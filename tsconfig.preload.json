@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "strict": true,
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "lib": ["ESNext", "DOM"],
+    "types": ["node", "electron"],
+    "outDir": "out/preload",
+    "skipLibCheck": true,
+    "composite": true
+  },
+  "include": ["src/preload/**/*"]
+}
