@@ -1095,6 +1095,27 @@ export function initDB() {
       db.prepare('UPDATE admins SET permissions = ? WHERE id = ?').run(JSON.stringify(perms), adm.id);
     }
   }
+
+  // Migration: Backfill audit_logs from existing activity_logs
+  const auditCount = (db.prepare("SELECT COUNT(*) as c FROM audit_logs").get() as any).c;
+  if (auditCount === 0) {
+    const bizId = (db.prepare("SELECT value FROM settings WHERE key = 'active_business_id'").get() as any)?.value;
+    if (bizId) {
+      const existing = db.prepare("SELECT id, action, entityType, entityId, details, createdAt FROM activity_logs ORDER BY createdAt ASC").all() as any[];
+      const insert = db.prepare('INSERT INTO audit_logs (businessId, action, entityType, entityId, fieldName, oldValue, newValue, changedBy, changedById, description, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      const tx = db.transaction(() => {
+        for (const row of existing) {
+          let changedBy = null;
+          if (row.details) {
+            const m = row.details.match(/— by (.+)$/);
+            if (m) changedBy = m[1];
+          }
+          insert.run(bizId, row.action, row.entityType || null, row.entityId || null, null, null, null, changedBy || 'system', null, row.details, row.createdAt);
+        }
+      });
+      tx();
+    }
+  }
 }
 
 export { ALL_PERMISSIONS, DEFAULT_ROLES };

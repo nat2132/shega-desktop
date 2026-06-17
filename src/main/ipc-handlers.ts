@@ -77,6 +77,15 @@ function logActivity(action: string, entityType?: string, entityId?: number, det
   } catch (e) {
     console.error(`[ActivityLog] Failed to log ${action}:`, e);
   }
+  try {
+    const bizId = getActiveBusinessId();
+    if (bizId) {
+      db.prepare('INSERT INTO audit_logs (businessId, action, entityType, entityId, fieldName, oldValue, newValue, changedBy, changedById, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(bizId, action, entityType || null, entityId || null, null, null, null, currentUserName || 'unknown', null, details || `${action} on ${entityType || 'unknown'}`);
+    }
+  } catch (e) {
+    console.error(`[AuditLog] Failed to log ${action}:`, e);
+  }
 }
 
 function insertAuditLog(action: string, entityType: string, entityId: number | null, fieldName: string | null, oldValue: string | null, newValue: string | null, description: string | null) {
