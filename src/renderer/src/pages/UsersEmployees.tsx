@@ -31,7 +31,7 @@ const PERMISSION_GROUPS: { key: string; label: string; permissions: string[] }[]
 ];
 
 const UsersEmployees: React.FC = () => {
-  const { t } = useSettings();
+  const { t, formatDate, formatTime, formatDateTime } = useSettings();
   const { isSuperAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('directory');
 
@@ -428,11 +428,11 @@ const UsersEmployees: React.FC = () => {
                   </div>
                   <div className="flex items-center gap-2 text-[9px] text-muted-foreground">
                     <Badge variant="outline" className="text-[8px]">{acct.roleName || 'No role'}</Badge>
-                    {acct.lastLogin && <span>Last: {new Date(acct.lastLogin).toLocaleDateString()}</span>}
+                    {acct.lastLogin && <span>Last: {formatDate(acct.lastLogin)}</span>}
                   </div>
                   {acct.lockedUntil && new Date(acct.lockedUntil) > new Date() && (
                     <div className="flex items-center gap-1.5 text-[9px] text-destructive font-bold">
-                      <AlertCircle size={10} /> Locked until {new Date(acct.lockedUntil).toLocaleTimeString()}
+                      <AlertCircle size={10} /> Locked until {formatTime(acct.lockedUntil)}
                     </div>
                   )}
                   <div className="flex gap-1 pt-1 border-t">
@@ -516,7 +516,7 @@ const UsersEmployees: React.FC = () => {
                       <div>
                         <p className="text-xs font-bold">{a.firstName} {a.lastName}</p>
                         <p className="text-[9px] text-muted-foreground">
-                          In: {a.clockIn ? new Date(a.clockIn).toLocaleTimeString() : '—'} | Out: {a.clockOut ? new Date(a.clockOut).toLocaleTimeString() : <span className="text-green-500">Active</span>}
+                          In: {a.clockIn ? formatTime(a.clockIn) : '—'} | Out: {a.clockOut ? formatTime(a.clockOut) : <span className="text-green-500">Active</span>}
                         </p>
                       </div>
                       <Badge variant={a.status === 'present' ? 'success' : a.status === 'partial' ? 'warning' : 'secondary'} className="text-[8px]">{a.status}</Badge>
@@ -562,8 +562,8 @@ const UsersEmployees: React.FC = () => {
                       <tr key={a.id} className="border-b hover:bg-muted/10">
                         <td className="p-3 font-bold">{a.firstName} {a.lastName}</td>
                         <td className="p-3">{a.date}</td>
-                        <td className="p-3">{a.clockIn ? new Date(a.clockIn).toLocaleTimeString() : '—'}</td>
-                        <td className="p-3">{a.clockOut ? new Date(a.clockOut).toLocaleTimeString() : '—'}</td>
+                        <td className="p-3">{a.clockIn ? formatTime(a.clockIn) : '—'}</td>
+                        <td className="p-3">{a.clockOut ? formatTime(a.clockOut) : '—'}</td>
                         <td className="p-3">{getStatusBadge(a.status)}</td>
                       </tr>
                     ))}
@@ -620,7 +620,7 @@ const UsersEmployees: React.FC = () => {
                         </Badge>
                         {log.entityType && <Badge variant="outline" className="text-[8px] px-1.5 h-4">{log.entityType}</Badge>}
                         <span className="text-[9px] text-muted-foreground ml-auto flex-shrink-0">
-                          {new Date(log.createdAt).toLocaleString()}
+                          {formatDateTime(log.createdAt)}
                         </span>
                       </div>
                       <p className="text-[10px] mt-1 truncate">{log.details || '—'}</p>

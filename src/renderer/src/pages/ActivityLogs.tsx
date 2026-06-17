@@ -35,7 +35,7 @@ const ActionBadge = ({ action }: { action: string }) => {
 };
 
 const ActivityLogs: React.FC = () => {
-  const { t } = useSettings();
+  const { t, formatDate, formatTime, formatDateTime } = useSettings();
   const [logs, setLogs] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [actionFilter, setActionFilter] = useState('');
@@ -172,7 +172,7 @@ const ActivityLogs: React.FC = () => {
                           <span className="text-[9px] font-bold text-muted-foreground">#{log.entityId}</span>
                         )}
                         <span className="text-[9px] text-muted-foreground ml-auto">
-                          {new Date(log.createdAt).toLocaleString()}
+                          {formatDateTime(log.createdAt)}
                         </span>
                       </div>
                       <p className="text-xs font-semibold mt-1.5 break-words">{formatDetails(log)}</p>

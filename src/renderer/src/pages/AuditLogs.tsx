@@ -34,7 +34,7 @@ const reverseLabel = (log: any): string => {
 };
 
 const AuditLogs: React.FC = () => {
-  const { t } = useSettings();
+  const { t, formatDate, formatTime, formatDateTime } = useSettings();
   const [logs, setLogs] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [entityFilter, setEntityFilter] = useState('');
@@ -172,7 +172,7 @@ const AuditLogs: React.FC = () => {
                         <Badge variant="secondary" className="text-[8px] font-black uppercase">Reversed</Badge>
                       )}
                       <span className="text-[9px] text-muted-foreground ml-auto">
-                        {log.createdAt ? new Date(log.createdAt).toLocaleString() : ''}
+                        {log.createdAt ? formatDateTime(log.createdAt) : ''}
                       </span>
                     </div>
                     {log.fieldName ? (

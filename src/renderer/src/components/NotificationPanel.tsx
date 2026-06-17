@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { X, AlertTriangle, Info, CheckCircle, AlertCircle, Trash2 } from 'lucide-react';
+import { useSettings } from '../context/SettingsContext';
 
 interface Notification {
   id: number;
@@ -15,6 +16,7 @@ interface NotificationPanelProps {
 }
 
 const NotificationPanel: React.FC<NotificationPanelProps> = ({ onClose }) => {
+  const { formatDate, formatTime, formatDateTime } = useSettings();
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
   useEffect(() => {
@@ -82,7 +84,7 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ onClose }) => {
                 <div className="flex-1 min-w-0">
                   <p className="font-semibold text-sm">{n.title}</p>
                   <p className="text-white/50 text-xs mt-1">{n.message}</p>
-                  <p className="text-white/30 text-xs mt-2">{new Date(n.createdAt).toLocaleString()}</p>
+                  <p className="text-white/30 text-xs mt-2">{formatDateTime(n.createdAt)}</p>
                 </div>
                 {!n.isRead && <div className="w-2 h-2 bg-blue-500 rounded-full mt-1.5 flex-shrink-0" />}
               </div>

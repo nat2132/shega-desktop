@@ -16,7 +16,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 type Tab = 'warehouses' | 'inventory' | 'transfers' | 'movements';
 
 const Warehouses: React.FC = () => {
-  const { t } = useSettings();
+  const { t, formatDate, formatTime, formatDateTime } = useSettings();
   const [activeTab, setActiveTab] = useState<Tab>('warehouses');
 
   const [warehouses, setWarehouses] = useState<any[]>([]);
@@ -380,7 +380,7 @@ const Warehouses: React.FC = () => {
                   <tbody>
                     {transfers.map((tr: any) => (
                       <tr key={tr.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
-                        <td className="p-4 text-[10px] font-semibold">{new Date(tr.createdAt).toLocaleDateString()}</td>
+                        <td className="p-4 text-[10px] font-semibold">{formatDate(tr.createdAt)}</td>
                         <td className="p-4">
                           <Badge variant="secondary" className="text-[9px] font-black">{tr.fromWarehouseName}</Badge>
                         </td>
@@ -446,7 +446,7 @@ const Warehouses: React.FC = () => {
                   <tbody>
                     {movements.map((mv: any) => (
                       <tr key={mv.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
-                        <td className="p-4 text-[10px] font-semibold">{new Date(mv.createdAt).toLocaleString()}</td>
+                        <td className="p-4 text-[10px] font-semibold">{formatDateTime(mv.createdAt)}</td>
                         <td className="p-4">
                           <Badge variant="outline" className="text-[9px] font-black">{mv.warehouseName}</Badge>
                         </td>

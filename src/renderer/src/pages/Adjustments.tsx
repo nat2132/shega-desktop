@@ -51,7 +51,7 @@ interface Adjustment {
 }
 
 const Adjustments: React.FC = () => {
-  const { t, formatDate } = useSettings();
+  const { t, formatDate, formatTime, formatDateTime } = useSettings();
   const { hasPermission } = useAuth();
   const [items, setItems] = useState<Item[]>([]);
   const [history, setHistory] = useState<Adjustment[]>([]);
@@ -286,7 +286,7 @@ const Adjustments: React.FC = () => {
                             <tr key={i} className="border-b border-border hover:bg-muted/30 transition-colors">
                               <td className="px-6 py-4 font-medium whitespace-nowrap text-foreground">
                                 {formatDate(h.date)}
-                                <div className="text-[10px] text-muted-foreground">{new Date(h.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                                <div className="text-[10px] text-muted-foreground">{formatTime(h.createdAt)}</div>
                               </td>
                               <td className="px-6 py-4 font-bold text-foreground">{h.itemName}</td>
                               <td className="px-6 py-4">

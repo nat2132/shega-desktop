@@ -14,7 +14,7 @@ import { DatePicker } from '../components/DatePicker';
 type Tab = 'employees' | 'roles' | 'accounts' | 'logs';
 
 const Employees: React.FC = () => {
-  const { t } = useSettings();
+  const { t, formatDate, formatTime, formatDateTime } = useSettings();
   const [activeTab, setActiveTab] = useState<Tab>('employees');
 
   const [employees, setEmployees] = useState<any[]>([]);
@@ -416,7 +416,7 @@ const Employees: React.FC = () => {
                           <p className="text-[9px] text-muted-foreground">{acct.employeeCode || ''}</p>
                         </td>
                         <td className="p-4 text-[10px] font-semibold">{acct.username}</td>
-                        <td className="p-4 text-[10px] font-semibold">{acct.lastLogin ? new Date(acct.lastLogin).toLocaleString() : '-'}</td>
+                        <td className="p-4 text-[10px] font-semibold">{acct.lastLogin ? formatDateTime(acct.lastLogin) : '-'}</td>
                         <td className="p-4">
                           <Badge variant={acct.isActive ? 'default' : 'secondary'} className="text-[9px] font-black uppercase">
                             {acct.isActive ? t('employees.active') : t('employees.inactive')}
@@ -480,7 +480,7 @@ const Employees: React.FC = () => {
                   <tbody>
                     {logs.map(log => (
                       <tr key={log.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
-                        <td className="p-4 text-[10px] font-semibold">{new Date(log.createdAt).toLocaleString()}</td>
+                        <td className="p-4 text-[10px] font-semibold">{formatDateTime(log.createdAt)}</td>
                         <td className="p-4 text-[10px] font-semibold">{log.firstName ? `${log.firstName} ${log.lastName}` : '-'}</td>
                         <td className="p-4">
                           <Badge variant="outline" className="text-[9px] font-black uppercase">{log.action}</Badge>

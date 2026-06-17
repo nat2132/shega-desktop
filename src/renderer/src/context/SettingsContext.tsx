@@ -21,6 +21,7 @@ interface SettingsContextType {
   t: (key: string, params?: Record<string, any>) => string;
   formatDate: (date: Date | string | number, options?: Intl.DateTimeFormatOptions) => string;
   formatTime: (date: Date) => string;
+  formatDateTime: (date: Date | string | number) => string;
 }
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
@@ -124,6 +125,16 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     });
   };
 
+  const formatDateTime = (date: Date | string | number): string => {
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return String(date);
+    try {
+      return `${formatDate(d)} ${formatTime(d)}`;
+    } catch {
+      return d.toLocaleString();
+    }
+  };
+
   return (
     <SettingsContext.Provider value={{ 
       language, setLanguage, 
@@ -131,7 +142,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       timeSystem, setTimeSystem,
       theme, setTheme,
       currentBusiness, refreshBusiness,
-      t, formatDate, formatTime
+      t, formatDate, formatTime, formatDateTime
     }}>
       {children}
     </SettingsContext.Provider>

@@ -46,7 +46,7 @@ const DATATYPE_OPTIONS: { value: DataType; labelKey: string }[] = [
 ];
 
 const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) => {
-  const { t } = useSettings();
+  const { t, formatDate, formatTime, formatDateTime } = useSettings();
   const [step, setStep] = useState<'export' | 'import'>('export');
   const [exportFormat, setExportFormat] = useState<ExportFormat>('csv');
   const [dataType, setDataType] = useState<DataType>('sales');
@@ -404,7 +404,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             <span className="text-[9px] text-muted-foreground">
-                              {new Date(b.createdAt).toLocaleDateString()}
+                              {formatDate(b.createdAt)}
                             </span>
                             <Check className="h-3 w-3 text-emerald-500" />
                           </div>

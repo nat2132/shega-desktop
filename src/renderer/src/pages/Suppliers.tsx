@@ -28,6 +28,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { DataTable } from '../components/data-table';
 import Modal from '../components/Modal';
 import { addPdfHeader } from '../lib/export-utils';
+import { toast } from 'sonner';
 
 const PAYMENT_METHODS = ['cash', 'bank_transfer', 'mobile_money', 'check', 'other'];
 const ROWS_PER_PAGE = 50;
@@ -84,7 +85,7 @@ const DEFAULT_FORM = {
 };
 
 const Suppliers: React.FC = () => {
-  const { t, formatDate, currency, currentBusiness } = useSettings();
+  const { t, formatDate, formatTime, formatDateTime, currency, currentBusiness } = useSettings();
   const { hasPermission } = useAuth();
   const [view, setView] = useState<ViewMode>('list');
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -383,7 +384,7 @@ const Suppliers: React.FC = () => {
     const y0 = addPdfHeader(doc, currentBusiness, 8);
     let y = y0 + 4;
     doc.setFontSize(14); doc.setFont('helvetica', 'bold'); doc.text('Suppliers Report', 14, y); y += 8;
-    doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, y);
+    doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.text(`Generated: ${formatDate(new Date())}`, 14, y);
     const headers = [['Name', 'Company', 'Phone', 'Total Purchases', 'Outstanding', 'Status']];
     const data = suppliers.map(s => [
       s.supplierName, s.companyName || '-', s.phone || '-',
@@ -394,6 +395,7 @@ const Suppliers: React.FC = () => {
     autoTable(doc, { head: headers, body: data, startY: y + 4, styles: { fontSize: 8 } });
     doc.save('suppliers-report.pdf');
     showToast('PDF exported');
+    toast.success('Report exported successfully');
   };
 
   const exportCSV = () => {

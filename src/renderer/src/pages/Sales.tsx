@@ -20,6 +20,7 @@ import Modal from '../components/Modal';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { exportCSV, exportPDF } from '../lib/export-utils';
 import { computeTrend } from '../lib/trend-utils';
+import { toast } from 'sonner';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -72,7 +73,7 @@ interface Item {
 }
 
 const Sales: React.FC = () => {
-  const { t, formatDate, currentBusiness } = useSettings();
+  const { t, formatDate, formatTime, formatDateTime, currentBusiness } = useSettings();
   const [sales, setSales] = useState<Sale[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [showModal, setShowModal] = useState(false);
@@ -448,7 +449,7 @@ const Sales: React.FC = () => {
     doc.line(3, y, pageWidth - 3, y);
     y += 4;
     doc.setFontSize(7);
-    doc.text(`Date: ${new Date(sale.createdAt).toLocaleString()}`, 3, y);
+    doc.text(`Date: ${formatDateTime(sale.createdAt)}`, 3, y);
     y += 4;
     doc.text(`Customer: ${sale.customerName || 'Walk-in'}`, 3, y);
     y += 4;
@@ -575,6 +576,7 @@ const Sales: React.FC = () => {
       'sales-report',
       ['', '', '', '', sales.reduce((sum, s) => sum + s.totalPrice, 0).toLocaleString(), '', '', '', '']
     );
+    toast.success('Report exported successfully');
   };
 
   return (
@@ -936,7 +938,7 @@ const Sales: React.FC = () => {
             <div className="text-center space-y-1 border-b border-dashed border-border pb-6">
               <h2 className="text-2xl font-black tracking-tight uppercase">{t('sales.receipt_header')}</h2>
               <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">ID: #REC-{viewingSale.id}</p>
-              <p className="text-xs text-muted-foreground">{new Date(viewingSale.createdAt).toLocaleString()}</p>
+              <p className="text-xs text-muted-foreground">{formatDateTime(viewingSale.createdAt)}</p>
             </div>
 
             <div className="space-y-4">

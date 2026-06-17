@@ -22,7 +22,7 @@ const statusConfig: Record<string, { label: string; variant: 'default' | 'second
 };
 
 const Shipments: React.FC = () => {
-  const { t } = useSettings();
+  const { t, formatDate, formatTime, formatDateTime } = useSettings();
   const [shipments, setShipments] = useState<any[]>([]);
   const [selectedShipment, setSelectedShipment] = useState<any>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -197,7 +197,7 @@ const Shipments: React.FC = () => {
                 )}
                 {s.scheduledDate && (
                   <div className="flex items-center gap-2 text-[10px] font-semibold text-muted-foreground">
-                    <CalendarDays size={12} /> {new Date(s.scheduledDate).toLocaleDateString()}
+                    <CalendarDays size={12} /> {formatDate(s.scheduledDate)}
                   </div>
                 )}
               </div>
@@ -205,7 +205,7 @@ const Shipments: React.FC = () => {
                 <p className="mt-3 text-[9px] text-muted-foreground line-clamp-2">{s.notes}</p>
               )}
               <div className="flex items-center justify-between mt-4 pt-3 border-t border-border/30">
-                <p className="text-[9px] text-muted-foreground font-bold">{new Date(s.createdAt).toLocaleDateString()}</p>
+                <p className="text-[9px] text-muted-foreground font-bold">{formatDate(s.createdAt)}</p>
                 <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
                   {!['delivered', 'cancelled'].includes(s.status) && (
                     <Button variant="outline" size="sm" className="h-7 text-[8px] font-black uppercase tracking-widest" onClick={() => {
@@ -356,13 +356,13 @@ const Shipments: React.FC = () => {
 
             {selectedShipment.scheduledDate && (
               <div className="flex items-center gap-2 text-[10px] font-semibold text-muted-foreground">
-                <CalendarDays size={14} /> {t('shipments.scheduled')}: {new Date(selectedShipment.scheduledDate).toLocaleDateString()}
+                <CalendarDays size={14} /> {t('shipments.scheduled')}: {formatDate(selectedShipment.scheduledDate)}
               </div>
             )}
 
             {selectedShipment.deliveredAt && (
               <div className="flex items-center gap-2 text-[10px] font-semibold text-green-600">
-                <CheckCircle size={14} /> {t('shipments.delivered_at')}: {new Date(selectedShipment.deliveredAt).toLocaleString()}
+                <CheckCircle size={14} /> {t('shipments.delivered_at')}: {formatDateTime(selectedShipment.deliveredAt)}
               </div>
             )}
 
@@ -380,7 +380,7 @@ const Shipments: React.FC = () => {
                 {(selectedShipment.history || []).map((h: any) => (
                   <div key={h.id} className="flex items-center gap-3 p-3 rounded-xl bg-muted/10">
                     <StatusBadge status={h.status} />
-                    <span className="text-[9px] text-muted-foreground">{new Date(h.createdAt).toLocaleString()}</span>
+                    <span className="text-[9px] text-muted-foreground">{formatDateTime(h.createdAt)}</span>
                     {h.notes && <span className="text-[9px] text-muted-foreground">— {h.notes}</span>}
                   </div>
                 ))}

@@ -342,6 +342,7 @@ const Expenses: React.FC = () => {
     const h = ['Name', 'Amount', 'Category', 'Date', 'Recurring', 'Frequency'];
     const r = expenses.map(e => [e.name, String(e.amount), e.category, e.date, e.isRecurring ? 'Yes' : 'No', e.frequency || '']);
     exportPDF('Expenses Report', h, r, 'expenses');
+    toast.success('Report exported successfully');
   };
 
   return (

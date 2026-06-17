@@ -132,6 +132,32 @@ export const getEthiopianMonthName = (monthIndex: number, language: Language = '
   return ETHIOPIAN_MONTHS[i];
 };
 
+export const formatDateTime = (
+  date: Date,
+  calendarType: CalendarType,
+  language: Language = 'en',
+  timeSystem?: TimeSystem
+) => {
+  if (!date || isNaN(date.getTime())) return '';
+  const dateStr = formatDate(date, calendarType, language);
+  const hours = date.getHours().toString().padStart(2, '0');
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  return `${dateStr} ${hours}:${minutes}`;
+};
+
+export type TimeSystem = 'device' | 'ethiopian';
+
+export const formatTime = (
+  date: Date,
+  timeSystem?: TimeSystem,
+  language: Language = 'en'
+) => {
+  if (!date || isNaN(date.getTime())) return '';
+  const hours = date.getHours().toString().padStart(2, '0');
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  return `${hours}:${minutes}`;
+};
+
 export const getFriendlyDate = (
   date: Date,
   calendarType: CalendarType,

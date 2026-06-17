@@ -502,6 +502,7 @@ const Inventory: React.FC = () => {
     const h = ['Name', 'Category', 'Base Qty', 'Base Unit', 'Selling Price', 'Purchase Price'];
     const r = items.map(i => [i.name, i.categoryName || '', String(i.totalBaseQuantity), i.baseUnit, String(i.baseSellingPrice), String(i.basePurchasePrice)]);
     exportPDF('Inventory Report', h, r, 'inventory', undefined, undefined, currentBusiness);
+    toast.success('Report exported successfully');
   };
 
   return (

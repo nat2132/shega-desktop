@@ -18,6 +18,7 @@ import { DatePicker } from '../components/DatePicker';
 import { Separator } from '../components/ui/separator';
 import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
+import { toast } from 'sonner';
 import { exportCSV, exportPDF, addPdfHeader } from '../lib/export-utils';
 
 interface SalesData {
@@ -265,6 +266,7 @@ const Reports: React.FC = () => {
     const rows = analytics.salesData.map(s => [s.date, String(s.revenue), String(s.units), String(s.profit)]);
     const totalUnits = analytics.salesData.reduce((a, s) => a + s.units, 0);
     exportPDF('Sales Performance Report', headers, rows, 'sales-performance', ['', 'Total', String(totalUnits), String(analytics.summary.totalProfit)], undefined, currentBusiness);
+    toast.success('Report exported successfully');
   };
 
   const exportValuationCSV = () => {
@@ -278,6 +280,7 @@ const Reports: React.FC = () => {
     const rows = items.map(i => [i.name, i.categoryName || '', String(i.totalBaseQuantity), i.baseUnit, String(i.basePurchasePrice), String(i.totalBaseQuantity * i.basePurchasePrice)]);
     const total = items.reduce((s, i) => s + (i.totalBaseQuantity * i.basePurchasePrice), 0);
     exportPDF('Stock Valuation Report', headers, rows, 'stock-valuation', ['', '', '', '', 'Grand Total', String(total)], undefined, currentBusiness);
+    toast.success('Report exported successfully');
   };
 
   const exportExpenseCSV = () => {
@@ -291,6 +294,7 @@ const Reports: React.FC = () => {
     const rows = expenses.map(e => [e.date, e.name, e.category, String(e.amount)]);
     const total = expenses.reduce((s, e) => s + e.amount, 0);
     exportPDF('Expense Report', headers, rows, 'expense-report', ['', '', 'Total', String(total)], undefined, currentBusiness);
+    toast.success('Report exported successfully');
   };
 
   const exportPNLCSV = () => {
@@ -315,6 +319,7 @@ const Reports: React.FC = () => {
       ['Net Profit', String(analytics.summary.netProfit)],
     ];
     exportPDF('Profit & Loss Report', headers, rows, 'profit-loss', undefined, undefined, currentBusiness);
+    toast.success('Report exported successfully');
   };
 
   const exportCatalogCSV = () => {
@@ -327,6 +332,7 @@ const Reports: React.FC = () => {
     const headers = ['Product', 'Category', 'Brand', 'Base Qty', 'Unit', 'Selling Price', 'Purchase Price'];
     const rows = items.map(i => [i.name, i.categoryName || '', i.companyName || '', String(i.totalBaseQuantity), i.baseUnit, String(i.baseSellingPrice), String(i.basePurchasePrice)]);
     exportPDF('Product Catalog Report', headers, rows, 'product-catalog', undefined, undefined, currentBusiness);
+    toast.success('Report exported successfully');
   };
 
   const exportSupplierSummaryCSV = () => {
@@ -342,6 +348,7 @@ const Reports: React.FC = () => {
     const totalPayments = supplierSummary.reduce((s: number, r: any) => s + (r.totalPayments || 0), 0);
     const totalOutstanding = supplierSummary.reduce((s: number, r: any) => s + (r.outstandingBalance || 0), 0);
     exportPDF('Supplier Summary Report', headers, rows, 'supplier-summary', ['Total', String(totalPurchases), String(totalPayments), String(totalOutstanding)], undefined, currentBusiness);
+    toast.success('Report exported successfully');
   };
 
   const exportSupplierTransactionsCSV = () => {
@@ -354,6 +361,7 @@ const Reports: React.FC = () => {
     const headers = ['Supplier', 'Order#', 'Date', 'Total Amount', 'Paid Amount', 'Balance', 'Status'];
     const rows = supplierTransactions.map((r: any) => [r.supplierName, r.purchaseNumber || `#${r.id}`, r.purchaseDate, String(r.totalAmount), String(r.paidAmount), String(r.remainingBalance), r.status]);
     exportPDF('Supplier Transaction Report', headers, rows, 'supplier-transactions', [], undefined, currentBusiness);
+    toast.success('Report exported successfully');
   };
 
   const exportInventoryBySupplierCSV = () => {
@@ -366,6 +374,7 @@ const Reports: React.FC = () => {
     const headers = ['Supplier', 'Product Count', 'Stock Quantity', 'Inventory Value', 'Last Supply Date'];
     const rows = inventoryBySupplier.map((r: any) => [r.supplierName, String(r.productCount), String(r.totalStockQuantity), String(r.inventoryValue), r.lastSupplyDate || '']);
     exportPDF('Inventory by Supplier Report', headers, rows, 'inventory-by-supplier', [], undefined, currentBusiness);
+    toast.success('Report exported successfully');
   };
 
   const exportVoidedSalesCSV = () => {
@@ -378,6 +387,7 @@ const Reports: React.FC = () => {
     const headers = ['Sale #', 'Product', 'Amount', 'Reason', 'Voided By', 'Date'];
     const rows = voidedSales.map((r: any) => [String(r.id), r.name || `Item #${r.itemId}`, String(r.totalPrice), r.voidReason || '', r.voidedBy || '', r.voidedAt || '']);
     exportPDF('Voided Sales Report', headers, rows, 'voided-sales', [], undefined, currentBusiness);
+    toast.success('Report exported successfully');
   };
 
   const exportReversalsCSV = () => {
@@ -390,6 +400,7 @@ const Reports: React.FC = () => {
     const headers = ['Action', 'Entity', 'Entity ID', 'Description', 'Changed By', 'Date'];
     const rows = reversalData.map((r: any) => [r.action, r.entityType || '', String(r.entityId || ''), r.description || '', r.changedBy || '', r.createdAt || '']);
     exportPDF('Reversals Report', headers, rows, 'reversals', [], undefined, currentBusiness);
+    toast.success('Report exported successfully');
   };
 
   const formattedRange = useMemo(() => {

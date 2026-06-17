@@ -2087,9 +2087,10 @@ function registerIPCHandlers() {
         newCount++;
         try {
           if (n.type === "error" || n.type === "warning") {
-            const { Notification: ElectronNotification } = require("electron");
+            const { Notification: ElectronNotification, nativeImage } = require("electron");
             if (ElectronNotification.isSupported()) {
-              new ElectronNotification({ title: n.title, body: n.message, urgency: n.type === "error" ? "critical" : "normal" }).show();
+              const icon = nativeImage.createFromPath(path.join(electron.app.getAppPath(), "src/assets/images/logo.ico"));
+              new ElectronNotification({ title: n.title, body: n.message, icon, urgency: n.type === "error" ? "critical" : "normal" }).show();
             }
           }
         } catch (_) {
@@ -2354,9 +2355,10 @@ function registerIPCHandlers() {
       );
       if (pref.desktop) {
         try {
-          const { Notification: ElectronNotification } = require("electron");
+          const { Notification: ElectronNotification, nativeImage } = require("electron");
           if (ElectronNotification.isSupported()) {
-            new ElectronNotification({ title: r.title, body: r.message || "" }).show();
+            const icon = nativeImage.createFromPath(path.join(electron.app.getAppPath(), "src/assets/images/logo.ico"));
+            new ElectronNotification({ title: r.title, body: r.message || "", icon }).show();
           }
         } catch (_) {
         }
@@ -2380,11 +2382,13 @@ function registerIPCHandlers() {
   });
   electron.ipcMain.handle("show-desktop-notification", (_, data) => {
     try {
-      const { Notification: ElectronNotification } = require("electron");
+      const { Notification: ElectronNotification, nativeImage } = require("electron");
       if (!ElectronNotification.isSupported()) return { shown: false, reason: "unsupported" };
+      const icon = nativeImage.createFromPath(path.join(electron.app.getAppPath(), "src/assets/images/logo.ico"));
       const n = new ElectronNotification({
         title: data.title,
         body: data.body,
+        icon,
         urgency: data.urgency || "normal",
         silent: false
       });

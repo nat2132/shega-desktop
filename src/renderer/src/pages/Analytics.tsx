@@ -51,7 +51,7 @@ interface AnalyticsData {
 }
 
 const Analytics: React.FC = () => {
-  const { t, formatDate, language } = useSettings();
+  const { t, formatDate, formatTime, formatDateTime, language } = useSettings();
   const [period, setPeriod] = useState<
     "today" | "week" | "month" | "year" | "custom"
   >("month");
@@ -1017,10 +1017,7 @@ const Analytics: React.FC = () => {
                               t("analytics.system_update")}
                           </p>
                           <p className="text-[8px] font-medium text-muted-foreground mt-0.5">
-                            {new Date(activity.date).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}{" "}
+                            {formatTime(activity.date)}{" "}
                             · {formatDate(activity.date)}
                           </p>
                         </div>
