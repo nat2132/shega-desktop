@@ -263,6 +263,10 @@ export interface ElectronAPI {
   getQuietHours: () => Promise<any[]>;
   setQuietHours: (data: any) => Promise<{ success: boolean; id?: number }>;
   deleteQuietHours: () => Promise<any>;
+
+  // Audit Logs
+  getAuditLogs: (options?: any) => Promise<any[]>;
+  reverseAuditLogEntry: (data: { logId: number }) => Promise<any>;
 }
 
 declare global {

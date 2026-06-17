@@ -191,6 +191,7 @@ contextBridge.exposeInMainWorld('api', {
   getActivityLogs: (options?: any) => ipcRenderer.invoke('get-activity-logs', options),
   logActivity: (data: any) => ipcRenderer.invoke('log-activity', data),
   getAuditLogs: (options?: any) => ipcRenderer.invoke('get-audit-logs', options),
+  reverseAuditLogEntry: (data: { logId: number }) => ipcRenderer.invoke('reverse-audit-log-entry', data),
 
   // Shipments
   getShipments: (options?: any) => ipcRenderer.invoke('get-shipments', options),

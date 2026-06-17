@@ -163,6 +163,7 @@ electron.contextBridge.exposeInMainWorld("api", {
   getActivityLogs: (options) => electron.ipcRenderer.invoke("get-activity-logs", options),
   logActivity: (data) => electron.ipcRenderer.invoke("log-activity", data),
   getAuditLogs: (options) => electron.ipcRenderer.invoke("get-audit-logs", options),
+  reverseAuditLogEntry: (data) => electron.ipcRenderer.invoke("reverse-audit-log-entry", data),
   // Shipments
   getShipments: (options) => electron.ipcRenderer.invoke("get-shipments", options),
   getShipment: (id) => electron.ipcRenderer.invoke("get-shipment", id),

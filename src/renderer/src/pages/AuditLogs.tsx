@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Shield, Search, RefreshCw, Filter, Eye
+  Shield, Search, RefreshCw, Filter, Eye, Undo2, RotateCcw, X
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { DatePicker } from '../components/DatePicker';
 import { Badge } from '../components/ui/badge';
+import { toast } from 'sonner';
 
 const actionVariants: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
   void_sale: 'default',
@@ -17,6 +18,21 @@ const actionVariants: Record<string, 'default' | 'secondary' | 'destructive' | '
   delete: 'destructive',
 };
 
+const canReverse = (log: any): boolean => {
+  if (log.reversedAt) return false;
+  if (log.action === 'soft_delete' && (log.entityType === 'item' || log.entityType === 'customer')) return true;
+  if (log.action === 'restore_item' || log.action === 'restore_customer') return true;
+  if ((log.action === 'update' || log.action === 'insert') && log.fieldName && log.oldValue !== null) return true;
+  return false;
+};
+
+const reverseLabel = (log: any): string => {
+  if (log.action === 'soft_delete') return log.entityType === 'item' ? 'Restore Item' : 'Restore Customer';
+  if (log.action === 'restore_item') return 'Re-delete Item';
+  if (log.action === 'restore_customer') return 'Re-delete Customer';
+  return 'Undo Change';
+};
+
 const AuditLogs: React.FC = () => {
   const { t } = useSettings();
   const [logs, setLogs] = useState<any[]>([]);
@@ -25,6 +41,7 @@ const AuditLogs: React.FC = () => {
   const [actionFilter, setActionFilter] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  const [reversingId, setReversingId] = useState<number | null>(null);
 
   useEffect(() => { loadLogs(); }, []);
 
@@ -48,6 +65,19 @@ const AuditLogs: React.FC = () => {
         setLogs(data);
       }
     } catch (err) { console.error(err); }
+  };
+
+  const handleReverse = async (log: any) => {
+    setReversingId(log.id);
+    try {
+      await window.api.reverseAuditLogEntry({ logId: log.id });
+      toast.success('Change reversed successfully');
+      loadLogs();
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to reverse');
+    } finally {
+      setReversingId(null);
+    }
   };
 
   return (
@@ -138,6 +168,9 @@ const AuditLogs: React.FC = () => {
                       {log.entityId && (
                         <span className="text-[9px] font-bold text-muted-foreground">#{log.entityId}</span>
                       )}
+                      {log.reversedAt && (
+                        <Badge variant="secondary" className="text-[8px] font-black uppercase">Reversed</Badge>
+                      )}
                       <span className="text-[9px] text-muted-foreground ml-auto">
                         {log.createdAt ? new Date(log.createdAt).toLocaleString() : ''}
                       </span>
@@ -157,6 +190,24 @@ const AuditLogs: React.FC = () => {
                     <div className="flex items-center gap-1.5 mt-1">
                       <span className="text-[9px] text-muted-foreground font-medium">{t('audit_logs.by')} {log.changedBy || 'unknown'}</span>
                     </div>
+                  </div>
+                  <div className="flex items-start gap-1 shrink-0">
+                    {canReverse(log) && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={reversingId === log.id}
+                        onClick={() => handleReverse(log)}
+                        className="h-7 text-[8px] font-black uppercase tracking-widest rounded-lg border-amber-500/30 text-amber-600 hover:bg-amber-500/10"
+                      >
+                        {reversingId === log.id ? (
+                          <RotateCcw size={11} className="animate-spin" />
+                        ) : (
+                          <Undo2 size={11} className="mr-1" />
+                        )}
+                        {reverseLabel(log)}
+                      </Button>
+                    )}
                   </div>
                 </div>
               </div>

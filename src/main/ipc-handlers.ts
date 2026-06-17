@@ -4562,6 +4562,55 @@ export function registerIPCHandlers() {
     return db.prepare(query).all(...params);
   });
 
+  ipcMain.handle('reverse-audit-log-entry', (_, data: { logId: number }) => {
+    requirePermission('audit.view');
+    const entry = db.prepare('SELECT * FROM audit_logs WHERE id = ? AND businessId = ?').get(data.logId, getActiveBusinessId()) as any;
+    if (!entry) throw new Error('Audit log entry not found');
+    if (entry.reversedAt) throw new Error('This change has already been reversed');
+
+    const reverseAction = (newAction: string, description: string) => {
+      db.prepare('UPDATE audit_logs SET reversedAt = CURRENT_TIMESTAMP, reversedBy = ? WHERE id = ?').run(currentUserName || 'unknown', entry.id);
+      insertAuditLog(newAction, entry.entityType, entry.entityId, entry.fieldName, entry.newValue, entry.oldValue, description);
+    };
+
+    // Handle field-level updates (generic reverse: set field back to oldValue)
+    if (entry.fieldName && entry.oldValue !== null && ['update', 'insert'].includes(entry.action)) {
+      const tableMap: Record<string, string> = { item: 'items', customer: 'customers', sale: 'sales', supplier: 'suppliers', expense: 'expenses', adjustment: 'adjustments' };
+      const table = tableMap[entry.entityType];
+      if (table && entry.entityId) {
+        db.prepare(`UPDATE ${table} SET ${entry.fieldName} = ? WHERE id = ?`).run(entry.oldValue, entry.entityId);
+        reverseAction('reverse_field_update', `Reversed field ${entry.fieldName} on ${entry.entityType} #${entry.entityId} from '${entry.newValue}' back to '${entry.oldValue}'`);
+        return { success: true };
+      }
+    }
+
+    // Handle soft-delete → restore
+    if (entry.action === 'soft_delete' && entry.entityType === 'item') {
+      db.prepare('UPDATE items SET is_deleted = 0, deleted_by = NULL, deleted_at = NULL WHERE id = ?').run(entry.entityId);
+      reverseAction('restore_item', `Item #${entry.entityId} restored via audit log reversal`);
+      return { success: true };
+    }
+    if (entry.action === 'soft_delete' && entry.entityType === 'customer') {
+      db.prepare('UPDATE customers SET is_deleted = 0, deleted_by = NULL, deleted_at = NULL WHERE id = ?').run(entry.entityId);
+      reverseAction('restore_customer', `Customer #${entry.entityId} restored via audit log reversal`);
+      return { success: true };
+    }
+
+    // Handle restore → re-soft-delete
+    if (entry.action === 'restore_item') {
+      db.prepare('UPDATE items SET is_deleted = 1, deleted_by = ?, deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(currentUserName || 'unknown', entry.entityId);
+      reverseAction('soft_delete', `Item #${entry.entityId} re-deleted via audit log reversal`);
+      return { success: true };
+    }
+    if (entry.action === 'restore_customer') {
+      db.prepare('UPDATE customers SET is_deleted = 1, deleted_by = ?, deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(currentUserName || 'unknown', entry.entityId);
+      reverseAction('soft_delete', `Customer #${entry.entityId} re-deleted via audit log reversal`);
+      return { success: true };
+    }
+
+    throw new Error('This action type cannot be automatically reversed from audit logs. Please use the relevant page to undo this change.');
+  });
+
   ipcMain.handle('get-reversal-stats', () => {
     const bizId = getActiveBusinessId();
     const voidedSales = (db.prepare("SELECT COUNT(*) as count FROM sales WHERE businessId = ? AND status = 'Voided'").get(bizId) as any).count;
