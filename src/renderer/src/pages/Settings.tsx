@@ -1,16 +1,26 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Palette, Globe, Calendar, Bell, User, Lock, Database, 
-  Download, Trash2, Shield, Moon, Sun, Droplets, TreePine, 
-  Sunset, Crown, Building2, Mail, Phone, MapPin,
-  Globe2, Landmark, Percent, Users2, ShieldCheck, 
-  Key, LogOut, CheckCircle, Smartphone, HardDrive,
-  RefreshCcw, UploadCloud, ChevronRight, AlertCircle
+import React, { useState } from 'react';
+import {
+  Palette, Globe, Building2,
+  CheckCircle, UploadCloud,
+  ShieldCheck, Database, Sun, Moon, Trash2, Download, Upload, UserCog, Bell, HardDrive, RotateCcw, FileText,
+  Sparkles, Leaf, Flame, Gem, Coffee, Clock, Headphones, Camera, User, Palette as PaletteIcon,
+  Phone, Users, Palette as PaletteIcon2
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { useSettings, Language, CalendarType, Theme } from '../context/SettingsContext';
-import Header from '../components/Header';
+import { Link } from 'react-router-dom';
+
+import { useSettings, Language } from '../context/SettingsContext';
+import { useAuth } from '../context/AuthContext';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { Badge } from '../components/ui/badge';
+import { cn } from '../utils/shadcn';
 import Modal from '../components/Modal';
+import { toast } from 'sonner';
+import NotificationSettings from '../components/NotificationSettings';
+import DataTransferModal from '../components/DataTransferModal';
+
+const profileImages = import.meta.glob('../assets/profile/*.png', { eager: true, import: 'default' });
+const AVATAR_OPTIONS = Object.values(profileImages) as string[];
 
 const LANGUAGES: { id: Language; name: string; native: string }[] = [
   { id: 'en', name: 'English', native: 'English' },
@@ -20,44 +30,105 @@ const LANGUAGES: { id: Language; name: string; native: string }[] = [
 ];
 
 const Settings: React.FC = () => {
-  const { t, language, setLanguage, calendarType, setCalendarType, theme, setTheme } = useSettings();
-  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'security' | 'data'>('profile');
-  const [showPinModal, setShowPinModal] = useState(false);
-  const [pinData, setPinData] = useState({ current: '', newPin: '', confirm: '' });
-  const [pinEnabled, setPinEnabled] = useState(false);
+  const { 
+    language, setLanguage, 
+    calendarType, setCalendarType, 
+    timeSystem, setTimeSystem,
+    theme, setTheme,
+    currentBusiness, refreshBusiness,
+    t
+  } = useSettings();
+  const { isSuperAdmin, currentAdmin } = useAuth();
+  
+  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'notifications' | 'security' | 'data' | 'support'>('profile');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showDataTransfer, setShowDataTransfer] = useState(false);
+  const [avatar, setAvatar] = useState<string | null>(null);
+  const currentAvatar = avatar ?? (currentAdmin?.avatar && currentAdmin.avatar.startsWith('profile') ? currentAdmin.avatar : null);
+  const [backups, setBackups] = useState<any[]>([]);
+  const [showBackups, setShowBackups] = useState(false);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [showRestoreConfirm, setShowRestoreConfirm] = useState<string | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  const [companyInfo, setCompanyInfo] = useState({
-    name: 'Shega Enterprise',
-    email: 'contact@shega.app',
-    phone: '+251 900 0000',
-    address: 'Addis Ababa, Ethiopia',
-    taxId: '8273645'
+  const [bizForm, setBizForm] = useState({
+    businessName: '',
+    storeName: '',
+    email: '',
+    phone: '',
+    address: '',
+    currency: 'ETB',
+    logo: ''
   });
 
-  useEffect(() => {
-    window.api.getSetting('pin_enabled').then((v: boolean | null) => {
-      if (v !== null) setPinEnabled(v);
-    });
+  React.useEffect(() => {
+    // (Notification preferences are now loaded by the NotificationSettings component)
   }, []);
 
-  const handlePinSave = async () => {
-    if (pinData.newPin !== pinData.confirm || pinData.newPin.length !== 4) return;
-    await window.api.setSetting('pin_code', pinData.newPin);
-    await window.api.setSetting('pin_enabled', true);
-    setPinEnabled(true);
-    setShowPinModal(false);
-    setPinData({ current: '', newPin: '', confirm: '' });
+  React.useEffect(() => {
+    if (currentBusiness) {
+      setBizForm({
+        businessName: currentBusiness.businessName,
+        storeName: currentBusiness.storeName,
+        email: currentBusiness.email || '',
+        phone: currentBusiness.phone || '',
+        address: currentBusiness.address || '',
+        currency: currentBusiness.currency || 'ETB',
+        logo: currentBusiness.logo || ''
+      });
+    }
+  }, [currentBusiness]);
+
+  const handleLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setBizForm(prev => ({ ...prev, logo: reader.result as string }));
+    reader.readAsDataURL(file);
   };
 
-  const handleRemovePin = async () => {
-    await window.api.setSetting('pin_enabled', false);
-    await window.api.setSetting('pin_code', null);
-    setPinEnabled(false);
+  const handleUpdateBiz = async () => {
+    if (!currentBusiness) return;
+    if (!bizForm.businessName.trim()) { toast.error('Business name is required'); return; }
+    if (!bizForm.storeName.trim()) { toast.error('Store name is required'); return; }
+    try {
+      await window.api?.updateBusiness(currentBusiness.id, bizForm);
+      await refreshBusiness();
+      toast.success(t('settings.commit_success'));
+    } catch {
+      toast.error(t('settings.commit_error'));
+    }
+  };
+
+  const handleUpdateAvatar = async (filename: string | null) => {
+    try {
+      await window.api.updateAdmin(currentAdmin.id, { avatar: filename });
+      setAvatar(filename);
+      toast.success('Profile image updated');
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to update avatar');
+    }
+  };
+
+  const handleUploadAvatar = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const dataUrl = ev.target?.result as string;
+      try {
+        await window.api.updateAdmin(currentAdmin.id, { avatar: dataUrl });
+        setAvatar(dataUrl);
+        toast.success('Profile image uploaded');
+      } catch (err: any) {
+        toast.error(err.message || 'Failed to upload avatar');
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleExport = async () => {
-    const data = await window.api.exportData();
+    const data = await window.api?.exportData();
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -67,334 +138,472 @@ const Settings: React.FC = () => {
   };
 
   const handleReset = async () => {
-    await window.api.resetData();
-    setShowResetConfirm(false);
-    window.location.reload();
+    try {
+      await window.api?.resetData();
+      setShowResetConfirm(false);
+      window.location.reload();
+    } catch (err: any) {
+      toast.error(err?.message || 'Wipe failed');
+    }
+  };
+
+  const handleCreateBackup = async () => {
+    setBackupLoading(true);
+    const result = await window.api?.createBackup();
+    setBackupLoading(false);
+    if (result?.success) {
+      toast.success(t('settings.backup_created'));
+      loadBackups();
+    } else {
+      toast.error(result?.error || t('settings.backup_error'));
+    }
+  };
+
+  const handleRestoreBackup = async (name: string) => {
+    const result = await window.api?.restoreBackup(name);
+    setShowRestoreConfirm(null);
+    if (result?.success) {
+      toast.success(t('settings.restore_success'));
+      setTimeout(() => window.location.reload(), 1500);
+    } else {
+      toast.error(result?.error || t('settings.restore_error'));
+    }
+  };
+
+  const handleDeleteBackup = async (name: string) => {
+    await window.api?.deleteBackup(name);
+    loadBackups();
+  };
+
+  const loadBackups = async () => {
+    const list = await window.api?.listBackups();
+    setBackups(list || []);
+  };
+
+  const handleToggleBackups = () => {
+    if (!showBackups) loadBackups();
+    setShowBackups(!showBackups);
   };
 
   const tabs = [
-    { id: 'profile' as const, label: 'Enterprise Profile', icon: Building2 },
-    { id: 'system' as const, label: 'Localization Engine', icon: Globe },
-    { id: 'security' as const, label: 'Security Protocols', icon: ShieldCheck },
-    { id: 'data' as const, label: 'Core Database', icon: Database },
+    { id: 'profile' as const, label: t('settings.enterprise_profile'), icon: Building2 },
+    { id: 'appearance' as const, label: t('settings.visual_interface'), icon: Palette },
+    { id: 'system' as const, label: t('settings.localization_engine'), icon: Globe },
+    { id: 'notifications' as const, label: t('settings.notifications'), icon: Bell },
+    { id: 'security' as const, label: t('settings.security_protocols'), icon: ShieldCheck },
+    { id: 'data' as const, label: t('settings.core_database'), icon: Database },
+    { id: 'support' as const, label: t('settings.support'), icon: Headphones },
   ];
 
   return (
-    <div className="fade-in pb-24 relative min-h-screen">
-      <Header 
-        title="Command Settings" 
-        subtitle="Manage localized preferences, security protocols, and operational workflows."
-      />
-
-
-
-      {/* Explicit Spacer for Sticky Header */}
-      <div className="h-12 md:h-16 w-full shrink-0"></div>
-
-      <div className="px-8 md:px-16 lg:px-24 max-w-[1800px] mx-auto flex flex-col gap-y-8">
-        <div className="grid grid-cols-12 gap-6">
-          
-          {/* Navigation Sidebar */}
-          <div className="col-span-12 lg:col-span-3 space-y-2">
-             <p className="text-xs font-black text-retail-gray-300 uppercase tracking-[0.3em] mb-4 px-4">Configuration Map</p>
-             {tabs.map(tab => (
-              <motion.button
+    <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 fade-in">
+      <div className="px-4 lg:px-6 grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Navigation Sidebar */}
+        <div className="lg:col-span-3 space-y-2">
+           <p className="text-[10px] font-black text-muted-foreground uppercase tracking-[0.3em] mb-4 px-2">{t('settings.header')}</p>
+           <div className="flex flex-col gap-1">
+            {tabs.map(tab => (
+              <Button
                 key={tab.id}
-                whileHover={{ x: 4 }}
+                variant={activeTab === tab.id ? "default" : "ghost"}
                 onClick={() => setActiveTab(tab.id)}
-                className={`w-full flex items-center justify-between px-5 py-4 rounded-2xl transition-all ${
-                  activeTab === tab.id 
-                    ? 'bg-retail-black text-white shadow-2xl shadow-black/20' 
-                    : 'text-retail-gray-300 hover:text-retail-black hover:bg-retail-gray-100'
-                }`}
+                className={cn(
+                  "w-full h-12 justify-between px-4 rounded-xl transition-all",
+                  activeTab === tab.id ? "shadow-md" : "text-muted-foreground"
+                )}
               >
                 <div className="flex items-center gap-3">
-                  <tab.icon size={18} strokeWidth={activeTab === tab.id ? 3 : 2} />
-                  <span className="font-black text-xs uppercase tracking-widest">{tab.label}</span>
+                  <tab.icon size={16} strokeWidth={activeTab === tab.id ? 3 : 2} />
+                  <span className="font-black text-[10px] uppercase tracking-widest">{tab.label}</span>
                 </div>
-                {activeTab === tab.id && <div className="w-1.5 h-1.5 rounded-full bg-retail-orange" />}
-              </motion.button>
+                {activeTab === tab.id && <div className="w-1.5 h-1.5 rounded-full bg-primary" />}
+              </Button>
             ))}
-            
-            <div className="mt-8 p-6 rounded-[32px] bg-retail-gray-100 border-2 border-transparent">
-               <div className="flex items-center gap-3 mb-3">
-                  <Shield size={18} className="text-retail-orange" />
-                  <span className="text-xs font-black uppercase tracking-widest text-retail-black">Environment</span>
-               </div>
-               <p className="text-[10px] text-retail-gray-300 font-black uppercase tracking-widest leading-relaxed">Local-first production build v2.4.0 (Enterprise Retail Suite)</p>
-            </div>
-          </div>
+           </div>
+        </div>
 
-          {/* Content Pane */}
-          <div className="col-span-12 lg:col-span-9">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={activeTab}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="bg-white/40 backdrop-blur-2xl saturate-150 p-8 rounded-[32px] border border-white/60 shadow-[inset_0_0_20px_rgba(255,255,255,0.6)] shadow-xl shadow-black/5 min-h-[500px] relative z-10"
-              >
-                {activeTab === 'profile' && (
-                  <div className="space-y-6">
-                    <div>
-                      <h3 className="text-2xl font-black text-retail-black tracking-tighter mb-2 flex items-center gap-3">
-                        <Building2 className="text-retail-orange" size={28} /> Enterprise Profile
-                      </h3>
-                      <p className="text-retail-gray-300 text-xs font-black uppercase tracking-widest">Master identity used for all fiscal reporting and invoices.</p>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Content Pane */}
+        <div className="lg:col-span-9">
+           <div className="rounded-2xl border bg-card/40 p-8 min-h-[500px]">
+               {activeTab === 'profile' && (
+                <div className="space-y-8">
+                   <div className="space-y-1">
+                      <h4 className="text-sm font-black uppercase tracking-widest">{t('settings.org_identity')}</h4>
+                      <p className="text-[9px] text-muted-foreground font-black uppercase tracking-widest">{t('settings.org_desc')} {currentBusiness?.businessName}.</p>
+                   </div>
+                   
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                       <div className="space-y-5">
-                         <div className="space-y-2">
-                            <label className="block text-xs font-black text-retail-gray-300 uppercase tracking-widest">Organization Name</label>
-                            <input className="w-full px-5 py-3.5 bg-retail-gray-100 rounded-2xl font-bold text-sm outline-none border-2 border-transparent focus:border-retail-black transition-all" value={companyInfo.name} onChange={e => setCompanyInfo({...companyInfo, name: e.target.value})} />
+                         <div className="space-y-1.5">
+                            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.corporate_name')}</label>
+                            <Input value={bizForm.businessName} onChange={e => setBizForm({...bizForm, businessName: e.target.value})} />
                          </div>
-                         <div className="space-y-2">
-                            <label className="block text-xs font-black text-retail-gray-300 uppercase tracking-widest">Primary Contact</label>
-                            <div className="relative">
-                              <input className="w-full px-5 py-3.5 bg-retail-gray-100 rounded-2xl font-bold text-sm outline-none" value={companyInfo.phone} />
-                              <Phone size={16} className="absolute right-5 top-1/2 -translate-y-1/2 text-retail-gray-200" />
+                         <div className="space-y-1.5">
+                            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.store_name')}</label>
+                            <Input value={bizForm.storeName} onChange={e => setBizForm({...bizForm, storeName: e.target.value})} />
+                         </div>
+                         <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-1.5">
+                               <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.system_currency')}</label>
+                               <Input value={bizForm.currency} onChange={e => setBizForm({...bizForm, currency: e.target.value})} />
+                            </div>
+                            <div className="space-y-1.5">
+                               <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.contact_phone')}</label>
+                               <Input value={bizForm.phone} onChange={e => setBizForm({...bizForm, phone: e.target.value})} />
                             </div>
                          </div>
-                         <div className="space-y-2">
-                            <label className="block text-xs font-black text-retail-gray-300 uppercase tracking-widest">Tax ID (TIN)</label>
-                            <input className="w-full px-5 py-3.5 bg-retail-gray-100 rounded-2xl font-bold text-sm outline-none" value={companyInfo.taxId} />
-                         </div>
+                         <Button className="w-full h-12 font-black uppercase text-[10px] tracking-widest mt-4 shadow-xl shadow-primary/20" onClick={handleUpdateBiz}>
+                            {t('settings.commit_changes')}
+                         </Button>
                       </div>
-                      <div className="space-y-5">
-                         <div className="p-8 rounded-[32px] bg-retail-gray-100 border-4 border-dashed border-retail-gray-200 flex flex-col items-center justify-center gap-4 text-center group cursor-pointer hover:bg-retail-gray-200 transition-all">
-                            <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center text-retail-black shadow-lg group-hover:scale-110 transition-transform">
-                               <UploadCloud size={28} />
-                            </div>
-                            <div>
-                              <p className="text-xs font-black uppercase tracking-widest text-retail-black">Master Branding (Logo)</p>
-                              <p className="text-[10px] text-retail-gray-300 font-black uppercase tracking-[0.2em] mt-1">Recommended: SVG or high-res PNG</p>
-                            </div>
-                         </div>
-                         <div className="space-y-2">
-                            <label className="block text-xs font-black text-retail-gray-300 uppercase tracking-widest">Official Address</label>
-                            <textarea className="w-full px-5 py-3.5 bg-retail-gray-100 rounded-2xl font-bold text-sm outline-none h-28 resize-none" value={companyInfo.address} />
-                         </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
 
-                {activeTab === 'system' && (
-                  <div className="space-y-8">
-                     <section>
-                        <h4 className="text-xs font-black text-retail-gray-300 uppercase tracking-[0.3em] mb-6">Localization Core</h4>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {LANGUAGES.map(lang => (
-                            <button
-                              key={lang.id}
-                              onClick={() => setLanguage(lang.id)}
-                              className={`p-5 rounded-2xl flex items-center justify-between transition-all border-2 ${
-                                language === lang.id ? 'border-retail-black bg-retail-black text-white shadow-2xl shadow-black/20' : 'border-retail-gray-100 hover:border-retail-gray-200'
-                              }`}
-                            >
-                              <div className="flex items-center gap-4">
-                                <span className={`text-xl font-black w-8 ${language === lang.id ? 'text-retail-orange' : 'text-retail-gray-200'}`}>{lang.id.toUpperCase()}</span>
-                                <div className="text-left">
-                                  <p className="font-black text-sm uppercase tracking-tighter">{lang.name}</p>
-                                  <p className={`text-xs font-black uppercase tracking-widest mt-1 ${language === lang.id ? 'text-white/40' : 'text-retail-gray-300'}`}>{lang.native}</p>
-                                </div>
+                      <div className="space-y-5">
+                          <div className="space-y-1.5">
+                             <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.org_branding')}</label>
+                             <input ref={fileInputRef} type="file" accept="image/*" onChange={handleLogoChange} className="hidden" />
+                             <div onClick={() => fileInputRef.current?.click()} className="aspect-video rounded-2xl border-2 border-dashed flex flex-col items-center justify-center gap-3 cursor-pointer hover:bg-muted/30 transition-all group/upload bg-muted/10 relative overflow-hidden">
+                                {bizForm.logo ? (
+                                  <img src={bizForm.logo} alt="Logo" className="absolute inset-0 w-full h-full object-contain p-4" />
+                                ) : (
+                                  <>
+                                    <div className="h-12 w-12 rounded-full bg-card flex items-center justify-center shadow-md group-hover/upload:scale-110 transition-transform">
+                                       <UploadCloud size={20} className="text-muted-foreground" />
+                                    </div>
+                                    <div className="text-center">
+                                       <p className="text-[9px] font-black uppercase tracking-widest">{t('settings.drop_asset')}</p>
+                                       <p className="text-[8px] text-muted-foreground font-black uppercase mt-1">{t('settings.asset_desc')}</p>
+                                    </div>
+                                  </>
+                                )}
+                             </div>
+                          </div>
+                              <div className="space-y-1.5">
+                                 <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.contact_email')}</label>
+                                 <Input value={bizForm.email} onChange={e => setBizForm({...bizForm, email: e.target.value})} />
                               </div>
-                              {language === lang.id && <CheckCircle size={20} className="text-retail-orange" />}
-                            </button>
-                          ))}
-                        </div>
-                     </section>
-
-                     <section>
-                        <h4 className="text-xs font-black text-retail-gray-300 uppercase tracking-[0.3em] mb-6">Operational Protocols</h4>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="p-6 rounded-[32px] bg-retail-gray-100 border-2 border-transparent">
-                             <div className="flex items-center justify-between mb-4">
-                                <div className="p-3 rounded-xl bg-white text-retail-black shadow-sm">
-                                  <Calendar size={20} />
-                                </div>
-                                <div className="flex bg-white p-1 rounded-xl shadow-sm">
-                                  <button onClick={() => setCalendarType('ethiopian')} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${calendarType === 'ethiopian' ? 'bg-retail-black text-white shadow-lg' : 'text-retail-gray-300'}`}>ET</button>
-                                  <button onClick={() => setCalendarType('gregorian')} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${calendarType === 'gregorian' ? 'bg-retail-black text-white shadow-lg' : 'text-retail-gray-300'}`}>GR</button>
-                                </div>
-                             </div>
-                             <p className="font-black text-sm uppercase tracking-widest text-retail-black">Calendar Engine</p>
-                             <p className="text-xs text-retail-gray-300 font-black uppercase tracking-widest mt-1">Primary date formatting for all ledgers.</p>
+                              <div className="space-y-1.5">
+                                 <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.physical_address')}</label>
+                             <Input value={bizForm.address} onChange={e => setBizForm({...bizForm, address: e.target.value})} />
                           </div>
-                          <div className="p-6 rounded-[32px] bg-retail-gray-100 border-2 border-transparent">
-                             <div className="flex items-center justify-between mb-4">
-                                <div className="p-3 rounded-xl bg-white text-green-500 shadow-sm">
-                                  <Percent size={20} />
-                                </div>
-                                <span className="text-lg font-black text-retail-black tracking-tighter">15.0%</span>
-                             </div>
-                             <p className="font-black text-sm uppercase tracking-widest text-retail-black">Fiscal Tax Rate (VAT)</p>
-                             <div className="flex items-center gap-3 mt-1">
-                                <input type="number" defaultValue={15} className="bg-transparent border-none outline-none text-xs text-retail-gray-300 font-black uppercase tracking-widest" />
-                                <ChevronRight size={14} className="text-retail-gray-200" />
-                             </div>
-                          </div>
-                        </div>
-                     </section>
-                  </div>
-                )}
-
-                {activeTab === 'security' && (
-                  <div className="space-y-6">
-                     <div>
-                      <h3 className="text-2xl font-black text-retail-black tracking-tighter mb-2 flex items-center gap-3">
-                        <ShieldCheck className="text-retail-orange" size={28} /> Security Studio
-                      </h3>
-                      <p className="text-retail-gray-300 text-xs font-black uppercase tracking-widest">Master gatekeeper protocols and access control.</p>
-                    </div>
-
-                    <div className="bg-retail-gray-100 rounded-[32px] p-8 space-y-6">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-5">
-                          <div className="w-12 h-12 rounded-2xl bg-white flex items-center justify-center text-retail-black shadow-sm">
-                             <Key size={20} />
-                          </div>
-                          <div>
-                            <p className="font-black text-base tracking-tight text-retail-black">Master Entry Shield</p>
-                            <p className="text-xs text-retail-gray-300 font-black uppercase tracking-widest mt-1">Require cryptographic PIN for app initialization.</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-4">
-                          {pinEnabled ? (
-                            <div className="flex items-center gap-4">
-                              <span className="text-xs font-black text-green-500 bg-white px-3 py-1.5 rounded-full shadow-sm">SHIELD ACTIVE</span>
-                              <button onClick={() => setShowPinModal(true)} className="text-xs font-black text-retail-black uppercase tracking-widest hover:underline">Reconfigure</button>
-                              <button onClick={handleRemovePin} className="text-xs font-black text-red-500 uppercase tracking-widest hover:underline">Deactivate</button>
-                            </div>
-                          ) : (
-                            <button onClick={() => setShowPinModal(true)} className="px-6 py-3 bg-retail-black text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl shadow-black/20 hover:scale-[1.02] active:scale-95 transition-all">Enable Protection</button>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="h-px bg-retail-gray-200" />
-
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-5">
-                          <div className="w-12 h-12 rounded-2xl bg-white flex items-center justify-center text-retail-gray-300 shadow-sm">
-                             <Smartphone size={20} />
-                          </div>
-                          <div>
-                            <p className="font-black text-base tracking-tight text-retail-black">Session Persistence</p>
-                            <p className="text-xs text-retail-gray-300 font-black uppercase tracking-widest mt-1">Automatic logout on system suspension.</p>
-                          </div>
-                        </div>
-                        <div 
-                          className={`w-12 h-6 rounded-full p-0.5 cursor-pointer transition-all ${pinEnabled ? 'bg-retail-orange' : 'bg-retail-gray-300'}`}
-                        >
-                          <div className={`w-5 h-5 bg-white rounded-full transition-transform ${pinEnabled ? 'translate-x-6' : ''}`} />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {activeTab === 'data' && (
-                  <div className="space-y-6">
-                     <div>
-                      <h3 className="text-2xl font-black text-retail-black tracking-tighter mb-2 flex items-center gap-3">
-                        <Database className="text-retail-orange" size={28} /> Operational Data
-                      </h3>
-                      <p className="text-retail-gray-300 text-xs font-black uppercase tracking-widest">Master database archives, migration, and purge controls.</p>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                       <motion.div 
-                        whileHover={{ scale: 1.02 }}
-                        onClick={handleExport}
-                        className="p-8 rounded-[32px] bg-retail-gray-100 border-2 border-transparent hover:border-retail-black transition-all cursor-pointer group"
-                       >
-                          <div className="w-12 h-12 rounded-2xl bg-white flex items-center justify-center text-retail-black shadow-sm mb-6 group-hover:scale-110 transition-transform">
-                             <Download size={20} />
-                          </div>
-                          <p className="font-black text-lg text-retail-black uppercase tracking-tight">Full Archive Export</p>
-                          <p className="text-xs text-retail-gray-300 font-black uppercase tracking-widest mt-3 leading-relaxed">Cryptographically signed JSON dump of all organizational data.</p>
-                       </motion.div>
-                       
-                       <motion.div 
-                        whileHover={{ scale: 1.02 }}
-                        onClick={() => setShowResetConfirm(true)}
-                        className="p-8 rounded-[32px] bg-retail-gray-100 border-2 border-transparent hover:border-red-500 transition-all cursor-pointer group"
-                       >
-                          <div className="w-12 h-12 rounded-2xl bg-white flex items-center justify-center text-red-500 shadow-sm mb-6 group-hover:rotate-180 transition-transform duration-700">
-                             <RefreshCcw size={20} />
-                          </div>
-                          <p className="font-black text-lg text-retail-black uppercase tracking-tight">System Purge</p>
-                          <p className="text-xs text-retail-gray-300 font-black uppercase tracking-widest mt-3 leading-relaxed">Permanently delete all localized ledgers and factory reset the suite.</p>
-                       </motion.div>
-                    </div>
-
-                    <div className="p-6 rounded-[32px] bg-retail-black/70 backdrop-blur-2xl saturate-150 text-white flex gap-4 border border-white/10 shadow-[inset_0_0_20px_rgba(255,255,255,0.05)] shadow-xl shadow-black/5">
-                       <AlertCircle className="text-retail-orange flex-shrink-0" size={24} />
-                       <div>
-                          <p className="text-xs font-black uppercase tracking-[0.2em] mb-1">Redundancy Protocol</p>
-                          <p className="text-xs text-white/40 font-black uppercase tracking-widest leading-relaxed">Maintain secondary off-site backups for complete disaster recovery capability.</p>
                        </div>
                     </div>
+                    {/* Profile Avatar */}
+                    <div className="space-y-3">
+                      <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground">{t('settings.avatar_title')}</h4>
+                      <div className="flex flex-wrap gap-3">
+                        <div
+                          onClick={() => { setAvatar(null); handleUpdateAvatar(null); }}
+                          className={`relative w-14 h-14 rounded-2xl border-2 flex items-center justify-center cursor-pointer transition-all hover:scale-105 ${
+                            !currentAvatar ? 'border-primary bg-primary/10 ring-2 ring-primary/20' : 'border-border bg-muted/50'
+                          }`}
+                        >
+                          <Camera className="h-5 w-5 text-muted-foreground" />
+                        </div>
+                        {AVATAR_OPTIONS.map((src, idx) => {
+                          const filename = `profile${idx + 1}.png`;
+                          const isSelected = currentAvatar === filename;
+                          return (
+                            <div
+                              key={idx}
+                              onClick={() => handleUpdateAvatar(filename)}
+                              className={`relative w-14 h-14 rounded-2xl border-2 overflow-hidden cursor-pointer transition-all hover:scale-105 ${
+                                isSelected ? 'border-primary ring-2 ring-primary/20' : 'border-border'
+                              }`}
+                            >
+                              <img src={src} alt={`Avatar ${idx + 1}`} className="w-full h-full object-cover" />
+                            </div>
+                          );
+                        })}
+                        <label className="relative w-14 h-14 rounded-2xl border-2 border-dashed border-border bg-muted/30 flex items-center justify-center cursor-pointer hover:border-primary hover:bg-primary/5 transition-all hover:scale-105">
+                          <Upload className="h-5 w-5 text-muted-foreground" />
+                          <input type="file" accept="image/*" className="hidden" onChange={handleUploadAvatar} />
+                        </label>
+                      </div>
+                    </div>
+                 </div>
+              )}
+
+              {activeTab === 'appearance' && (
+                <div className="space-y-8">
+                   <div className="space-y-1">
+                      <h3 className="text-xl font-black tracking-tight">{t('settings.visual_interface')}</h3>
+                      <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.appearance_desc')}</p>
+                   </div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                       {[
+                         { id: 'light', name: t('settings.light_mode'), icon: Sun, desc: 'Clean & bright' },
+                         { id: 'dark', name: t('settings.dark_mode'), icon: Moon, desc: 'Classic dark' },
+                         { id: 'midnight', name: 'Midnight', icon: Sparkles, desc: 'Blue + gold' },
+                         { id: 'emerald', name: 'Emerald', icon: Leaf, desc: 'Green + sand' },
+                         { id: 'charcoal', name: 'Charcoal', icon: Flame, desc: 'Red + amber' },
+                         { id: 'slate', name: 'Slate', icon: Gem, desc: 'Violet + gold' },
+                         { id: 'cocoa', name: 'Cocoa', icon: Coffee, desc: 'Copper + cream' },
+                       ].map((t_item) => (
+                         <div 
+                           key={t_item.id}
+                           onClick={() => setTheme(t_item.id as any)}
+                           className={cn(
+                             "p-4 rounded-2xl border-2 cursor-pointer transition-all flex flex-col items-center gap-3 text-center",
+                             theme === t_item.id ? "border-primary bg-primary/5 shadow-sm" : "border-transparent bg-muted/20 hover:border-muted-foreground/30"
+                           )}
+                         >
+                            <div className={cn(
+                              "h-10 w-10 rounded-xl flex items-center justify-center shadow-sm",
+                              theme === t_item.id ? "bg-primary text-primary-foreground" : "bg-card text-foreground"
+                            )}>
+                               <t_item.icon size={16} />
+                            </div>
+                            <div>
+                              <span className="text-[10px] font-black uppercase tracking-widest block">{t_item.name}</span>
+                              <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider">{t_item.desc}</span>
+                            </div>
+                            {theme === t_item.id && <Badge variant="default" className="text-[8px] h-4 px-1.5">{t('settings.active')}</Badge>}
+                         </div>
+                       ))}
+                    </div>
+                    <div className="p-4 rounded-2xl border bg-muted/20 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <Clock className="h-5 w-5 text-muted-foreground" />
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-widest">{t('settings.time_system')}</p>
+                          <p className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider">{t('settings.time_system_desc')}</p>
+                        </div>
+                      </div>
+                      <div className="flex bg-card p-1 rounded-lg border">
+                        <Button size="sm" variant={timeSystem === 'device' ? 'default' : 'ghost'} onClick={() => setTimeSystem('device')} className="h-7 px-3 text-[8px] font-black uppercase">{t('settings.device_time')}</Button>
+                        <Button size="sm" variant={timeSystem === 'ethiopian' ? 'default' : 'ghost'} onClick={() => setTimeSystem('ethiopian')} className="h-7 px-3 text-[8px] font-black uppercase">{t('settings.ethiopian_time')}</Button>
+                      </div>
+                    </div>
+                </div>
+              )}
+
+              {activeTab === 'system' && (
+                <div className="space-y-8">
+                   <div className="space-y-1">
+                      <h3 className="text-xl font-black tracking-tight">{t('settings.localization_engine')}</h3>
+                      <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.date_formatting')}</p>
+                   </div>
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {LANGUAGES.map(lang => (
+                        <Button
+                          key={lang.id}
+                          variant={language === lang.id ? "default" : "outline"}
+                          onClick={() => setLanguage(lang.id)}
+                          className="h-16 justify-between px-5 rounded-xl border-2"
+                        >
+                           <div className="flex items-center gap-4">
+                              <span className="text-lg font-black opacity-30">{lang.id.toUpperCase()}</span>
+                              <div className="text-left">
+                                 <p className="text-[10px] font-black uppercase tracking-widest">{lang.name}</p>
+                                 <p className="text-[9px] opacity-60">{lang.native}</p>
+                              </div>
+                           </div>
+                           {language === lang.id && <CheckCircle size={16} />}
+                        </Button>
+                      ))}
+                   </div>
+                   <div className="p-6 rounded-xl border bg-muted/20 flex items-center justify-between">
+                      <div>
+                         <p className="text-[10px] font-black uppercase tracking-widest">{t('settings.calendar_protocol')}</p>
+                         <p className="text-[9px] text-muted-foreground font-bold uppercase">{t('settings.date_formatting')}</p>
+                      </div>
+                      <div className="flex bg-card p-1 rounded-lg border">
+                         <Button size="sm" variant={calendarType === 'ethiopian' ? 'default' : 'ghost'} onClick={() => setCalendarType('ethiopian')} className="h-7 px-4 text-[9px] font-black uppercase">{t('common.ethiopian')}</Button>
+                         <Button size="sm" variant={calendarType === 'gregorian' ? 'default' : 'ghost'} onClick={() => setCalendarType('gregorian')} className="h-7 px-4 text-[9px] font-black uppercase">{t('common.gregorian')}</Button>
+                      </div>
+                   </div>
+                </div>
+              )}
+
+               {activeTab === 'notifications' && (
+                <div className="space-y-8">
+                   <div className="space-y-1">
+                      <h3 className="text-xl font-black tracking-tight">{t('settings.notifications')}</h3>
+                      <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.notif_desc')}</p>
+                   </div>
+                   <NotificationSettings />
+                </div>
+              )}
+
+              {activeTab === 'security' && (
+                <div className="space-y-8">
+                   <div className="space-y-1">
+                      <h3 className="text-xl font-black tracking-tight">{t('settings.security_studio')}</h3>
+                      <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.security_desc')}</p>
+                   </div>
+                   <div className="p-8 rounded-2xl border bg-muted/20 flex items-center justify-between">
+                      <div className="flex items-center gap-5">
+                         <div className="h-12 w-12 rounded-xl bg-card flex items-center justify-center text-foreground shadow-md">
+                            <ShieldCheck size={20} />
+                         </div>
+                         <div>
+                            <p className="text-sm font-black tracking-tight">{t('settings.admin_auth')}</p>
+                            <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest">{t('settings.admin_auth_desc')}</p>
+                         </div>
+                      </div>
+                      <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20 text-[9px] font-black">{t('settings.active')}</Badge>
+                   </div>
+                   {isSuperAdmin && (
+                     <Link to="/admin-management">
+                       <div className="p-8 rounded-2xl border bg-muted/20 hover:border-primary transition-all cursor-pointer group">
+                          <UserCog size={24} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                          <p className="text-sm font-black uppercase tracking-widest">{t('settings.admin_management')}</p>
+                          <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.admin_management_desc')}</p>
+                       </div>
+                     </Link>
+                   )}
+                </div>
+              )}
+
+               {activeTab === 'data' && (
+                <div className="space-y-8">
+                   <div className="space-y-1">
+                      <h3 className="text-xl font-black tracking-tight">{t('settings.core_database')}</h3>
+                      <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.purge_desc')}</p>
+                   </div>
+                   <div className="p-6 rounded-2xl border bg-muted/20">
+                      <div className="flex items-center justify-between mb-4">
+                         <div className="flex items-center gap-3">
+                            <HardDrive size={20} className="text-foreground" />
+                            <div>
+                               <p className="text-sm font-black uppercase tracking-widest">{t('settings.backup_title')}</p>
+                               <p className="text-[9px] text-muted-foreground font-bold uppercase mt-0.5">{t('settings.backup_desc')}</p>
+                            </div>
+                         </div>
+                         <div className="flex gap-2">
+                            <Button size="sm" variant="default" onClick={handleCreateBackup} disabled={backupLoading} className="h-8 px-3 text-[9px] font-black uppercase">
+                               <Upload size={12} className="mr-1.5" />
+                               {t('settings.backup_create')}
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={handleToggleBackups} className="h-8 px-3 text-[9px] font-black uppercase">
+                               <FileText size={12} className="mr-1.5" />
+                               {t('settings.backup_list')}
+                            </Button>
+                         </div>
+                      </div>
+                      {showBackups && (
+                        <div className="space-y-2 mt-4 pt-4 border-t">
+                          {backups.length === 0 ? (
+                            <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest text-center py-4">{t('settings.backup_none')}</p>
+                          ) : (
+                            backups.map(b => (
+                              <div key={b.name} className="flex items-center justify-between p-3 rounded-xl bg-muted/30">
+                                <div className="flex items-center gap-3">
+                                   <FileText size={14} className="text-muted-foreground" />
+                                   <div>
+                                      <p className="text-[10px] font-black uppercase tracking-widest">{b.name.replace('.db', '').replace('shega-backup-', '')}</p>
+                                      <p className="text-[8px] text-muted-foreground font-bold">{(b.size / 1024).toFixed(1)} KB</p>
+                                   </div>
+                                </div>
+                                <div className="flex gap-1">
+                                   <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setShowRestoreConfirm(b.name)} title={t('settings.backup_restore')}>
+                                      <RotateCcw size={12} />
+                                   </Button>
+                                   <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive" onClick={() => handleDeleteBackup(b.name)} title={t('settings.backup_delete')}>
+                                      <Trash2 size={12} />
+                                   </Button>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                   </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                       <div className="p-8 rounded-2xl border bg-muted/20 hover:border-primary transition-all cursor-pointer group" onClick={() => setShowDataTransfer(true)}>
+                          <Upload size={24} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                          <p className="text-sm font-black uppercase tracking-widest">{t('settings.data_transfer') || 'Data Transfer'}</p>
+                          <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.data_transfer_desc') || 'Import/export your data'}</p>
+                       </div>
+                       <div className="p-8 rounded-2xl border bg-muted/20 hover:border-primary transition-all cursor-pointer group" onClick={handleExport}>
+                         <Download size={24} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                         <p className="text-sm font-black uppercase tracking-widest">{t('settings.export_archive')}</p>
+                         <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.export_desc')}</p>
+                      </div>
+                      <div className="p-8 rounded-2xl border bg-muted/20 hover:border-destructive transition-all cursor-pointer group" onClick={() => setShowResetConfirm(true)}>
+                         <Trash2 size={24} className="mb-4 text-muted-foreground group-hover:text-destructive transition-colors" />
+                         <p className="text-sm font-black uppercase tracking-widest">{t('settings.purge_system')}</p>
+                         <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.purge_desc')}</p>
+                      </div>
+                   </div>
+                </div>
+              )}
+
+              {activeTab === 'support' && (
+                <div className="space-y-8">
+                  <div className="space-y-1">
+                    <h3 className="text-xl font-black tracking-tight">{t('settings.support')}</h3>
+                    <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.support_desc')}</p>
                   </div>
-                )}
-              </motion.div>
-            </AnimatePresence>
-          </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="p-8 rounded-2xl border bg-muted/20 hover:bg-primary/5 hover:border-primary/30 transition-all group">
+                      <Phone size={28} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                      <p className="text-sm font-black uppercase tracking-widest">{t('support.call_us')}</p>
+                      <p className="text-lg font-bold mt-2 text-primary">{t('support.phone')}</p>
+                      <p className="text-[9px] text-muted-foreground font-bold uppercase tracking-wider mt-2">
+                        {t('support.business_hours')}: {t('support.mon_fri')}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <a href="https://shega.tech/docs" target="_blank" rel="noopener noreferrer" className="p-6 rounded-2xl border bg-muted/20 hover:border-primary transition-all group cursor-pointer">
+                      <FileText size={24} className="mb-3 text-muted-foreground group-hover:text-primary transition-colors" />
+                      <p className="text-[10px] font-black uppercase tracking-widest">{t('support.documentation')}</p>
+                      <p className="text-[8px] text-muted-foreground font-bold uppercase mt-1">shega.tech/docs</p>
+                    </a>
+                    <a href="https://shega.tech/community" target="_blank" rel="noopener noreferrer" className="p-6 rounded-2xl border bg-muted/20 hover:border-primary transition-all group cursor-pointer">
+                      <Users size={24} className="mb-3 text-muted-foreground group-hover:text-primary transition-colors" />
+                      <p className="text-[10px] font-black uppercase tracking-widest">{t('support.community')}</p>
+                      <p className="text-[8px] text-muted-foreground font-bold uppercase mt-1">{t('support.community')}</p>
+                    </a>
+                    <a href="https://shega.tech/support" target="_blank" rel="noopener noreferrer" className="p-6 rounded-2xl border bg-muted/20 hover:border-primary transition-all group cursor-pointer">
+                      <Headphones size={24} className="mb-3 text-muted-foreground group-hover:text-primary transition-colors" />
+                      <p className="text-[10px] font-black uppercase tracking-widest">{t('support.report_issue')}</p>
+                      <p className="text-[8px] text-muted-foreground font-bold uppercase mt-1">{t('support.report_issue')}</p>
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
         </div>
       </div>
 
-      <Modal isOpen={showPinModal} onClose={() => setShowPinModal(false)} title="Shield Configuration" size="sm">
-        <div className="space-y-10">
-          <div className="flex items-center gap-6 p-6 rounded-[32px] bg-retail-gray-100 text-retail-black">
-             <Shield size={24} className="text-retail-orange" />
-             <p className="text-[10px] font-black uppercase tracking-widest leading-tight">PIN is locally hashed and cannot be recovered via cloud services.</p>
-          </div>
-          <div className="space-y-8">
-            <div className="space-y-4">
-              <label className="block text-[10px] font-black text-retail-gray-300 uppercase tracking-widest">Master 4-Digit PIN</label>
-              <input 
-                type="password" 
-                maxLength={4} 
-                className="w-full bg-retail-gray-100 rounded-[24px] text-center text-5xl tracking-[0.6em] py-8 font-black border-4 border-transparent focus:border-retail-black transition-all outline-none" 
-                placeholder="0000"
-                value={pinData.newPin} 
-                onChange={e => setPinData({...pinData, newPin: e.target.value.replace(/\D/g, '')})} 
-              />
+      <Modal isOpen={showResetConfirm} onClose={() => setShowResetConfirm(false)} title={t('settings.wipe_protocol')} size="sm">
+         <div className="text-center space-y-6">
+            <div className="h-20 w-20 rounded-full bg-destructive/10 flex items-center justify-center text-destructive mx-auto">
+               <Trash2 size={32} />
             </div>
-            <div className="space-y-4">
-              <label className="block text-[10px] font-black text-retail-gray-300 uppercase tracking-widest text-center">Verify Master PIN</label>
-              <input 
-                type="password" 
-                maxLength={4} 
-                className="w-full bg-retail-gray-100 rounded-[24px] text-center text-5xl tracking-[0.6em] py-8 font-black border-4 border-transparent focus:border-retail-black transition-all outline-none" 
-                placeholder="0000"
-                value={pinData.confirm} 
-                onChange={e => setPinData({...pinData, confirm: e.target.value.replace(/\D/g, '')})} 
-              />
+            <div className="space-y-2">
+               <h4 className="text-lg font-black tracking-tight">{t('settings.initialize_purge')}</h4>
+               <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground leading-relaxed">
+                  {t('settings.wipe_warning')}
+               </p>
             </div>
-          </div>
-          <button onClick={handlePinSave} className="w-full py-6 bg-retail-black text-white rounded-[24px] font-black uppercase tracking-[0.2em] transition-all shadow-xl shadow-black/20 active:scale-95">Enable entry shield</button>
-        </div>
+            <div className="flex gap-4">
+               <Button variant="destructive" className="flex-1" onClick={handleReset}>{t('settings.wipe_confirm')}</Button>
+               <Button variant="outline" className="flex-1" onClick={() => setShowResetConfirm(false)}>{t('common.abort')}</Button>
+            </div>
+         </div>
       </Modal>
 
-      <Modal isOpen={showResetConfirm} onClose={() => setShowResetConfirm(false)} title="Destructive Wipe Protocol" size="sm">
-        <div className="space-y-10 py-4">
-          <div className="w-24 h-24 rounded-[32px] bg-red-100 flex items-center justify-center text-red-500 mx-auto">
-             <Trash2 size={48} strokeWidth={3} />
-          </div>
-          <div className="text-center space-y-4">
-            <h4 className="text-2xl font-black text-retail-black tracking-tighter">System Purge?</h4>
-            <p className="text-retail-gray-300 text-[10px] font-black uppercase tracking-widest leading-relaxed">This will permanently delete all organizational ledgers, assets, and history. This action is <span className="text-red-500 underline">IMMEDIATE AND FINAL</span>.</p>
-          </div>
-          <div className="flex gap-4">
-            <button onClick={handleReset} className="flex-1 py-6 bg-red-500 hover:bg-red-600 text-white rounded-[24px] font-black uppercase tracking-[0.2em] transition-all shadow-xl shadow-red-500/20">Wipe Database</button>
-            <button onClick={() => setShowResetConfirm(false)} className="flex-1 py-6 bg-retail-gray-100 text-retail-gray-300 hover:text-retail-black rounded-[24px] font-black uppercase tracking-widest transition-all">Abort</button>
-          </div>
-        </div>
+      <Modal isOpen={!!showRestoreConfirm} onClose={() => setShowRestoreConfirm(null)} title={t('settings.backup_restore_title')} size="sm">
+         <div className="text-center space-y-6">
+            <div className="h-20 w-20 rounded-full bg-warning/10 flex items-center justify-center text-warning mx-auto">
+               <RotateCcw size={32} />
+            </div>
+            <div className="space-y-2">
+               <h4 className="text-lg font-black tracking-tight">{t('settings.backup_restore_title')}</h4>
+               <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground leading-relaxed">
+                  {t('settings.backup_restore_warn')}
+               </p>
+            </div>
+            <div className="flex gap-4">
+               <Button variant="default" className="flex-1" onClick={() => showRestoreConfirm && handleRestoreBackup(showRestoreConfirm)}>{t('settings.backup_restore_confirm')}</Button>
+               <Button variant="outline" className="flex-1" onClick={() => setShowRestoreConfirm(null)}>{t('common.abort')}</Button>
+            </div>
+         </div>
       </Modal>
+      <DataTransferModal open={showDataTransfer} onClose={() => setShowDataTransfer(false)} />
     </div>
   );
 };

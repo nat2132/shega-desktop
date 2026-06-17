@@ -1,15 +1,27 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
-  RefreshCcw, ShieldAlert, 
   History, Package, DollarSign, TrendingDown,
-  CheckCircle, ChevronRight, AlertCircle, Info,
-  Zap, Database, Activity, User, X
+  ChevronRight, AlertCircle, Info,
+  Zap, Database, Activity, User, X, TrendingUp, AlertTriangle, Blocks, Shield, Ban
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { toast } from 'sonner';
+import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
-import Header from '../components/Header';
-import Modal from '../components/Modal';
-import { formatDate } from '../utils/ethiopian-calendar';
+
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '../components/ui/card';
+import { Badge } from '../components/ui/badge';
+import { Input } from '../components/ui/input';
+import { Button } from '../components/ui/button';
+import { Label } from '../components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { Textarea } from '../components/ui/textarea';
+import { ScrollArea } from '../components/ui/scroll-area';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel,
+  AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '../components/ui/alert-dialog';
 
 interface Item {
   id: number;
@@ -20,6 +32,7 @@ interface Item {
   baseSellingPrice: number;
   packSellingPrice: number;
   basePurchasePrice: number;
+  category: string;
 }
 
 interface Adjustment {
@@ -30,30 +43,43 @@ interface Adjustment {
   oldValue: number;
   newValue: number;
   quantity: number;
+  unitType: string;
   reason: string;
   date: string;
   createdAt: string;
+  reversalId?: number | null;
 }
 
 const Adjustments: React.FC = () => {
-  const { t, calendarType, language } = useSettings();
+  const { t, formatDate } = useSettings();
+  const { hasPermission } = useAuth();
   const [items, setItems] = useState<Item[]>([]);
   const [history, setHistory] = useState<Adjustment[]>([]);
-  const [showModal, setShowModal] = useState(false);
-  const [adjustmentType, setAdjustmentType] = useState<'price_change' | 'damage'>('price_change');
-  const [selectedItem, setSelectedItem] = useState<Item | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [showFabMenu, setShowFabMenu] = useState(false);
+  
+  // Tab States
+  const [activeTab, setActiveTab] = useState('history');
 
-  const [formData, setFormData] = useState({
-    itemId: '',
-    unitType: 'base' as 'base' | 'pack',
-    type: 'price_increase',
-    newValue: '',
-    quantity: '1',
-    reason: '',
-    date: new Date().toISOString().split('T')[0]
-  });
+  // Stock Form State
+  const [stockItem, setStockItem] = useState<Item | null>(null);
+  const [stockType, setStockType] = useState<'add_stock' | 'damage' | 'loss'>('add_stock');
+  const [stockQty, setStockQty] = useState('');
+  const [stockReason, setStockReason] = useState('');
+
+  // Price Form State
+  const [priceItem, setPriceItem] = useState<Item | null>(null);
+  const [priceUnitType, setPriceUnitType] = useState<'base' | 'pack'>('base');
+  const [newPrice, setNewPrice] = useState('');
+  const [priceReason, setPriceReason] = useState('');
+
+  // Bulk Adjustments State
+  const [bulkCategory, setBulkCategory] = useState<string>('all');
+  const [bulkValue, setBulkValue] = useState('');
+  const [bulkType, setBulkType] = useState<'percentage' | 'fixed'>('percentage');
+  const [bulkUnitType, setBulkUnitType] = useState<'base' | 'pack'>('base');
+  const [bulkReason, setBulkReason] = useState('');
+  const [reverseTarget, setReverseTarget] = useState<Adjustment | null>(null);
+  const [reverseReason, setReverseReason] = useState('');
 
   useEffect(() => {
     loadData();
@@ -74,319 +100,621 @@ const Adjustments: React.FC = () => {
     }
   };
 
-  const handleItemSelect = (id: string) => {
-    const item = items.find(i => i.id === parseInt(id));
-    setSelectedItem(item || null);
-    setFormData({
-      ...formData,
-      itemId: id,
-      newValue: item ? String(formData.unitType === 'base' ? item.baseSellingPrice : item.packSellingPrice) : ''
-    });
-  };
+  const categories = useMemo(() => {
+    const cats = new Set(items.map(i => i.category || t('inventory.uncategorized')));
+    return Array.from(cats);
+  }, [items, t]);
 
-  const stats = useMemo(() => {
-    const totalLoss = history
-      .filter(h => h.type === 'damage')
-      .reduce((sum, h) => sum + (h.quantity * (items.find(i => i.id === h.itemId)?.basePurchasePrice || 0)), 0);
-    const priceChanges = history.filter(h => h.type.includes('price')).length;
-    return { totalLoss, priceChanges };
-  }, [history, items]);
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  // Handle Stock Submit
+  const handleStockSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedItem) return;
+    if (!stockItem || !stockQty) return;
+
     const adjustment = {
-      itemId: selectedItem.id,
-      type: adjustmentType === 'damage' ? 'damage' : formData.type,
-      oldValue: formData.unitType === 'base' ? selectedItem.baseSellingPrice : selectedItem.packSellingPrice,
-      newValue: adjustmentType === 'damage' ? 0 : parseFloat(formData.newValue),
-      quantity: adjustmentType === 'damage' ? parseFloat(formData.quantity) : null,
-      unitType: formData.unitType,
-      reason: formData.reason,
-      date: formData.date
+      itemId: stockItem.id,
+      type: stockType,
+      oldValue: stockItem.totalBaseQuantity,
+      newValue: stockType === 'add_stock' ? stockItem.totalBaseQuantity + parseFloat(stockQty) : stockItem.totalBaseQuantity - parseFloat(stockQty),
+      quantity: parseFloat(stockQty),
+      unitType: 'base',
+      reason: stockReason,
+      date: new Date().toISOString().split('T')[0]
     };
+    
     await window.api.insertAdjustment(adjustment);
-    setShowModal(false);
-    resetForm();
+    setStockItem(null); setStockQty(''); setStockReason('');
     loadData();
+    setActiveTab('history');
   };
 
-  const resetForm = () => {
-    setFormData({
-      itemId: '', unitType: 'base', type: 'price_increase',
-      newValue: '', quantity: '1', reason: '',
+  // Handle Price Submit
+  const handlePriceSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!priceItem || !newPrice) return;
+
+    const oldPrice = priceUnitType === 'base' ? priceItem.baseSellingPrice : priceItem.packSellingPrice;
+    const nPrice = parseFloat(newPrice);
+    const type = nPrice > oldPrice ? 'price_increase' : 'price_decrease';
+
+    const adjustment = {
+      itemId: priceItem.id,
+      type,
+      oldValue: oldPrice,
+      newValue: nPrice,
+      quantity: null,
+      unitType: priceUnitType,
+      reason: priceReason,
       date: new Date().toISOString().split('T')[0]
+    };
+
+    await window.api.insertAdjustment(adjustment);
+    setPriceItem(null); setNewPrice(''); setPriceReason('');
+    loadData();
+    setActiveTab('history');
+  };
+
+  // Handle Bulk Submit
+  const handleBulkSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bulkValue) return;
+
+    const targetItems = bulkCategory === 'all' ? items : items.filter(i => (i.category || t('inventory.uncategorized')) === bulkCategory);
+    if (targetItems.length === 0) return;
+
+    const adjustments = targetItems.map(item => {
+      const oldPrice = bulkUnitType === 'base' ? item.baseSellingPrice : item.packSellingPrice;
+      let nPrice = oldPrice;
+      
+      const val = parseFloat(bulkValue);
+      if (bulkType === 'percentage') {
+        nPrice = oldPrice + (oldPrice * (val / 100));
+      } else {
+        nPrice = oldPrice + val;
+      }
+
+      const type = nPrice > oldPrice ? 'price_increase' : 'price_decrease';
+
+      return {
+        itemId: item.id,
+        type,
+        oldValue: oldPrice,
+        newValue: nPrice,
+        quantity: null,
+        unitType: bulkUnitType,
+        reason: bulkReason || `Bulk adjustment applied (${bulkType})`,
+        date: new Date().toISOString().split('T')[0]
+      };
     });
-    setSelectedItem(null);
+
+    await window.api.insertBulkAdjustments(adjustments);
+    setBulkValue(''); setBulkReason('');
+    loadData();
+    setActiveTab('history');
+  };
+
+  const handleReverseAdjustment = async () => {
+    if (!reverseTarget) return;
+    try {
+      await window.api.reverseAdjustment({ adjustmentId: reverseTarget.id, reason: reverseReason });
+      toast.success('Adjustment reversed successfully');
+      setReverseTarget(null);
+      setReverseReason('');
+      loadData();
+    } catch (error) {
+      toast.error('Failed to reverse adjustment');
+    }
+  };
+
+  const calculatePriceChange = () => {
+    if (!priceItem || !newPrice) return null;
+    const oldP = priceUnitType === 'base' ? priceItem.baseSellingPrice : priceItem.packSellingPrice;
+    const newP = parseFloat(newPrice);
+    if (oldP === 0) return { diff: newP, perc: 100 };
+    return {
+      diff: newP - oldP,
+      perc: ((newP - oldP) / oldP) * 100
+    };
+  };
+
+  const getBadgeType = (type: string) => {
+    switch (type) {
+      case 'add_stock': return { text: t('adjustments.add_stock') };
+      case 'damage': return { text: t('adjustments.record_damage') };
+      case 'loss': return { text: t('adjustments.record_loss') };
+      case 'price_increase': return { text: t('adjustments.price_up') };
+      case 'price_decrease': return { text: t('adjustments.price_down') };
+      default: return { text: type };
+    }
   };
 
   return (
-    <div className="fade-in pb-24 relative min-h-screen">
-      <Header 
-        title="Admin Logistics" 
-        subtitle="Manage price shifts, damaged inventory, and stock reconciliation."
-        onSearch={setSearchQuery}
-      />
-
-
-
-      {/* Explicit Spacer for Sticky Header */}
-      <div className="h-12 md:h-16 w-full shrink-0"></div>
-
-      <div className="px-8 md:px-16 lg:px-24 max-w-[1800px] mx-auto flex flex-col gap-y-6">
+    <div className="fade-in pb-24 relative min-h-screen bg-background text-foreground">
+      <div className="px-4 md:px-8 lg:px-12 max-w-[1600px] mx-auto flex flex-col gap-y-8 pt-8">
         
-        <div className="grid grid-cols-12 gap-6">
-          {/* Audit Log Timeline */}
-          <div className="col-span-12 lg:col-span-8 space-y-4">
-            <div className="bg-white/40 backdrop-blur-2xl saturate-150 rounded-[28px] p-6 border border-white/60 shadow-[inset_0_0_20px_rgba(255,255,255,0.6)] shadow-xl shadow-black/5 relative z-0">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-base font-black text-retail-black flex items-center gap-3">
-                  <History className="text-retail-gray-200" size={18} />
-                  Operational Audit Log
-                </h3>
-                <span className="px-3 py-1 rounded-full bg-retail-gray-100 text-xs font-black uppercase tracking-widest text-retail-gray-300">
-                  LIVE SESSION LOG
-                </span>
-              </div>
-              
-              <div className="space-y-4 relative before:absolute before:left-6 before:top-3 before:bottom-3 before:w-px before:bg-retail-gray-100">
-                {history.length === 0 ? (
-                  <div className="py-16 text-center text-retail-gray-200 font-black uppercase text-[10px] tracking-widest italic">No operational adjustments recorded.</div>
-                ) : (
-                  history.map((entry, i) => (
-                    <motion.div 
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: i * 0.05 }}
-                      key={entry.id} 
-                      className="relative pl-14 group"
-                    >
-                      <div className={`absolute left-4 top-2.5 w-3.5 h-3.5 rounded-full border-[3px] border-white z-10 ${
-                        entry.type === 'damage' ? 'bg-red-500 shadow-md shadow-red-500/30' : 
-                        entry.type === 'price_increase' ? 'bg-green-500 shadow-md shadow-green-500/30' :
-                        'bg-retail-orange shadow-md shadow-retail-orange/30'
-                      }`} />
-                      
-                      <div className="bg-retail-gray-100/50 hover:bg-retail-gray-100 rounded-2xl p-5 transition-all flex flex-col md:flex-row items-center justify-between gap-4 border border-transparent hover:border-retail-gray-200">
-                        <div className="flex items-center gap-4">
-                          <div className="w-12 h-12 rounded-xl bg-white flex items-center justify-center border border-retail-gray-200 group-hover:scale-105 transition-transform">
-                            <Package size={20} className="text-retail-gray-300" />
-                          </div>
-                          <div>
-                            <p className="font-black text-sm text-retail-black tracking-tight">{entry.itemName}</p>
-                            <p className="text-[10px] text-retail-gray-300 font-black uppercase tracking-widest mt-0.5">
-                              {formatDate(new Date(entry.date || Date.now()), calendarType, language)} • {entry.reason || 'MANUAL RECONCILIATION'}
-                            </p>
-                          </div>
+        <div>
+          <h1 className="text-3xl font-black tracking-tighter">{t('adjustments.title')}</h1>
+          <p className="text-sm font-bold text-muted-foreground">{t('adjustments.subtitle')}</p>
+        </div>
+
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="grid w-full grid-cols-4 max-w-2xl bg-muted/50 p-1 rounded-2xl h-14">
+            <TabsTrigger value="history" className="rounded-xl data-[state=active]:bg-background data-[state=active]:shadow-sm font-bold"><History className="w-4 h-4 mr-2"/> {t('adjustments.history')}</TabsTrigger>
+            <TabsTrigger value="stock" className="rounded-xl data-[state=active]:bg-background data-[state=active]:shadow-sm font-bold"><Package className="w-4 h-4 mr-2"/> {t('adjustments.stock')}</TabsTrigger>
+            <TabsTrigger value="price" className="rounded-xl data-[state=active]:bg-background data-[state=active]:shadow-sm font-bold"><DollarSign className="w-4 h-4 mr-2"/> {t('adjustments.price')}</TabsTrigger>
+            <TabsTrigger value="bulk" className="rounded-xl data-[state=active]:bg-background data-[state=active]:shadow-sm font-bold"><Blocks className="w-4 h-4 mr-2"/> {t('adjustments.bulk')}</TabsTrigger>
+          </TabsList>
+
+          <div className="mt-8">
+            {/* HISTORY TAB */}
+            <TabsContent value="history">
+              <Card className="border-border shadow-sm rounded-3xl overflow-hidden">
+                <CardHeader className="bg-muted/30 border-b border-border">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <CardTitle>{t('adjustments.audit_log')}</CardTitle>
+                      <CardDescription>{t('adjustments.audit_desc')}</CardDescription>
+                    </div>
+                    <Input 
+                      placeholder={t('adjustments.search_placeholder')}
+                      className="max-w-xs bg-background"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                  </div>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="text-xs uppercase bg-muted/50 text-muted-foreground">
+                        <tr>
+                          <th className="px-6 py-4 font-black">{t('adjustments.date')}</th>
+                          <th className="px-6 py-4 font-black">{t('adjustments.item')}</th>
+                          <th className="px-6 py-4 font-black">{t('adjustments.type')}</th>
+                          <th className="px-6 py-4 font-black text-right">{t('adjustments.change')}</th>
+                          <th className="px-6 py-4 font-black">{t('adjustments.reason')}</th>
+                          <th className="px-6 py-4 font-black">{t('adjustments.user')}</th>
+                          <th className="px-6 py-4 font-black text-center">{t('common.actions')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {history
+                          .filter(h => h.itemName.toLowerCase().includes(searchQuery.toLowerCase()))
+                          .map((h, i) => {
+                          const badge = getBadgeType(h.type);
+                          const isPrice = h.type.includes('price');
+                          return (
+                            <tr key={i} className="border-b border-border hover:bg-muted/30 transition-colors">
+                              <td className="px-6 py-4 font-medium whitespace-nowrap text-foreground">
+                                {formatDate(h.date)}
+                                <div className="text-[10px] text-muted-foreground">{new Date(h.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                              </td>
+                              <td className="px-6 py-4 font-bold text-foreground">{h.itemName}</td>
+                              <td className="px-6 py-4">
+                                <Badge variant="outline" className={`font-bold bg-muted text-foreground border-border`}>{badge.text}</Badge>
+                              </td>
+                              <td className="px-6 py-4 text-right">
+                                {isPrice ? (
+                                  <div className="flex flex-col items-end">
+                                    <span className="font-black text-foreground">{t('common.etb')} {h.newValue.toLocaleString()}</span>
+                                    <span className="text-[10px] text-muted-foreground line-through">{t('common.etb')} {h.oldValue.toLocaleString()}</span>
+                                  </div>
+                                ) : (
+                                  <div className="flex flex-col items-end">
+                                    <span className={`font-black text-foreground`}>
+                                      {h.type === 'add_stock' ? '+' : '-'}{h.quantity} {h.unitType}
+                                    </span>
+                                    <span className="text-[10px] text-muted-foreground">{t('adjustments.now')}: {h.newValue}</span>
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-6 py-4 text-muted-foreground">{h.reason || '-'}</td>
+                              <td className="px-6 py-4 font-medium text-foreground">{t('common.operator')}</td>
+                              <td className="px-6 py-4 text-center">
+                                {h.reversalId ? (
+                                  <Badge variant="outline" className="bg-muted/50 text-muted-foreground border-border font-bold text-[10px]">Reversed</Badge>
+                                ) : hasPermission('adjustments.reverse') ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-8 w-8 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                    onClick={() => { setReverseTarget(h); setReverseReason(''); }}
+                                  >
+                                    <Ban size={14} />
+                                  </Button>
+                                ) : null}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {history.length === 0 && (
+                          <tr>
+                            <td colSpan={7} className="px-6 py-12 text-center text-muted-foreground font-bold">
+                              {t('adjustments.no_adjustments')}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* STOCK ADJUSTMENT TAB */}
+            <TabsContent value="stock">
+              <div className="flex flex-col gap-8">
+                <Card className="border-border shadow-sm rounded-3xl">
+                  <CardHeader>
+                    <CardTitle>{t('adjustments.stock_form_title')}</CardTitle>
+                    <CardDescription>{t('adjustments.stock_form_desc')}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form onSubmit={handleStockSubmit} className="space-y-6">
+                      <div className="space-y-2">
+                        <Label>{t('adjustments.action_type')}</Label>
+                        <Select value={stockType} onValueChange={(v: any) => setStockType(v)}>
+                          <SelectTrigger className="bg-background">
+                            <SelectValue placeholder={t('adjustments.select_type')} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="add_stock">{t('adjustments.add_stock')}</SelectItem>
+                            <SelectItem value="damage">{t('adjustments.record_damage')}</SelectItem>
+                            <SelectItem value="loss">{t('adjustments.record_loss')}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>{t('adjustments.select_item')}</Label>
+                        <Select value={stockItem?.id.toString()} onValueChange={(id) => setStockItem(items.find(i => i.id === parseInt(id)) || null)}>
+                          <SelectTrigger className="bg-background">
+                            <SelectValue placeholder={t('adjustments.choose_item')} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <ScrollArea className="h-[200px]">
+                              {items.map(item => (
+                                <SelectItem key={item.id} value={item.id.toString()}>{item.name}</SelectItem>
+                              ))}
+                            </ScrollArea>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>{t('adjustments.qty_change')}</Label>
+                        <Input 
+                          type="number" 
+                          min="0.01" step="any"
+                          required
+                          value={stockQty}
+                          onChange={(e) => setStockQty(e.target.value)}
+                          className="bg-background font-bold text-lg"
+                          placeholder="e.g. 5"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>{t('adjustments.reason_req')}</Label>
+                        <Textarea 
+                          required
+                          value={stockReason}
+                          onChange={(e) => setStockReason(e.target.value)}
+                          className="bg-background resize-none"
+                        />
+                      </div>
+
+                      <Button type="submit" className="w-full h-12 rounded-xl font-bold" disabled={!stockItem || !stockQty || !stockReason}>
+                        {t('adjustments.submit_adj')}
+                      </Button>
+                    </form>
+                  </CardContent>
+                </Card>
+
+                {/* Preview Card */}
+                {stockItem && (
+                  <Card className="border-border shadow-sm rounded-3xl bg-muted/30">
+                    <CardHeader>
+                      <CardTitle>{t('adjustments.impact_preview')}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                      <div className="flex justify-between items-center p-4 bg-background rounded-2xl border border-border">
+                        <div>
+                          <p className="text-sm font-bold text-muted-foreground">{t('adjustments.current_stock')}</p>
+                          <p className="text-2xl font-black">{stockItem.totalBaseQuantity} {stockItem.baseUnit}</p>
                         </div>
-                        <div className="text-right flex flex-col items-center md:items-end">
-                          {entry.type === 'damage' ? (
-                            <div className="px-3 py-1.5 bg-red-500 text-white rounded-lg text-[10px] font-black uppercase tracking-widest shadow-md shadow-red-500/20">-{entry.quantity} UNITS LOSS</div>
-                          ) : (
-                            <div className="flex items-center gap-2">
-                              <span className="text-[10px] text-retail-gray-300 font-black line-through">ETB {entry.oldValue}</span>
-                              <ChevronRight size={12} className="text-retail-gray-200" />
-                              <span className={`text-sm font-black ${entry.type === 'price_increase' ? 'text-green-500' : 'text-retail-orange'}`}>
-                                ETB {entry.newValue}
-                              </span>
-                            </div>
-                          )}
-                          <p className="text-[8px] text-retail-gray-300 font-black uppercase tracking-[0.2em] mt-1.5 flex items-center gap-1.5">
-                            <User size={10} /> MASTER ADMIN
+                        <ChevronRight className="text-muted-foreground" />
+                        <div className="text-right">
+                          <p className="text-sm font-bold text-muted-foreground">{t('adjustments.new_stock')}</p>
+                          <p className={`text-2xl font-black text-foreground`}>
+                            {stockType === 'add_stock' 
+                              ? stockItem.totalBaseQuantity + (parseFloat(stockQty) || 0)
+                              : Math.max(0, stockItem.totalBaseQuantity - (parseFloat(stockQty) || 0))} {stockItem.baseUnit}
                           </p>
                         </div>
                       </div>
-                    </motion.div>
-                  ))
+
+                      {stockType !== 'add_stock' && (
+                         <div className="p-4 bg-muted rounded-2xl border border-border flex items-start gap-3">
+                           <AlertTriangle className="text-foreground shrink-0 mt-1" size={20} />
+                           <div>
+                             <h4 className="font-bold text-foreground">{t('adjustments.financial_loss')}</h4>
+                             <p className="text-sm text-muted-foreground mt-1">{t('adjustments.financial_loss_desc')} {t('common.etb')} {((parseFloat(stockQty) || 0) * stockItem.basePurchasePrice).toLocaleString()}</p>
+                           </div>
+                         </div>
+                      )}
+                    </CardContent>
+                  </Card>
                 )}
               </div>
-            </div>
-          </div>
+            </TabsContent>
 
-          {/* Audit Insights Sidebar */}
-          <div className="col-span-12 lg:col-span-4 space-y-4">
-            <div className="bg-retail-orange/70 backdrop-blur-2xl saturate-150 rounded-[28px] p-6 text-white relative overflow-hidden border border-white/20 shadow-[inset_0_0_20px_rgba(255,255,255,0.3)] shadow-xl shadow-black/5">
-              <TrendingDown className="text-white mb-4" size={28} strokeWidth={3} />
-              <p className="text-white/40 text-xs font-black uppercase tracking-[0.3em] mb-1">Inventory Depletion</p>
-              <h3 className="text-2xl font-black tracking-tighter">ETB {(stats.totalLoss || 0).toLocaleString()}</h3>
-              <div className="mt-4 p-4 rounded-2xl bg-white/10 backdrop-blur-md border border-white/5">
-                <div className="flex items-center gap-2 text-white/80 text-xs font-black uppercase tracking-widest mb-2">
-                  <Info size={12} />
-                  Valuation Drift Analysis
-                </div>
-                <div className="h-2 w-full bg-white/10 rounded-full overflow-hidden">
-                  <motion.div 
-                    initial={{ width: 0 }}
-                    animate={{ width: '65%' }}
-                    className="h-full bg-white rounded-full" 
-                  />
-                </div>
-                <p className="text-[9px] font-bold text-white/40 mt-2 italic">Calculated loss based on purchase price parity.</p>
+            {/* PRICE ADJUSTMENT TAB */}
+            <TabsContent value="price">
+              <div className="flex flex-col gap-8">
+                <Card className="border-border shadow-sm rounded-3xl">
+                  <CardHeader>
+                    <CardTitle>{t('adjustments.price_form_title')}</CardTitle>
+                    <CardDescription>{t('adjustments.price_form_desc')}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form onSubmit={handlePriceSubmit} className="space-y-6">
+                      
+                      <div className="space-y-2">
+                        <Label>{t('adjustments.select_item')}</Label>
+                        <Select value={priceItem?.id.toString()} onValueChange={(id) => setPriceItem(items.find(i => i.id === parseInt(id)) || null)}>
+                          <SelectTrigger className="bg-background">
+                            <SelectValue placeholder={t('adjustments.choose_item')} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <ScrollArea className="h-[200px]">
+                              {items.map(item => (
+                                <SelectItem key={item.id} value={item.id.toString()}>{item.name}</SelectItem>
+                              ))}
+                            </ScrollArea>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label>{t('adjustments.unit_type')}</Label>
+                          <Select value={priceUnitType} onValueChange={(v: any) => setPriceUnitType(v)}>
+                            <SelectTrigger className="bg-background">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="base">{t('adjustments.base_unit')}</SelectItem>
+                              <SelectItem value="pack">{t('adjustments.pack_unit')}</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>{t('adjustments.new_price')} ({t('common.etb')})</Label>
+                          <Input 
+                            type="number" 
+                            min="0" step="any"
+                            required
+                            value={newPrice}
+                            onChange={(e) => setNewPrice(e.target.value)}
+                            className="bg-background font-bold text-lg"
+                            placeholder="e.g. 150"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>{t('adjustments.reason_opt')}</Label>
+                        <Textarea 
+                          value={priceReason}
+                          onChange={(e) => setPriceReason(e.target.value)}
+                          className="bg-background resize-none"
+                        />
+                      </div>
+
+                      <Button type="submit" className="w-full h-12 rounded-xl font-bold" disabled={!priceItem || !newPrice}>
+                        {t('adjustments.apply_price')}
+                      </Button>
+                    </form>
+                  </CardContent>
+                </Card>
+
+                {/* Preview Card */}
+                {priceItem && (
+                  <Card className="border-border shadow-sm rounded-3xl bg-muted/30">
+                    <CardHeader>
+                      <CardTitle>{t('adjustments.impact_preview')}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                      <div className="flex justify-between items-center p-4 bg-background rounded-2xl border border-border">
+                        <div>
+                          <p className="text-sm font-bold text-muted-foreground">{t('adjustments.old_price')}</p>
+                          <p className="text-2xl font-black text-foreground">{t('common.etb')} {(priceUnitType === 'base' ? priceItem.baseSellingPrice : priceItem.packSellingPrice).toLocaleString()}</p>
+                        </div>
+                        <ChevronRight className="text-muted-foreground" />
+                        <div className="text-right">
+                          <p className="text-sm font-bold text-muted-foreground">{t('adjustments.new_price')}</p>
+                          <p className="text-2xl font-black text-foreground">{t('common.etb')} {parseFloat(newPrice) ? parseFloat(newPrice).toLocaleString() : '0'}</p>
+                        </div>
+                      </div>
+
+                      {newPrice && (
+                        <div className="p-4 bg-background rounded-2xl border border-border flex items-center justify-between">
+                          <span className="font-bold text-foreground">{t('adjustments.difference')}</span>
+                          {(() => {
+                            const change = calculatePriceChange();
+                            if (!change) return null;
+                            const isPositive = change.diff > 0;
+                            return (
+                              <Badge variant="outline" className={`text-sm py-1 font-bold bg-muted text-foreground border-border`}>
+                                {isPositive ? '+' : ''}{(change.perc || 0).toFixed(1)}% ({t('common.etb')} {Math.abs(change.diff || 0).toLocaleString()})
+                              </Badge>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
+            </TabsContent>
+
+            {/* BULK ADJUSTMENT TAB */}
+            <TabsContent value="bulk">
+              <div className="flex flex-col gap-8">
+                <Card className="border-border shadow-sm rounded-3xl">
+                  <CardHeader>
+                    <CardTitle>{t('adjustments.bulk_form_title')}</CardTitle>
+                    <CardDescription>{t('adjustments.bulk_form_desc')}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form onSubmit={handleBulkSubmit} className="space-y-6">
+                      <div className="space-y-2">
+                        <Label>{t('adjustments.target_category')}</Label>
+                        <Select value={bulkCategory} onValueChange={setBulkCategory}>
+                          <SelectTrigger className="bg-background">
+                            <SelectValue placeholder={t('adjustments.select_category')} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">{t('adjustments.all_items')}</SelectItem>
+                            {categories.map((c, i) => (
+                              <SelectItem key={i} value={c}>{c}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label>{t('adjustments.unit_type')}</Label>
+                          <Select value={bulkUnitType} onValueChange={(v: any) => setBulkUnitType(v)}>
+                            <SelectTrigger className="bg-background">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="base">{t('adjustments.base_unit')}</SelectItem>
+                              <SelectItem value="pack">{t('adjustments.pack_unit')}</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>{t('adjustments.adj_type')}</Label>
+                          <Select value={bulkType} onValueChange={(v: any) => setBulkType(v)}>
+                            <SelectTrigger className="bg-background">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="percentage">{t('adjustments.percentage')}</SelectItem>
+                              <SelectItem value="fixed">{t('adjustments.fixed_amount')} ({t('common.etb')})</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>{t('adjustments.adj_value')}</Label>
+                        <Input 
+                          type="number" 
+                          step="any"
+                          required
+                          value={bulkValue}
+                          onChange={(e) => setBulkValue(e.target.value)}
+                          className="bg-background font-bold text-lg"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>{t('adjustments.reason')}</Label>
+                        <Textarea 
+                          value={bulkReason}
+                          onChange={(e) => setBulkReason(e.target.value)}
+                          className="bg-background resize-none"
+                        />
+                      </div>
+
+                      <Button type="submit" className="w-full h-12 rounded-xl font-bold" disabled={!bulkValue}>
+                        {t('adjustments.apply_to')} {bulkCategory === 'all' ? items.length : items.filter(i => (i.category || t('inventory.uncategorized')) === bulkCategory).length}
+                      </Button>
+                    </form>
+                  </CardContent>
+                </Card>
+
+                {/* Bulk Preview Card */}
+                {bulkValue && (
+                  <Card className="border-border shadow-sm rounded-3xl bg-muted/30">
+                    <CardHeader>
+                      <CardTitle>{t('adjustments.bulk_impact')}</CardTitle>
+                      <CardDescription>{t('adjustments.bulk_impact_desc')}</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <ScrollArea className="h-[400px] pr-4">
+                        <div className="space-y-3">
+                          {items
+                            .filter(i => bulkCategory === 'all' || (i.category || t('inventory.uncategorized')) === bulkCategory)
+                            .slice(0, 50)
+                            .map(item => {
+                              const oldP = bulkUnitType === 'base' ? item.baseSellingPrice : item.packSellingPrice;
+                              const val = parseFloat(bulkValue) || 0;
+                              const newP = bulkType === 'percentage' ? oldP + (oldP * (val / 100)) : oldP + val;
+                              const diff = newP - oldP;
+                              return (
+                                <div key={item.id} className="p-3 bg-background rounded-xl border border-border flex justify-between items-center">
+                                  <div>
+                                    <p className="font-bold text-sm truncate max-w-[150px]">{item.name}</p>
+                                    <p className="text-[10px] text-muted-foreground">{t('common.etb')} {oldP.toLocaleString()} → {t('common.etb')} {newP.toLocaleString()}</p>
+                                  </div>
+                                  <Badge variant="outline" className={`font-bold bg-muted text-foreground border-border`}>
+                                    {diff > 0 ? '+' : ''}{diff.toLocaleString()}
+                                  </Badge>
+                                </div>
+                              );
+                            })}
+                            {items.filter(i => bulkCategory === 'all' || (i.category || t('inventory.uncategorized')) === bulkCategory).length > 50 && (
+                               <p className="text-center text-xs text-muted-foreground mt-4 font-bold">
+                                 {t('adjustments.and_more').replace('{count}', ((items.filter(i => bulkCategory === 'all' || (i.category || t('inventory.uncategorized')) === bulkCategory).length) - 50).toString())}
+                               </p>
+                            )}
+                        </div>
+                      </ScrollArea>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
+            </TabsContent>
+          </div>
+        </Tabs>
+
+        <AlertDialog open={reverseTarget !== null} onOpenChange={(open) => { if (!open) { setReverseTarget(null); setReverseReason(''); } }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Reverse Adjustment</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to reverse this adjustment for {reverseTarget?.itemName}?
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>{t('adjustments.reason_req')}</Label>
+                <Textarea
+                  required
+                  value={reverseReason}
+                  onChange={(e) => setReverseReason(e.target.value)}
+                  className="bg-background resize-none"
+                  placeholder="Reason for reversal..."
+                />
               </div>
             </div>
-
-            <div className="bg-white/40 backdrop-blur-2xl saturate-150 border border-white/60 rounded-[28px] p-6 shadow-[inset_0_0_20px_rgba(255,255,255,0.6)] shadow-xl shadow-black/5 relative overflow-hidden">
-              <Activity className="text-retail-black mb-4" size={24} strokeWidth={3} />
-              <p className="text-retail-gray-300 text-xs font-black uppercase tracking-[0.3em] mb-1">Market Volatility</p>
-              <h3 className="text-2xl font-black text-retail-black tracking-tighter">{stats.priceChanges} EVENTS</h3>
-              <p className="text-xs text-retail-gray-300 font-black uppercase tracking-widest mt-3 border-t border-retail-gray-100 pt-3">Recorded market adaptation events in current fiscal cycle.</p>
-            </div>
-
-            <div className="p-6 rounded-[28px] bg-retail-black/70 backdrop-blur-2xl saturate-150 text-white border border-white/10 shadow-[inset_0_0_20px_rgba(255,255,255,0.05)] shadow-xl shadow-black/5">
-              <h4 className="text-sm font-black mb-2 flex items-center gap-2">
-                 <Database size={16} className="text-retail-orange" />
-                 Audit Integrity
-              </h4>
-              <p className="text-white/40 text-xs font-black uppercase tracking-widest leading-loose">
-                Every state change is captured immutably. Discrepancies are flagged for immediate reconciliation.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Adjustment Modal */}
-      <Modal 
-        isOpen={showModal} 
-        onClose={() => setShowModal(false)} 
-        title={adjustmentType === 'damage' ? 'Log Asset Depletion' : 'Price Point Adjustment'} 
-        size="lg"
-      >
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="space-y-3">
-            <label className="text-[10px] font-black text-retail-gray-300 uppercase tracking-[0.2em] block">Target SKU Identification</label>
-            <select 
-              required 
-              className="w-full px-5 py-4 bg-retail-gray-100 rounded-2xl font-black uppercase tracking-widest text-xs outline-none focus:ring-4 ring-retail-orange/5 transition-all" 
-              value={formData.itemId} 
-              onChange={e => handleItemSelect(e.target.value)}
-            >
-              <option value="">Select Item to Adjust...</option>
-              {items.map(item => (
-                <option key={item.id} value={item.id}>{item.name}</option>
-              ))}
-            </select>
-          </div>
-
-          {selectedItem && (
-             <motion.div 
-               initial={{ opacity: 0, y: 10 }}
-               animate={{ opacity: 1, y: 0 }}
-               className="grid grid-cols-2 gap-4 p-6 rounded-2xl bg-retail-gray-100"
-             >
-                <div>
-                  <p className="text-[8px] text-retail-gray-300 font-black uppercase tracking-[0.3em] mb-1.5">Book Value (SRP)</p>
-                  <p className="text-lg font-black text-retail-black">{formData.unitType === 'base' ? selectedItem.baseSellingPrice : selectedItem.packSellingPrice} ETB</p>
-                </div>
-                <div>
-                  <p className="text-[8px] text-retail-orange font-black uppercase tracking-[0.3em] mb-1.5">Projected State</p>
-                  <p className="text-lg font-black text-retail-orange uppercase">
-                    {adjustmentType === 'damage' ? 'Stock Reduction' : `${formData.newValue || '0'} ETB`}
-                  </p>
-                </div>
-             </motion.div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {adjustmentType === 'price_change' ? (
-              <>
-                <div className="space-y-3">
-                  <label className="text-[10px] font-black text-retail-gray-300 uppercase tracking-[0.2em]">Shift Type</label>
-                  <select className="w-full px-5 py-3.5 bg-retail-gray-100 rounded-2xl font-bold outline-none" value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})}>
-                    <option value="price_increase">Inflation Increase</option>
-                    <option value="price_decrease">Promotional Markdown</option>
-                  </select>
-                </div>
-                <div className="space-y-3">
-                  <label className="text-[10px] font-black text-retail-gray-300 uppercase tracking-[0.2em]">New Price Point</label>
-                  <div className="relative">
-                    <input required type="number" step="0.01" className="w-full px-5 py-3.5 bg-retail-gray-100 rounded-2xl font-black outline-none border-2 border-transparent focus:border-retail-black transition-all" value={formData.newValue} onChange={e => setFormData({...formData, newValue: e.target.value})} />
-                    <DollarSign size={16} className="absolute right-5 top-1/2 -translate-y-1/2 text-retail-gray-200" />
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="col-span-1 md:col-span-2 space-y-3">
-                <label className="text-[10px] font-black text-retail-gray-300 uppercase tracking-[0.2em]">Asset Volume Depleted</label>
-                <input required type="number" step="0.01" className="w-full px-5 py-3.5 bg-retail-gray-100 rounded-2xl font-black outline-none border-2 border-transparent focus:border-retail-black transition-all" value={formData.quantity} onChange={e => setFormData({...formData, quantity: e.target.value})} />
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-3">
-            <label className="text-[10px] font-black text-retail-gray-300 uppercase tracking-[0.2em]">Operational Rationale</label>
-            <input required placeholder="Brief justification for audit log *" className="w-full px-5 py-3.5 bg-retail-gray-100 rounded-2xl font-bold outline-none" value={formData.reason} onChange={e => setFormData({...formData, reason: e.target.value})} />
-          </div>
-
-          <div className="flex gap-3 pt-4 border-t border-retail-gray-100">
-            <button 
-              type="submit" 
-              className={`flex-1 py-4 text-white rounded-2xl font-black uppercase tracking-[0.2em] transition-all shadow-xl active:scale-95 flex items-center justify-center gap-2 ${
-                adjustmentType === 'damage' ? 'bg-red-500 hover:bg-red-600 shadow-red-500/20' : 'bg-retail-black hover:bg-black shadow-black/20'
-              }`}
-            >
-              <CheckCircle size={20} strokeWidth={3} /> {adjustmentType === 'damage' ? 'Audit Loss Record' : 'Apply Price Shift'}
-            </button>
-            <button type="button" onClick={() => setShowModal(false)} className="px-8 py-4 bg-retail-gray-100 text-retail-gray-300 hover:text-retail-black rounded-2xl font-black uppercase tracking-widest transition-all">
-              Discard
-            </button>
-          </div>
-        </form>
-      </Modal>
- 
-      {/* Floating Action Hub */}
-      <div className="fixed bottom-10 right-10 flex flex-col items-end gap-4 z-[100]">
-        <AnimatePresence>
-          {showFabMenu && (
-            <motion.div 
-              initial={{ opacity: 0, y: 20, scale: 0.9 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.9 }}
-              className="flex flex-col items-end gap-3 mb-2"
-            >
-              <motion.button
-                whileHover={{ scale: 1.05, x: -5 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => { setAdjustmentType('price_change'); resetForm(); setShowModal(true); setShowFabMenu(false); }}
-                className="bg-retail-black text-white pl-4 pr-10 py-5 rounded-[28px] shadow-2xl shadow-black/40 flex items-center gap-4 group transition-all border border-white/10"
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={!reverseReason}
+                onClick={handleReverseAdjustment}
               >
-                <div className="w-12 h-12 rounded-2xl bg-white/10 flex items-center justify-center text-retail-orange group-hover:rotate-180 transition-transform duration-700">
-                  <RefreshCcw size={22} strokeWidth={3} />
-                </div>
-                <div className="text-left">
-                  <p className="text-[10px] font-black text-white/30 uppercase tracking-[0.2em] leading-none mb-1">Stock Value</p>
-                  <p className="text-sm font-black uppercase tracking-widest">Price Shift</p>
-                </div>
-              </motion.button>
- 
-              <motion.button
-                whileHover={{ scale: 1.05, x: -5 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => { setAdjustmentType('damage'); resetForm(); setShowModal(true); setShowFabMenu(false); }}
-                className="bg-white text-retail-black pl-4 pr-10 py-5 rounded-[28px] shadow-2xl shadow-black/10 flex items-center gap-4 group transition-all border border-retail-gray-200"
-              >
-                <div className="w-12 h-12 rounded-2xl bg-red-500 flex items-center justify-center text-white group-hover:scale-110 transition-transform duration-300 shadow-lg shadow-red-500/20">
-                  <ShieldAlert size={22} strokeWidth={3} />
-                </div>
-                <div className="text-left">
-                  <p className="text-[10px] font-black text-retail-gray-300 uppercase tracking-[0.2em] leading-none mb-1">Asset Loss</p>
-                  <p className="text-sm font-black uppercase tracking-widest">Audit Record</p>
-                </div>
-              </motion.button>
-            </motion.div>
-          )}
-        </AnimatePresence>
- 
-        <motion.button
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
-          onClick={() => setShowFabMenu(!showFabMenu)}
-          className={`w-20 h-20 rounded-full flex items-center justify-center shadow-2xl transition-all duration-500 ${
-            showFabMenu ? 'bg-retail-orange text-white rotate-45' : 'bg-retail-black text-white'
-          }`}
-        >
-          {showFabMenu ? <X size={32} strokeWidth={3} /> : <Zap size={32} strokeWidth={3} className="fill-retail-orange text-retail-orange" />}
-        </motion.button>
+                <Ban size={14} className="mr-1" /> Reverse
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );

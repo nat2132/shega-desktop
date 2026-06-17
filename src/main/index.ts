@@ -3,12 +3,21 @@ import { join } from 'path';
 import { initDB } from './database';
 import { registerIPCHandlers } from './ipc-handlers';
 
+// Global error handlers
+process.on('uncaughtException', (error) => {
+  console.error('[FATAL] Uncaught exception:', error);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled rejection:', reason);
+});
+
 function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     show: false,
     autoHideMenuBar: true,
+    icon: join(__dirname, '../../src/assets/images/logo.ico'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -24,6 +33,10 @@ function createWindow() {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    console.log(`[Renderer Console]: ${message} (Line ${line} in ${sourceId})`);
+  });
 }
 
 app.whenReady().then(() => {

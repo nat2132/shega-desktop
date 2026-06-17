@@ -1,4 +1,8 @@
 export interface ElectronAPI {
+  // Businesses
+  getActiveBusiness: () => Promise<any>;
+  updateBusiness: (id: number, biz: any) => Promise<any>;
+
   // Categories
   getCategories: () => Promise<any[]>;
   insertCategory: (name: string, icon?: string) => Promise<number>;
@@ -12,15 +16,21 @@ export interface ElectronAPI {
   deleteItem: (id: number) => Promise<any>;
   getLowStockItems: () => Promise<any[]>;
   getExpiringItems: () => Promise<any[]>;
+  getItemsBySupplier: (supplierId: number) => Promise<any[]>;
+  restockItem: (id: number, quantity: number) => Promise<{ success: boolean }>;
 
   // Sales
   getSales: (options?: any) => Promise<any[]>;
   getSale: (id: number) => Promise<any>;
   insertSale: (sale: any) => Promise<number>;
+  insertSalesBatch: (sales: any[]) => Promise<number[]>;
   updateSale: (id: number, sale: any) => Promise<any>;
   deleteSale: (id: number) => Promise<any>;
   getDebtSales: () => Promise<any[]>;
-  payDebt: (saleId: number, amount: number) => Promise<any>;
+  payDebt: (saleId: number, amount: number, options?: { type?: string; note?: string }) => Promise<any>;
+  getDebtPayments: (saleId: number) => Promise<any[]>;
+  createReturn: (data: any) => Promise<{ success: boolean; returnId?: number; error?: string }>;
+  getReturns: (options?: any) => Promise<any[]>;
 
   // Expenses
   getExpenses: (options?: any) => Promise<any[]>;
@@ -31,12 +41,43 @@ export interface ElectronAPI {
   // Adjustments
   getAdjustments: (options?: any) => Promise<any[]>;
   insertAdjustment: (adjustment: any) => Promise<number>;
+  insertBulkAdjustments: (adjustments: any[]) => Promise<number>;
 
   // Notifications
+  checkNotifications: () => Promise<any>;
   getNotifications: (options?: any) => Promise<any[]>;
+  getUnreadNotificationCount: () => Promise<number>;
+  getNotificationCategories: () => Promise<any[]>;
   insertNotification: (notification: any) => Promise<number>;
   markNotificationRead: (id: number) => Promise<any>;
-  clearNotifications: () => Promise<any>;
+  markAllNotificationsRead: () => Promise<any>;
+  dismissNotification: (id: number) => Promise<any>;
+  snoozeNotification: (id: number, untilIso: string) => Promise<any>;
+  clearNotifications: (options?: any) => Promise<any>;
+
+  // Notification preferences
+  getNotificationPreferences: () => Promise<any[]>;
+  updateNotificationPreference: (key: string, prefs: any) => Promise<{ success: boolean }>;
+
+  // Banners
+  getActiveBanners: () => Promise<any[]>;
+  dismissBanner: (id: number) => Promise<any>;
+  createBanner: (data: any) => Promise<number>;
+
+  // Reminders
+  getReminders: (options?: any) => Promise<any[]>;
+  createReminder: (data: any) => Promise<number>;
+  updateReminder: (id: number, data: any) => Promise<any>;
+  snoozeReminder: (id: number, untilIso: string) => Promise<any>;
+  completeReminder: (id: number) => Promise<any>;
+  deleteReminder: (id: number) => Promise<any>;
+  runReminderEngine: () => Promise<{ fired: number }>;
+
+  // Desktop OS notification
+  showDesktopNotification: (data: { title: string; body: string; urgency?: 'normal' | 'critical' }) => Promise<{ shown: boolean; reason?: string }>;
+
+  // Dashboard alerts
+  getDashboardAlerts: () => Promise<any[]>;
 
   // Settings
   getSetting: (key: string) => Promise<any>;
@@ -44,16 +85,184 @@ export interface ElectronAPI {
 
   // Analytics / Dashboard
   getDashboardStats: () => Promise<any>;
-  getRecentActivity: (limit?: number) => Promise<any[]>;
-  getAnalytics: (period: 'week' | 'month' | 'year') => Promise<any>;
+  getRecentActivity: (limit?: number, dateRange?: { start: string; end: string }) => Promise<any[]>;
+  getAnalytics: (period: string, dateRange?: { start: string; end: string }) => Promise<any>;
 
   // Customers
   getCustomers: () => Promise<any[]>;
+  getCustomer: (id: number) => Promise<any>;
   getCustomerSales: (customerName: string) => Promise<any[]>;
+  insertCustomer: (customer: any) => Promise<{ success: boolean; id?: number; error?: string }>;
+  updateCustomer: (customer: any) => Promise<{ success: boolean; error?: string }>;
+  deleteCustomer: (id: number) => Promise<{ success: boolean; error?: string }>;
+  getCustomerNotes: (customerId: number) => Promise<any[]>;
+  addCustomerNote: (customerId: number, note: string, createdBy?: string) => Promise<{ success: boolean }>;
 
   // Data Management
   exportData: () => Promise<any>;
   resetData: () => Promise<any>;
+
+  // Admin Management
+  login: (username: string, pin: string) => Promise<any>;
+  getAdmins: () => Promise<any[]>;
+  getCurrentAdmin: (id: number) => Promise<any>;
+  insertAdmin: (admin: any) => Promise<any>;
+  updateAdmin: (id: number, admin: any) => Promise<any>;
+  deleteAdmin: (id: number) => Promise<any>;
+
+  // Warehouses
+  getWarehouses: () => Promise<any[]>;
+  getWarehouse: (id: number) => Promise<any>;
+  insertWarehouse: (wh: any) => Promise<number>;
+  updateWarehouse: (id: number, wh: any) => Promise<any>;
+  deleteWarehouse: (id: number) => Promise<any>;
+
+  // Warehouse Inventory
+  getWarehouseInventory: (warehouseId: number) => Promise<any[]>;
+  getAllWarehouseInventory: (options?: any) => Promise<any[]>;
+  updateWarehouseInventory: (warehouseId: number, itemId: number, quantity: number) => Promise<any>;
+
+  // Stock Transfers
+  transferStock: (transfer: any) => Promise<number>;
+  getStockTransfers: (options?: any) => Promise<any[]>;
+
+  // Stock Movements
+  getStockMovements: (options?: any) => Promise<any[]>;
+  cleanupStockMovements: () => Promise<{ success: boolean; deleted: number }>;
+  getWarehouseReport: (warehouseId: number) => Promise<any>;
+
+  // Employee Roles
+  getEmployeeRoles: () => Promise<any[]>;
+  getEmployeeRole: (id: number) => Promise<any>;
+  insertEmployeeRole: (data: any) => Promise<any>;
+  updateEmployeeRole: (id: number, data: any) => Promise<any>;
+  duplicateEmployeeRole: (id: number) => Promise<any>;
+  deleteEmployeeRole: (id: number) => Promise<any>;
+
+  // Employees
+  getEmployees: (options?: any) => Promise<any[]>;
+  getEmployee: (id: number) => Promise<any>;
+  insertEmployee: (data: any) => Promise<any>;
+  updateEmployee: (id: number, data: any) => Promise<any>;
+  deleteEmployee: (id: number) => Promise<any>;
+  archiveEmployee: (id: number) => Promise<any>;
+  reactivateEmployee: (id: number) => Promise<any>;
+
+  // Employee Accounts
+  getEmployeeAccounts: () => Promise<any[]>;
+  insertEmployeeAccount: (data: any) => Promise<any>;
+  updateEmployeeAccount: (id: number, data: any) => Promise<any>;
+  deleteEmployeeAccount: (id: number) => Promise<any>;
+  lockEmployeeAccount: (id: number) => Promise<any>;
+  unlockEmployeeAccount: (id: number) => Promise<any>;
+  resetEmployeePassword: (id: number, newPin: string) => Promise<any>;
+  loginEmployee: (username: string, pin: string) => Promise<any>;
+
+  // Login History
+  getLoginHistory: (options?: any) => Promise<any[]>;
+
+  // Attendance
+  clockIn: (employeeId: number, notes?: string) => Promise<any>;
+  clockOut: (employeeId: number, notes?: string) => Promise<any>;
+  getAttendance: (options?: any) => Promise<any[]>;
+  getTodayAttendance: () => Promise<any[]>;
+
+  // Employee Performance
+  getEmployeePerformance: (options?: any) => Promise<any[]>;
+  updateEmployeePerformance: (data: any) => Promise<any>;
+
+  // Employee Stats (Dashboard)
+  getEmployeeStats: () => Promise<any>;
+
+  // Activity Logs
+  getActivityLogs: (options?: any) => Promise<any[]>;
+  logActivity: (data: any) => Promise<any>;
+
+  // Shipments
+  getShipments: (options?: any) => Promise<any[]>;
+  getShipment: (id: number) => Promise<any>;
+  insertShipment: (data: any) => Promise<number>;
+  updateShipment: (id: number, data: any) => Promise<any>;
+  updateShipmentStatus: (id: number, status: string, changedBy?: string, notes?: string) => Promise<any>;
+  deleteShipment: (id: number) => Promise<any>;
+  getShipmentHistory: (shipmentId: number) => Promise<any[]>;
+
+  // Suppliers
+  getSuppliers: (options?: any) => Promise<{ rows: any[]; total: number }>;
+  getSupplier: (id: number) => Promise<any>;
+  insertSupplier: (data: any) => Promise<{ id: number }>;
+  updateSupplier: (id: number, data: any) => Promise<{ success: boolean }>;
+  archiveSupplier: (id: number) => Promise<{ success: boolean }>;
+  restoreSupplier: (id: number) => Promise<{ success: boolean }>;
+  deleteSupplier: (id: number) => Promise<{ success: boolean }>;
+
+  getSupplierPurchases: (options?: any) => Promise<{ rows: any[]; total: number }>;
+  getSupplierPurchase: (id: number) => Promise<any>;
+  insertSupplierPurchase: (data: any) => Promise<{ id: number }>;
+  updateSupplierPurchaseStatus: (id: number, status: string, notes?: string) => Promise<{ success: boolean }>;
+  deleteSupplierPurchase: (id: number) => Promise<{ success: boolean }>;
+
+  getSupplierPayments: (options?: any) => Promise<{ rows: any[]; total: number }>;
+  insertSupplierPayment: (data: any) => Promise<{ id: number }>;
+  updateSupplierPayment: (id: number, data: any) => Promise<{ success: boolean }>;
+  deleteSupplierPayment: (id: number) => Promise<{ success: boolean }>;
+
+  getSupplierProducts: (supplierId: number) => Promise<any[]>;
+  getSupplierBalance: (supplierId: number) => Promise<any>;
+  getSupplierAgingReport: () => Promise<any[]>;
+  getSupplierDashboardStats: () => Promise<any>;
+  getSupplierMonthlyReport: () => Promise<any[]>;
+  getTopSuppliers: (limit?: number) => Promise<any[]>;
+  toggleSupplierFavorite: (id: number) => Promise<{ success: boolean; isFavorite: boolean }>;
+  getSupplierActivityLog: (supplierId: number, limit?: number) => Promise<any[]>;
+  getSupplierAnalytics: () => Promise<{ topSuppliers: any[]; monthlyTrends: any[]; outstandingBySupplier: any[]; avgPurchase: number; summary: any }>;
+
+  generateTestSuppliers: (count: number) => Promise<{ success: boolean; count: number }>;
+  clearTestSuppliers: () => Promise<{ deleted: number }>;
+
+  // Comprehensive Test Data Generator
+  generateTestData: (count: number) => Promise<{ success: boolean; totalCreated: number; duration: number; phases: { name: string; count: number; time: number }[] }>;
+  clearTestData: () => Promise<{ deleted: number; duration: number; details: Record<string, number> }>;
+  onTestDataProgress: (callback: (data: { phase: string; current: number; total: number; message: string; totalCreated: number; overallPercent: number }) => void) => void;
+  removeTestDataProgressListener: () => void;
+  measurePerformance: () => Promise<Record<string, number>>;
+  getDatabaseSize: () => Promise<number>;
+
+  // Backup & Restore
+  createBackup: () => Promise<{ success: boolean; name?: string; size?: number; error?: string }>;
+  listBackups: () => Promise<{ name: string; size: number; createdAt: string }[]>;
+  restoreBackup: (name: string) => Promise<{ success: boolean; error?: string }>;
+  deleteBackup: (name: string) => Promise<{ success: boolean; error?: string }>;
+
+  // Receipt Printing
+  printReceipt: (sale: any) => Promise<{ success: boolean; error?: string }>;
+
+  // Draft Sales
+  getDraftSales: () => Promise<any[]>;
+  getDraftSale: (id: number) => Promise<any>;
+  saveDraftSale: (data: any) => Promise<{ success: boolean; id?: number }>;
+  deleteDraftSale: (id: number) => Promise<any>;
+
+  // Contacts
+  getContacts: (options?: any) => Promise<any[]>;
+  insertContact: (data: any) => Promise<{ success: boolean; id?: number }>;
+  updateContact: (id: number, data: any) => Promise<{ success: boolean }>;
+  deleteContact: (id: number) => Promise<{ success: boolean }>;
+
+  // Budgets
+  getBudgets: (options?: any) => Promise<any[]>;
+  setBudget: (data: any) => Promise<{ success: boolean; id?: number }>;
+  deleteBudget: (id: number) => Promise<any>;
+
+  // Supplier Price Checks
+  getSupplierPriceChecks: (supplierId?: number) => Promise<any[]>;
+  saveSupplierPriceCheck: (data: any) => Promise<{ success: boolean; id?: number }>;
+  deleteSupplierPriceCheck: (id: number) => Promise<any>;
+
+  // Quiet Hours
+  getQuietHours: () => Promise<any[]>;
+  setQuietHours: (data: any) => Promise<{ success: boolean; id?: number }>;
+  deleteQuietHours: () => Promise<any>;
 }
 
 declare global {

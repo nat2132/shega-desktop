@@ -35,6 +35,10 @@ const ETHIOPIAN_DAYS_OM = [
   'Dilbata', 'Wiixata', 'Saafila', 'Roobii', 'Kamisa', 'Jimaata', 'Sanbata'
 ];
 
+const ETHIOPIAN_DAYS_TI = [
+  'ሰንበት', 'ሰኑይ', 'ሰሉስ', 'ረቡዕ', 'ሓሙስ', 'ዓርቢ', 'ቀዳም'
+];
+
 export type CalendarType = 'ethiopian' | 'gregorian';
 export type Language = 'en' | 'am' | 'om' | 'ti';
 
@@ -64,12 +68,14 @@ export const toEthiopianDate = (date: Date) => {
 export const formatDate = (
   date: Date, 
   calendarType: CalendarType, 
-  language: Language = 'en'
+  language: Language = 'en',
+  options?: Intl.DateTimeFormatOptions
 ) => {
   if (!date || isNaN(date.getTime())) date = new Date();
 
   if (calendarType === 'gregorian') {
-    return date.toLocaleDateString(language === 'en' ? 'en-US' : 'am-ET', {
+    const locale = language === 'en' ? 'en-US' : language === 'am' ? 'am-ET' : language === 'om' ? 'om-ET' : 'ti-ET';
+    return date.toLocaleDateString(locale, options || {
       month: 'long',
       day: 'numeric',
       year: 'numeric'
@@ -81,8 +87,49 @@ export const formatDate = (
     if (language === 'om') monthName = ETHIOPIAN_MONTHS_OM[month - 1];
     if (language === 'ti') monthName = ETHIOPIAN_MONTHS_TI[month - 1];
     
+    // Basic support for options in Ethiopian calendar
+    if (options?.month === '2-digit') {
+      const mStr = month < 10 ? `0${month}` : `${month}`;
+      const dStr = day < 10 ? `0${day}` : `${day}`;
+      return `${dStr}/${mStr}/${year}`;
+    }
+
     return `${monthName} ${day}, ${year}`;
   }
+};
+
+const JDN_ETHIOPIC_EPOCH = 1723856;
+
+export const fromEthiopianDate = (year: number, month: number, day: number): Date => {
+  const jdn = JDN_ETHIOPIC_EPOCH + 365 * (year - 1) + Math.floor((year - 1) / 4) + 30 * (month - 1) + day - 1;
+  const a = jdn + 32044;
+  const b = Math.floor((4 * a + 3) / 146097);
+  const c = a - Math.floor(146097 * b / 4);
+  const d = Math.floor((4 * c + 3) / 1461);
+  const e = c - Math.floor(1461 * d / 4);
+  const m = Math.floor((5 * e + 2) / 153);
+  const gDay = e - Math.floor((153 * m + 2) / 5) + 1;
+  const gMonth = m + 3 - 12 * Math.floor(m / 10);
+  const gYear = 100 * b + d - 4800 + Math.floor(m / 10);
+  return new Date(gYear, gMonth - 1, gDay);
+};
+
+/** Get localized Ethiopian day name. dayOfWeek: 0=Sun … 6=Sat (matches JS getDay()) */
+export const getEthiopianDayName = (dayOfWeek: number, language: Language = 'en'): string => {
+  const i = dayOfWeek % 7;
+  if (language === 'am') return ETHIOPIAN_DAYS_AM[i];
+  if (language === 'om') return ETHIOPIAN_DAYS_OM[i];
+  if (language === 'ti') return ETHIOPIAN_DAYS_TI[i];
+  return ETHIOPIAN_DAYS[i];
+};
+
+/** Get localized Ethiopian month name. monthIndex 0-based (0=Meskerem, 12=Pagumen) */
+export const getEthiopianMonthName = (monthIndex: number, language: Language = 'en'): string => {
+  const i = Math.max(0, Math.min(monthIndex, 12));
+  if (language === 'am') return ETHIOPIAN_MONTHS_AM[i];
+  if (language === 'om') return ETHIOPIAN_MONTHS_OM[i];
+  if (language === 'ti') return ETHIOPIAN_MONTHS_TI[i];
+  return ETHIOPIAN_MONTHS[i];
 };
 
 export const getFriendlyDate = (

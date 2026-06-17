@@ -6,6 +6,10 @@ import {
   LogOut, RefreshCcw
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
+import { Button } from './ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+import { cn } from '@renderer/utils/shadcn';
+import logo from '../assets/logo.svg';
 
 const Sidebar = () => {
   const { t, theme } = useSettings();
@@ -21,52 +25,63 @@ const Sidebar = () => {
   ];
 
   return (
-    <aside className="w-[80px] hidden md:flex flex-col h-full border-r bg-white/40 backdrop-blur-2xl saturate-150 border-white/60 shadow-[inset_0_0_20px_rgba(255,255,255,0.6)] flex-shrink-0 z-40 transition-all duration-300">
+    <aside className="w-[80px] hidden md:flex flex-col h-full border-r bg-card/40 backdrop-blur-2xl saturate-150 border-white/10 shadow-2xl flex-shrink-0 z-40 transition-all duration-300">
       
       {/* Brand Logo */}
       <div className="pt-8 pb-12 flex justify-center">
-        <div className="w-12 h-12 bg-retail-orange rounded-[14px] flex items-center justify-center shadow-lg shadow-retail-orange/30 group cursor-pointer hover:rotate-6 transition-transform">
-          <span className="text-white font-black text-2xl tracking-tighter">R</span>
+        <div className="w-12 h-12 bg-white dark:bg-zinc-950 rounded-[14px] flex items-center justify-center shadow-lg shadow-primary/10 group cursor-pointer hover:rotate-6 transition-transform border border-border/50">
+          <img src={logo} alt="Logo" className="w-8 h-8 object-contain dark:invert" />
         </div>
       </div>
 
       <nav className="flex-1 px-3 space-y-4">
         {navItems.map((item) => (
-          <NavLink
-            key={item.path}
-            to={item.path}
-            title={t(`tabs.${item.id}`)}
-            className={({ isActive }) => `
-              w-14 h-14 mx-auto flex items-center justify-center rounded-[18px] transition-all duration-300 group relative
-              ${isActive 
-                ? 'bg-retail-black text-white shadow-xl shadow-black/10 scale-105' 
-                : 'text-retail-gray-300 hover:text-retail-black hover:bg-retail-gray-100'}
-            `}
-          >
-            <item.icon size={22} strokeWidth={2.5} className="transition-transform group-hover:scale-110" />
-            
-            <div className="absolute left-[75px] px-3 py-1.5 rounded-lg bg-retail-black text-white text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 pointer-events-none transition-all duration-300 translate-x-[-10px] group-hover:translate-x-0 whitespace-nowrap z-50 shadow-xl">
+          <Tooltip key={item.path} delayDuration={0}>
+            <TooltipTrigger asChild>
+              <NavLink
+                to={item.path}
+                className={({ isActive }) => cn(
+                  "w-14 h-14 mx-auto flex items-center justify-center rounded-[18px] transition-all duration-300 group relative",
+                  isActive 
+                    ? "bg-foreground text-background shadow-xl scale-105" 
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                <item.icon size={22} strokeWidth={2.5} className="transition-transform group-hover:scale-110" />
+              </NavLink>
+            </TooltipTrigger>
+            <TooltipContent side="right" className="bg-foreground text-background font-black text-[10px] uppercase tracking-widest border-none px-3 py-1.5 shadow-2xl">
               {t(`tabs.${item.id}`)}
-            </div>
-          </NavLink>
+            </TooltipContent>
+          </Tooltip>
         ))}
       </nav>
 
       <div className="pb-8 pt-4 space-y-4 px-3">
-        <NavLink
-            to="/settings"
-            title={t('tabs.settings')}
-            className={({ isActive }) => `
-              w-14 h-14 mx-auto flex items-center justify-center rounded-[18px] transition-all duration-300 group relative
-              ${isActive ? 'bg-retail-gray-100 text-retail-black' : 'text-retail-gray-300 hover:text-retail-black hover:bg-retail-gray-100'}
-            `}
-          >
-            <Settings size={22} strokeWidth={2.5} />
-        </NavLink>
+        <Tooltip delayDuration={0}>
+          <TooltipTrigger asChild>
+            <NavLink
+              to="/settings"
+              className={({ isActive }) => cn(
+                "w-14 h-14 mx-auto flex items-center justify-center rounded-[18px] transition-all duration-300 group relative",
+                isActive ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              )}
+            >
+              <Settings size={22} strokeWidth={2.5} />
+            </NavLink>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="bg-foreground text-background font-black text-[10px] uppercase tracking-widest border-none px-3 py-1.5 shadow-2xl">
+            {t('tabs.settings')}
+          </TooltipContent>
+        </Tooltip>
         
-        <button className="w-14 h-14 mx-auto flex items-center justify-center rounded-[18px] text-retail-gray-300 hover:text-red-500 hover:bg-red-50 transition-all group">
+        <Button 
+          variant="ghost" 
+          size="icon" 
+          className="w-14 h-14 mx-auto flex items-center justify-center rounded-[18px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all group"
+        >
           <LogOut size={22} strokeWidth={2.5} className="group-hover:translate-x-1 transition-transform" />
-        </button>
+        </Button>
       </div>
     </aside>
   );
