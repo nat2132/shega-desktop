@@ -4,7 +4,7 @@ const SOUNDS = {
   nice: new Audio('sounds/nice.mp3'),
   bad: new Audio('sounds/bad.mp3'),
   reminder: new Audio('sounds/reminder.mp3'),
-  start: new Audio('sounds/start.wav'),
+  start: new Audio('sounds/start.mp3'),
 }
 
 export async function initSound() {
