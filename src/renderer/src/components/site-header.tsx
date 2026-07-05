@@ -7,6 +7,7 @@ import {
 import { useSettings } from "../context/SettingsContext"
 import { useLocation } from "react-router-dom"
 import NotificationCenter from "./NotificationCenter"
+import { GlobalSearch } from "./GlobalSearch"
 
 export function SiteHeader() {
   const { theme, setTheme, t } = useSettings();
@@ -31,6 +32,10 @@ export function SiteHeader() {
         <div className="flex flex-col hidden sm:flex">
           <h1 className="text-[10px] font-black uppercase tracking-[0.3em] text-foreground">{getPageTitle()}</h1>
           <p className="text-[8px] font-black uppercase tracking-[0.2em] text-muted-foreground">{t('header.terminal_active')}</p>
+        </div>
+
+        <div className="mx-4 flex-1 max-w-md">
+          <GlobalSearch />
         </div>
 
         <div className="ml-auto flex items-center gap-3">

@@ -324,4 +324,13 @@ contextBridge.exposeInMainWorld('api', {
   convertOrderToSale: (data: { orderId: number; paymentMethod?: string; discount?: number; vat?: number }) => ipcRenderer.invoke('convert-order-to-sale', data),
   convertOrderToDebt: (data: { orderId: number; dueDate?: string; paymentMethod?: string; discount?: number; vat?: number }) => ipcRenderer.invoke('convert-order-to-debt', data),
   cancelOrder: (data: { orderId: number; reason?: string }) => ipcRenderer.invoke('cancel-order', data),
+
+  // Global Search
+  globalSearch: (query: string) => ipcRenderer.invoke('global-search', query),
+
+  // Business Health Score
+  getBusinessHealthScore: () => ipcRenderer.invoke('get-business-health-score'),
+
+  // Business Assistant Insights
+  getBusinessInsights: () => ipcRenderer.invoke('get-business-insights'),
 })

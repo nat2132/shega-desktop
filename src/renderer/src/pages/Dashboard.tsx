@@ -14,6 +14,7 @@ import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
 import { SectionCards, SectionCardData } from '../components/section-cards';
 import DashboardAlerts from '../components/DashboardAlerts';
+import { BusinessAssistant } from '../components/BusinessAssistant';
 import TestDataGenerator from '../components/TestDataGenerator';
 import { CategorySalesChart } from '../components/category-sales-chart';
 import { DataTable } from '../components/data-table';
@@ -307,22 +308,24 @@ const Dashboard: React.FC = () => {
       ) : (
         <>
           <div className="px-4 lg:px-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h1 className="text-2xl md:text-3xl font-black tracking-tight">
-                  {t(`dashboard.${greeting}`)}, {currentAdmin?.name?.split(' ')[0] || 'Admin'}
-                </h1>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {t('dashboard.welcome')}
-                </p>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-2xl md:text-3xl font-black tracking-tight">
+                    {t(`dashboard.${greeting}`)}, {currentAdmin?.name?.split(' ')[0] || 'Admin'}
+                  </h1>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {t('dashboard.welcome')}
+                  </p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground font-bold uppercase tracking-widest">
+                    <Clock className="h-4 w-4" />
+                    <span className="text-[10px] font-black uppercase tracking-[0.3em]">
+                      {formatDate(new Date(), { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+                    </span>
+                  </div>
+                </div>
               </div>
-              <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground font-bold uppercase tracking-widest">
-                <Clock className="h-4 w-4" />
-                <span className="text-[10px] font-black uppercase tracking-[0.3em]">
-                  {formatDate(new Date(), { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
-                </span>
-              </div>
-            </div>
           </div>
 
           <SectionCards cards={kpiCards} />
@@ -535,6 +538,11 @@ const Dashboard: React.FC = () => {
               )}
             </div>
           )}
+
+          {/* ── Business Assistant ── */}
+          <div className="px-4 lg:px-6">
+            <BusinessAssistant />
+          </div>
 
           {/* ── Test Data Generator (dev mode only) ── */}
           {(window.location.protocol === 'http:' || window.location.hostname === 'localhost') && (

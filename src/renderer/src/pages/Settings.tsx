@@ -4,7 +4,7 @@ import {
   CheckCircle, UploadCloud,
   ShieldCheck, Database, Sun, Moon, Trash2, Upload, UserCog, Bell, HardDrive, RotateCcw, FileText,
   Sparkles, Leaf, Flame, Gem, Coffee, Clock, Headphones, Camera,
-  Phone, Users,
+  Phone, Users, HeartPulse,
   Package, ShoppingCart, Receipt, TrendingDown,
   CreditCard, Warehouse, Truck, BarChart3, SlidersHorizontal
 } from 'lucide-react';
@@ -21,6 +21,7 @@ import Modal from '../components/Modal';
 import { toast } from 'sonner';
 import NotificationSettings from '../components/NotificationSettings';
 import DataTransferModal from '../components/DataTransferModal';
+import { BusinessHealthScore } from '../components/BusinessHealthScore';
 
 const profileImages = (import.meta as any).glob('../assets/profile/*.png', { eager: true, import: 'default' });
 const AVATAR_OPTIONS = Object.values(profileImages) as string[];
@@ -43,7 +44,7 @@ const Settings: React.FC = () => {
   } = useSettings();
   const { isSuperAdmin, currentAdmin, refreshAdmin } = useAuth();
   
-  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'notifications' | 'security' | 'data' | 'support'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'notifications' | 'security' | 'data' | 'support' | 'health'>('profile');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showDataTransfer, setShowDataTransfer] = useState(false);
   const [avatar, setAvatar] = useState<string | null>(null);
@@ -190,6 +191,7 @@ const Settings: React.FC = () => {
     { id: 'security' as const, label: t('settings.security_protocols'), icon: ShieldCheck },
     { id: 'data' as const, label: t('settings.core_database'), icon: Database },
     { id: 'support' as const, label: t('settings.support'), icon: Headphones },
+    { id: 'health' as const, label: 'Health Score', icon: HeartPulse },
   ];
 
   return (
@@ -558,7 +560,11 @@ const Settings: React.FC = () => {
                 </div>
               )}
 
-              {activeTab === 'support' && (
+               {activeTab === 'health' && (
+                <BusinessHealthScore />
+               )}
+
+               {activeTab === 'support' && (
                 <div className="space-y-8">
                   <div className="space-y-1">
                     <h3 className="text-xl font-black tracking-tight">{t('settings.support')}</h3>

@@ -275,5 +275,11 @@ electron.contextBridge.exposeInMainWorld("api", {
   insertOrder: (data) => electron.ipcRenderer.invoke("insert-order", data),
   convertOrderToSale: (data) => electron.ipcRenderer.invoke("convert-order-to-sale", data),
   convertOrderToDebt: (data) => electron.ipcRenderer.invoke("convert-order-to-debt", data),
-  cancelOrder: (data) => electron.ipcRenderer.invoke("cancel-order", data)
+  cancelOrder: (data) => electron.ipcRenderer.invoke("cancel-order", data),
+  // Global Search
+  globalSearch: (query) => electron.ipcRenderer.invoke("global-search", query),
+  // Business Health Score
+  getBusinessHealthScore: () => electron.ipcRenderer.invoke("get-business-health-score"),
+  // Business Assistant Insights
+  getBusinessInsights: () => electron.ipcRenderer.invoke("get-business-insights")
 });

@@ -6630,6 +6630,771 @@ function registerIPCHandlers() {
     insertAuditLog("cancel_order", "order", data.orderId, "status", "Order", "Cancelled", `Order #${data.orderId} cancelled by ${currentUserName || "unknown"}. Reason: ${data.reason || "N/A"}`);
     return { success: true };
   });
+  electron.ipcMain.handle("global-search", (_, query) => {
+    const bizId = getActiveBusinessId();
+    if (!query || query.trim().length < 1) return [];
+    const q = `%${query.trim()}%`;
+    const results = [];
+    try {
+      const items = db.prepare(`
+        SELECT id, name, companyName, categoryId, totalBaseQuantity, baseUnit, baseSellingPrice,
+          categories.name as categoryName
+        FROM items LEFT JOIN categories ON items.categoryId = categories.id
+        WHERE items.businessId = ? AND items.is_deleted = 0
+          AND (items.name LIKE ? OR items.companyName LIKE ?)
+        LIMIT 8
+      `).all(bizId, q, q);
+      items.forEach((i) => results.push({
+        type: "item",
+        id: i.id,
+        title: i.name,
+        subtitle: `${i.companyName || ""} ${i.categoryName ? "· " + i.categoryName : ""} · ${i.totalBaseQuantity || 0} ${i.baseUnit || "pcs"}`,
+        route: "/inventory",
+        detail: i.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const sales = db.prepare(`
+        SELECT s.id, s.totalPrice, s.customerName, s.paymentStatus, s.createdAt, i.name as itemName
+        FROM sales s LEFT JOIN items i ON s.itemId = i.id
+        WHERE s.businessId = ? AND (i.name LIKE ? OR s.customerName LIKE ? OR CAST(s.id AS TEXT) LIKE ?)
+        LIMIT 8
+      `).all(bizId, q, q, q);
+      sales.forEach((s) => results.push({
+        type: "sale",
+        id: s.id,
+        title: `#${s.id} · ${s.itemName || "Item"}`,
+        subtitle: `${s.customerName || "Walk-in"} · ${s.paymentStatus} · ETB ${(s.totalPrice || 0).toLocaleString()}`,
+        route: `/sales/${s.id}`,
+        detail: s.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const customers = db.prepare(`
+        SELECT id, customerName, phone, company, groupName
+        FROM customers WHERE businessId = ? AND isActive = 1
+          AND (customerName LIKE ? OR phone LIKE ? OR company LIKE ?)
+        LIMIT 8
+      `).all(bizId, q, q, q);
+      customers.forEach((c) => results.push({
+        type: "customer",
+        id: c.id,
+        title: c.customerName,
+        subtitle: `${c.phone || ""} ${c.company ? "· " + c.company : ""}`,
+        route: "/customers",
+        detail: c.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const suppliers = db.prepare(`
+        SELECT id, supplierName, companyName, phone, contactPerson
+        FROM suppliers WHERE businessId = ? AND isActive = 1
+          AND (supplierName LIKE ? OR companyName LIKE ? OR phone LIKE ? OR contactPerson LIKE ?)
+        LIMIT 8
+      `).all(bizId, q, q, q, q);
+      suppliers.forEach((s) => results.push({
+        type: "supplier",
+        id: s.id,
+        title: s.supplierName,
+        subtitle: `${s.companyName || ""} ${s.contactPerson ? "· " + s.contactPerson : ""}`,
+        route: "/suppliers",
+        detail: s.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const expenses = db.prepare(`
+        SELECT id, name, amount, category, date
+        FROM expenses WHERE businessId = ? AND (name LIKE ? OR category LIKE ?)
+        LIMIT 8
+      `).all(bizId, q, q);
+      expenses.forEach((e) => results.push({
+        type: "expense",
+        id: e.id,
+        title: e.name,
+        subtitle: `${e.category} · ETB ${(e.amount || 0).toLocaleString()}`,
+        route: "/expenses",
+        detail: e.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const budgets = db.prepare(`
+        SELECT id, category, amount, budgetType, month, year, referenceName
+        FROM budgets WHERE businessId = ? AND (category LIKE ? OR referenceName LIKE ?)
+        LIMIT 8
+      `).all(bizId, q, q);
+      budgets.forEach((b) => results.push({
+        type: "budget",
+        id: b.id,
+        title: b.category,
+        subtitle: `ETB ${(b.amount || 0).toLocaleString()} · ${b.budgetType}${b.referenceName ? " · " + b.referenceName : ""}`,
+        route: "/budgets",
+        detail: b.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const cats = db.prepare(`
+        SELECT id, name FROM categories WHERE businessId = ? AND name LIKE ?
+        LIMIT 8
+      `).all(bizId, q);
+      cats.forEach((c) => results.push({
+        type: "category",
+        id: c.id,
+        title: c.name,
+        subtitle: "",
+        route: "/inventory",
+        detail: c.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const whs = db.prepare(`
+        SELECT id, name, location, managerName
+        FROM warehouses WHERE businessId = ? AND (name LIKE ? OR location LIKE ? OR managerName LIKE ?)
+        LIMIT 8
+      `).all(bizId, q, q, q);
+      whs.forEach((w) => results.push({
+        type: "warehouse",
+        id: w.id,
+        title: w.name,
+        subtitle: `${w.location || ""} ${w.managerName ? "· " + w.managerName : ""}`,
+        route: "/warehouses",
+        detail: w.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const purchases = db.prepare(`
+        SELECT sp.id, sp.purchaseNumber, sp.totalAmount, sp.status, s.supplierName
+        FROM supplier_purchases sp LEFT JOIN suppliers s ON sp.supplierId = s.id
+        WHERE sp.businessId = ? AND (sp.purchaseNumber LIKE ? OR s.supplierName LIKE ? OR CAST(sp.id AS TEXT) LIKE ?)
+        LIMIT 8
+      `).all(bizId, q, q, q);
+      purchases.forEach((p) => results.push({
+        type: "purchase",
+        id: p.id,
+        title: p.purchaseNumber || `#${p.id}`,
+        subtitle: `${p.supplierName || ""} · ETB ${(p.totalAmount || 0).toLocaleString()} · ${p.status || ""}`,
+        route: "/suppliers",
+        detail: p.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const adjustments = db.prepare(`
+        SELECT a.id, a.type, a.reason, a.quantity, i.name as itemName
+        FROM adjustments a LEFT JOIN items i ON a.itemId = i.id
+        WHERE a.businessId = ? AND (i.name LIKE ? OR a.reason LIKE ? OR a.type LIKE ?)
+        LIMIT 8
+      `).all(bizId, q, q, q);
+      adjustments.forEach((a) => results.push({
+        type: "adjustment",
+        id: a.id,
+        title: `${a.type} · ${a.itemName || ""}`,
+        subtitle: `${a.reason || ""} ${a.quantity ? "· Qty: " + a.quantity : ""}`,
+        route: "/adjustments",
+        detail: a.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const notifs = db.prepare(`
+        SELECT id, title, message, type, severity
+        FROM notifications WHERE businessId = ? AND isDismissed = 0
+          AND (title LIKE ? OR message LIKE ?)
+        LIMIT 8
+      `).all(bizId, q, q);
+      notifs.forEach((n) => results.push({
+        type: "notification",
+        id: n.id,
+        title: n.title,
+        subtitle: n.message || "",
+        route: null,
+        detail: n.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const drafts = db.prepare(`
+        SELECT id, customerName, discount, vat, notes
+        FROM draft_sales WHERE businessId = ?
+          AND (customerName LIKE ? OR notes LIKE ?)
+        LIMIT 8
+      `).all(bizId, q, q);
+      drafts.forEach((d) => results.push({
+        type: "draft",
+        id: d.id,
+        title: d.customerName || "Unnamed Draft",
+        subtitle: `${d.notes || ""}${d.discount ? " · Discount: " + d.discount : ""}`,
+        route: "/sales",
+        detail: d.id
+      }));
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    return results.slice(0, 40);
+  });
+  electron.ipcMain.handle("get-business-health-score", () => {
+    const bizId = getActiveBusinessId();
+    const now = /* @__PURE__ */ new Date();
+    const today = now.toISOString().split("T")[0];
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 864e5).toISOString().split("T")[0];
+    const sixtyDaysAgo = new Date(now.getTime() - 60 * 864e5).toISOString().split("T")[0];
+    const ninetyDaysAgo = new Date(now.getTime() - 90 * 864e5).toISOString().split("T")[0];
+    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    const factors = [];
+    const recommendations = [];
+    try {
+      const last30Sales = db.prepare(
+        "SELECT COUNT(*) as count, COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) >= ? AND DATE(createdAt) <= ? AND businessId = ?"
+      ).get(thirtyDaysAgo, today, bizId);
+      const prev30Sales = db.prepare(
+        "SELECT COUNT(*) as count, COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) >= ? AND DATE(createdAt) < ? AND businessId = ?"
+      ).get(sixtyDaysAgo, thirtyDaysAgo, bizId);
+      const salesGrowth = prev30Sales.revenue > 0 ? (last30Sales.revenue - prev30Sales.revenue) / prev30Sales.revenue * 100 : 0;
+      let salesScore = 50;
+      if (last30Sales.count > 0 && prev30Sales.count > 0) {
+        salesScore = Math.min(100, Math.max(0, 50 + salesGrowth));
+      } else if (last30Sales.count > 0) {
+        salesScore = 60;
+      } else {
+        salesScore = 20;
+      }
+      factors.push({
+        name: "Sales Performance",
+        score: Math.round(salesScore),
+        weight: 20,
+        status: salesScore >= 70 ? "good" : salesScore >= 40 ? "warning" : "critical",
+        detail: `${last30Sales.count} transactions, ETB ${(last30Sales.revenue || 0).toLocaleString()} revenue (${salesGrowth >= 0 ? "+" : ""}${salesGrowth.toFixed(1)}% vs prev period)`
+      });
+      if (salesScore < 40) recommendations.push("Increase sales efforts — revenue is significantly below potential. Consider promotions or new product lines.");
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const profitData = db.prepare(`
+        SELECT COALESCE(SUM(s.totalPrice - (CASE WHEN s.unitType = 'pack' THEN s.quantity * COALESCE(i.unitsPerPack, 1) ELSE s.quantity END * COALESCE(i.basePurchasePrice, 0))), 0) as grossProfit,
+               COALESCE(SUM(s.totalPrice), 0) as revenue
+        FROM sales s LEFT JOIN items i ON s.itemId = i.id
+        WHERE DATE(s.createdAt) >= ? AND DATE(s.createdAt) <= ? AND s.businessId = ?
+      `).get(thirtyDaysAgo, today, bizId);
+      const margin = profitData.revenue > 0 ? profitData.grossProfit / profitData.revenue * 100 : 0;
+      let marginScore = Math.min(100, Math.max(0, margin / 50 * 100));
+      factors.push({
+        name: "Gross Profit Margin",
+        score: Math.round(marginScore),
+        weight: 15,
+        status: margin >= 30 ? "good" : margin >= 15 ? "warning" : "critical",
+        detail: `${margin.toFixed(1)}% margin (ETB ${(profitData.grossProfit || 0).toLocaleString()} profit on ETB ${(profitData.revenue || 0).toLocaleString()} revenue)`
+      });
+      if (margin < 20) recommendations.push("Your gross profit margin is low. Review pricing strategy and negotiate better purchase prices from suppliers.");
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const totalExpenses = db.prepare(
+        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND date <= ? AND businessId = ?"
+      ).get(thirtyDaysAgo, today, bizId);
+      const last30Rev = db.prepare(
+        "SELECT COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) >= ? AND DATE(createdAt) <= ? AND businessId = ?"
+      ).get(thirtyDaysAgo, today, bizId);
+      const expenseRatio = last30Rev.revenue > 0 ? totalExpenses.total / last30Rev.revenue * 100 : 0;
+      let expenseScore = Math.min(100, Math.max(0, 100 - expenseRatio * 2));
+      factors.push({
+        name: "Expense Control",
+        score: Math.round(expenseScore),
+        weight: 15,
+        status: expenseRatio <= 30 ? "good" : expenseRatio <= 60 ? "warning" : "critical",
+        detail: `Expenses are ${expenseRatio.toFixed(1)}% of revenue (ETB ${(totalExpenses.total || 0).toLocaleString()})`
+      });
+      if (expenseRatio > 50) recommendations.push("Expenses are eating into profits. Review and cut non-essential spending.");
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const totalItems = db.prepare("SELECT COUNT(*) as count FROM items WHERE businessId = ? AND is_deleted = 0").get(bizId);
+      const lowStock = db.prepare("SELECT COUNT(*) as count FROM items WHERE totalBaseQuantity < 10 AND businessId = ? AND is_deleted = 0").get(bizId);
+      const outOfStock = db.prepare("SELECT COUNT(*) as count FROM items WHERE totalBaseQuantity <= 0 AND businessId = ? AND is_deleted = 0").get(bizId);
+      const healthyRatio = totalItems.count > 0 ? 1 - lowStock.count / totalItems.count : 0;
+      let invScore = Math.round(healthyRatio * 100);
+      factors.push({
+        name: "Inventory Health",
+        score: invScore,
+        weight: 15,
+        status: invScore >= 80 ? "good" : invScore >= 50 ? "warning" : "critical",
+        detail: `${lowStock.count} low-stock, ${outOfStock.count} out-of-stock out of ${totalItems.count} products`
+      });
+      if (lowStock.count > totalItems.count * 0.3) recommendations.push("Too many products are low on stock. Restock popular items and set up automated reorder alerts.");
+      if (outOfStock.count > 5) recommendations.push("Several items are completely out of stock. Prioritize restocking best-selling products.");
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const slowMoving = db.prepare(`
+        SELECT COUNT(*) as count FROM items i WHERE i.businessId = ? AND i.is_deleted = 0
+          AND (SELECT COUNT(*) FROM sales WHERE itemId = i.id AND DATE(createdAt) >= ?) = 0
+          AND i.totalBaseQuantity > 0
+      `).get(bizId, ninetyDaysAgo);
+      const deadStock = db.prepare(`
+        SELECT COUNT(*) as count FROM items i WHERE i.businessId = ? AND i.is_deleted = 0
+          AND (SELECT COUNT(*) FROM sales WHERE itemId = i.id AND DATE(createdAt) >= ?) = 0
+          AND i.totalBaseQuantity > 0
+      `).get(bizId, sixtyDaysAgo);
+      const totalActive = db.prepare("SELECT COUNT(*) as count FROM items WHERE businessId = ? AND is_deleted = 0 AND totalBaseQuantity > 0").get(bizId);
+      const slowRatio = totalActive.count > 0 ? slowMoving.count / totalActive.count : 0;
+      let slowScore = Math.round(Math.max(0, 100 - slowRatio * 200));
+      factors.push({
+        name: "Inventory Turnover",
+        score: slowScore,
+        weight: 10,
+        status: slowScore >= 70 ? "good" : slowScore >= 40 ? "warning" : "critical",
+        detail: `${slowMoving.count} items with no sales in 90 days, ${deadStock.count} with no sales in 60 days`
+      });
+      if (slowMoving.count > 5) recommendations.push("You have slow-moving inventory. Consider discounts or bundles to clear stagnant stock.");
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const budgets = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total FROM budgets WHERE businessId = ? AND year = ? AND (month = ? OR month IS NULL)").get(bizId, String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"));
+      if (budgets.count > 0) {
+        const expenses = db.prepare(
+          "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE businessId = ? AND date >= ? AND date <= ?"
+        ).get(bizId, monthStart, today);
+        const budgetUsage = budgets.total > 0 ? expenses.total / budgets.total * 100 : 0;
+        let budgetScore = budgetUsage <= 100 ? Math.round(100 - Math.abs(budgetUsage - 50) * 0.5) : Math.max(0, Math.round(100 - (budgetUsage - 100) * 1.5));
+        factors.push({
+          name: "Budget Adherence",
+          score: budgetScore,
+          weight: 10,
+          status: budgetUsage <= 100 ? "good" : "critical",
+          detail: `${budgetUsage.toFixed(1)}% of budget used (ETB ${(expenses.total || 0).toLocaleString()} / ETB ${(budgets.total || 0).toLocaleString()})`
+        });
+        if (budgetUsage > 100) recommendations.push("You have exceeded your budget. Review spending and adjust budget allocations.");
+      } else {
+        factors.push({ name: "Budget Adherence", score: 50, weight: 10, status: "warning", detail: "No budgets set for this period. Set budgets to track spending." });
+        recommendations.push("Set up monthly budgets to better track and control your expenses.");
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const activeCustomers = db.prepare(`
+        SELECT COUNT(DISTINCT TRIM(customerName)) as count FROM sales
+        WHERE DATE(createdAt) >= ? AND businessId = ? AND customerName IS NOT NULL AND customerName != ''
+      `).get(thirtyDaysAgo, bizId);
+      const totalCustomers = db.prepare("SELECT COUNT(*) as count FROM customers WHERE businessId = ? AND isActive = 1").get(bizId);
+      const repeatRate = totalCustomers.count > 0 ? Math.min(1, activeCustomers.count / totalCustomers.count * 2) : 0;
+      let custScore = Math.round(repeatRate * 100);
+      factors.push({
+        name: "Customer Activity",
+        score: custScore,
+        weight: 10,
+        status: custScore >= 60 ? "good" : custScore >= 30 ? "warning" : "critical",
+        detail: `${activeCustomers.count} active customers this month (${totalCustomers.count} total)`
+      });
+      if (custScore < 40) recommendations.push("Customer engagement is low. Launch a loyalty program or email campaign to bring customers back.");
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const currentMonthRev = db.prepare(
+        "SELECT COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) >= ? AND businessId = ?"
+      ).get(thirtyDaysAgo, bizId);
+      const prevMonthRev = db.prepare(
+        "SELECT COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) >= ? AND DATE(createdAt) < ? AND businessId = ?"
+      ).get(sixtyDaysAgo, thirtyDaysAgo, bizId);
+      const growth = prevMonthRev.revenue > 0 ? (currentMonthRev.revenue - prevMonthRev.revenue) / prevMonthRev.revenue * 100 : 0;
+      let growthScore = Math.min(100, Math.max(0, 50 + growth));
+      factors.push({
+        name: "Revenue Growth",
+        score: Math.round(growthScore),
+        weight: 5,
+        status: growth >= 5 ? "good" : growth >= -5 ? "warning" : "critical",
+        detail: `${growth >= 0 ? "+" : ""}${growth.toFixed(1)}% month-over-month`
+      });
+      if (growth < -10) recommendations.push("Revenue is declining. Analyze sales data to identify trends and adjust your strategy.");
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    const totalWeight = factors.reduce((sum, f) => sum + f.weight, 0);
+    const weightedScore = totalWeight > 0 ? factors.reduce((sum, f) => sum + f.score * f.weight / totalWeight, 0) : 0;
+    const finalScore = Math.round(Math.max(0, Math.min(100, weightedScore)));
+    let rating;
+    if (finalScore >= 80) rating = "Excellent";
+    else if (finalScore >= 60) rating = "Good";
+    else if (finalScore >= 40) rating = "Fair";
+    else rating = "Needs Attention";
+    return { score: finalScore, rating, factors, recommendations };
+  });
+  electron.ipcMain.handle("get-business-insights", () => {
+    const bizId = getActiveBusinessId();
+    const now = /* @__PURE__ */ new Date();
+    const today = now.toISOString().split("T")[0];
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 864e5).toISOString().split("T")[0];
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 864e5).toISOString().split("T")[0];
+    const ninetyDaysAgo = new Date(now.getTime() - 90 * 864e5).toISOString().split("T")[0];
+    const sixtyDaysAgo = new Date(now.getTime() - 60 * 864e5).toISOString().split("T")[0];
+    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    const insights = [];
+    try {
+      const lowItems = db.prepare(`
+        SELECT i.id, i.name, i.totalBaseQuantity, i.baseUnit, i.baseSellingPrice, c.name as categoryName
+        FROM items i LEFT JOIN categories c ON i.categoryId = c.id
+        WHERE i.businessId = ? AND i.is_deleted = 0 AND i.totalBaseQuantity < 10 AND i.totalBaseQuantity > 0
+        ORDER BY i.totalBaseQuantity ASC LIMIT 5
+      `).all(bizId);
+      if (lowItems.length > 0) {
+        insights.push({
+          type: "low_stock",
+          severity: "warning",
+          title: `${lowItems.length} Products Running Low`,
+          message: lowItems.map((i) => `${i.name} (${i.totalBaseQuantity} ${i.baseUnit})`).join(", ") + ". Restock soon to avoid stockouts.",
+          action: { label: "View Inventory", route: "/inventory" }
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const oosItems = db.prepare(`
+        SELECT COUNT(*) as count FROM items WHERE businessId = ? AND is_deleted = 0 AND totalBaseQuantity <= 0
+      `).get(bizId);
+      if (oosItems.count > 0) {
+        insights.push({
+          type: "out_of_stock",
+          severity: "critical",
+          title: `${oosItems.count} Products Out of Stock`,
+          message: `These items need immediate attention to restore availability. Check your supplier list and place orders.`,
+          action: { label: "View Inventory", route: "/inventory" }
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const bestSellers = db.prepare(`
+        SELECT i.name, SUM(s.quantity) as totalQty, SUM(s.totalPrice) as totalRevenue
+        FROM sales s JOIN items i ON s.itemId = i.id
+        WHERE DATE(s.createdAt) >= ? AND s.businessId = ?
+        GROUP BY s.itemId ORDER BY totalQty DESC LIMIT 5
+      `).all(thirtyDaysAgo, bizId);
+      if (bestSellers.length > 0) {
+        insights.push({
+          type: "best_sellers",
+          severity: "success",
+          title: "Best Selling Products",
+          message: bestSellers.map((i) => `${i.name} (${i.totalQty} units, ETB ${(i.totalRevenue || 0).toLocaleString()})`).join(" · "),
+          action: { label: "View Sales", route: "/sales" }
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const topProfit = db.prepare(`
+        SELECT i.name,
+          SUM(s.totalPrice - (CASE WHEN s.unitType = 'pack' THEN s.quantity * COALESCE(i.unitsPerPack, 1) ELSE s.quantity END * COALESCE(i.basePurchasePrice, 0))) as totalProfit,
+          SUM(s.quantity) as totalQty
+        FROM sales s JOIN items i ON s.itemId = i.id
+        WHERE DATE(s.createdAt) >= ? AND s.businessId = ?
+        GROUP BY s.itemId ORDER BY totalProfit DESC LIMIT 5
+      `).all(thirtyDaysAgo, bizId);
+      if (topProfit.length > 0) {
+        insights.push({
+          type: "top_profit",
+          severity: "success",
+          title: "Highest Profit Items",
+          message: topProfit.map((i) => `${i.name} (ETB ${(i.totalProfit || 0).toLocaleString()})`).join(" · ")
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const slowMoving = db.prepare(`
+        SELECT i.id, i.name, i.totalBaseQuantity, i.baseUnit, i.basePurchasePrice * i.totalBaseQuantity as inventoryValue
+        FROM items i WHERE i.businessId = ? AND i.is_deleted = 0 AND i.totalBaseQuantity > 0
+          AND (SELECT COALESCE(SUM(quantity), 0) FROM sales WHERE itemId = i.id AND DATE(createdAt) >= ?) = 0
+        ORDER BY inventoryValue DESC LIMIT 5
+      `).all(bizId, ninetyDaysAgo);
+      if (slowMoving.length > 0) {
+        insights.push({
+          type: "slow_moving",
+          severity: "warning",
+          title: "Slow-Moving Products",
+          message: `${slowMoving.length} products haven't sold in 90 days. Consider promotions or bundles to move this stock. Top: ${slowMoving[0].name} (ETB ${(slowMoving[0].inventoryValue || 0).toLocaleString()} tied up)`
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const overstocked = db.prepare(`
+        SELECT i.name, i.totalBaseQuantity, i.baseUnit, c.name as categoryName
+        FROM items i LEFT JOIN categories c ON i.categoryId = c.id
+        WHERE i.businessId = ? AND i.is_deleted = 0 AND i.totalBaseQuantity > 100
+        ORDER BY i.totalBaseQuantity DESC LIMIT 3
+      `).all(bizId);
+      if (overstocked.length > 0) {
+        insights.push({
+          type: "overstocked",
+          severity: "info",
+          title: "Overstocked Items",
+          message: `${overstocked.map((i) => `${i.name} (${i.totalBaseQuantity} ${i.baseUnit})`).join(", ")}. Consider reducing future orders.`
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const currentExpenses = db.prepare(
+        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND businessId = ?"
+      ).get(thirtyDaysAgo, bizId);
+      const prevExpenses = db.prepare(
+        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND date < ? AND businessId = ?"
+      ).get(sixtyDaysAgo, thirtyDaysAgo, bizId);
+      if (prevExpenses.total > 0) {
+        const change = (currentExpenses.total - prevExpenses.total) / prevExpenses.total * 100;
+        if (change > 30) {
+          const topCategory = db.prepare(`
+            SELECT category, SUM(amount) as total FROM expenses
+            WHERE date >= ? AND businessId = ? GROUP BY category ORDER BY total DESC LIMIT 1
+          `).get(thirtyDaysAgo, bizId);
+          insights.push({
+            type: "expense_increase",
+            severity: "warning",
+            title: "Expenses Up Significantly",
+            message: `Expenses increased ${change.toFixed(0)}% vs last month${topCategory ? `. Top category: ${topCategory.category} (ETB ${(topCategory.total || 0).toLocaleString()})` : ""}. Review for potential savings.`,
+            action: { label: "View Expenses", route: "/expenses" }
+          });
+        }
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const overrunBudgets = db.prepare(`
+        SELECT b.category, b.amount as budgetAmount,
+          COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) as spent
+        FROM budgets b
+        WHERE b.businessId = ? AND b.month = ? AND b.year = ?
+        HAVING spent > budgetAmount
+        ORDER BY (spent - budgetAmount) DESC LIMIT 3
+      `).all(bizId, bizId, monthStart, today, bizId, String(now.getMonth() + 1).padStart(2, "0"), String(now.getFullYear()));
+      if (overrunBudgets.length > 0) {
+        insights.push({
+          type: "budget_overrun",
+          severity: "critical",
+          title: "Budget Overruns Detected",
+          message: overrunBudgets.map((b) => `${b.category}: ETB ${(b.spent || 0).toLocaleString()} / ETB ${(b.budgetAmount || 0).toLocaleString()}`).join(" · "),
+          action: { label: "View Budgets", route: "/budgets" }
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const weeklySales = db.prepare(`
+        SELECT DATE(createdAt) as date, COALESCE(SUM(totalPrice), 0) as revenue
+        FROM sales WHERE DATE(createdAt) >= ? AND businessId = ? GROUP BY DATE(createdAt) ORDER BY date
+      `).all(sevenDaysAgo, bizId);
+      if (weeklySales.length >= 4) {
+        const recent = weeklySales.slice(-2).reduce((a, d) => a + d.revenue, 0);
+        const earlier = weeklySales.slice(0, -2).reduce((a, d) => a + d.revenue, 0);
+        if (earlier > 0 && recent < earlier * 0.7) {
+          insights.push({
+            type: "sales_decline",
+            severity: "critical",
+            title: "Sales Declining",
+            message: "Revenue has dropped significantly in recent days. Check for stock issues, competitor activity, or seasonal factors.",
+            action: { label: "View Analytics", route: "/analytics" }
+          });
+        }
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const topCustomers = db.prepare(`
+        SELECT TRIM(s.customerName) as name, COUNT(*) as count, SUM(s.totalPrice) as total
+        FROM sales s WHERE DATE(s.createdAt) >= ? AND s.businessId = ? AND s.customerName IS NOT NULL AND s.customerName != ''
+        GROUP BY TRIM(s.customerName) ORDER BY total DESC LIMIT 3
+      `).all(thirtyDaysAgo, bizId);
+      if (topCustomers.length > 0) {
+        insights.push({
+          type: "top_customers",
+          severity: "success",
+          title: "Top Customers (30 days)",
+          message: topCustomers.map((c) => `${c.name} (ETB ${(c.total || 0).toLocaleString()})`).join(" · ")
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const todaySales = db.prepare(
+        "SELECT COUNT(*) as count, COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) = ? AND businessId = ?"
+      ).get(today, bizId);
+      const todayExpenses = db.prepare(
+        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date = ? AND businessId = ?"
+      ).get(today, bizId);
+      if (todaySales.count > 0 || todayExpenses.total > 0) {
+        insights.push({
+          type: "daily_summary",
+          severity: "info",
+          title: "Today's Summary",
+          message: `${todaySales.count} sales · ETB ${(todaySales.revenue || 0).toLocaleString()} revenue · ETB ${(todayExpenses.total || 0).toLocaleString()} expenses`
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const weekSales = db.prepare(
+        "SELECT COUNT(*) as count, COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) >= ? AND businessId = ?"
+      ).get(sevenDaysAgo, bizId);
+      const weekExpenses = db.prepare(
+        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND businessId = ?"
+      ).get(sevenDaysAgo, bizId);
+      if (weekSales.count > 0) {
+        insights.push({
+          type: "weekly_summary",
+          severity: "info",
+          title: "This Week",
+          message: `${weekSales.count} sales · ETB ${(weekSales.revenue || 0).toLocaleString()} revenue · ETB ${(weekExpenses.total || 0).toLocaleString()} expenses · Net: ETB ${((weekSales.revenue || 0) - (weekExpenses.total || 0)).toLocaleString()}`
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const monthSales = db.prepare(
+        "SELECT COUNT(*) as count, COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) >= ? AND businessId = ?"
+      ).get(thirtyDaysAgo, bizId);
+      const monthExpenses = db.prepare(
+        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND businessId = ?"
+      ).get(thirtyDaysAgo, bizId);
+      if (monthSales.count > 0) {
+        insights.push({
+          type: "monthly_summary",
+          severity: "info",
+          title: "Last 30 Days",
+          message: `${monthSales.count} sales · ETB ${(monthSales.revenue || 0).toLocaleString()} revenue · ETB ${(monthExpenses.total || 0).toLocaleString()} expenses · Net: ETB ${((monthSales.revenue || 0) - (monthExpenses.total || 0)).toLocaleString()}`
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const topSuppliers = db.prepare(`
+        SELECT s.supplierName,
+          COUNT(sp.id) as purchaseCount,
+          COALESCE(SUM(sp.totalAmount), 0) as totalAmount,
+          AVG(CASE WHEN sp.status = 'received' THEN julianday(sp.purchaseDate) - julianday(sp.purchaseDate) ELSE NULL END) as leadTime
+        FROM suppliers s
+        JOIN supplier_purchases sp ON sp.supplierId = s.id
+        WHERE sp.businessId = ? AND sp.status != 'cancelled' AND sp.purchaseDate >= ?
+        GROUP BY s.id ORDER BY totalAmount DESC LIMIT 2
+      `).all(bizId, thirtyDaysAgo);
+      if (topSuppliers.length > 0) {
+        insights.push({
+          type: "supplier_performance",
+          severity: "info",
+          title: "Top Suppliers",
+          message: topSuppliers.map((s) => `${s.supplierName} (ETB ${(s.totalAmount || 0).toLocaleString()})`).join(" · "),
+          action: { label: "View Suppliers", route: "/suppliers" }
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const totalRevenue = db.prepare(
+        "SELECT COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) >= ? AND businessId = ? AND paymentStatus = 'Paid'"
+      ).get(thirtyDaysAgo, bizId);
+      const debtSales = db.prepare(
+        "SELECT COALESCE(SUM(totalPrice - paidAmount), 0) as outstanding FROM sales WHERE paymentStatus = 'Debt' AND businessId = ?"
+      ).get(bizId);
+      const ratio = totalRevenue.revenue > 0 ? debtSales.outstanding / totalRevenue.revenue * 100 : 0;
+      if (ratio > 30) {
+        insights.push({
+          type: "cash_flow",
+          severity: "warning",
+          title: "Cash Flow Observation",
+          message: `Outstanding debts (ETB ${(debtSales.outstanding || 0).toLocaleString()}) represent ${ratio.toFixed(0)}% of paid revenue. Follow up on collections to improve cash flow.`,
+          action: { label: "View Debts", route: "/debt-management" }
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const avgMargin = db.prepare(`
+        SELECT AVG(CASE WHEN s.totalPrice > 0 THEN
+          (s.totalPrice - (CASE WHEN s.unitType = 'pack' THEN s.quantity * COALESCE(i.unitsPerPack, 1) ELSE s.quantity END * COALESCE(i.basePurchasePrice, 0))) / s.totalPrice * 100
+        ELSE 0 END) as avgMargin
+        FROM sales s LEFT JOIN items i ON s.itemId = i.id
+        WHERE DATE(s.createdAt) >= ? AND s.businessId = ? AND s.totalPrice > 0
+      `).get(thirtyDaysAgo, bizId);
+      if (avgMargin.avgMargin !== null && avgMargin.avgMargin < 25) {
+        insights.push({
+          type: "profit_suggestion",
+          severity: "info",
+          title: "Profit Improvement Opportunity",
+          message: `Average margin is ${avgMargin.avgMargin.toFixed(1)}%. A 5% price increase across all products could boost profit by ${avgMargin.avgMargin > 0 ? Math.round(5 / avgMargin.avgMargin * 100) : 20}%.`
+        });
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    try {
+      const lastYearSales = db.prepare(`
+        SELECT COALESCE(SUM(totalPrice), 0) as revenue FROM sales
+        WHERE DATE(createdAt) >= ? AND DATE(createdAt) < ? AND businessId = ?
+      `).get(thirtyDaysAgo, today, bizId);
+      const lastYearPeriod = db.prepare(`
+        SELECT COALESCE(SUM(totalPrice), 0) as revenue FROM sales
+        WHERE DATE(createdAt) >= ? AND DATE(createdAt) < ? AND businessId = ?
+      `).get(
+        new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().split("T")[0],
+        new Date(now.getFullYear() - 1, now.getMonth(), now.getDate() + 30).toISOString().split("T")[0],
+        bizId
+      );
+      if (lastYearPeriod.revenue > 0) {
+        const yoy = (lastYearSales.revenue - lastYearPeriod.revenue) / lastYearPeriod.revenue * 100;
+        if (Math.abs(yoy) > 20) {
+          insights.push({
+            type: "seasonal_trend",
+            severity: yoy > 0 ? "success" : "warning",
+            title: `Year-over-Year: ${yoy >= 0 ? "+" : ""}${yoy.toFixed(0)}%`,
+            message: `Revenue compared to same period last year. ${yoy >= 0 ? "Growing" : "Declining"} market trend detected.`
+          });
+        }
+      }
+    } catch (e) {
+      console.error("[Search]", e);
+    }
+    return insights.sort((a, b) => {
+      const order = { critical: 0, warning: 1, success: 2, info: 3 };
+      return (order[a.severity] ?? 4) - (order[b.severity] ?? 4);
+    });
+  });
 }
 process.on("uncaughtException", (error) => {
   console.error("[FATAL] Uncaught exception:", error);

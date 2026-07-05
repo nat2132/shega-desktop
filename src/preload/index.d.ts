@@ -307,13 +307,47 @@ export interface ElectronAPI {
   // CSV / Data Import
   importData: (module: string, rows: any[]) => Promise<{ success: boolean; imported: number; errors: { row: number; message: string }[]; skipped: number }>;
 
+  // Global Search
+  globalSearch: (query: string) => Promise<GlobalSearchResult[]>;
+
+  // Business Health Score
+  getBusinessHealthScore: () => Promise<BusinessHealthScore>;
+
+  // Business Assistant Insights
+  getBusinessInsights: () => Promise<BusinessInsight[]>;
+
   // Order Management
+
   getOrders: (options?: any) => Promise<any[]>;
   getOrder: (id: number) => Promise<any>;
   insertOrder: (data: any) => Promise<number>;
   convertOrderToSale: (data: { orderId: number; paymentMethod?: string; discount?: number; vat?: number }) => Promise<{ success: boolean; saleIds: number[] }>;
   convertOrderToDebt: (data: { orderId: number; dueDate?: string; paymentMethod?: string; discount?: number; vat?: number }) => Promise<{ success: boolean; saleIds: number[] }>;
   cancelOrder: (data: { orderId: number; reason?: string }) => Promise<{ success: boolean }>;
+}
+
+export interface GlobalSearchResult {
+  type: 'item' | 'sale' | 'customer' | 'supplier' | 'expense' | 'budget' | 'category' | 'warehouse' | 'purchase' | 'adjustment' | 'notification' | 'draft';
+  id: number;
+  title: string;
+  subtitle: string;
+  route: string | null;
+  detail: number;
+}
+
+export interface BusinessHealthScore {
+  score: number;
+  rating: string;
+  factors: { name: string; score: number; weight: number; status: 'good' | 'warning' | 'critical'; detail: string }[];
+  recommendations: string[];
+}
+
+export interface BusinessInsight {
+  type: string;
+  severity: 'info' | 'success' | 'warning' | 'critical';
+  title: string;
+  message: string;
+  action?: { label: string; route: string };
 }
 
 declare global {
