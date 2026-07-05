@@ -171,6 +171,15 @@ contextBridge.exposeInMainWorld('api', {
   resetEmployeePassword: (id: number, newPin: string) => ipcRenderer.invoke('reset-employee-password', id, newPin),
   loginEmployee: (username: string, pin: string) => ipcRenderer.invoke('login-employee', username, pin),
 
+  // PIN Recovery
+  generateRecoveryKey: (entityType: 'employee' | 'admin', entityId: number) => ipcRenderer.invoke('generate-recovery-key', entityType, entityId),
+  verifyRecoveryKey: (username: string, recoveryKey: string) => ipcRenderer.invoke('verify-recovery-key', username, recoveryKey),
+  resetPinWithRecovery: (username: string, recoveryKey: string, newPin: string) => ipcRenderer.invoke('reset-pin-with-recovery', username, recoveryKey, newPin),
+  lockUserAccount: (id: number) => ipcRenderer.invoke('lock-user-account', id),
+  unlockUserAccount: (id: number) => ipcRenderer.invoke('unlock-user-account', id),
+  forcePinChange: (id: number) => ipcRenderer.invoke('force-pin-change', id),
+  getPinHistory: (entityType?: string, entityId?: number) => ipcRenderer.invoke('get-pin-history', entityType, entityId),
+
   // Login History
   getLoginHistory: (options?: any) => ipcRenderer.invoke('get-login-history', options),
 
@@ -187,9 +196,6 @@ contextBridge.exposeInMainWorld('api', {
   // Employee Stats (Dashboard)
   getEmployeeStats: () => ipcRenderer.invoke('get-employee-stats'),
 
-  // Activity Logs
-  getActivityLogs: (options?: any) => ipcRenderer.invoke('get-activity-logs', options),
-  logActivity: (data: any) => ipcRenderer.invoke('log-activity', data),
   getAuditLogs: (options?: any) => ipcRenderer.invoke('get-audit-logs', options),
   reverseAuditLogEntry: (data: { logId: number }) => ipcRenderer.invoke('reverse-audit-log-entry', data),
 
@@ -278,6 +284,14 @@ contextBridge.exposeInMainWorld('api', {
   getBudgets: (options?: any) => ipcRenderer.invoke('get-budgets', options),
   setBudget: (data: any) => ipcRenderer.invoke('set-budget', data),
   deleteBudget: (id: number) => ipcRenderer.invoke('delete-budget', id),
+  getBudgetAdjustments: (budgetId: number) => ipcRenderer.invoke('get-budget-adjustments', budgetId),
+  createBudgetAdjustment: (data: any) => ipcRenderer.invoke('create-budget-adjustment', data),
+  approveBudgetAdjustment: (id: number, approvedBy: string) => ipcRenderer.invoke('approve-budget-adjustment', id, approvedBy),
+  duplicateBudget: (fromData: any, toMonth: string, toYear: string) => ipcRenderer.invoke('duplicate-budget', fromData, toMonth, toYear),
+  getBudgetAlerts: (options?: any) => ipcRenderer.invoke('get-budget-alerts', options),
+  acknowledgeBudgetAlert: (id: number) => ipcRenderer.invoke('acknowledge-budget-alert', id),
+  getBudgetReport: (options?: any) => ipcRenderer.invoke('get-budget-report', options),
+  getBudgetForecast: (options?: any) => ipcRenderer.invoke('get-budget-forecast', options),
 
   // Supplier Price Checks
   getSupplierPriceChecks: (supplierId?: number) => ipcRenderer.invoke('get-supplier-price-checks', supplierId),
@@ -299,4 +313,15 @@ contextBridge.exposeInMainWorld('api', {
   getSupplierUnpaidOrders: () => ipcRenderer.invoke('get-supplier-unpaid-orders'),
   getSupplierPaymentDueAlerts: () => ipcRenderer.invoke('get-supplier-payment-due-alerts'),
   getSupplierLowStock: () => ipcRenderer.invoke('get-supplier-low-stock'),
+
+  // CSV / Data Import
+  importData: (module: string, rows: any[]) => ipcRenderer.invoke('import-data', module, rows),
+
+  // Order Management
+  getOrders: (options?: any) => ipcRenderer.invoke('get-orders', options),
+  getOrder: (id: number) => ipcRenderer.invoke('get-order', id),
+  insertOrder: (data: any) => ipcRenderer.invoke('insert-order', data),
+  convertOrderToSale: (data: { orderId: number; paymentMethod?: string; discount?: number; vat?: number }) => ipcRenderer.invoke('convert-order-to-sale', data),
+  convertOrderToDebt: (data: { orderId: number; dueDate?: string; paymentMethod?: string; discount?: number; vat?: number }) => ipcRenderer.invoke('convert-order-to-debt', data),
+  cancelOrder: (data: { orderId: number; reason?: string }) => ipcRenderer.invoke('cancel-order', data),
 })

@@ -1,15 +1,15 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
-  History, Package, DollarSign, TrendingDown,
-  ChevronRight, AlertCircle, Info,
-  Zap, Database, Activity, User, X, TrendingUp, AlertTriangle, Blocks, Shield, Ban
+  History, Package, DollarSign,
+  ChevronRight,
+  AlertTriangle, Blocks, Ban
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '../components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { Button } from '../components/ui/button';
@@ -51,7 +51,7 @@ interface Adjustment {
 }
 
 const Adjustments: React.FC = () => {
-  const { t, formatDate, formatTime, formatDateTime } = useSettings();
+  const { t, formatDate, formatTime } = useSettings();
   const { hasPermission } = useAuth();
   const [items, setItems] = useState<Item[]>([]);
   const [history, setHistory] = useState<Adjustment[]>([]);
@@ -196,12 +196,12 @@ const Adjustments: React.FC = () => {
     if (!reverseTarget) return;
     try {
       await window.api.reverseAdjustment({ adjustmentId: reverseTarget.id, reason: reverseReason });
-      toast.success('Adjustment reversed successfully');
+      toast.success(t('adjustments.toast_reverse_success') || 'Adjustment reversed successfully');
       setReverseTarget(null);
       setReverseReason('');
       loadData();
     } catch (error) {
-      toast.error('Failed to reverse adjustment');
+      toast.error(t('adjustments.toast_reverse_error') || 'Failed to reverse adjustment');
     }
   };
 
@@ -286,7 +286,7 @@ const Adjustments: React.FC = () => {
                             <tr key={i} className="border-b border-border hover:bg-muted/30 transition-colors">
                               <td className="px-6 py-4 font-medium whitespace-nowrap text-foreground">
                                 {formatDate(h.date)}
-                                <div className="text-[10px] text-muted-foreground">{formatTime(h.createdAt)}</div>
+                                <div className="text-[10px] text-muted-foreground">{formatTime(h.createdAt ? new Date(h.createdAt) : new Date())}</div>
                               </td>
                               <td className="px-6 py-4 font-bold text-foreground">{h.itemName}</td>
                               <td className="px-6 py-4">
@@ -311,7 +311,7 @@ const Adjustments: React.FC = () => {
                               <td className="px-6 py-4 font-medium text-foreground">{t('common.operator')}</td>
                               <td className="px-6 py-4 text-center">
                                 {h.reversalId ? (
-                                  <Badge variant="outline" className="bg-muted/50 text-muted-foreground border-border font-bold text-[10px]">Reversed</Badge>
+                                  <Badge variant="outline" className="bg-muted/50 text-muted-foreground border-border font-bold text-[10px]">{t('adjustments.reversed_badge') || 'Reversed'}</Badge>
                                 ) : hasPermission('adjustments.reverse') ? (
                                   <Button
                                     variant="ghost"
@@ -389,7 +389,7 @@ const Adjustments: React.FC = () => {
                           value={stockQty}
                           onChange={(e) => setStockQty(e.target.value)}
                           className="bg-background font-bold text-lg"
-                          placeholder="e.g. 5"
+                          placeholder={t('adjustments.placeholder_qty') || 'e.g. 5'}
                         />
                       </div>
 
@@ -497,7 +497,7 @@ const Adjustments: React.FC = () => {
                             value={newPrice}
                             onChange={(e) => setNewPrice(e.target.value)}
                             className="bg-background font-bold text-lg"
-                            placeholder="e.g. 150"
+                            placeholder={t('adjustments.placeholder_price') || 'e.g. 150'}
                           />
                         </div>
                       </div>
@@ -686,9 +686,9 @@ const Adjustments: React.FC = () => {
         <AlertDialog open={reverseTarget !== null} onOpenChange={(open) => { if (!open) { setReverseTarget(null); setReverseReason(''); } }}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Reverse Adjustment</AlertDialogTitle>
+              <AlertDialogTitle>{t('adjustments.reverse_title') || 'Reverse Adjustment'}</AlertDialogTitle>
               <AlertDialogDescription>
-                Are you sure you want to reverse this adjustment for {reverseTarget?.itemName}?
+                {t('adjustments.reverse_confirm', { itemName: reverseTarget?.itemName }) || `Are you sure you want to reverse this adjustment for ${reverseTarget?.itemName}?`}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <div className="space-y-4">
@@ -699,18 +699,18 @@ const Adjustments: React.FC = () => {
                   value={reverseReason}
                   onChange={(e) => setReverseReason(e.target.value)}
                   className="bg-background resize-none"
-                  placeholder="Reason for reversal..."
+                  placeholder={t('adjustments.reverse_reason_placeholder') || 'Reason for reversal...'}
                 />
               </div>
             </div>
             <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogCancel>{t('common.cancel') || 'Cancel'}</AlertDialogCancel>
               <AlertDialogAction
                 variant="destructive"
                 disabled={!reverseReason}
                 onClick={handleReverseAdjustment}
               >
-                <Ban size={14} className="mr-1" /> Reverse
+                <Ban size={14} className="mr-1" /> {t('adjustments.reverse_action') || 'Reverse'}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

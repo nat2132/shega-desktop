@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Truck, Plus, Search, RefreshCw, MapPin, User, Phone,
-  CalendarDays, FileText, Eye, Edit2, Trash2, X, Clock,
+  Truck, Search, RefreshCw, MapPin, User, Phone,
+  CalendarDays, Edit2, Trash2, X, Clock,
   CheckCircle, XCircle, ArrowRight, Navigation
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
@@ -22,7 +22,7 @@ const statusConfig: Record<string, { label: string; variant: 'default' | 'second
 };
 
 const Shipments: React.FC = () => {
-  const { t, formatDate, formatTime, formatDateTime } = useSettings();
+  const { t, formatDate, formatDateTime } = useSettings();
   const [shipments, setShipments] = useState<any[]>([]);
   const [selectedShipment, setSelectedShipment] = useState<any>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -30,7 +30,6 @@ const Shipments: React.FC = () => {
 
   const [showShipmentModal, setShowShipmentModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
   const [editingShipment, setEditingShipment] = useState<any>(null);
 
@@ -103,7 +102,6 @@ const Shipments: React.FC = () => {
     try {
       await window.api.deleteShipment(deleteTarget.id);
       toast.success(t('shipments.shipment_deleted'));
-      setShowDeleteConfirm(false);
       setDeleteTarget(null);
       loadShipments();
     } catch (err: any) { toast.error(err.message); }
@@ -223,7 +221,7 @@ const Shipments: React.FC = () => {
                   <Button variant="ghost" size="sm" className="h-7 text-[8px] font-black uppercase tracking-widest" onClick={() => openEdit(s)}>
                     <Edit2 size={11} />
                   </Button>
-                  <Button variant="ghost" size="sm" className="h-7 text-[8px] font-black uppercase tracking-widest text-destructive" onClick={() => { setDeleteTarget(s); setShowDeleteConfirm(true); }}>
+                  <Button variant="ghost" size="sm" className="h-7 text-[8px] font-black uppercase tracking-widest text-destructive" onClick={() => { setDeleteTarget(s); }}>
                     <Trash2 size={11} />
                   </Button>
                 </div>
@@ -395,7 +393,7 @@ const Shipments: React.FC = () => {
 
       {/* Delete Confirmation */}
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => { setShowDeleteConfirm(false); setDeleteTarget(null); }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => { setDeleteTarget(null); }}>
           <div className="p-6 rounded-2xl bg-card border shadow-xl max-w-sm w-full mx-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-sm font-black uppercase tracking-widest">{t('shipments.delete_title')}</h3>
             <p className="text-[10px] font-semibold text-muted-foreground mt-3">
@@ -405,7 +403,7 @@ const Shipments: React.FC = () => {
               <Button variant="destructive" className="flex-1 h-11 text-[10px] font-black uppercase tracking-widest" onClick={handleDelete}>
                 {t('shipments.delete')}
               </Button>
-              <Button variant="outline" className="flex-1 h-11 text-[10px] font-black uppercase tracking-widest" onClick={() => { setShowDeleteConfirm(false); setDeleteTarget(null); }}>
+              <Button variant="outline" className="flex-1 h-11 text-[10px] font-black uppercase tracking-widest" onClick={() => { setDeleteTarget(null); }}>
                 {t('common.cancel')}
               </Button>
             </div>

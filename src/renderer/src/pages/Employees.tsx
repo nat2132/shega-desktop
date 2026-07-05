@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Users, UserPlus, UserCog, ShieldCheck, KeyRound, History,
-  Search, Plus, Edit2, Trash2, RefreshCw, CheckCircle, XCircle, LogIn
+  Users, UserPlus, ShieldCheck, KeyRound,
+  Search, Plus, Edit2, Trash2, RefreshCw, LogIn
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { Button } from '../components/ui/button';
@@ -11,16 +11,15 @@ import Modal from '../components/Modal';
 import { toast } from 'sonner';
 import { DatePicker } from '../components/DatePicker';
 
-type Tab = 'employees' | 'roles' | 'accounts' | 'logs';
+type Tab = 'employees' | 'roles' | 'accounts';
 
 const Employees: React.FC = () => {
-  const { t, formatDate, formatTime, formatDateTime } = useSettings();
+  const { t, formatDateTime } = useSettings();
   const [activeTab, setActiveTab] = useState<Tab>('employees');
 
   const [employees, setEmployees] = useState<any[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
-  const [logs, setLogs] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<number | ''>('');
 
@@ -28,7 +27,6 @@ const Employees: React.FC = () => {
   const [showEmployeeModal, setShowEmployeeModal] = useState(false);
   const [showRoleModal, setShowRoleModal] = useState(false);
   const [showAccountModal, setShowAccountModal] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
   const [editingEmployee, setEditingEmployee] = useState<any>(null);
   const [editingRole, setEditingRole] = useState<any>(null);
@@ -37,7 +35,6 @@ const Employees: React.FC = () => {
   const [empForm, setEmpForm] = useState({ employeeCode: '', firstName: '', lastName: '', phone: '', email: '', roleId: 0, hireDate: '' });
   const [roleForm, setRoleForm] = useState({ name: '', description: '', permissions: [] as string[] });
   const [accountForm, setAccountForm] = useState({ employeeId: 0, username: '', pin: '' });
-  const [logFilters, setLogFilters] = useState({ employeeId: 0, action: '' });
 
   useEffect(() => {
     loadEmployees();
@@ -46,7 +43,6 @@ const Employees: React.FC = () => {
 
   useEffect(() => {
     if (activeTab === 'accounts') loadAccounts();
-    if (activeTab === 'logs') loadLogs();
   }, [activeTab]);
 
   const loadEmployees = async () => {
@@ -64,15 +60,6 @@ const Employees: React.FC = () => {
 
   const loadAccounts = async () => {
     try { setAccounts(await window.api.getEmployeeAccounts() || []); } catch (err) { console.error(err); }
-  };
-
-  const loadLogs = async () => {
-    try {
-      const opts: any = { limit: 200 };
-      if (logFilters.employeeId) opts.employeeId = logFilters.employeeId;
-      if (logFilters.action) opts.action = logFilters.action;
-      setLogs(await window.api.getActivityLogs(opts) || []);
-    } catch (err) { console.error(err); }
   };
 
   // Employee CRUD
@@ -118,7 +105,6 @@ const Employees: React.FC = () => {
     try {
       await window.api.deleteEmployee(deleteTarget.id);
       toast.success(t('employees.emp_deleted'));
-      setShowDeleteConfirm(false);
       setDeleteTarget(null);
       loadEmployees();
     } catch (err: any) { toast.error(err.message); }
@@ -207,7 +193,6 @@ const Employees: React.FC = () => {
     { id: 'employees' as Tab, label: t('employees.employees'), icon: Users },
     { id: 'roles' as Tab, label: t('employees.roles'), icon: ShieldCheck },
     { id: 'accounts' as Tab, label: t('employees.accounts'), icon: KeyRound },
-    { id: 'logs' as Tab, label: t('employees.activity_logs'), icon: History },
   ];
 
   const allPermissionOptions = [
@@ -312,7 +297,7 @@ const Employees: React.FC = () => {
                             <Button variant="ghost" size="sm" className="h-7 text-[9px] font-black uppercase tracking-widest" onClick={() => openEditEmployee(emp)}>
                               <Edit2 size={11} className="mr-1" /> {t('employees.edit')}
                             </Button>
-                            <Button variant="ghost" size="sm" className="h-7 text-[9px] font-black uppercase tracking-widest text-destructive" onClick={() => { setDeleteTarget(emp); setShowDeleteConfirm(true); }}>
+                            <Button variant="ghost" size="sm" className="h-7 text-[9px] font-black uppercase tracking-widest text-destructive" onClick={() => { setDeleteTarget(emp); }}>
                               <Trash2 size={11} className="mr-1" /> {t('employees.delete')}
                             </Button>
                           </div>
@@ -444,62 +429,6 @@ const Employees: React.FC = () => {
           </div>
         )}
 
-        {/* ACTIVITY LOGS TAB */}
-        {activeTab === 'logs' && (
-          <div className="space-y-4">
-            <div className="flex items-center gap-4 flex-wrap">
-              <div className="flex items-center gap-2">
-                <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee')}:</label>
-                <select
-                  value={logFilters.employeeId}
-                  onChange={e => setLogFilters({ ...logFilters, employeeId: Number(e.target.value) })}
-                  className="h-9 px-3 rounded-xl border bg-background text-xs font-bold"
-                >
-                  <option value={0}>{t('employees.all_employees')}</option>
-                  {employees.map(emp => (
-                    <option key={emp.id} value={emp.id}>{emp.firstName} {emp.lastName}</option>
-                  ))}
-                </select>
-              </div>
-              <Button size="sm" variant="outline" className="h-9 text-[10px] font-black uppercase tracking-widest" onClick={loadLogs}>
-                <RefreshCw size={14} className="mr-2" /> {t('employees.refresh')}
-              </Button>
-            </div>
-            <div className="rounded-2xl border bg-card/40 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="border-b border-border/50 text-[9px] font-black uppercase tracking-widest text-muted-foreground">
-                      <th className="p-4">{t('employees.date')}</th>
-                      <th className="p-4">{t('employees.employee')}</th>
-                      <th className="p-4">{t('employees.action')}</th>
-                      <th className="p-4">{t('employees.entity')}</th>
-                      <th className="p-4">{t('employees.details')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {logs.map(log => (
-                      <tr key={log.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
-                        <td className="p-4 text-[10px] font-semibold">{formatDateTime(log.createdAt)}</td>
-                        <td className="p-4 text-[10px] font-semibold">{log.firstName ? `${log.firstName} ${log.lastName}` : '-'}</td>
-                        <td className="p-4">
-                          <Badge variant="outline" className="text-[9px] font-black uppercase">{log.action}</Badge>
-                        </td>
-                        <td className="p-4">
-                          <span className="text-[10px] text-muted-foreground">{log.entityType ? `${log.entityType}${log.entityId ? ` #${log.entityId}` : ''}` : '-'}</span>
-                        </td>
-                        <td className="p-4 text-[10px] text-muted-foreground max-w-[300px] truncate" title={log.details}>{log.details || '-'}</td>
-                      </tr>
-                    ))}
-                    {logs.length === 0 && (
-                      <tr><td colSpan={5} className="p-12 text-center"><p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.no_logs')}</p></td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Employee Modal */}
@@ -647,7 +576,7 @@ const Employees: React.FC = () => {
 
       {/* Delete Confirmation */}
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => { setShowDeleteConfirm(false); setDeleteTarget(null); }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => { setDeleteTarget(null); }}>
           <div className="p-6 rounded-2xl bg-card border shadow-xl max-w-sm w-full mx-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-sm font-black uppercase tracking-widest">{t('employees.delete_title')}</h3>
             <p className="text-[10px] font-semibold text-muted-foreground mt-3">
@@ -657,7 +586,7 @@ const Employees: React.FC = () => {
               <Button variant="destructive" className="flex-1 h-11 text-[10px] font-black uppercase tracking-widest" onClick={handleDeleteEmployee}>
                 {t('employees.delete')}
               </Button>
-              <Button variant="outline" className="flex-1 h-11 text-[10px] font-black uppercase tracking-widest" onClick={() => { setShowDeleteConfirm(false); setDeleteTarget(null); }}>
+              <Button variant="outline" className="flex-1 h-11 text-[10px] font-black uppercase tracking-widest" onClick={() => { setDeleteTarget(null); }}>
                 {t('common.cancel')}
               </Button>
             </div>

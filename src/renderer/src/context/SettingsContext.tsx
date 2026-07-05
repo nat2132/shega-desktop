@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { translations } from '../i18n/translations';
 import { formatDate as formatEtDate } from '../utils/ethiopian-calendar';
+import { ALL_MODULES } from '../utils/feature-modules';
 
 export type Language = 'en' | 'am' | 'om' | 'ti';
 export type CalendarType = 'ethiopian' | 'gregorian';
@@ -18,10 +19,14 @@ interface SettingsContextType {
   setTheme: (theme: Theme) => void;
   currentBusiness: any | null;
   refreshBusiness: () => Promise<void>;
-  t: (key: string, params?: Record<string, any>) => string;
+  t: (key: string, fallbackOrParams?: string | Record<string, any>, params?: Record<string, any>) => string;
   formatDate: (date: Date | string | number, options?: Intl.DateTimeFormatOptions) => string;
-  formatTime: (date: Date) => string;
+  formatTime: (date: Date | string | number) => string;
   formatDateTime: (date: Date | string | number) => string;
+  enabledModules: string[];
+  setEnabledModules: (modules: string[]) => void;
+  isModuleEnabled: (moduleId: string) => boolean;
+  currency: string;
 }
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
@@ -32,6 +37,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [timeSystem, setTimeSystem] = useState<TimeSystem>('device');
   const [theme, setTheme] = useState<Theme>('dark');
   const [currentBusiness, setCurrentBusiness] = useState<any | null>(null);
+  const [enabledModules, setEnabledModulesState] = useState<string[]>([...ALL_MODULES]);
 
   const refreshBusiness = async () => {
     try {
@@ -42,14 +48,29 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
+  const setEnabledModules = useCallback((modules: string[]) => {
+    setEnabledModulesState(modules);
+    window.api.setSetting('enabled_modules', modules);
+  }, []);
+
+  const isModuleEnabled = useCallback((moduleId: string): boolean => {
+    return enabledModules.includes(moduleId);
+  }, [enabledModules]);
+
   // Load settings from DB on mount
   useEffect(() => {
-    window.api.getSetting('app_settings').then((settings) => {
-      if (settings) {
-        if (settings.language) setLanguage(settings.language);
-        if (settings.calendarType) setCalendarType(settings.calendarType);
-        if (settings.timeSystem) setTimeSystem(settings.timeSystem);
-        if (settings.theme) setTheme(settings.theme);
+    Promise.all([
+      window.api.getSetting('app_settings'),
+      window.api.getSetting('enabled_modules'),
+    ]).then(([appSettings, savedModules]) => {
+      if (appSettings) {
+        if (appSettings.language) setLanguage(appSettings.language);
+        if (appSettings.calendarType) setCalendarType(appSettings.calendarType);
+        if (appSettings.timeSystem) setTimeSystem(appSettings.timeSystem);
+        if (appSettings.theme) setTheme(appSettings.theme);
+      }
+      if (savedModules && Array.isArray(savedModules)) {
+        setEnabledModulesState(savedModules);
       }
     });
     refreshBusiness();
@@ -71,22 +92,50 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [theme, language]);
 
-  const t = (key: string, params?: Record<string, any>): string => {
+  const t = (key: string, fallbackOrParams?: string | Record<string, any>, params?: Record<string, any>): string => {
     const getNestedValue = (obj: any, path: string) => {
       return path.split('.').reduce((acc, part) => acc && acc[part], obj);
     };
 
-    let translation = getNestedValue(translations[language], key) || getNestedValue(translations['en'], key) || key;
+    // Determine if second arg is a fallback string or interpolation params
+    let fallback: string | undefined;
+    let interpolateParams: Record<string, any> | undefined;
+
+    if (typeof fallbackOrParams === 'string') {
+      fallback = fallbackOrParams;
+      interpolateParams = params;
+    } else if (typeof fallbackOrParams === 'object') {
+      interpolateParams = fallbackOrParams;
+    }
+
+    let translation = getNestedValue(translations[language], key);
     
-    // Fallback for flat keys if nested not found
-    if (translation === key) {
-      translation = translations[language]?.[key] || translations['en']?.[key] || key;
+    // Fallback to flat keys before trying English
+    if (!translation) {
+      translation = translations[language]?.[key];
     }
     
-    if (!params || typeof translation !== 'string') return String(translation);
+    // Try English nested
+    if (!translation) {
+      translation = getNestedValue(translations['en'], key);
+    }
+    
+    // Try English flat key
+    if (!translation) {
+      translation = translations['en']?.[key];
+    }
+
+    // Use fallback if no translation found
+    if (!translation) {
+      return fallback ?? key;
+    }
+
+    if (typeof translation !== 'string') return String(translation);
+    
+    if (!interpolateParams) return translation;
     
     let result = translation;
-    Object.entries(params).forEach(([k, v]) => {
+    Object.entries(interpolateParams).forEach(([k, v]) => {
       result = result.replace(`{${k}}`, String(v));
     });
     return result;
@@ -105,10 +154,12 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  const formatTime = (date: Date): string => {
+  const formatTime = (date: Date | string | number): string => {
+    const d = typeof date === 'object' && date !== null ? date : new Date(date);
+    if (isNaN(d.getTime())) return String(date);
     if (timeSystem === 'ethiopian') {
-      const hours = date.getUTCHours();
-      const minutes = date.getUTCMinutes();
+      const hours = d.getUTCHours();
+      const minutes = d.getUTCMinutes();
       // Ethiopian time: 6 AM UTC = 12:00 (start of day), 12 PM UTC = 6:00, 6 PM UTC = 12:00 (night)
       let ethHours = (hours + 6) % 24;
       const period = ethHours >= 12 ? 'PM' : 'AM';
@@ -119,7 +170,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         period;
       return `${ethHours}:${minutes.toString().padStart(2, '0')} ${periodLabel}`;
     }
-    return date.toLocaleTimeString(language === 'en' ? 'en-US' : language === 'am' ? 'am-ET' : language === 'om' ? 'om-ET' : 'ti-ET', {
+    return d.toLocaleTimeString(language === 'en' ? 'en-US' : language === 'am' ? 'am-ET' : language === 'om' ? 'om-ET' : 'ti-ET', {
       hour: '2-digit',
       minute: '2-digit'
     });
@@ -142,7 +193,9 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       timeSystem, setTimeSystem,
       theme, setTheme,
       currentBusiness, refreshBusiness,
-      t, formatDate, formatTime, formatDateTime
+      t, formatDate, formatTime, formatDateTime,
+      enabledModules, setEnabledModules, isModuleEnabled,
+      currency: currentBusiness?.currency || 'ETB'
     }}>
       {children}
     </SettingsContext.Provider>

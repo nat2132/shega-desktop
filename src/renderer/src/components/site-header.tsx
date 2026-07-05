@@ -3,14 +3,13 @@ import { Separator } from "@renderer/components/ui/separator"
 import { SidebarTrigger } from "@renderer/components/ui/sidebar"
 import {
   Sun, Moon,
-  Building2
 } from "lucide-react"
 import { useSettings } from "../context/SettingsContext"
 import { useLocation } from "react-router-dom"
 import NotificationCenter from "./NotificationCenter"
 
 export function SiteHeader() {
-  const { theme, setTheme, currentBusiness, t } = useSettings();
+  const { theme, setTheme, t } = useSettings();
   const location = useLocation();
 
   const getPageTitle = () => {
@@ -29,17 +28,7 @@ export function SiteHeader() {
           className="mx-2 data-[orientation=vertical]:h-4"
         />
 
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border bg-muted/20">
-          <div className="h-6 w-6 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
-            <Building2 size={12} strokeWidth={3} />
-          </div>
-          <div className="flex flex-col text-left">
-            <span className="text-[9px] font-black uppercase tracking-tight truncate max-w-[100px] lg:max-w-[150px]">{currentBusiness?.businessName}</span>
-            <span className="text-[7px] font-black uppercase tracking-[0.2em] text-muted-foreground truncate">{currentBusiness?.storeName}</span>
-          </div>
-        </div>
-
-        <div className="ml-4 flex flex-col hidden sm:flex">
+        <div className="flex flex-col hidden sm:flex">
           <h1 className="text-[10px] font-black uppercase tracking-[0.3em] text-foreground">{getPageTitle()}</h1>
           <p className="text-[8px] font-black uppercase tracking-[0.2em] text-muted-foreground">{t('header.terminal_active')}</p>
         </div>

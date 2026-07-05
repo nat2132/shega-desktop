@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import {
-  Plus, Shield, ShieldCheck, User, Users,
-  Pencil, Trash2, Eye, EyeOff, Crown, UserCog, Power
+  Plus,
+  Pencil, Trash2, Eye, EyeOff, Crown, Power
 } from 'lucide-react';
 import { ColumnDef } from '@tanstack/react-table';
 import {
@@ -16,7 +16,7 @@ import {
   AlertDialogTrigger,
 } from "../components/ui/alert-dialog";
 
-import { useAuth, Admin } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import { SectionCards, SectionCardData } from '../components/section-cards';
 import { DataTable } from '../components/data-table';
@@ -312,7 +312,6 @@ const AdminManagement: React.FC = () => {
       header: () => <div className="text-right">{t('common.actions')}</div>,
       cell: ({ row }) => {
         const isSelf = row.original.id === currentAdmin?.id;
-        const isProtectedSuper = row.original.role === 'super_admin';
 
         return (
           <div className="flex justify-end gap-1">

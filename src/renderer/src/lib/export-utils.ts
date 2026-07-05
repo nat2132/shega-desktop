@@ -56,14 +56,14 @@ export function exportPDF(
     doc.setFont(fontName, 'normal');
   }
 
-  let startY = addPdfHeader(doc, business, 8) + 4;
+  let startY = addPdfHeader(doc, business ?? null, 8) + 4;
 
   doc.setFontSize(12);
   doc.setFont('helvetica', 'bold');
   doc.text(title, pageWidth / 2, startY, { align: 'center' });
   startY += 8;
 
-  const body = rows.map(r => [...r]);
+  const body = rows.map(r => r.map(c => String(c ?? '')));
   const tableConfig: any = {
     startY,
     head: [headers],

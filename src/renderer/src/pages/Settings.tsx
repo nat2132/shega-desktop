@@ -2,14 +2,17 @@ import React, { useState } from 'react';
 import {
   Palette, Globe, Building2,
   CheckCircle, UploadCloud,
-  ShieldCheck, Database, Sun, Moon, Trash2, Download, Upload, UserCog, Bell, HardDrive, RotateCcw, FileText,
-  Sparkles, Leaf, Flame, Gem, Coffee, Clock, Headphones, Camera, User, Palette as PaletteIcon,
-  Phone, Users, Palette as PaletteIcon2
+  ShieldCheck, Database, Sun, Moon, Trash2, Upload, UserCog, Bell, HardDrive, RotateCcw, FileText,
+  Sparkles, Leaf, Flame, Gem, Coffee, Clock, Headphones, Camera,
+  Phone, Users,
+  Package, ShoppingCart, Receipt, TrendingDown,
+  CreditCard, Warehouse, Truck, BarChart3, SlidersHorizontal
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import { useSettings, Language } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
+import { MODULE_META } from '../utils/feature-modules';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
@@ -19,14 +22,14 @@ import { toast } from 'sonner';
 import NotificationSettings from '../components/NotificationSettings';
 import DataTransferModal from '../components/DataTransferModal';
 
-const profileImages = import.meta.glob('../assets/profile/*.png', { eager: true, import: 'default' });
+const profileImages = (import.meta as any).glob('../assets/profile/*.png', { eager: true, import: 'default' });
 const AVATAR_OPTIONS = Object.values(profileImages) as string[];
 
-const LANGUAGES: { id: Language; name: string; native: string }[] = [
-  { id: 'en', name: 'English', native: 'English' },
-  { id: 'am', name: 'Amharic', native: 'አማርኛ' },
-  { id: 'om', name: 'Oromo', native: 'Afaan Oromo' },
-  { id: 'ti', name: 'Tigrinya', native: 'ትግርኛ' },
+const LANGUAGES: { id: Language; nameKey: string; native: string }[] = [
+  { id: 'en', nameKey: 'settings.lang_en', native: 'English' },
+  { id: 'am', nameKey: 'settings.lang_am', native: 'አማርኛ' },
+  { id: 'om', nameKey: 'settings.lang_om', native: 'Afaan Oromo' },
+  { id: 'ti', nameKey: 'settings.lang_ti', native: 'ትግርኛ' },
 ];
 
 const Settings: React.FC = () => {
@@ -36,9 +39,9 @@ const Settings: React.FC = () => {
     timeSystem, setTimeSystem,
     theme, setTheme,
     currentBusiness, refreshBusiness,
-    t
+    t, enabledModules, setEnabledModules
   } = useSettings();
-  const { isSuperAdmin, currentAdmin } = useAuth();
+  const { isSuperAdmin, currentAdmin, refreshAdmin } = useAuth();
   
   const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'notifications' | 'security' | 'data' | 'support'>('profile');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -89,8 +92,8 @@ const Settings: React.FC = () => {
 
   const handleUpdateBiz = async () => {
     if (!currentBusiness) return;
-    if (!bizForm.businessName.trim()) { toast.error('Business name is required'); return; }
-    if (!bizForm.storeName.trim()) { toast.error('Store name is required'); return; }
+    if (!bizForm.businessName.trim()) { toast.error(t('settings.business_name_required', 'Business name is required')); return; }
+    if (!bizForm.storeName.trim()) { toast.error(t('settings.store_name_required', 'Store name is required')); return; }
     try {
       await window.api?.updateBusiness(currentBusiness.id, bizForm);
       await refreshBusiness();
@@ -101,12 +104,14 @@ const Settings: React.FC = () => {
   };
 
   const handleUpdateAvatar = async (filename: string | null) => {
+    if (!currentAdmin) return;
     try {
       await window.api.updateAdmin(currentAdmin.id, { avatar: filename });
+      await refreshAdmin();
       setAvatar(filename);
-      toast.success('Profile image updated');
+      toast.success(t('settings.avatar_updated', 'Profile image updated'));
     } catch (e: any) {
-      toast.error(e.message || 'Failed to update avatar');
+      toast.error(e.message || t('settings.avatar_error', 'Failed to update avatar'));
     }
   };
 
@@ -116,25 +121,17 @@ const Settings: React.FC = () => {
     const reader = new FileReader();
     reader.onload = async (ev) => {
       const dataUrl = ev.target?.result as string;
+      if (!currentAdmin) return;
       try {
         await window.api.updateAdmin(currentAdmin.id, { avatar: dataUrl });
+        await refreshAdmin();
         setAvatar(dataUrl);
-        toast.success('Profile image uploaded');
+        toast.success(t('settings.avatar_upload_success', 'Profile image uploaded'));
       } catch (err: any) {
-        toast.error(err.message || 'Failed to upload avatar');
+        toast.error(err.message || t('settings.avatar_error', 'Failed to update avatar'));
       }
     };
     reader.readAsDataURL(file);
-  };
-
-  const handleExport = async () => {
-    const data = await window.api?.exportData();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `shega-backup-${new Date().toISOString().split('T')[0]}.json`;
-    a.click();
   };
 
   const handleReset = async () => {
@@ -143,7 +140,7 @@ const Settings: React.FC = () => {
       setShowResetConfirm(false);
       window.location.reload();
     } catch (err: any) {
-      toast.error(err?.message || 'Wipe failed');
+      toast.error(err?.message || t('settings.wipe_error', 'Wipe failed'));
     }
   };
 
@@ -242,16 +239,7 @@ const Settings: React.FC = () => {
                             <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.store_name')}</label>
                             <Input value={bizForm.storeName} onChange={e => setBizForm({...bizForm, storeName: e.target.value})} />
                          </div>
-                         <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-1.5">
-                               <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.system_currency')}</label>
-                               <Input value={bizForm.currency} onChange={e => setBizForm({...bizForm, currency: e.target.value})} />
-                            </div>
-                            <div className="space-y-1.5">
-                               <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.contact_phone')}</label>
-                               <Input value={bizForm.phone} onChange={e => setBizForm({...bizForm, phone: e.target.value})} />
-                            </div>
-                         </div>
+
                          <Button className="w-full h-12 font-black uppercase text-[10px] tracking-widest mt-4 shadow-xl shadow-primary/20" onClick={handleUpdateBiz}>
                             {t('settings.commit_changes')}
                          </Button>
@@ -263,7 +251,7 @@ const Settings: React.FC = () => {
                              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleLogoChange} className="hidden" />
                              <div onClick={() => fileInputRef.current?.click()} className="aspect-video rounded-2xl border-2 border-dashed flex flex-col items-center justify-center gap-3 cursor-pointer hover:bg-muted/30 transition-all group/upload bg-muted/10 relative overflow-hidden">
                                 {bizForm.logo ? (
-                                  <img src={bizForm.logo} alt="Logo" className="absolute inset-0 w-full h-full object-contain p-4" />
+                                  <img src={bizForm.logo} alt={t('settings.logo_alt', 'Logo')} className="absolute inset-0 w-full h-full object-contain p-4" />
                                 ) : (
                                   <>
                                     <div className="h-12 w-12 rounded-full bg-card flex items-center justify-center shadow-md group-hover/upload:scale-110 transition-transform">
@@ -276,15 +264,7 @@ const Settings: React.FC = () => {
                                   </>
                                 )}
                              </div>
-                          </div>
-                              <div className="space-y-1.5">
-                                 <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.contact_email')}</label>
-                                 <Input value={bizForm.email} onChange={e => setBizForm({...bizForm, email: e.target.value})} />
-                              </div>
-                              <div className="space-y-1.5">
-                                 <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.physical_address')}</label>
-                             <Input value={bizForm.address} onChange={e => setBizForm({...bizForm, address: e.target.value})} />
-                          </div>
+                           </div>
                        </div>
                     </div>
                     {/* Profile Avatar */}
@@ -310,7 +290,7 @@ const Settings: React.FC = () => {
                                 isSelected ? 'border-primary ring-2 ring-primary/20' : 'border-border'
                               }`}
                             >
-                              <img src={src} alt={`Avatar ${idx + 1}`} className="w-full h-full object-cover" />
+                              <img src={src} alt={t('settings.avatar_alt', 'Avatar {n}', { n: idx + 1 })} className="w-full h-full object-cover" />
                             </div>
                           );
                         })}
@@ -331,14 +311,14 @@ const Settings: React.FC = () => {
                    </div>
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                        {[
-                         { id: 'light', name: t('settings.light_mode'), icon: Sun, desc: 'Clean & bright' },
-                         { id: 'dark', name: t('settings.dark_mode'), icon: Moon, desc: 'Classic dark' },
-                         { id: 'midnight', name: 'Midnight', icon: Sparkles, desc: 'Blue + gold' },
-                         { id: 'emerald', name: 'Emerald', icon: Leaf, desc: 'Green + sand' },
-                         { id: 'charcoal', name: 'Charcoal', icon: Flame, desc: 'Red + amber' },
-                         { id: 'slate', name: 'Slate', icon: Gem, desc: 'Violet + gold' },
-                         { id: 'cocoa', name: 'Cocoa', icon: Coffee, desc: 'Copper + cream' },
-                       ].map((t_item) => (
+                          { id: 'light', name: t('settings.light_mode'), icon: Sun, desc: t('settings.theme_light_desc', 'Clean & bright') },
+                          { id: 'dark', name: t('settings.dark_mode'), icon: Moon, desc: t('settings.theme_dark_desc', 'Classic dark') },
+                          { id: 'midnight', name: t('settings.theme_midnight', 'Midnight'), icon: Sparkles, desc: t('settings.theme_midnight_desc', 'Blue + gold') },
+                          { id: 'emerald', name: t('settings.theme_emerald', 'Emerald'), icon: Leaf, desc: t('settings.theme_emerald_desc', 'Green + sand') },
+                          { id: 'charcoal', name: t('settings.theme_charcoal', 'Charcoal'), icon: Flame, desc: t('settings.theme_charcoal_desc', 'Red + amber') },
+                          { id: 'slate', name: t('settings.theme_slate', 'Slate'), icon: Gem, desc: t('settings.theme_slate_desc', 'Violet + gold') },
+                          { id: 'cocoa', name: t('settings.theme_cocoa', 'Cocoa'), icon: Coffee, desc: t('settings.theme_cocoa_desc', 'Copper + cream') },
+                        ].map((t_item) => (
                          <div 
                            key={t_item.id}
                            onClick={() => setTheme(t_item.id as any)}
@@ -394,7 +374,7 @@ const Settings: React.FC = () => {
                            <div className="flex items-center gap-4">
                               <span className="text-lg font-black opacity-30">{lang.id.toUpperCase()}</span>
                               <div className="text-left">
-                                 <p className="text-[10px] font-black uppercase tracking-widest">{lang.name}</p>
+                                  <p className="text-[10px] font-black uppercase tracking-widest">{t(lang.nameKey, lang.native)}</p>
                                  <p className="text-[9px] opacity-60">{lang.native}</p>
                               </div>
                            </div>
@@ -411,6 +391,60 @@ const Settings: React.FC = () => {
                          <Button size="sm" variant={calendarType === 'ethiopian' ? 'default' : 'ghost'} onClick={() => setCalendarType('ethiopian')} className="h-7 px-4 text-[9px] font-black uppercase">{t('common.ethiopian')}</Button>
                          <Button size="sm" variant={calendarType === 'gregorian' ? 'default' : 'ghost'} onClick={() => setCalendarType('gregorian')} className="h-7 px-4 text-[9px] font-black uppercase">{t('common.gregorian')}</Button>
                       </div>
+                   </div>
+
+                   {/* Feature Modules */}
+                   <div className="space-y-4 pt-4 border-t border-border">
+                      <div className="space-y-1">
+                         <h4 className="text-sm font-black uppercase tracking-widest">{t('settings.modules')}</h4>
+                         <p className="text-[9px] text-muted-foreground font-black uppercase tracking-widest">{t('settings.modules_desc')}</p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        {MODULE_META.map(meta => {
+                          const SettingIcon = {
+                            Package, ShoppingCart, Receipt, TrendingDown,
+                            UserCog, CreditCard, Warehouse, Truck, Building2,
+                            Users, BarChart3, SlidersHorizontal,
+                          }[meta.iconName] || Package;
+                          const isOn = enabledModules.includes(meta.id);
+                          return (
+                            <button
+                              key={meta.id}
+                              onClick={() => {
+                                const next = isOn
+                                  ? enabledModules.filter(m => m !== meta.id)
+                                  : [...enabledModules, meta.id];
+                                setEnabledModules(next);
+                              }}
+                              className={`flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${
+                                isOn
+                                  ? 'bg-muted/30 border-border hover:bg-muted/50'
+                                  : 'bg-muted/10 border-transparent opacity-50 hover:opacity-80'
+                              }`}
+                            >
+                              <div className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${
+                                isOn ? 'bg-primary/10 text-primary' : 'bg-muted/20 text-muted-foreground'
+                              }`}>
+                                <SettingIcon size={14} />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-[10px] font-black uppercase tracking-wider ${isOn ? 'text-foreground' : 'text-muted-foreground'}`}>
+                                  {t(meta.nameKey)}
+                                </p>
+                                <p className="text-[8px] text-muted-foreground font-bold leading-tight">{t(meta.descKey)}</p>
+                              </div>
+                              <div className={`h-4 w-7 rounded-full border transition-colors ${
+                                isOn ? 'bg-primary border-primary/50' : 'bg-muted border-border'
+                              }`}>
+                                <div className={`h-full w-1/2 rounded-full transition-all duration-200 ${
+                                  isOn ? 'bg-primary-foreground translate-x-full' : 'bg-muted-foreground/50 translate-x-0'
+                                }`} />
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[8px] text-muted-foreground/60 font-bold uppercase tracking-wider">{t('settings.modules_hint')}</p>
                    </div>
                 </div>
               )}
@@ -509,23 +543,18 @@ const Settings: React.FC = () => {
                         </div>
                       )}
                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                       <div className="p-8 rounded-2xl border bg-muted/20 hover:border-primary transition-all cursor-pointer group" onClick={() => setShowDataTransfer(true)}>
-                          <Upload size={24} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
-                          <p className="text-sm font-black uppercase tracking-widest">{t('settings.data_transfer') || 'Data Transfer'}</p>
-                          <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.data_transfer_desc') || 'Import/export your data'}</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="p-8 rounded-2xl border bg-muted/20 hover:border-primary transition-all cursor-pointer group" onClick={() => setShowDataTransfer(true)}>
+                           <Upload size={24} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                           <p className="text-sm font-black uppercase tracking-widest">{t('settings.data_transfer') || 'Data Transfer'}</p>
+                           <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.data_transfer_desc') || 'Import/export your data'}</p>
+                        </div>
+                       <div className="p-8 rounded-2xl border bg-muted/20 hover:border-destructive transition-all cursor-pointer group" onClick={() => setShowResetConfirm(true)}>
+                          <Trash2 size={24} className="mb-4 text-muted-foreground group-hover:text-destructive transition-colors" />
+                          <p className="text-sm font-black uppercase tracking-widest">{t('settings.purge_system')}</p>
+                          <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.purge_desc')}</p>
                        </div>
-                       <div className="p-8 rounded-2xl border bg-muted/20 hover:border-primary transition-all cursor-pointer group" onClick={handleExport}>
-                         <Download size={24} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
-                         <p className="text-sm font-black uppercase tracking-widest">{t('settings.export_archive')}</p>
-                         <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.export_desc')}</p>
-                      </div>
-                      <div className="p-8 rounded-2xl border bg-muted/20 hover:border-destructive transition-all cursor-pointer group" onClick={() => setShowResetConfirm(true)}>
-                         <Trash2 size={24} className="mb-4 text-muted-foreground group-hover:text-destructive transition-colors" />
-                         <p className="text-sm font-black uppercase tracking-widest">{t('settings.purge_system')}</p>
-                         <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.purge_desc')}</p>
-                      </div>
-                   </div>
+                    </div>
                 </div>
               )}
 

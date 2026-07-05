@@ -1,4 +1,3 @@
-import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { 
   LayoutDashboard, Package, ShoppingCart, 
@@ -12,7 +11,7 @@ import { cn } from '@renderer/utils/shadcn';
 import logo from '../assets/logo.svg';
 
 const Sidebar = () => {
-  const { t, theme } = useSettings();
+  const { t } = useSettings();
   
   const navItems = [
     { id: 'dashboard', path: '/', icon: LayoutDashboard },

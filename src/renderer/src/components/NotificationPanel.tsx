@@ -16,7 +16,7 @@ interface NotificationPanelProps {
 }
 
 const NotificationPanel: React.FC<NotificationPanelProps> = ({ onClose }) => {
-  const { formatDate, formatTime, formatDateTime } = useSettings();
+  const { formatDateTime } = useSettings();
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
   useEffect(() => {

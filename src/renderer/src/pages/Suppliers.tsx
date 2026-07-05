@@ -2,11 +2,10 @@ import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import {
   Truck, Plus, Search, Phone, Mail, MapPin, Edit, Archive, RotateCcw,
   Trash2, Eye, Download, Printer, CreditCard,
-  Building2, Package, X, ChevronRight, Sparkles,
-  ChevronLeft, RefreshCw, Star, Filter, Upload, DollarSign,
-  Calendar, TrendingUp, Users, AlertTriangle, CheckCircle,
-  MoreHorizontal, Copy, Receipt, Clock, Heart, ShieldAlert,
-  ChevronDown, ChevronUp, SlidersHorizontal, ListFilter, Bell, Ban
+  Building2, ChevronRight,
+  ChevronLeft, RefreshCw, DollarSign,
+  Calendar, TrendingUp, Users, CheckCircle,
+  Clock, Heart, Bell, Ban
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -24,13 +23,19 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
 import { DatePicker } from '../components/DatePicker';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
-import { DataTable } from '../components/data-table';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import Modal from '../components/Modal';
 import { addPdfHeader } from '../lib/export-utils';
 import { toast } from 'sonner';
 
 const PAYMENT_METHODS = ['cash', 'bank_transfer', 'mobile_money', 'check', 'other'];
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  cash: 'payment_cash',
+  bank_transfer: 'payment_bank',
+  mobile_money: 'payment_mobile',
+  check: 'payment_check',
+  other: 'payment_other',
+};
 const ROWS_PER_PAGE = 50;
 
 interface Supplier {
@@ -85,7 +90,7 @@ const DEFAULT_FORM = {
 };
 
 const Suppliers: React.FC = () => {
-  const { t, formatDate, formatTime, formatDateTime, currency, currentBusiness } = useSettings();
+  const { t, formatDate, currency, currentBusiness } = useSettings();
   const { hasPermission } = useAuth();
   const [view, setView] = useState<ViewMode>('list');
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -99,7 +104,7 @@ const Suppliers: React.FC = () => {
   const [selectedProducts, setSelectedProducts] = useState<any[]>([]);
   const [form, setForm] = useState<any>(DEFAULT_FORM);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [toastState, setToastState] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [editingPayment, setEditingPayment] = useState<Payment | null>(null);
   const [paymentForm, setPaymentForm] = useState({
@@ -109,11 +114,8 @@ const Suppliers: React.FC = () => {
   const [selectedSupplierPayments, setSelectedSupplierPayments] = useState<Payment[]>([]);
   const [selectedSupplierPurchases, setSelectedSupplierPurchases] = useState<Purchase[]>([]);
   const [dashboardStats, setDashboardStats] = useState<any>(null);
-  const [showTestMenu, setShowTestMenu] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const [supplierActivity, setSupplierActivity] = useState<SupplierActivity[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [showFilters, setShowFilters] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [priceChecks, setPriceChecks] = useState<PriceCheck[]>([]);
   const [showPriceCheckModal, setShowPriceCheckModal] = useState(false);
@@ -126,8 +128,8 @@ const Suppliers: React.FC = () => {
   const [reversePaymentReason, setReversePaymentReason] = useState('');
 
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3500);
+    setToastState({ message, type });
+    setTimeout(() => setToastState(null), 3500);
   }, []);
 
   const loadSuppliers = useCallback(async () => {
@@ -147,7 +149,7 @@ const Suppliers: React.FC = () => {
       if (sortBy === 'recent') rows.sort((a, b) => (b.lastPurchaseDate || '').localeCompare(a.lastPurchaseDate || ''));
       setSuppliers(rows);
     } catch (e: any) {
-      showToast(e.message || 'Failed to load suppliers', 'error');
+      showToast(e.message || t('suppliers.toast_load_failed', 'Failed to load suppliers'), 'error');
     } finally {
       setLoading(false);
     }
@@ -191,7 +193,7 @@ const Suppliers: React.FC = () => {
   const paged = useMemo(() => suppliers.slice(page * ROWS_PER_PAGE, (page + 1) * ROWS_PER_PAGE), [suppliers, page]);
 
   const handleSave = async () => {
-    if (!form.supplierName.trim()) { showToast(t('suppliers.field_name') + ' is required', 'error'); return; }
+    if (!form.supplierName.trim()) { showToast(t('suppliers.name_required', 'Supplier name is required'), 'error'); return; }
     try {
       if (editingId) {
         await window.api.updateSupplier(editingId, form);
@@ -203,7 +205,7 @@ const Suppliers: React.FC = () => {
       setView('list'); setForm(DEFAULT_FORM); setEditingId(null);
       loadSuppliers(); loadDashboardStats();
     } catch (e: any) {
-      showToast(e.message || 'Save failed', 'error');
+      showToast(e.message || t('suppliers.toast_save_failed', 'Save failed'), 'error');
     }
   };
 
@@ -243,7 +245,7 @@ const Suppliers: React.FC = () => {
   const openDetail = async (s: Supplier) => {
     try {
       const fresh = await window.api.getSupplier(s.id);
-      if (!fresh) { showToast('Supplier not found', 'error'); return; }
+      if (!fresh) { showToast(t('suppliers.toast_not_found', 'Supplier not found'), 'error'); return; }
       setSelected(fresh);
       const [purchases, payments, products, activity] = await Promise.all([
         window.api.getSupplierPurchases({ supplierId: s.id, limit: 1000, offset: 0 }),
@@ -281,7 +283,7 @@ const Suppliers: React.FC = () => {
   const handleSavePayment = async () => {
     if (!selected) return;
     if (!paymentForm.amount || Number(paymentForm.amount) <= 0) { showToast(t('common.amount') + ' is required', 'error'); return; }
-    if (!paymentForm.paymentMethod) { showToast('Payment method is required', 'error'); return; }
+    if (!paymentForm.paymentMethod) { showToast(t('suppliers.payment_method_required', 'Payment method is required'), 'error'); return; }
     try {
       const payload = {
         supplierId: selected.id, purchaseId: paymentForm.purchaseId ? Number(paymentForm.purchaseId) : null,
@@ -328,7 +330,7 @@ const Suppliers: React.FC = () => {
     if (!reversePaymentTarget) return;
     try {
       await window.api.reverseSupplierPayment({ paymentId: reversePaymentTarget.id, reason: reversePaymentReason });
-      showToast('Payment reversed successfully');
+      showToast(t('suppliers.toast_payment_reversed', 'Payment reversed successfully'));
       setReversePaymentTarget(null);
       setReversePaymentReason('');
       if (selected) {
@@ -352,7 +354,7 @@ const Suppliers: React.FC = () => {
       if (priceCheckForm.itemId) payload.itemId = Number(priceCheckForm.itemId);
       const result = await window.api.saveSupplierPriceCheck(payload);
       if (result.success) {
-        showToast('Price check scheduled');
+        showToast(t('suppliers.toast_price_check_scheduled', 'Price check scheduled'));
         setShowPriceCheckModal(false);
         setPriceCheckForm({ supplierId: 0, itemId: '', frequency: 'weekly', notes: '', active: true });
         if (selected) loadPriceChecks(selected.id);
@@ -362,10 +364,10 @@ const Suppliers: React.FC = () => {
   };
 
   const handleDeletePriceCheck = async (id: number) => {
-    if (!window.confirm('Delete this price check reminder?')) return;
+    if (!window.confirm(t('suppliers.confirm_delete_price_check', 'Delete this price check reminder?'))) return;
     try {
       await window.api.deleteSupplierPriceCheck(id);
-      showToast('Price check deleted');
+      showToast(t('suppliers.toast_price_check_deleted', 'Price check deleted'));
       if (selected) loadPriceChecks(selected.id);
       else loadPriceChecks();
     } catch (e: any) { showToast(e.message, 'error'); }
@@ -383,33 +385,43 @@ const Suppliers: React.FC = () => {
     const doc = new jsPDF();
     const y0 = addPdfHeader(doc, currentBusiness, 8);
     let y = y0 + 4;
-    doc.setFontSize(14); doc.setFont('helvetica', 'bold'); doc.text('Suppliers Report', 14, y); y += 8;
-    doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.text(`Generated: ${formatDate(new Date())}`, 14, y);
-    const headers = [['Name', 'Company', 'Phone', 'Total Purchases', 'Outstanding', 'Status']];
+    doc.setFontSize(14); doc.setFont('helvetica', 'bold'); doc.text(t('suppliers.pdf_title', 'Suppliers Report'), 14, y); y += 8;
+    doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.text(t('suppliers.pdf_generated', 'Generated') + ': ' + formatDate(new Date()), 14, y);
+    const headers = [[
+      t('suppliers.col_name', 'Name'), t('suppliers.col_company', 'Company'),
+      t('suppliers.col_phone', 'Phone'), t('suppliers.col_total', 'Total Purchases'),
+      t('suppliers.col_outstanding', 'Outstanding'), t('suppliers.col_status', 'Status')
+    ]];
     const data = suppliers.map(s => [
       s.supplierName, s.companyName || '-', s.phone || '-',
       `${cur} ${(s.totalPurchases || 0).toLocaleString()}`,
       `${cur} ${(s.outstandingBalance || 0).toLocaleString()}`,
-      s.isActive ? 'Active' : 'Inactive'
+      s.isActive ? t('suppliers.status_active', 'Active') : t('suppliers.status_inactive', 'Inactive')
     ]);
     autoTable(doc, { head: headers, body: data, startY: y + 4, styles: { fontSize: 8 } });
     doc.save('suppliers-report.pdf');
-    showToast('PDF exported');
-    toast.success('Report exported successfully');
+    showToast(t('suppliers.toast_pdf_exported', 'PDF exported'));
+    toast.success(t('suppliers.toast_report_exported', 'Report exported successfully'));
   };
 
   const exportCSV = () => {
-    const headers = ['Name', 'Company', 'Phone', 'Email', 'Total Purchases', 'Outstanding', 'Status'];
+    const headers = [
+      t('suppliers.col_name', 'Name'), t('suppliers.col_company', 'Company'),
+      t('suppliers.col_phone', 'Phone'), t('suppliers.col_email', 'Email'),
+      t('suppliers.col_total', 'Total Purchases'), t('suppliers.col_outstanding', 'Outstanding'),
+      t('suppliers.col_status', 'Status')
+    ];
     const rows = suppliers.map(s => [
       s.supplierName, s.companyName || '', s.phone || '', s.email || '',
-      s.totalPurchases || 0, s.outstandingBalance || 0, s.isActive ? 'Active' : 'Inactive'
+      s.totalPurchases || 0, s.outstandingBalance || 0,
+      s.isActive ? t('suppliers.status_active', 'Active') : t('suppliers.status_inactive', 'Inactive')
     ]);
     const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = 'suppliers.csv'; a.click();
     URL.revokeObjectURL(url);
-    showToast('CSV exported');
+    showToast(t('suppliers.toast_csv_exported', 'CSV exported'));
   };
 
   const toggleSelectAll = () => {
@@ -428,9 +440,9 @@ const Suppliers: React.FC = () => {
 
     return (
       <div className="space-y-4 p-2 fade-in">
-        {toast && (
-          <div className={`fixed bottom-4 right-4 z-50 px-4 py-2 rounded shadow ${toast.type === 'success' ? 'bg-green-600' : 'bg-red-600'} text-white text-sm`}>
-            {toast.message}
+        {toastState && (
+          <div className={`fixed bottom-4 right-4 z-50 px-4 py-2 rounded shadow ${toastState.type === 'success' ? 'bg-green-600' : 'bg-red-600'} text-white text-sm`}>
+            {toastState.message}
           </div>
         )}
 
@@ -444,13 +456,13 @@ const Suppliers: React.FC = () => {
           </div>
           <div className="flex gap-2 flex-wrap">
             <Button variant="outline" size="sm" onClick={exportPDF}>
-              <Download className="h-4 w-4 mr-1" />PDF
+              <Download className="h-4 w-4 mr-1" />{t('suppliers.export_pdf', 'PDF')}
             </Button>
             <Button variant="outline" size="sm" onClick={exportCSV}>
-              <Printer className="h-4 w-4 mr-1" />CSV
+              <Printer className="h-4 w-4 mr-1" />{t('suppliers.export_csv', 'CSV')}
             </Button>
             <Button variant="outline" size="sm" onClick={() => { loadItems(); setPriceCheckForm({ supplierId: 0, itemId: '', frequency: 'weekly', notes: '', active: true }); setShowPriceCheckModal(true); }}>
-              <Bell className="h-4 w-4 mr-1" />Price Checks
+              <Bell className="h-4 w-4 mr-1" />{t('suppliers.price_checks', 'Price Checks')}
             </Button>
             <Button size="sm" onClick={() => openForm()}>
               <Plus className="h-4 w-4 mr-1" />{t('suppliers.add_supplier')}
@@ -647,7 +659,7 @@ const Suppliers: React.FC = () => {
               </div>
               <div>
                 <label className="text-sm font-medium">{t('suppliers.field_phone')} *</label>
-                <Input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="+251..." />
+                <Input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder={t('suppliers.phone_placeholder', '+251...')} />
               </div>
               <div>
                 <label className="text-sm font-medium">{t('suppliers.field_alt_phone')}</label>
@@ -688,7 +700,7 @@ const Suppliers: React.FC = () => {
 
   // ── Detail View ──
   if (view === 'detail' && selected) {
-    const balance = (selected.outstanding || 0);
+    const balance = (selected.outstandingBalance || 0);
     const overduePurchases = selectedSupplierPurchases.filter(p => {
       if (!p.dueDate) return false;
       return new Date(p.dueDate) < new Date() && (p.totalAmount - (p.paidAmount || 0)) > 0 && p.status !== 'cancelled';
@@ -697,9 +709,9 @@ const Suppliers: React.FC = () => {
 
     return (
       <div className="space-y-4 p-2 fade-in">
-        {toast && (
-          <div className={`fixed bottom-4 right-4 z-50 px-4 py-2 rounded shadow ${toast.type === 'success' ? 'bg-green-600' : 'bg-red-600'} text-white text-sm`}>
-            {toast.message}
+        {toastState && (
+          <div className={`fixed bottom-4 right-4 z-50 px-4 py-2 rounded shadow ${toastState.type === 'success' ? 'bg-green-600' : 'bg-red-600'} text-white text-sm`}>
+            {toastState.message}
           </div>
         )}
 
@@ -711,7 +723,7 @@ const Suppliers: React.FC = () => {
               <Truck className="h-6 w-6" />{selected.supplierName}
             </h1>
             {selected.isFavorite ? <Heart className="h-5 w-5 text-red-500 fill-red-500" /> : null}
-            <Badge variant={selected.isActive ? 'default' : 'secondary'}>{selected.status || (selected.isActive ? 'Active' : 'Inactive')}</Badge>
+            <Badge variant={selected.isActive ? 'default' : 'secondary'}>{selected.status || (selected.isActive ? t('suppliers.status_active', 'Active') : t('suppliers.status_inactive', 'Inactive'))}</Badge>
           </div>
           <div className="flex gap-2 flex-wrap">
             <Button variant="outline" size="sm" onClick={() => openForm(selected)}><Edit className="h-4 w-4 mr-1" />{t('common.edit')}</Button>
@@ -816,13 +828,13 @@ const Suppliers: React.FC = () => {
                       unitPrice: p.lastPurchasePrice || 0,
                     }))
                   });
-                  showToast(t('suppliers.toast_created') || 'Purchase created', 'success');
+                  showToast(t('suppliers.toast_purchase_created', 'Purchase created'), 'success');
                   openDetail(selected);
                 } catch (err: any) {
-                  showToast(err.message || 'Purchase failed', 'error');
+                  showToast(err.message || t('suppliers.toast_purchase_failed', 'Purchase failed'), 'error');
                 }
               }}>
-                <Plus className="h-4 w-4 mr-1" />Purchase
+                <Plus className="h-4 w-4 mr-1" />{t('suppliers.add_purchase', 'Purchase')}
               </Button>
             </div>
           </CardHeader>
@@ -934,7 +946,7 @@ const Suppliers: React.FC = () => {
                     <thead className="bg-muted/30">
                       <tr>
                         <th className="text-left p-2">{t('suppliers.col_item')}</th>
-                        <th className="text-left p-2">SKU</th>
+                        <th className="text-left p-2">{t('common.sku', 'SKU')}</th>
                         <th className="text-right p-2">{t('suppliers.col_stock')}</th>
                         <th className="text-right p-2">{t('suppliers.col_last_price')}</th>
                         <th className="text-right p-2">{t('suppliers.col_avg_price')}</th>
@@ -965,21 +977,21 @@ const Suppliers: React.FC = () => {
         <Card>
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-sm flex items-center gap-2"><Bell className="h-4 w-4" />Price Checks ({priceChecks.length})</CardTitle>
+              <CardTitle className="text-sm flex items-center gap-2"><Bell className="h-4 w-4" />{t('suppliers.price_checks', 'Price Checks')} ({priceChecks.length})</CardTitle>
               <Button size="sm" onClick={() => { setPriceCheckForm({ supplierId: selected.id, itemId: '', frequency: 'weekly', notes: '', active: true }); setShowPriceCheckModal(true); }}>
-                <Plus className="h-4 w-4 mr-1" />Schedule
+                <Plus className="h-4 w-4 mr-1" />{t('suppliers.schedule', 'Schedule')}
               </Button>
             </div>
           </CardHeader>
           <CardContent>
             {priceChecks.length === 0 ? (
-              <div className="text-sm text-muted-foreground py-4 text-center">No price check reminders scheduled</div>
+              <div className="text-sm text-muted-foreground py-4 text-center">{t('suppliers.no_price_checks', 'No price check reminders scheduled')}</div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {priceChecks.map(pc => (
                   <div key={pc.id} className="rounded-3xl border border-border bg-card p-4 space-y-2">
                     <div className="flex items-center justify-between">
-                      <h4 className="font-semibold text-sm">{pc.itemName || 'All Items'}</h4>
+                      <h4 className="font-semibold text-sm">{pc.itemName || t('suppliers.label_all_items', 'All Items')}</h4>
                       <button onClick={() => handleTogglePriceCheckActive(pc)} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${pc.active ? 'bg-green-600' : 'bg-muted'}`}>
                         <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${pc.active ? 'translate-x-[18px]' : 'translate-x-[3px]'}`} />
                       </button>
@@ -989,12 +1001,12 @@ const Suppliers: React.FC = () => {
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <div>
-                        <span className="text-muted-foreground uppercase tracking-widest">Last</span>
-                        <p>{pc.lastCheckedDate ? formatDate(pc.lastCheckedDate) : 'Never'}</p>
+                        <span className="text-muted-foreground uppercase tracking-widest">{t('suppliers.label_last', 'Last')}</span>
+                        <p>{pc.lastCheckedDate ? formatDate(pc.lastCheckedDate) : t('suppliers.label_never', 'Never')}</p>
                       </div>
                       <div>
-                        <span className="text-muted-foreground uppercase tracking-widest">Next</span>
-                        <p>{pc.nextCheckDate ? formatDate(pc.nextCheckDate) : 'N/A'}</p>
+                        <span className="text-muted-foreground uppercase tracking-widest">{t('suppliers.label_next', 'Next')}</span>
+                        <p>{pc.nextCheckDate ? formatDate(pc.nextCheckDate) : t('suppliers.label_na', 'N/A')}</p>
                       </div>
                     </div>
                     <div className="flex items-center justify-between pt-1">
@@ -1018,7 +1030,7 @@ const Suppliers: React.FC = () => {
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
-                {supplierActivity.map((a, i) => (
+                {supplierActivity.map((a, _i) => (
                   <div key={a.id} className="flex items-start gap-3 text-sm">
                     <div className="mt-1">
                       {a.action === 'created' ? <Plus className="h-3 w-3 text-green-500" /> :
@@ -1068,7 +1080,7 @@ const Suppliers: React.FC = () => {
               <div>
                 <label className="text-sm font-medium">{t('suppliers.col_method')} *</label>
                 <select className="w-full border rounded px-2 py-1.5 bg-background text-sm" value={paymentForm.paymentMethod} onChange={e => setPaymentForm({ ...paymentForm, paymentMethod: e.target.value })}>
-                  {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m.replace('_', ' ')}</option>)}
+                  {PAYMENT_METHODS.map(m => <option key={m} value={m}>{t('suppliers.' + PAYMENT_METHOD_LABELS[m], m.replace('_', ' '))}</option>)}
                 </select>
               </div>
               <div>
@@ -1089,17 +1101,17 @@ const Suppliers: React.FC = () => {
 
         {/* Price Check Schedule Modal */}
         {showPriceCheckModal && (
-          <Modal isOpen={showPriceCheckModal} title="Schedule Price Check" onClose={() => setShowPriceCheckModal(false)}>
+          <Modal isOpen={showPriceCheckModal} title={t('suppliers.price_check_title', 'Schedule Price Check')} onClose={() => setShowPriceCheckModal(false)}>
             <div className="space-y-4 min-w-[420px]">
               <div>
-                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">Supplier</label>
+                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">{t('suppliers.select_supplier', 'Supplier')}</label>
                 {selected ? (
                   <div className="border rounded px-3 py-2 bg-background text-sm mt-1">{selected.supplierName}</div>
                 ) : (
                   <select className="w-full border rounded px-2 py-1.5 bg-background text-sm mt-1"
                     value={priceCheckForm.supplierId}
                     onChange={e => setPriceCheckForm({ ...priceCheckForm, supplierId: Number(e.target.value) })}>
-                    <option value={0}>Select supplier</option>
+                    <option value={0}>{t('suppliers.select_supplier', 'Select supplier')}</option>
                     {suppliers.map(s => (
                       <option key={s.id} value={s.id}>{s.supplierName}</option>
                     ))}
@@ -1107,28 +1119,28 @@ const Suppliers: React.FC = () => {
                 )}
               </div>
               <div>
-                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">Item (optional)</label>
+                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">{t('suppliers.item_optional', 'Item (optional)')}</label>
                 <select className="w-full border rounded px-2 py-1.5 bg-background text-sm mt-1"
                   value={priceCheckForm.itemId}
                   onChange={e => setPriceCheckForm({ ...priceCheckForm, itemId: e.target.value })}>
-                  <option value="">All items</option>
+                  <option value="">{t('suppliers.label_all_items', 'All items')}</option>
                   {items.map((item: any) => (
                     <option key={item.id} value={item.id}>{item.name}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">Frequency</label>
+                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">{t('suppliers.frequency', 'Frequency')}</label>
                 <select className="w-full border rounded px-2 py-1.5 bg-background text-sm mt-1"
                   value={priceCheckForm.frequency}
                   onChange={e => setPriceCheckForm({ ...priceCheckForm, frequency: e.target.value })}>
-                  <option value="weekly">Weekly</option>
-                  <option value="biweekly">Bi-weekly</option>
-                  <option value="monthly">Monthly</option>
+                  <option value="weekly">{t('suppliers.weekly', 'Weekly')}</option>
+                  <option value="biweekly">{t('suppliers.biweekly', 'Bi-weekly')}</option>
+                  <option value="monthly">{t('suppliers.monthly', 'Monthly')}</option>
                 </select>
               </div>
               <div>
-                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">Notes</label>
+                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">{t('suppliers.field_notes', 'Notes')}</label>
                 <textarea className="w-full border rounded px-2 py-1.5 bg-background min-h-[60px] text-sm mt-1"
                   value={priceCheckForm.notes}
                   onChange={e => setPriceCheckForm({ ...priceCheckForm, notes: e.target.value })} />
@@ -1136,11 +1148,11 @@ const Suppliers: React.FC = () => {
               <div className="flex items-center gap-2">
                 <input type="checkbox" id="pc-active" checked={priceCheckForm.active}
                   onChange={e => setPriceCheckForm({ ...priceCheckForm, active: e.target.checked })} />
-                <label htmlFor="pc-active" className="text-sm">Active</label>
+                <label htmlFor="pc-active" className="text-sm">{t('common.active', 'Active')}</label>
               </div>
               <div className="flex gap-2 justify-end">
-                <Button variant="outline" onClick={() => setShowPriceCheckModal(false)}>Cancel</Button>
-                <Button onClick={handleSavePriceCheck}>Save</Button>
+                <Button variant="outline" onClick={() => setShowPriceCheckModal(false)}>{t('common.cancel', 'Cancel')}</Button>
+                <Button onClick={handleSavePriceCheck}>{t('common.save', 'Save')}</Button>
               </div>
             </div>
           </Modal>
@@ -1149,20 +1161,20 @@ const Suppliers: React.FC = () => {
         <AlertDialog open={reversePaymentTarget !== null} onOpenChange={(open) => { if (!open) { setReversePaymentTarget(null); setReversePaymentReason(''); } }}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Reverse Payment</AlertDialogTitle>
+              <AlertDialogTitle>{t('suppliers.reverse_payment_title', 'Reverse Payment')}</AlertDialogTitle>
               <AlertDialogDescription>
-                Are you sure you want to reverse this payment of {cur} {reversePaymentTarget?.amount.toLocaleString()}?
+                {t('suppliers.reverse_payment_confirm', 'Are you sure you want to reverse this payment of')} {cur} {reversePaymentTarget?.amount.toLocaleString()}?
               </AlertDialogDescription>
             </AlertDialogHeader>
             <div className="space-y-4">
               <div className="space-y-2">
-                <Label className="text-sm font-medium">Reason for reversal *</Label>
+                <Label className="text-sm font-medium">{t('suppliers.reason_for_reversal', 'Reason for reversal *')}</Label>
                 <Textarea
                   required
                   value={reversePaymentReason}
                   onChange={(e) => setReversePaymentReason(e.target.value)}
                   className="bg-background resize-none"
-                  placeholder="Reason for reversal..."
+                  placeholder={t('suppliers.reason_for_reversal_placeholder', 'Reason for reversal...')}
                 />
               </div>
             </div>
@@ -1173,7 +1185,7 @@ const Suppliers: React.FC = () => {
                 disabled={!reversePaymentReason}
                 onClick={handleReverseSupplierPayment}
               >
-                <Ban size={14} className="mr-1" /> Reverse
+                <Ban size={14} className="mr-1" /> {t('suppliers.action_reverse', 'Reverse')}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

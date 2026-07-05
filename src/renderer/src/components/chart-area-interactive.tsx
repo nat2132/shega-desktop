@@ -5,7 +5,7 @@ import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
 
 import { useIsMobile } from "@renderer/hooks/use-mobile"
 import { useSettings } from "../context/SettingsContext"
-import { toEthiopianDate, getEthiopianDayName, getEthiopianMonthName } from "../utils/ethiopian-calendar"
+import { toEthiopianDate, getEthiopianMonthName } from "../utils/ethiopian-calendar"
 import {
   Card,
   CardAction,
@@ -137,7 +137,6 @@ export function ChartAreaInteractive({
         const wn = Math.min(Math.ceil(day / 7), 5)
         groups[wn] = (groups[wn] || 0) + (item[dataKey] || 0)
       })
-      const langMap: Record<string, string> = { en: 'en', am: 'am', om: 'om', ti: 'ti' }
       const wkLabel = language === 'am' ? 'ሳም' : language === 'om' ? 'Tor' : language === 'ti' ? 'ሳም' : 'Wk'
       return [1, 2, 3, 4, 5].map(wn => ({
         label: `${wkLabel} ${wn}`,
@@ -188,7 +187,7 @@ export function ChartAreaInteractive({
       return result
     }
 
-    return raw.map((item, i) => {
+    return raw.map((item, _i) => {
       const d = new Date(item[xAxisKey])
       const now = new Date()
       const isToday = !isNaN(d.getTime()) && 

@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Warehouse, Building2, MapPin, Phone, User, Plus, Edit2, Trash2,
-  Package, ArrowRightLeft, History, BarChart3, Search, RefreshCw,
-  CheckCircle, XCircle, AlertTriangle, X
+  Warehouse, Building2, Phone, User, Plus, Edit2, Trash2,
+  Package, ArrowRightLeft, History, Search, RefreshCw
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { Button } from '../components/ui/button';
@@ -16,7 +15,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 type Tab = 'warehouses' | 'inventory' | 'transfers' | 'movements';
 
 const Warehouses: React.FC = () => {
-  const { t, formatDate, formatTime, formatDateTime } = useSettings();
+  const { t, formatDate, formatDateTime } = useSettings();
   const [activeTab, setActiveTab] = useState<Tab>('warehouses');
 
   const [warehouses, setWarehouses] = useState<any[]>([]);

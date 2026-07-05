@@ -1,8 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
-  Plus, Package, AlertTriangle, 
-  Boxes, DollarSign, 
-  ShieldAlert, TrendingUp, Search, Trash2, Eye,
+  Plus, Package, 
+  ShieldAlert, TrendingUp, Trash2, Eye,
   FileText, Download, ShoppingCart, Filter, X, RotateCcw
 } from 'lucide-react';
 import jsPDF from 'jspdf';
@@ -64,6 +63,9 @@ interface Item {
   supplierName: string;
   lastPurchaseDate: string;
   lastPurchasePrice: number;
+  totalPurchasedQuantity?: number;
+  lastPurchaseOrderRef?: string;
+  lastPurchaseOrderDate?: string;
 }
 
 const Inventory: React.FC = () => {
@@ -75,7 +77,7 @@ const Inventory: React.FC = () => {
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [editingItem, setEditingItem] = useState<Item | null>(null);
   const [viewingItem, setViewingItem] = useState<Item | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
   const [showPOModal, setShowPOModal] = useState(false);
   const [poItems, setPOItems] = useState<(Item & { orderQty: number })[]>([]);
@@ -83,10 +85,6 @@ const Inventory: React.FC = () => {
   const [customItemName, setCustomItemName] = useState('');
   const [customItemQty, setCustomItemQty] = useState('1');
   const [customItemPrice, setCustomItemPrice] = useState('0');
-  const [showPurchaseModal, setShowPurchaseModal] = useState(false);
-  const [purchaseForm, setPurchaseForm] = useState({ supplierId: '', purchaseDate: new Date().toISOString().split('T')[0], notes: '' });
-  const [purchaseItems, setPurchaseItems] = useState<{ itemId: number; itemName: string; unit: string; quantity: string; unitPrice: string }[]>([]);
-
   const [filterStartDate, setFilterStartDate] = useState('');
   const [filterEndDate, setFilterEndDate] = useState('');
   const [filterCategory, setFilterCategory] = useState('All');
@@ -104,8 +102,8 @@ const Inventory: React.FC = () => {
     packPurchasePrice: '0', basePurchasePrice: '0', baseSellingPrice: '', packSellingPrice: '0',
     allowSellByBaseUnit: true, allowSellByPackUnit: false,
     expiryDate: '', qualityGrade: '', notes: '', isCredit: false,
-    supplierPhone: ''
-  });
+      supplierPhone: '', supplierId: ''
+    });
 
   useEffect(() => {
     loadData();
@@ -314,9 +312,9 @@ const Inventory: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name.trim()) { toast.error('Product name is required'); return; }
+    if (!formData.name.trim()) { toast.error(t('inventory.product_name_required', 'Product name is required')); return; }
     const basePrice = parseFloat(formData.baseSellingPrice) || 0;
-    if (basePrice <= 0 && parseFloat(formData.packSellingPrice) <= 0) { toast.error('At least one selling price is required'); return; }
+    if (basePrice <= 0 && parseFloat(formData.packSellingPrice) <= 0) { toast.error(t('inventory.selling_price_required', 'At least one selling price is required')); return; }
     const baseCost = parseFloat(formData.basePurchasePrice) || 0;
     const packPrice = parseFloat(formData.packSellingPrice) || 0;
     const packCost = parseFloat(formData.packPurchasePrice) || 0;
@@ -368,12 +366,11 @@ const Inventory: React.FC = () => {
   };
 
   const handleRestock = async () => {
-    if (restockItem && restockQty) {
-      await window.api?.restockItem(restockItem.id, parseInt(restockQty));
-      setRestockItem(null);
-      setRestockQty('');
-      loadData();
-    }
+    if (!restockItem || !restockQty || parseInt(restockQty) <= 0) return;
+    await window.api?.restockItem(restockItem.id, parseInt(restockQty));
+    setRestockItem(null);
+    setRestockQty('');
+    loadData();
   };
 
   const baseProfit = (parseFloat(formData.baseSellingPrice) || 0) - (parseFloat(formData.basePurchasePrice) || 0);
@@ -457,17 +454,17 @@ const Inventory: React.FC = () => {
     
     doc.setFontSize(14);
     doc.setFont('helvetica', 'bold');
-    doc.text("PURCHASE ORDER", 105, y, { align: 'center' });
+    doc.text(t('inventory.po_title', 'PURCHASE ORDER'), 105, y, { align: 'center' });
     y += 8;
     doc.setFontSize(9);
     doc.setFont('helvetica', 'normal');
-    doc.text(`Date: ${date}`, 190, y, { align: 'right' });
+    doc.text(`${t('inventory.po_date_label', 'Date')}: ${date}`, 190, y, { align: 'right' });
     y += 4;
 
     const tableData = poItems.map((item, index) => [
       index + 1,
       item.name,
-      item.companyName || 'N/A',
+      item.companyName || t('common.not_available'),
       `${item.orderQty} ${item.baseUnit}`,
       `${t('common.etb')} ${item.basePurchasePrice.toLocaleString()}`,
       `${t('common.etb')} ${(item.orderQty * item.basePurchasePrice).toLocaleString()}`
@@ -477,32 +474,31 @@ const Inventory: React.FC = () => {
 
     autoTable(doc, {
       startY: y,
-      head: [['#', 'Product', 'Brand', 'Quantity', 'Unit Cost', 'Subtotal']],
+      head: [[t('inventory.po_col_hash', '#'), t('inventory.po_col_product', 'Product'), t('inventory.po_col_brand', 'Brand'), t('inventory.po_col_quantity', 'Quantity'), t('inventory.po_col_unit_cost', 'Unit Cost'), t('inventory.po_col_subtotal', 'Subtotal')]],
       body: tableData,
       theme: 'striped',
-      headStyles: { fillStyle: 'dark', fillColor: [0, 0, 0] },
-      foot: [['', '', '', '', 'TOTAL COST', `${t('common.etb')} ${totalCost.toLocaleString()}`]],
+      headStyles: { fillColor: [0, 0, 0] },
+      foot: [['', '', '', '', t('inventory.po_total_cost', 'TOTAL COST'), `${t('common.etb')} ${totalCost.toLocaleString()}`]],
       footStyles: { fillColor: [245, 245, 245], textColor: [0, 0, 0], fontStyle: 'bold' }
     });
 
     doc.setFontSize(8);
     doc.setTextColor(150);
-    doc.text("This is an automatically generated purchase order by Shega Retail POS.", 105, 280, { align: 'center' });
+    doc.text(t('inventory.po_auto_generated', 'This is an automatically generated purchase order by Shega Retail POS.'), 105, 280, { align: 'center' });
 
-    doc.save(`Purchase_Order_${date.replace(/\//g, '-')}.pdf`);
+    doc.save(`${t('inventory.po_filename', 'Purchase_Order')}_${date.replace(/\//g, '-')}.pdf`);
   };
 
   const exportInventoryCSV = () => {
-    const h = ['Name', 'Category', 'Base Qty', 'Base Unit', 'Selling Price', 'Purchase Price'];
+    const h = [t('common.name', 'Name'), t('common.category'), t('inventory.base_qty', 'Base Qty'), t('inventory.base_unit'), t('inventory.selling_price', 'Selling Price'), t('inventory.purchase_price', 'Purchase Price')];
     const r = items.map(i => [i.name, i.categoryName || '', i.totalBaseQuantity, i.baseUnit, i.baseSellingPrice, i.basePurchasePrice]);
     exportCSV(h, r, 'inventory');
   };
 
   const exportInventoryPDF = () => {
-    const h = ['Name', 'Category', 'Base Qty', 'Base Unit', 'Selling Price', 'Purchase Price'];
+    const h = [t('common.name', 'Name'), t('common.category'), t('inventory.base_qty', 'Base Qty'), t('inventory.base_unit'), t('inventory.selling_price', 'Selling Price'), t('inventory.purchase_price', 'Purchase Price')];
     const r = items.map(i => [i.name, i.categoryName || '', String(i.totalBaseQuantity), i.baseUnit, String(i.baseSellingPrice), String(i.basePurchasePrice)]);
-    exportPDF('Inventory Report', h, r, 'inventory', undefined, undefined, currentBusiness);
-    toast.success('Report exported successfully');
+    exportPDF(t('data_transfer.inventory_report'), h, r, 'inventory', undefined, undefined, currentBusiness);
   };
 
   return (
@@ -581,7 +577,6 @@ const Inventory: React.FC = () => {
                         setFilterCategory('All');
                         setFilterStartDate('');
                         setFilterEndDate('');
-                        setFilterCalendar('gregorian');
                       }}
                     >
                       {t('inventory.reset_all')}
@@ -611,8 +606,8 @@ const Inventory: React.FC = () => {
           title={t('inventory.header')}
         />
         <div className="flex gap-2 justify-end mt-2">
-          <Button variant="outline" size="sm" onClick={exportInventoryCSV} className="h-7 text-[10px] font-bold uppercase tracking-widest px-2.5"><FileText size={11} className="mr-1" /> CSV</Button>
-          <Button variant="outline" size="sm" onClick={exportInventoryPDF} className="h-7 text-[10px] font-bold uppercase tracking-widest px-2.5"><FileText size={11} className="mr-1" /> PDF</Button>
+          <Button variant="outline" size="sm" onClick={exportInventoryCSV} className="h-7 text-[10px] font-bold uppercase tracking-widest px-2.5"><FileText size={11} className="mr-1" /> {t('common.csv')}</Button>
+          <Button variant="outline" size="sm" onClick={exportInventoryPDF} className="h-7 text-[10px] font-bold uppercase tracking-widest px-2.5"><FileText size={11} className="mr-1" /> {t('common.pdf')}</Button>
         </div>
       </div>
 
@@ -670,11 +665,11 @@ const Inventory: React.FC = () => {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.purchase_unit')}</label>
-                <Input value={formData.purchaseUnit} onChange={e => setFormData({...formData, purchaseUnit: e.target.value})} placeholder="Box/Crate" />
+                <Input value={formData.purchaseUnit} onChange={e => setFormData({...formData, purchaseUnit: e.target.value})} placeholder={t('inventory.placeholder_purchase_unit', 'Box/Crate')} />
               </div>
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.base_unit')}</label>
-                <Input value={formData.baseUnit} onChange={e => setFormData({...formData, baseUnit: e.target.value})} placeholder="Piece/Kg" />
+                <Input value={formData.baseUnit} onChange={e => setFormData({...formData, baseUnit: e.target.value})} placeholder={t('inventory.placeholder_base_unit', 'Piece/Kg')} />
               </div>
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.qty_per_pack')}</label>
@@ -814,7 +809,7 @@ const Inventory: React.FC = () => {
               </div>
               <div className="p-3.5 rounded-xl border border-border/40 bg-card/50">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">{t('inventory.expiry_date')}</p>
-                <p className="text-sm font-bold">{viewingItem.expiryDate || 'N/A'}</p>
+                <p className="text-sm font-bold">{viewingItem.expiryDate || t('common.not_available')}</p>
               </div>
             </div>
 
@@ -851,11 +846,11 @@ const Inventory: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <div className="p-3.5 rounded-xl border border-border/40 bg-card/50">
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">{t('suppliers.col_supplier')}</p>
-                  <p className="text-sm font-bold">{viewingItem.supplierName || 'N/A'}</p>
+                  <p className="text-sm font-bold">{viewingItem.supplierName || t('common.not_available')}</p>
                 </div>
                 <div className="p-3.5 rounded-xl border border-border/40 bg-card/50">
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">{t('inventory.last_purchase_date')}</p>
-                  <p className="text-sm font-bold">{viewingItem.lastPurchaseDate || 'N/A'}</p>
+                  <p className="text-sm font-bold">{viewingItem.lastPurchaseDate || t('common.not_available')}</p>
                 </div>
                 <div className="p-3.5 rounded-xl border border-border/40 bg-card/50">
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">{t('inventory.last_cost_price')}</p>
@@ -1017,9 +1012,9 @@ const Inventory: React.FC = () => {
             )}
             {/* Custom item */}
             <div className="flex items-center gap-2 p-3 rounded-xl border bg-muted/20">
-              <Input placeholder={t('inventory.custom_item_name') || 'Custom item name...'} value={customItemName} onChange={e => setCustomItemName(e.target.value)} className="flex-1 h-9 text-xs" />
-              <Input type="number" placeholder="Qty" value={customItemQty} onChange={e => setCustomItemQty(e.target.value)} className="w-20 h-9 text-xs" />
-              <Input type="number" placeholder="Price" value={customItemPrice} onChange={e => setCustomItemPrice(e.target.value)} className="w-24 h-9 text-xs" />
+              <Input placeholder={t('inventory.custom_item_name', 'Custom item name...')} value={customItemName} onChange={e => setCustomItemName(e.target.value)} className="flex-1 h-9 text-xs" />
+              <Input type="number" placeholder={t('inventory.placeholder_qty', 'Qty')} value={customItemQty} onChange={e => setCustomItemQty(e.target.value)} className="w-20 h-9 text-xs" />
+              <Input type="number" placeholder={t('inventory.placeholder_price', 'Price')} value={customItemPrice} onChange={e => setCustomItemPrice(e.target.value)} className="w-24 h-9 text-xs" />
               <Button variant="outline" size="sm" onClick={addCustomItemToPO} disabled={!customItemName.trim()} className="text-[10px] font-bold uppercase shrink-0">
                 + {t('inventory.add') || 'Add'}
               </Button>
@@ -1118,7 +1113,6 @@ const Inventory: React.FC = () => {
             <AlertDialogCancel className="rounded-xl border-none bg-muted/50 hover:bg-muted font-bold py-2.5">{t('common.cancel') || 'Cancel'}</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleRestock}
-              disabled={!restockQty || parseInt(restockQty) <= 0}
               className="rounded-xl bg-primary hover:bg-primary/90 text-white font-bold py-2.5"
             >
               <RotateCcw className="mr-2 h-4 w-4" /> {t('inventory.restock_confirm') || 'Restock'}

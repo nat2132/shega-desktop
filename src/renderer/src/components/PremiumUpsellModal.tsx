@@ -1,5 +1,5 @@
 import React from 'react';
-import { Sparkles, X, Check, ArrowRight, BarChart3, Building2, Cloud, Headphones, Palette } from 'lucide-react';
+import { Sparkles, Check, ArrowRight, BarChart3, Building2, Cloud, Headphones, Palette } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import {
   Dialog,

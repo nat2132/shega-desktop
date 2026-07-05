@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
-  Plus, CreditCard, User, Phone,
-  Search, TrendingUp, DollarSign, 
+  Plus, User, Phone,
+  Search, 
   ShoppingBag, CheckCircle, FileText, Trash2, Edit, Eye, Printer, ShoppingCart, X, Filter, Undo2
 } from 'lucide-react';
 import { ColumnDef } from '@tanstack/react-table';
@@ -73,11 +73,11 @@ interface Item {
 }
 
 const Sales: React.FC = () => {
-  const { t, formatDate, formatTime, formatDateTime, currentBusiness } = useSettings();
+  const { t, formatDate, formatDateTime, currentBusiness } = useSettings();
   const [sales, setSales] = useState<Sale[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [showModal, setShowModal] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery] = useState('');
   const [categories, setCategories] = useState<any[]>([]);
 
   const [filterStartDate, setFilterStartDate] = useState('');
@@ -85,20 +85,6 @@ const Sales: React.FC = () => {
   const [filterCategory, setFilterCategory] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
 
-  const [formData, setFormData] = useState({
-    itemId: '',
-    quantity: '1',
-    unitType: 'base' as 'base' | 'pack',
-    discount: '0',
-    vat: '0',
-    paymentMethod: t('sales.cash'),
-    paymentStatus: t('sales.paid'),
-    customerName: '',
-    customerPhone: '',
-    dueDate: ''
-  });
-
-  const [selectedItem, setSelectedItem] = useState<Item | null>(null);
   const [cart, setCart] = useState<any[]>([]);
   const [customerInfo, setCustomerInfo] = useState({ name: '', phone: '' });
   const [paymentInfo, setPaymentInfo] = useState({ method: t('sales.cash'), status: t('sales.paid'), dueDate: '', isDebt: false });
@@ -231,7 +217,7 @@ const Sales: React.FC = () => {
             {row.original.paymentStatus === 'Paid' || row.original.paymentStatus === t('sales.paid') ? t('sales.paid') : t('sales.debt')}
           </Badge>
           {row.original.status === 'Voided' && (
-            <Badge variant="destructive" className="text-[8px] font-black uppercase">Voided</Badge>
+            <Badge variant="destructive" className="text-[8px] font-black uppercase">{t('sales.voided_badge', 'Voided')}</Badge>
           )}
         </div>
       )
@@ -250,7 +236,7 @@ const Sales: React.FC = () => {
           <Button variant="ghost" size="sm" onClick={() => handleEdit(row.original)} title={t('common.edit')}>
             <Edit className="h-4 w-4" />
           </Button>
-          <Button variant="ghost" size="sm" className="text-amber-500 hover:bg-amber-500/10" onClick={() => openReturn(row.original)} title="Return">
+          <Button variant="ghost" size="sm" className="text-amber-500 hover:bg-amber-500/10" onClick={() => openReturn(row.original)} title={t('common.return')}>
             <Undo2 className="h-4 w-4" />
           </Button>
           
@@ -373,12 +359,23 @@ const Sales: React.FC = () => {
       paidAmount: paymentInfo.isDebt ? 0 : ((c.quantity * c.price) - c.discount + c.vat - (parseFloat(globalDiscount) / cart.length) + (parseFloat(globalVAT) / cart.length))
     }));
 
-    await window.api?.insertSalesBatch(salesToInsert);
+    const insertedIds = await window.api?.insertSalesBatch(salesToInsert);
     playSound('nice');
     setShowModal(false);
     resetForm();
     loadData();
-    setLastSale(salesToInsert[0]);
+    const totalPrice = salesToInsert.reduce((sum, s) => sum + s.totalPrice, 0);
+    const itemCount = salesToInsert.reduce((sum, s) => sum + s.quantity, 0);
+    setLastSale({
+      id: insertedIds?.[0] || Date.now(),
+      totalPrice,
+      itemCount,
+      paymentMethod: paymentInfo.method,
+      paymentStatus: paymentInfo.isDebt ? 'Debt' : 'Paid',
+      paidAmount: paymentInfo.isDebt ? 0 : totalPrice,
+      customerName: customerInfo.name?.trim() || t('summary.walk_in'),
+      items: cart.map(c => ({ name: c.name, quantity: c.quantity, price: c.price })),
+    });
     setShowSuccessModal(true);
   };
 
@@ -439,31 +436,31 @@ const Sales: React.FC = () => {
     }
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(14);
-    doc.text('RECEIPT', pageWidth / 2, y, { align: 'center' });
+    doc.text(t('pdf.receipt', 'RECEIPT'), pageWidth / 2, y, { align: 'center' });
     y += 7;
     doc.setFontSize(8);
     doc.setFont('helvetica', 'normal');
-    doc.text(`#REC-${sale.id}`, pageWidth / 2, y, { align: 'center' });
+    doc.text(t('pdf.receipt_id', '#REC-{id}', { id: sale.id }), pageWidth / 2, y, { align: 'center' });
     y += 5;
     doc.setDrawColor(0);
     doc.line(3, y, pageWidth - 3, y);
     y += 4;
     doc.setFontSize(7);
-    doc.text(`Date: ${formatDateTime(sale.createdAt)}`, 3, y);
+    doc.text(t('pdf.date', 'Date: {date}', { date: formatDateTime(sale.createdAt) }), 3, y);
     y += 4;
-    doc.text(`Customer: ${sale.customerName || 'Walk-in'}`, 3, y);
+    doc.text(t('pdf.customer', 'Customer: {name}', { name: sale.customerName || t('sales.walk_in') }), 3, y);
     y += 4;
     if (sale.customerPhone) {
-      doc.text(`Phone: ${sale.customerPhone}`, 3, y);
+      doc.text(t('pdf.phone', 'Phone: {phone}', { phone: sale.customerPhone }), 3, y);
       y += 4;
     }
     doc.line(3, y, pageWidth - 3, y);
     y += 4;
     doc.setFont('helvetica', 'bold');
-    doc.text('Item', 3, y);
-    doc.text('Qty', 40, y);
-    doc.text('Price', 55, y);
-    doc.text('Total', 68, y, { align: 'right' });
+    doc.text(t('pdf.item', 'Item'), 3, y);
+    doc.text(t('pdf.qty', 'Qty'), 40, y);
+    doc.text(t('pdf.price', 'Price'), 55, y);
+    doc.text(t('pdf.total', 'Total'), 68, y, { align: 'right' });
     y += 4;
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7);
@@ -478,21 +475,21 @@ const Sales: React.FC = () => {
     y += 5;
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(10);
-    doc.text(`Total: ETB ${sale.totalPrice.toFixed(2)}`, 3, y);
+    doc.text(t('pdf.total_label', 'Total: {currency} {amount}', { currency: t('common.etb'), amount: sale.totalPrice.toFixed(2) }), 3, y);
     y += 5;
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7);
-    doc.text(`Payment: ${sale.paymentMethod}`, 3, y);
+    doc.text(t('pdf.payment', 'Payment: {method}', { method: sale.paymentMethod }), 3, y);
     y += 4;
-    doc.text(`Paid: ETB ${(sale.paidAmount || sale.totalPrice).toFixed(2)}`, 3, y);
+    doc.text(t('pdf.paid', 'Paid: {currency} {amount}', { currency: t('common.etb'), amount: (sale.paidAmount || sale.totalPrice).toFixed(2) }), 3, y);
     y += 4;
     if (sale.paymentStatus === 'Debt') {
-      doc.text(`Due: ETB ${(sale.totalPrice - (sale.paidAmount || 0)).toFixed(2)}`, 3, y);
+      doc.text(t('pdf.due', 'Due: {currency} {amount}', { currency: t('common.etb'), amount: (sale.totalPrice - (sale.paidAmount || 0)).toFixed(2) }), 3, y);
       y += 4;
     }
     y += 5;
     doc.setFont('helvetica', 'bold');
-    doc.text('Thank you for your business!', pageWidth / 2, y, { align: 'center' });
+    doc.text(t('pdf.thanks', 'Thank you for your business!'), pageWidth / 2, y, { align: 'center' });
     doc.save(`receipt-${sale.id}.pdf`);
   };
 
@@ -514,11 +511,11 @@ const Sales: React.FC = () => {
       reason: returnReason
     });
     if (result?.success) {
-      toast.success('Return processed successfully');
+      toast.success(t('sales.return_success', 'Return processed successfully'));
       setShowReturnModal(false);
       loadData();
     } else {
-      toast.error(result?.error || 'Return failed');
+      toast.error(result?.error || t('sales.return_failed', 'Return failed'));
     }
   };
 
@@ -550,7 +547,7 @@ const Sales: React.FC = () => {
       discount: parseFloat(globalDiscount) || 0,
       vat: parseFloat(globalVAT) || 0
     });
-    toast.success('Draft saved');
+    toast.success(t('sales.draft_saved', 'Draft saved'));
     setShowModal(false);
     resetForm();
   };
@@ -562,21 +559,21 @@ const Sales: React.FC = () => {
 
   const exportSalesCSV = () => {
     exportCSV(
-      ['ID', 'Item', 'Qty', 'Unit', 'Total', 'Payment', 'Status', 'Customer', 'Date'],
-      sales.map(s => [s.id, s.itemName, s.quantity, s.unit, s.totalPrice, s.paymentMethod, s.paymentStatus, s.customerName || 'Walk-in', s.createdAt]),
+      [t('common.id'), t('common.item', 'Item'), t('inventory.qty'), t('inventory.unit'), t('common.total'), t('sales.payment'), t('common.status'), t('sales.customer'), t('common.date')],
+      sales.map(s => [s.id, s.itemName, s.quantity, s.unit, s.totalPrice, s.paymentMethod, s.paymentStatus, s.customerName || t('sales.walk_in'), s.createdAt]),
       'sales-report'
     );
   };
 
   const exportSalesPDF = () => {
     exportPDF(
-      'Sales Report',
-      ['ID', 'Item', 'Qty', 'Unit', 'Total', 'Payment', 'Status', 'Customer', 'Date'],
-      sales.map(s => [s.id, s.itemName, s.quantity, s.unit, s.totalPrice, s.paymentMethod, s.paymentStatus, s.customerName || 'Walk-in', s.createdAt]),
+      t('data_transfer.sales_report'),
+      [t('common.id'), t('common.item', 'Item'), t('inventory.qty'), t('inventory.unit'), t('common.total'), t('sales.payment'), t('common.status'), t('sales.customer'), t('common.date')],
+      sales.map(s => [s.id, s.itemName, s.quantity, s.unit, s.totalPrice, s.paymentMethod, s.paymentStatus, s.customerName || t('sales.walk_in'), s.createdAt]),
       'sales-report',
       ['', '', '', '', sales.reduce((sum, s) => sum + s.totalPrice, 0).toLocaleString(), '', '', '', '']
     );
-    toast.success('Report exported successfully');
+    toast.success(t('sales.export_success', 'Report exported successfully'));
   };
 
   return (
@@ -656,7 +653,7 @@ const Sales: React.FC = () => {
           </Sheet>
 
           <Button variant="outline" onClick={loadDrafts} className="h-8 text-[10px] font-bold uppercase tracking-widest px-3">
-            <FileText className="mr-1.5 h-3.5 w-3.5" /> {t('sales.drafts') || 'Drafts'}
+            <FileText className="mr-1.5 h-3.5 w-3.5" /> {t('sales.drafts')}
           </Button>
           <Button onClick={() => { resetForm(); setShowModal(true); }} className="h-8 text-[10px] font-bold uppercase tracking-widest px-3">
             <Plus className="mr-1.5 h-3.5 w-3.5" /> {t('sales.new_btn')}
@@ -670,10 +667,10 @@ const Sales: React.FC = () => {
         />
         <div className="flex gap-2 justify-end">
           <Button variant="outline" size="sm" onClick={() => exportSalesCSV()} className="h-7 text-[10px] font-bold uppercase tracking-widest px-2.5">
-            <FileText size={11} className="mr-1" /> CSV
+            <FileText size={11} className="mr-1" /> {t('reports.csv')}
           </Button>
           <Button variant="outline" size="sm" onClick={() => exportSalesPDF()} className="h-7 text-[10px] font-bold uppercase tracking-widest px-2.5">
-            <FileText size={11} className="mr-1" /> PDF
+            <FileText size={11} className="mr-1" /> {t('reports.pdf')}
           </Button>
         </div>
       </div>
@@ -722,16 +719,23 @@ const Sales: React.FC = () => {
                 <div className="flex-1 w-full max-w-xl rounded-3xl border border-border bg-muted/10 overflow-hidden flex flex-col">
                   {itemSearchQuery ? (
                     <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
-                      {items.filter(i => i.name.toLowerCase().includes(itemSearchQuery.toLowerCase())).map(item => (
+                      {items.filter(i => i.name.toLowerCase().includes(itemSearchQuery.toLowerCase())).map(item => {
+                        const isOutOfStock = item.totalBaseQuantity === 0 && item.totalPackQuantity === 0;
+                        return (
                         <button 
                           key={item.id} 
-                          onClick={() => { addToCart(String(item.id)); setItemSearchQuery(''); }}
-                          className="w-full text-left p-4 rounded-xl hover:bg-card hover:shadow-sm transition-all border border-transparent hover:border-border group flex justify-between items-center"
+                          onClick={() => { if (!isOutOfStock) { addToCart(String(item.id)); setItemSearchQuery(''); } }}
+                          className={`w-full text-left p-4 rounded-xl transition-all border flex justify-between items-center ${isOutOfStock ? 'opacity-40 cursor-not-allowed' : 'hover:bg-card hover:shadow-sm border-transparent hover:border-border group'}`}
+                          disabled={isOutOfStock}
                         >
-                          <span className="font-bold text-sm group-hover:text-primary">{item.name}</span>
-                          <Plus className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100" />
+                          <span className={`font-bold text-sm ${isOutOfStock ? 'text-muted-foreground' : 'group-hover:text-primary'}`}>{item.name}</span>
+                          {isOutOfStock ? (
+                            <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('sales.out_of_stock', 'Out of Stock')}</span>
+                          ) : (
+                            <Plus className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100" />
+                          )}
                         </button>
-                      ))}
+                      )})}
                       {items.filter(i => i.name.toLowerCase().includes(itemSearchQuery.toLowerCase())).length === 0 && (
                         <div className="p-8 text-center text-xs font-bold text-muted-foreground uppercase tracking-widest">{t('common.no_match')}</div>
                       )}
@@ -763,7 +767,7 @@ const Sales: React.FC = () => {
                     disabled={cart.length === 0}
                     onClick={handleSaveDraft}
                   >
-                    {t('sales.save_draft') || 'Draft'}
+                    {t('sales.save_draft')}
                   </Button>
                 </div>
               </div>
@@ -825,7 +829,7 @@ const Sales: React.FC = () => {
                     {t('sales.add_more')}
                   </Button>
                   <Button variant="secondary" className="h-10 text-[10px] font-black uppercase tracking-widest rounded-xl" onClick={handleSaveDraft}>
-                    {t('sales.save_draft') || 'Draft'}
+                    {t('sales.save_draft')}
                   </Button>
                   <Button className="flex-1 h-10 text-[10px] font-black uppercase tracking-widest shadow-lg rounded-xl" onClick={() => setCurrentStep(3)}>
                     {t('sales.proceed_settlement')}
@@ -918,7 +922,7 @@ const Sales: React.FC = () => {
                       {t('sales.authorize')}
                     </Button>
                     <Button variant="outline" onClick={handleSaveDraft} className="w-full h-9 text-[10px] font-black uppercase tracking-widest rounded-xl" disabled={cart.length === 0}>
-                      {t('sales.save_draft') || 'Save as Draft'}
+                      {t('sales.save_draft')}
                     </Button>
                     <Button variant="ghost" onClick={() => setCurrentStep(2)} className="w-full text-[9px] font-bold uppercase tracking-widest opacity-40 hover:bg-transparent h-7">
                       {t('sales.back_to_cart')}
@@ -937,7 +941,7 @@ const Sales: React.FC = () => {
           <div className="space-y-6">
             <div className="text-center space-y-1 border-b border-dashed border-border pb-6">
               <h2 className="text-2xl font-black tracking-tight uppercase">{t('sales.receipt_header')}</h2>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">ID: #REC-{viewingSale.id}</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('sales.receipt_id_label', 'ID: #REC-{id}', { id: viewingSale.id })}</p>
               <p className="text-xs text-muted-foreground">{formatDateTime(viewingSale.createdAt)}</p>
             </div>
 
@@ -972,42 +976,42 @@ const Sales: React.FC = () => {
       </Modal>
 
       {/* Return Modal */}
-      <Modal isOpen={showReturnModal} onClose={() => setShowReturnModal(false)} title="Process Return" size="sm">
+      <Modal isOpen={showReturnModal} onClose={() => setShowReturnModal(false)} title={t('sales.process_return', 'Process Return')} size="sm">
         {returnSale && (
           <form onSubmit={handleReturn} className="space-y-4">
             <div className="p-3 rounded-xl bg-muted/30 text-sm space-y-1">
               <p className="font-bold">{returnSale.itemName}</p>
-              <p className="text-xs text-muted-foreground">Sale #{returnSale.id} &middot; {returnSale.customerName || 'Walk-in'}</p>
-              <p className="text-xs">Original qty: {returnSale.quantity} &middot; Total: {t('common.etb')} {returnSale.totalPrice.toLocaleString()}</p>
+              <p className="text-xs text-muted-foreground">{t('sales.return_sale_info', 'Sale #{id} · {customer}', { id: returnSale.id, customer: returnSale.customerName || t('sales.walk_in') })}</p>
+              <p className="text-xs">{t('sales.original_qty_total', 'Original qty: {qty} · Total: {total}', { qty: returnSale.quantity, total: `${t('common.etb')} ${returnSale.totalPrice.toLocaleString()}` })}</p>
             </div>
             <div className="space-y-1.5">
               <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                Quantity to Return *
+                {t('sales.quantity_to_return', 'Quantity to Return')} *
               </label>
               <Input required type="number" min="1" max={returnSale.quantity}
                 value={returnQty} onChange={e => setReturnQty(e.target.value)} />
             </div>
             <div className="space-y-1.5">
               <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                Refund Amount ({t('common.etb')})
+                {t('sales.refund_amount')}
               </label>
               <Input type="number" min="0"
                 value={returnRefund} onChange={e => setReturnRefund(e.target.value)} />
-              <p className="text-[10px] text-muted-foreground">Set to 0 for no refund (exchange only)</p>
+              <p className="text-[10px] text-muted-foreground">{t('sales.return_refund_hint', 'Set to 0 for no refund (exchange only)')}</p>
             </div>
             <div className="space-y-1.5">
               <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                Reason
+                {t('sales.return_reason_label', 'Reason')}
               </label>
               <Input value={returnReason} onChange={e => setReturnReason(e.target.value)}
-                placeholder="Defective, wrong item, customer request..." />
+                placeholder={t('sales.return_reason_placeholder', 'Defective, wrong item, customer request...')} />
             </div>
             <div className="flex gap-2 pt-2">
               <Button type="button" variant="outline" className="flex-1 h-9 text-[10px] font-bold uppercase tracking-widest" onClick={() => setShowReturnModal(false)}>
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button type="submit" className="flex-1 h-9 text-[10px] font-bold uppercase tracking-widest" disabled={!returnQty || parseFloat(returnQty) < 1}>
-                Process Return
+                {t('sales.process_return', 'Process Return')}
               </Button>
             </div>
           </form>
@@ -1015,11 +1019,11 @@ const Sales: React.FC = () => {
       </Modal>
 
       {/* Drafts Modal */}
-      <Modal isOpen={showDraftsModal} onClose={() => setShowDraftsModal(false)} title={t('sales.draft_sales') || 'Draft Sales'} size="lg">
+      <Modal isOpen={showDraftsModal} onClose={() => setShowDraftsModal(false)} title={t('sales.draft_sales')} size="lg">
         <div className="space-y-4">
           {drafts.length === 0 ? (
             <div className="p-12 text-center text-muted-foreground">
-              <p className="font-bold uppercase tracking-widest text-xs">{t('sales.no_drafts') || 'No draft sales'}</p>
+              <p className="font-bold uppercase tracking-widest text-xs">{t('sales.no_drafts')}</p>
             </div>
           ) : (
             drafts.map(draft => {
@@ -1035,13 +1039,13 @@ const Sales: React.FC = () => {
                   <div className="flex-1 min-w-0">
                     <p className="font-bold text-sm">{draft.customerName || t('sales.walk_in')}</p>
                     <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest mt-0.5">
-                      {items.length} {t('common.items') || 'items'} &middot; {t('common.etb')} {total.toLocaleString()}
+                      {items.length} {t('common.items')} &middot; {t('common.etb')} {total.toLocaleString()}
                     </p>
                     <p className="text-[9px] text-muted-foreground mt-0.5">{formatDate(draft.createdAt)}</p>
                   </div>
                   <div className="flex gap-1.5 shrink-0">
                     <Button size="sm" variant="outline" onClick={() => resumeDraft(draft.id)} className="h-7 text-[9px] font-bold uppercase tracking-widest px-2">
-                      {t('sales.resume') || 'Resume'}
+                      {t('sales.resume')}
                     </Button>
                     <Button size="sm" variant="destructive" onClick={() => deleteDraft(draft.id)} className="h-7 w-7 p-0">
                       <Trash2 className="h-3 w-3" />

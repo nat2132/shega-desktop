@@ -31,7 +31,7 @@ interface AnalyticsData {
 }
 
 const Summary: React.FC = () => {
-  const { t, formatDate } = useSettings();
+  const { t } = useSettings();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [inventoryValue, setInventoryValue] = useState(0);
@@ -59,7 +59,7 @@ const Summary: React.FC = () => {
         setInventoryValue(val);
       }
     } catch (e: any) {
-      setError(e.message || 'Failed to load summary data');
+      setError(e.message || t('summary.load_error'));
     } finally {
       setLoading(false);
     }
@@ -146,7 +146,7 @@ const Summary: React.FC = () => {
               <AlertCircle className="h-5 w-5 text-destructive shrink-0" />
               <p className="text-sm font-medium text-destructive">{error}</p>
               <Button variant="outline" size="sm" onClick={loadData} className="ml-auto shrink-0">
-                <RefreshCw className="h-4 w-4 mr-1" /> Retry
+                <RefreshCw className="h-4 w-4 mr-1" /> {t('common.retry')}
               </Button>
             </CardContent>
           </Card>
@@ -402,7 +402,7 @@ const Summary: React.FC = () => {
                     {topProduct || t('common.no_data')}
                   </p>
                   <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mt-1">
-                    Top selling product
+                    {t('summary.top_selling_product')}
                   </p>
                 </CardContent>
               </Card>
@@ -421,7 +421,7 @@ const Summary: React.FC = () => {
                     {lowStock}
                   </p>
                   <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mt-1">
-                    Low stock alerts
+                    {t('summary.low_stock_alerts')}
                   </p>
                 </CardContent>
               </Card>
@@ -440,7 +440,7 @@ const Summary: React.FC = () => {
                     {t('common.etb')} {activeDebts.toLocaleString()}
                   </p>
                   <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mt-1">
-                    Debt alerts
+                    {t('summary.debt_alert')}
                   </p>
                 </CardContent>
               </Card>
@@ -459,7 +459,7 @@ const Summary: React.FC = () => {
                     {t('common.etb')} {netCashFlow.toLocaleString()}
                   </p>
                   <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mt-1">
-                    {netCashFlow >= 0 ? 'Positive cash flow' : 'Negative cash flow'}
+                    {netCashFlow >= 0 ? t('summary.positive_cash_flow') : t('summary.negative_cash_flow')}
                   </p>
                 </CardContent>
               </Card>

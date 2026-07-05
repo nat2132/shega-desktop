@@ -33,7 +33,6 @@ import {
 import { useSettings } from "../context/SettingsContext";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent } from "../components/ui/card";
-import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { DatePicker } from "../components/DatePicker";
 
@@ -51,7 +50,7 @@ interface AnalyticsData {
 }
 
 const Analytics: React.FC = () => {
-  const { t, formatDate, formatTime, formatDateTime, language } = useSettings();
+  const { t, formatDate, formatTime, language } = useSettings();
   const [period, setPeriod] = useState<
     "today" | "week" | "month" | "year" | "custom"
   >("month");
@@ -95,10 +94,7 @@ const Analytics: React.FC = () => {
     }
   }, [period]);
 
-  const [error, setError] = useState<string | null>(null);
-
   const loadData = async (customRange?: { start: string; end: string }) => {
-    setError(null);
     const range = customRange || currentRange;
 
     try {
@@ -128,7 +124,7 @@ const Analytics: React.FC = () => {
         setLowStockItems(lowStock);
       }
     } catch (e: any) {
-      setError(e.message || 'Failed to load analytics');
+      console.error(e.message || 'Failed to load analytics');
     }
   };
 
@@ -166,7 +162,7 @@ const Analytics: React.FC = () => {
   }, [data, period, language, dateRange]);
 
   const salesDistribution = useMemo(() => {
-    if (!rawSales.length) return [];
+    if (!rawSales.length) return { title: '', subtitle: '', data: [], dataKey: '' };
     const range = currentRange;
     const start = range.start ? new Date(range.start) : null;
     const end = range.end ? new Date(range.end) : null;
@@ -195,7 +191,7 @@ const Analytics: React.FC = () => {
     }
 
     if (granularity === 'daily') {
-      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const dayNames = [t('analytics.day_sun'), t('analytics.day_mon'), t('analytics.day_tue'), t('analytics.day_wed'), t('analytics.day_thu'), t('analytics.day_fri'), t('analytics.day_sat')];
       const days = dayNames.map((n) => ({ label: n, revenue: 0, count: 0 }));
       rawSales.forEach((s) => {
         const d = new Date(s.createdAt).getDay();
@@ -206,7 +202,7 @@ const Analytics: React.FC = () => {
     }
 
     if (granularity === 'weekly') {
-      const weeks = Array.from({ length: 5 }, (_, i) => ({ label: `Week ${i + 1}`, revenue: 0, count: 0 }));
+      const weeks = Array.from({ length: 5 }, (_, i) => ({ label: t('analytics.week_label', { week: i + 1 }), revenue: 0, count: 0 }));
       rawSales.forEach((s) => {
         const d = new Date(s.createdAt);
         const day = d.getDate();
@@ -217,7 +213,7 @@ const Analytics: React.FC = () => {
       return { title: t('analytics.by_week') || 'Sales by Week', subtitle: t('analytics.by_week_desc') || 'Weekly revenue pattern', data: weeks, dataKey: 'label' };
     }
 
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const months = [t('budgets.month_jan'), t('budgets.month_feb'), t('budgets.month_mar'), t('budgets.month_apr'), t('budgets.month_may'), t('budgets.month_jun'), t('budgets.month_jul'), t('budgets.month_aug'), t('budgets.month_sep'), t('budgets.month_oct'), t('budgets.month_nov'), t('budgets.month_dec')];
     const monthly = months.map((n) => ({ label: n, revenue: 0, count: 0 }));
     rawSales.forEach((s) => {
       const m = new Date(s.createdAt).getMonth();
@@ -498,7 +494,7 @@ const Analytics: React.FC = () => {
                 <PieChart size={20} />
               </div>
               <h3 className="text-lg font-bold tracking-tight text-foreground">
-                Payment Methods
+                {t('analytics.payment_methods')}
               </h3>
             </div>
             <div className="space-y-4">
@@ -536,7 +532,7 @@ const Analytics: React.FC = () => {
                           </span>
                           {isPredominant && (
                             <span className="text-[9px] font-bold uppercase text-primary tracking-wider">
-                              Most used
+                              {t('analytics.most_used')}
                             </span>
                           )}
                         </div>
@@ -891,9 +887,9 @@ const Analytics: React.FC = () => {
                       color: "var(--muted-foreground)", fontSize: "9px",
                       textTransform: "uppercase", fontWeight: 700, marginBottom: "6px",
                     }}
-                    formatter={(value: number) => [`ETB ${value.toLocaleString()}`, "Revenue"]}
+                    formatter={(value: any) => [`${t('common.etb')} ${(value ?? 0).toLocaleString()}`, t('analytics.revenue')]}
                   />
-                  <Bar dataKey="revenue" name="Revenue" fill="url(#colorDist)" radius={[4, 4, 0, 0]} maxBarSize={30} />
+                  <Bar dataKey="revenue" name={t('analytics.revenue')} fill="url(#colorDist)" radius={[4, 4, 0, 0]} maxBarSize={30} />
                 </BarChart>
               </ResponsiveContainer>
               )}

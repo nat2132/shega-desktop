@@ -18,6 +18,9 @@ export interface ElectronAPI {
   getExpiringItems: () => Promise<any[]>;
   getItemsBySupplier: (supplierId: number) => Promise<any[]>;
   restockItem: (id: number, quantity: number) => Promise<{ success: boolean }>;
+  archiveItem: (data: any) => Promise<any>;
+  restoreItem: (data: any) => Promise<any>;
+  getDeletedItems: () => Promise<any[]>;
 
   // Sales
   getSales: (options?: any) => Promise<any[]>;
@@ -31,6 +34,8 @@ export interface ElectronAPI {
   getDebtPayments: (saleId: number) => Promise<any[]>;
   createReturn: (data: any) => Promise<{ success: boolean; returnId?: number; error?: string }>;
   getReturns: (options?: any) => Promise<any[]>;
+  voidSale: (data: any) => Promise<any>;
+  reverseDebtPayment: (data: any) => Promise<any>;
 
   // Expenses
   getExpenses: (options?: any) => Promise<any[]>;
@@ -42,6 +47,7 @@ export interface ElectronAPI {
   getAdjustments: (options?: any) => Promise<any[]>;
   insertAdjustment: (adjustment: any) => Promise<number>;
   insertBulkAdjustments: (adjustments: any[]) => Promise<number>;
+  reverseAdjustment: (data: any) => Promise<any>;
 
   // Notifications
   checkNotifications: () => Promise<any>;
@@ -87,6 +93,8 @@ export interface ElectronAPI {
   getDashboardStats: () => Promise<any>;
   getRecentActivity: (limit?: number, dateRange?: { start: string; end: string }) => Promise<any[]>;
   getAnalytics: (period: string, dateRange?: { start: string; end: string }) => Promise<any>;
+  getVoidedSales: (options?: any) => Promise<any>;
+  getReversalStats: () => Promise<any>;
 
   // Customers
   getCustomers: () => Promise<any[]>;
@@ -97,6 +105,9 @@ export interface ElectronAPI {
   deleteCustomer: (id: number) => Promise<{ success: boolean; error?: string }>;
   getCustomerNotes: (customerId: number) => Promise<any[]>;
   addCustomerNote: (customerId: number, note: string, createdBy?: string) => Promise<{ success: boolean }>;
+  archiveCustomer: (data: any) => Promise<any>;
+  restoreCustomer: (data: any) => Promise<any>;
+  getDeletedCustomers: () => Promise<any[]>;
 
   // Data Management
   exportData: () => Promise<any>;
@@ -158,6 +169,15 @@ export interface ElectronAPI {
   resetEmployeePassword: (id: number, newPin: string) => Promise<any>;
   loginEmployee: (username: string, pin: string) => Promise<any>;
 
+  // PIN Recovery
+  generateRecoveryKey: (entityType: 'employee' | 'admin', entityId: number) => Promise<{ recoveryKey: string; hint: string }>;
+  verifyRecoveryKey: (username: string, recoveryKey: string) => Promise<{ valid: boolean; error?: string; accountId?: number; isEmployee?: boolean }>;
+  resetPinWithRecovery: (username: string, recoveryKey: string, newPin: string) => Promise<{ success: boolean; error?: string }>;
+  lockUserAccount: (id: number) => Promise<{ success: boolean; error?: string }>;
+  unlockUserAccount: (id: number) => Promise<{ success: boolean; error?: string }>;
+  forcePinChange: (id: number) => Promise<{ success: boolean; error?: string }>;
+  getPinHistory: (entityType?: string, entityId?: number) => Promise<any[]>;
+
   // Login History
   getLoginHistory: (options?: any) => Promise<any[]>;
 
@@ -173,10 +193,6 @@ export interface ElectronAPI {
 
   // Employee Stats (Dashboard)
   getEmployeeStats: () => Promise<any>;
-
-  // Activity Logs
-  getActivityLogs: (options?: any) => Promise<any[]>;
-  logActivity: (data: any) => Promise<any>;
 
   // Shipments
   getShipments: (options?: any) => Promise<any[]>;
@@ -206,6 +222,7 @@ export interface ElectronAPI {
   insertSupplierPayment: (data: any) => Promise<{ id: number }>;
   updateSupplierPayment: (id: number, data: any) => Promise<{ success: boolean }>;
   deleteSupplierPayment: (id: number) => Promise<{ success: boolean }>;
+  reverseSupplierPayment: (data: any) => Promise<any>;
 
   getSupplierProducts: (supplierId: number) => Promise<any[]>;
   getSupplierBalance: (supplierId: number) => Promise<any>;
@@ -253,6 +270,14 @@ export interface ElectronAPI {
   getBudgets: (options?: any) => Promise<any[]>;
   setBudget: (data: any) => Promise<{ success: boolean; id?: number }>;
   deleteBudget: (id: number) => Promise<any>;
+  getBudgetAdjustments: (budgetId: number) => Promise<any[]>;
+  createBudgetAdjustment: (data: any) => Promise<{ success: boolean; id?: number }>;
+  approveBudgetAdjustment: (id: number, approvedBy: string) => Promise<{ success: boolean }>;
+  duplicateBudget: (fromData: any, toMonth: string, toYear: string) => Promise<{ success: boolean; count?: number }>;
+  getBudgetAlerts: (options?: any) => Promise<any[]>;
+  acknowledgeBudgetAlert: (id: number) => Promise<{ success: boolean }>;
+  getBudgetReport: (options?: any) => Promise<any>;
+  getBudgetForecast: (options?: any) => Promise<any>;
 
   // Supplier Price Checks
   getSupplierPriceChecks: (supplierId?: number) => Promise<any[]>;
@@ -264,9 +289,31 @@ export interface ElectronAPI {
   setQuietHours: (data: any) => Promise<{ success: boolean; id?: number }>;
   deleteQuietHours: () => Promise<any>;
 
+  // External links
+  openExternal: (url: string) => Promise<any>;
+
+  // Supplier Reports
+  getSupplierUnpaidOrders: () => Promise<any>;
+  getSupplierPaymentDueAlerts: () => Promise<any>;
+  getSupplierLowStock: () => Promise<any>;
+  getSupplierReportSummary: () => Promise<any>;
+  getSupplierTransactionReport: (options?: any) => Promise<any>;
+  getInventoryBySupplierReport: () => Promise<any>;
+
   // Audit Logs
   getAuditLogs: (options?: any) => Promise<any[]>;
   reverseAuditLogEntry: (data: { logId: number }) => Promise<any>;
+
+  // CSV / Data Import
+  importData: (module: string, rows: any[]) => Promise<{ success: boolean; imported: number; errors: { row: number; message: string }[]; skipped: number }>;
+
+  // Order Management
+  getOrders: (options?: any) => Promise<any[]>;
+  getOrder: (id: number) => Promise<any>;
+  insertOrder: (data: any) => Promise<number>;
+  convertOrderToSale: (data: { orderId: number; paymentMethod?: string; discount?: number; vat?: number }) => Promise<{ success: boolean; saleIds: number[] }>;
+  convertOrderToDebt: (data: { orderId: number; dueDate?: string; paymentMethod?: string; discount?: number; vat?: number }) => Promise<{ success: boolean; saleIds: number[] }>;
+  cancelOrder: (data: { orderId: number; reason?: string }) => Promise<{ success: boolean }>;
 }
 
 declare global {

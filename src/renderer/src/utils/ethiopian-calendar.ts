@@ -136,7 +136,7 @@ export const formatDateTime = (
   date: Date,
   calendarType: CalendarType,
   language: Language = 'en',
-  timeSystem?: TimeSystem
+  _timeSystem?: TimeSystem
 ) => {
   if (!date || isNaN(date.getTime())) return '';
   const dateStr = formatDate(date, calendarType, language);
@@ -149,8 +149,8 @@ export type TimeSystem = 'device' | 'ethiopian';
 
 export const formatTime = (
   date: Date,
-  timeSystem?: TimeSystem,
-  language: Language = 'en'
+  _timeSystem?: TimeSystem,
+  _language: Language = 'en'
 ) => {
   if (!date || isNaN(date.getTime())) return '';
   const hours = date.getHours().toString().padStart(2, '0');

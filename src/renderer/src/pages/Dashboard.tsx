@@ -8,7 +8,7 @@ import {
 import { 
   ColumnDef 
 } from '@tanstack/react-table';
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts';
+import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Cell } from 'recharts';
 
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
@@ -94,7 +94,7 @@ const Dashboard: React.FC = () => {
       setSupplierLowStock(lowStock);
       setReversalStats(revStats);
     } catch (e: any) {
-      setError(e.message || 'Failed to load dashboard data');
+      setError(e.message || t('dashboard.load_error'));
     } finally {
       setLoading(false);
     }
@@ -108,11 +108,12 @@ const Dashboard: React.FC = () => {
     if (revPeriod === 'week') {
       // Current week: Sunday → Saturday
       const now = new Date();
+      const todayStr = now.toISOString().split('T')[0];
       const sun = new Date(now);
       sun.setDate(now.getDate() - now.getDay());
       sun.setHours(0, 0, 0, 0);
 
-      const days: { label: string; revenue: number }[] = [];
+      const days: { label: string; revenue: number; isToday: boolean }[] = [];
       for (let i = 0; i < 7; i++) {
         const d = new Date(sun);
         d.setDate(sun.getDate() + i);
@@ -126,7 +127,7 @@ const Dashboard: React.FC = () => {
           const loc = language === 'am' ? 'am-ET' : language === 'om' ? 'om-ET' : language === 'ti' ? 'ti-ET' : 'en-US';
           label = d.toLocaleDateString(loc, { weekday: 'short' });
         }
-        days.push({ label, revenue: sale?.revenue || 0 });
+        days.push({ label, revenue: sale?.revenue || 0, isToday: dateStr === todayStr });
       }
       return days;
     }
@@ -134,10 +135,11 @@ const Dashboard: React.FC = () => {
     if (revPeriod === 'month') {
       // Current month split into weeks
       const now = new Date();
+      const todayStr = now.toISOString().split('T')[0];
       const first = new Date(now.getFullYear(), now.getMonth(), 1);
       const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-      const weeks: { label: string; revenue: number }[] = [];
+      const weeks: { label: string; revenue: number; isToday: boolean }[] = [];
       let ws = new Date(first);
       let wn = 1;
 
@@ -152,7 +154,9 @@ const Dashboard: React.FC = () => {
           if (sd >= ws && sd <= we) rev += s.revenue;
         });
 
-        weeks.push({ label: `${t('analytics.week')} ${wn}`, revenue: rev });
+        const weStr = we.toISOString().split('T')[0];
+        const wsStr = ws.toISOString().split('T')[0];
+        weeks.push({ label: `${t('analytics.week')} ${wn}`, revenue: rev, isToday: todayStr >= wsStr && todayStr <= weStr });
         ws = new Date(we);
         ws.setDate(ws.getDate() + 1);
         wn++;
@@ -163,21 +167,23 @@ const Dashboard: React.FC = () => {
     // Year view
     if (calendarType === 'ethiopian') {
       // 13 Ethiopian months
-      const months: { label: string; revenue: number }[] = [];
+      const ethNow = toEthiopianDate(new Date());
+      const months: { label: string; revenue: number; isToday: boolean }[] = [];
       for (let m = 1; m <= 13; m++) {
         let rev = 0;
         salesData.forEach(s => {
           const eth = toEthiopianDate(new Date(s.date));
           if (eth.month === m) rev += s.revenue;
         });
-        months.push({ label: getEthiopianMonthName(m - 1, language as any), revenue: rev });
+        months.push({ label: getEthiopianMonthName(m - 1, language as any), revenue: rev, isToday: m === ethNow.month });
       }
       return months;
     } else {
       // 12 Gregorian months
       const now = new Date();
+      const curMonth = now.getMonth();
       const loc = language === 'am' ? 'am-ET' : language === 'om' ? 'om-ET' : language === 'ti' ? 'ti-ET' : 'en-US';
-      const months: { label: string; revenue: number }[] = [];
+      const months: { label: string; revenue: number; isToday: boolean }[] = [];
       for (let m = 0; m < 12; m++) {
         const md = new Date(now.getFullYear(), m, 1);
         let rev = 0;
@@ -185,7 +191,7 @@ const Dashboard: React.FC = () => {
           const sd = new Date(s.date);
           if (sd.getMonth() === m && sd.getFullYear() === now.getFullYear()) rev += s.revenue;
         });
-        months.push({ label: md.toLocaleDateString(loc, { month: 'short' }), revenue: rev });
+        months.push({ label: md.toLocaleDateString(loc, { month: 'short' }), revenue: rev, isToday: m === curMonth });
       }
       return months;
     }
@@ -223,7 +229,7 @@ const Dashboard: React.FC = () => {
     { 
       title: t('inventory.low'), 
       value: stats?.lowStock || 0, 
-      trend: stats?.lowStock > 5 ? 'High' : 'Normal', 
+      trend: stats?.lowStock > 5 ? t('dashboard.trend_high') : t('dashboard.trend_normal'), 
       trendType: stats?.lowStock > 5 ? 'up' : 'down',
       footerTitle: t('dashboard.low_stock'),
       footerSub: t('inventory.refill_needed')
@@ -262,7 +268,7 @@ const Dashboard: React.FC = () => {
       header: t('common.details'),
       cell: ({ row }) => (
         <Badge variant="secondary" className="text-[10px] font-bold uppercase tracking-widest cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>
-          {row.original.extra || 'System'}
+          {row.original.extra || t('dashboard.system_entry')}
         </Badge>
       )
     },
@@ -290,7 +296,7 @@ const Dashboard: React.FC = () => {
             <AlertDescription>{error}</AlertDescription>
           </Alert>
           <Button variant="outline" size="sm" onClick={loadData} className="mt-2">
-            <RefreshCw className="h-4 w-4 mr-1" /> Retry
+            <RefreshCw className="h-4 w-4 mr-1" /> {t('common.retry')}
           </Button>
         </div>
       ) : !stats ? (
@@ -329,23 +335,23 @@ const Dashboard: React.FC = () => {
             <div className="px-4 lg:px-6">
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Total Employees</p>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('dashboard.total_employees')}</p>
                   <p className="text-2xl font-black">{empStats.total || 0}</p>
                 </div>
                 <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Active</p>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('common.active')}</p>
                   <p className="text-2xl font-black text-green-600">{empStats.active || 0}</p>
                 </div>
                 <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Online Now</p>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('dashboard.online_now')}</p>
                   <p className="text-2xl font-black text-blue-600">{empStats.online || 0}</p>
                 </div>
                 <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Clocked In</p>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('dashboard.clocked_in')}</p>
                   <p className="text-2xl font-black text-amber-600">{empStats.clockedIn || 0}</p>
                 </div>
                 <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Pending</p>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('common.pending')}</p>
                   <p className="text-2xl font-black text-destructive">{empStats.pendingApprovals || 0}</p>
                 </div>
               </div>
@@ -355,24 +361,24 @@ const Dashboard: React.FC = () => {
           {reversalStats && (
             <div className="px-4 lg:px-6">
               <h3 className="text-sm font-black uppercase tracking-widest text-muted-foreground flex items-center gap-2 mb-3">
-                <ArrowLeftRight className="h-4 w-4" /> Reversals
+                <ArrowLeftRight className="h-4 w-4" /> {t('reports.reversals')}
               </h3>
               <div className="grid grid-cols-3 gap-3">
                 <div className="rounded-xl border bg-card/40 p-3 space-y-1">
                   <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1">
-                    <Ban className="h-3 w-3" /> Voided Sales
+                    <Ban className="h-3 w-3" /> {t('reports.voided_sales')}
                   </p>
                   <p className="text-xl font-black">{reversalStats.voidedSales || 0}</p>
                 </div>
                 <div className="rounded-xl border bg-card/40 p-3 space-y-1">
                   <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1">
-                    <RotateCcw className="h-3 w-3" /> Reversed Payments
+                    <RotateCcw className="h-3 w-3" /> {t('dashboard.reversed_payments')}
                   </p>
                   <p className="text-xl font-black">{reversalStats.reversedPayments || 0}</p>
                 </div>
                 <div className="rounded-xl border bg-card/40 p-3 space-y-1">
                   <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1">
-                    <RotateCcw className="h-3 w-3" /> Reversed Adjustments
+                    <RotateCcw className="h-3 w-3" /> {t('dashboard.reversed_adjustments')}
                   </p>
                   <p className="text-xl font-black">{reversalStats.reversedAdjustments || 0}</p>
                 </div>
@@ -420,7 +426,7 @@ const Dashboard: React.FC = () => {
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <DollarSign className="h-4 w-4 text-red-500" />
-                      Unpaid Supplier Orders ({supplierUnpaidOrders.length})
+                      {t('dashboard.unpaid_supplier_orders', { count: supplierUnpaidOrders.length })}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-0">
@@ -428,10 +434,10 @@ const Dashboard: React.FC = () => {
                       <table className="w-full text-sm">
                         <thead className="bg-muted/30">
                           <tr>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">Supplier</th>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">Order#</th>
-                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">Balance</th>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">Due</th>
+                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('suppliers.col_supplier')}</th>
+                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('reports.header_order_num')}</th>
+                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">{t('common.balance')}</th>
+                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('common.due')}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -455,7 +461,7 @@ const Dashboard: React.FC = () => {
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <AlertTriangle className="h-4 w-4 text-amber-500" />
-                      Payment Due Alerts
+                      {t('dashboard.payment_due_alerts')}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-0">
@@ -463,10 +469,10 @@ const Dashboard: React.FC = () => {
                       <table className="w-full text-sm">
                         <thead className="bg-muted/30">
                           <tr>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">Supplier</th>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">Order#</th>
-                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">Amount</th>
-                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">Due In</th>
+                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('suppliers.col_supplier')}</th>
+                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('reports.header_order_num')}</th>
+                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">{t('common.amount')}</th>
+                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">{t('dashboard.due_in')}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -478,9 +484,9 @@ const Dashboard: React.FC = () => {
                               <td className="p-2 text-xs">
                                 {a.daysUntilDue !== null && a.daysUntilDue !== undefined ? (
                                   a.daysUntilDue <= 0 ? (
-                                    <Badge variant="destructive" className="text-[9px]">Overdue</Badge>
+                                    <Badge variant="destructive" className="text-[9px]">{t('common.overdue')}</Badge>
                                   ) : (
-                                    <span className="text-amber-600 font-semibold">{a.daysUntilDue} days</span>
+                                    <span className="text-amber-600 font-semibold">{a.daysUntilDue} {t('common.days')}</span>
                                   )
                                 ) : '-'}
                               </td>
@@ -498,7 +504,7 @@ const Dashboard: React.FC = () => {
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <Package className="h-4 w-4 text-orange-500" />
-                      Low Stock Products with Supplier
+                      {t('dashboard.low_stock_supplier')}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-0">
@@ -506,10 +512,10 @@ const Dashboard: React.FC = () => {
                       <table className="w-full text-sm">
                         <thead className="bg-muted/30">
                           <tr>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">Product</th>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">Supplier</th>
-                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">Stock</th>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">Category</th>
+                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('inventory.product')}</th>
+                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('suppliers.col_supplier')}</th>
+                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">{t('common.stock')}</th>
+                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('common.category')}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -584,10 +590,17 @@ const Dashboard: React.FC = () => {
                     />
                     <Bar
                       dataKey="revenue"
-                      fill="var(--primary)"
                       radius={[6, 6, 0, 0]}
                       maxBarSize={48}
-                    />
+                    >
+                      {revenueChartData.map((entry: any, idx: number) => (
+                        <Cell
+                          key={idx}
+                          fill={entry.isToday ? 'var(--primary)' : 'var(--primary)'}
+                          opacity={entry.isToday ? 1 : 0.35}
+                        />
+                      ))}
+                    </Bar>
                   </BarChart>
                 </ChartContainer>
               </CardContent>
@@ -634,7 +647,7 @@ const Dashboard: React.FC = () => {
                   </div>
                   <div className="p-4 rounded-xl border border-border/40 bg-card/50 col-span-2">
                     <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1">{t('common.details')}</p>
-                    <p className="font-medium">{selectedActivity.extra || 'System entry'}</p>
+                    <p className="font-medium">{selectedActivity.extra || t('dashboard.system_entry')}</p>
                   </div>
                 </div>
 

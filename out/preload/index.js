@@ -147,6 +147,14 @@ electron.contextBridge.exposeInMainWorld("api", {
   unlockEmployeeAccount: (id) => electron.ipcRenderer.invoke("unlock-employee-account", id),
   resetEmployeePassword: (id, newPin) => electron.ipcRenderer.invoke("reset-employee-password", id, newPin),
   loginEmployee: (username, pin) => electron.ipcRenderer.invoke("login-employee", username, pin),
+  // PIN Recovery
+  generateRecoveryKey: (entityType, entityId) => electron.ipcRenderer.invoke("generate-recovery-key", entityType, entityId),
+  verifyRecoveryKey: (username, recoveryKey) => electron.ipcRenderer.invoke("verify-recovery-key", username, recoveryKey),
+  resetPinWithRecovery: (username, recoveryKey, newPin) => electron.ipcRenderer.invoke("reset-pin-with-recovery", username, recoveryKey, newPin),
+  lockUserAccount: (id) => electron.ipcRenderer.invoke("lock-user-account", id),
+  unlockUserAccount: (id) => electron.ipcRenderer.invoke("unlock-user-account", id),
+  forcePinChange: (id) => electron.ipcRenderer.invoke("force-pin-change", id),
+  getPinHistory: (entityType, entityId) => electron.ipcRenderer.invoke("get-pin-history", entityType, entityId),
   // Login History
   getLoginHistory: (options) => electron.ipcRenderer.invoke("get-login-history", options),
   // Attendance
@@ -159,9 +167,6 @@ electron.contextBridge.exposeInMainWorld("api", {
   updateEmployeePerformance: (data) => electron.ipcRenderer.invoke("update-employee-performance", data),
   // Employee Stats (Dashboard)
   getEmployeeStats: () => electron.ipcRenderer.invoke("get-employee-stats"),
-  // Activity Logs
-  getActivityLogs: (options) => electron.ipcRenderer.invoke("get-activity-logs", options),
-  logActivity: (data) => electron.ipcRenderer.invoke("log-activity", data),
   getAuditLogs: (options) => electron.ipcRenderer.invoke("get-audit-logs", options),
   reverseAuditLogEntry: (data) => electron.ipcRenderer.invoke("reverse-audit-log-entry", data),
   // Shipments
@@ -237,6 +242,14 @@ electron.contextBridge.exposeInMainWorld("api", {
   getBudgets: (options) => electron.ipcRenderer.invoke("get-budgets", options),
   setBudget: (data) => electron.ipcRenderer.invoke("set-budget", data),
   deleteBudget: (id) => electron.ipcRenderer.invoke("delete-budget", id),
+  getBudgetAdjustments: (budgetId) => electron.ipcRenderer.invoke("get-budget-adjustments", budgetId),
+  createBudgetAdjustment: (data) => electron.ipcRenderer.invoke("create-budget-adjustment", data),
+  approveBudgetAdjustment: (id, approvedBy) => electron.ipcRenderer.invoke("approve-budget-adjustment", id, approvedBy),
+  duplicateBudget: (fromData, toMonth, toYear) => electron.ipcRenderer.invoke("duplicate-budget", fromData, toMonth, toYear),
+  getBudgetAlerts: (options) => electron.ipcRenderer.invoke("get-budget-alerts", options),
+  acknowledgeBudgetAlert: (id) => electron.ipcRenderer.invoke("acknowledge-budget-alert", id),
+  getBudgetReport: (options) => electron.ipcRenderer.invoke("get-budget-report", options),
+  getBudgetForecast: (options) => electron.ipcRenderer.invoke("get-budget-forecast", options),
   // Supplier Price Checks
   getSupplierPriceChecks: (supplierId) => electron.ipcRenderer.invoke("get-supplier-price-checks", supplierId),
   saveSupplierPriceCheck: (data) => electron.ipcRenderer.invoke("save-supplier-price-check", data),
@@ -253,5 +266,14 @@ electron.contextBridge.exposeInMainWorld("api", {
   getInventoryBySupplierReport: () => electron.ipcRenderer.invoke("get-inventory-by-supplier-report"),
   getSupplierUnpaidOrders: () => electron.ipcRenderer.invoke("get-supplier-unpaid-orders"),
   getSupplierPaymentDueAlerts: () => electron.ipcRenderer.invoke("get-supplier-payment-due-alerts"),
-  getSupplierLowStock: () => electron.ipcRenderer.invoke("get-supplier-low-stock")
+  getSupplierLowStock: () => electron.ipcRenderer.invoke("get-supplier-low-stock"),
+  // CSV / Data Import
+  importData: (module, rows) => electron.ipcRenderer.invoke("import-data", module, rows),
+  // Order Management
+  getOrders: (options) => electron.ipcRenderer.invoke("get-orders", options),
+  getOrder: (id) => electron.ipcRenderer.invoke("get-order", id),
+  insertOrder: (data) => electron.ipcRenderer.invoke("insert-order", data),
+  convertOrderToSale: (data) => electron.ipcRenderer.invoke("convert-order-to-sale", data),
+  convertOrderToDebt: (data) => electron.ipcRenderer.invoke("convert-order-to-debt", data),
+  cancelOrder: (data) => electron.ipcRenderer.invoke("cancel-order", data)
 });

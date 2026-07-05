@@ -25,7 +25,6 @@ const PHASE_LABELS: Record<string, string> = {
   employees: 'Employees',
   stock_movements: 'Stock Movements',
   notifications: 'Notifications',
-  activity_logs: 'Activity Logs',
 };
 
 const TestDataGenerator: React.FC = () => {

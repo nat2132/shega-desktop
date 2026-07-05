@@ -1,17 +1,16 @@
 import { useState, useMemo } from "react"
 import {
   User as UserIcon,
-  CreditCard,
   Bell,
   LogOut,
   MoreVertical,
-  ShieldCheck,
   Crown,
   Camera,
   Check
 } from "lucide-react"
 
 import { useAuth } from "../context/AuthContext"
+import { useSettings } from "../context/SettingsContext"
 import {
   Avatar,
   AvatarImage,
@@ -37,7 +36,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Button } from "@renderer/components/ui/button"
 
 // Import profile images
-const profileImages = import.meta.glob('../assets/profile/*.png', { eager: true, import: 'default' });
+const profileImages = (import.meta as any).glob('../assets/profile/*.png', { eager: true, import: 'default' });
 const AVATAR_OPTIONS = Object.values(profileImages) as string[];
 
 export function NavUser({
@@ -51,6 +50,7 @@ export function NavUser({
 }) {
   const { isMobile } = useSidebar()
   const { logout, currentAdmin, isSuperAdmin, refreshAdmin } = useAuth()
+  const { t } = useSettings()
   const [isAvatarOpen, setIsAvatarOpen] = useState(false)
   const [showSecurity, setShowSecurity] = useState(false)
   const [showPriority, setShowPriority] = useState(false)
@@ -136,7 +136,7 @@ export function NavUser({
                       {isSuperAdmin && <Crown className="h-3 w-3 text-amber-500" />}
                     </div>
                     <span className="truncate text-[8px] text-muted-foreground uppercase tracking-widest">
-                      @{currentAdmin?.username || 'unknown'}
+                      @{currentAdmin?.username || t('common.unknown', 'Unknown')}
                     </span>
                   </div>
                 </div>
@@ -147,7 +147,7 @@ export function NavUser({
                   variant={isSuperAdmin ? "default" : "outline"} 
                   className="text-[8px] font-black uppercase tracking-widest w-full justify-center py-1"
                 >
-                  {isSuperAdmin ? '★ Super Admin' : currentAdmin?.isEmployee ? currentAdmin.role : 'Admin'}
+                  {isSuperAdmin ? '★ ' + t('common.super_admin', 'Super Admin') : currentAdmin?.isEmployee ? currentAdmin.role : t('common.admin', 'Admin')}
                 </Badge>
               </div>
               <DropdownMenuSeparator />
@@ -157,15 +157,15 @@ export function NavUser({
                   onClick={() => setIsAvatarOpen(true)}
                 >
                   <Camera className="size-4 mr-2" />
-                  Update Profile Image
+                  {t('nav_user.update_profile_image', 'Update Profile Image')}
                 </DropdownMenuItem>
                 <DropdownMenuItem className="text-[10px] font-medium uppercase tracking-widest" onClick={() => setShowSecurity(true)}>
                   <UserIcon className="size-4 mr-2" />
-                  Security Profile
+                  {t('nav_user.security_profile', 'Security Profile')}
                 </DropdownMenuItem>
                 <DropdownMenuItem className="text-[10px] font-medium uppercase tracking-widest" onClick={() => setShowPriority(true)}>
                   <Bell className="size-4 mr-2" />
-                  Priority Alerts
+                  {t('nav_user.priority_alerts', 'Priority Alerts')}
                 </DropdownMenuItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
@@ -174,7 +174,7 @@ export function NavUser({
                 onClick={logout}
               >
                 <LogOut className="size-4 mr-2" />
-                Terminate Session
+                {t('nav_user.terminate_session', 'Terminate Session')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -184,9 +184,9 @@ export function NavUser({
       <Dialog open={isAvatarOpen} onOpenChange={setIsAvatarOpen}>
         <DialogContent className="sm:max-w-md bg-card border-border/50">
           <DialogHeader>
-            <DialogTitle className="text-sm font-black uppercase tracking-widest">Select Profile Identity</DialogTitle>
+            <DialogTitle className="text-sm font-black uppercase tracking-widest">{t('nav_user.select_avatar', 'Select Profile Identity')}</DialogTitle>
             <DialogDescription className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-              Choose an avatar that reflects your security clearance.
+              {t('nav_user.avatar_description', 'Choose an avatar that reflects your security clearance.')}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[300px] overflow-y-auto px-1">
@@ -223,7 +223,7 @@ export function NavUser({
               onClick={() => setIsAvatarOpen(false)}
               className="text-[10px] font-black uppercase tracking-widest h-8"
             >
-              Cancel
+              {t('common.cancel', 'Cancel')}
             </Button>
           </div>
         </DialogContent>
@@ -232,23 +232,23 @@ export function NavUser({
       <Dialog open={showSecurity} onOpenChange={setShowSecurity}>
         <DialogContent className="sm:max-w-md bg-card border-border/50">
           <DialogHeader>
-            <DialogTitle className="text-lg font-black uppercase tracking-tight">Security Profile</DialogTitle>
+            <DialogTitle className="text-lg font-black uppercase tracking-tight">{t('nav_user.security_title', 'Security Profile')}</DialogTitle>
             <DialogDescription className="text-xs font-medium">
-              Manage your account security settings.
+              {t('nav_user.security_description', 'Manage your account security settings.')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4 text-sm">
             <div className="flex items-center justify-between p-3 rounded-xl border bg-muted/20">
-              <span className="font-bold">Two-Factor Authentication</span>
-              <span className="text-xs text-muted-foreground">Coming soon</span>
+              <span className="font-bold">{t('nav_user.two_factor', 'Two-Factor Authentication')}</span>
+              <span className="text-xs text-muted-foreground">{t('nav_user.coming_soon', 'Coming soon')}</span>
             </div>
             <div className="flex items-center justify-between p-3 rounded-xl border bg-muted/20">
-              <span className="font-bold">Session Management</span>
-              <span className="text-xs text-muted-foreground">Coming soon</span>
+              <span className="font-bold">{t('nav_user.session_management', 'Session Management')}</span>
+              <span className="text-xs text-muted-foreground">{t('nav_user.coming_soon', 'Coming soon')}</span>
             </div>
             <div className="flex items-center justify-between p-3 rounded-xl border bg-muted/20">
-              <span className="font-bold">Audit Log</span>
-              <span className="text-xs text-muted-foreground">Track account activity</span>
+              <span className="font-bold">{t('nav_user.audit_log', 'Audit Log')}</span>
+              <span className="text-xs text-muted-foreground">{t('nav_user.track_activity', 'Track account activity')}</span>
             </div>
           </div>
         </DialogContent>
@@ -257,30 +257,30 @@ export function NavUser({
       <Dialog open={showPriority} onOpenChange={setShowPriority}>
         <DialogContent className="sm:max-w-md bg-card border-border/50">
           <DialogHeader>
-            <DialogTitle className="text-lg font-black uppercase tracking-tight">Priority Alerts</DialogTitle>
+            <DialogTitle className="text-lg font-black uppercase tracking-tight">{t('nav_user.priority_title', 'Priority Alerts')}</DialogTitle>
             <DialogDescription className="text-xs font-medium">
-              Configure which alerts you want to receive.
+              {t('nav_user.priority_description', 'Configure which alerts you want to receive.')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4 text-sm">
             <div className="flex items-center justify-between p-3 rounded-xl border bg-muted/20">
               <div>
-                <p className="font-bold">Low Stock Alerts</p>
-                <p className="text-[10px] text-muted-foreground">When items run below threshold</p>
+                <p className="font-bold">{t('nav_user.low_stock_alerts', 'Low Stock Alerts')}</p>
+                <p className="text-[10px] text-muted-foreground">{t('nav_user.low_stock_desc', 'When items run below threshold')}</p>
               </div>
               <div className="w-9 h-5 rounded-full bg-primary" />
             </div>
             <div className="flex items-center justify-between p-3 rounded-xl border bg-muted/20">
               <div>
-                <p className="font-bold">Overdue Payments</p>
-                <p className="text-[10px] text-muted-foreground">When debts pass due date</p>
+                <p className="font-bold">{t('nav_user.overdue_payments', 'Overdue Payments')}</p>
+                <p className="text-[10px] text-muted-foreground">{t('nav_user.overdue_payments_desc', 'When debts pass due date')}</p>
               </div>
               <div className="w-9 h-5 rounded-full bg-primary" />
             </div>
             <div className="flex items-center justify-between p-3 rounded-xl border bg-muted/20">
               <div>
-                <p className="font-bold">Expiry Reminders</p>
-                <p className="text-[10px] text-muted-foreground">Items approaching expiry</p>
+                <p className="font-bold">{t('nav_user.expiry_reminders', 'Expiry Reminders')}</p>
+                <p className="text-[10px] text-muted-foreground">{t('nav_user.expiry_reminders_desc', 'Items approaching expiry')}</p>
               </div>
               <div className="w-9 h-5 rounded-full bg-muted" />
             </div>

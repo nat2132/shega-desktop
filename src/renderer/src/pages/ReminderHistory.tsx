@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Bell, BellOff, CheckCircle, Clock, Calendar, Trash2, ChevronDown } from 'lucide-react';
+import { Plus, Bell, BellOff, CheckCircle, Clock, Calendar, Trash2 } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -99,18 +99,6 @@ const ReminderHistory: React.FC = () => {
     setShowModal(true);
   };
 
-  const openEdit = (reminder: Reminder) => {
-    setEditingReminder(reminder);
-    setFormData({
-      title: reminder.title,
-      message: reminder.message,
-      type: reminder.type,
-      triggerDate: reminder.triggerAt.split('T')[0] || new Date().toISOString().split('T')[0],
-      triggerTime: reminder.triggerAt.split('T')[1]?.slice(0, 5) || '09:00',
-    });
-    setShowModal(true);
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.title.trim()) return;
@@ -122,16 +110,16 @@ const ReminderHistory: React.FC = () => {
     if (editingReminder) {
       try {
         await window.api?.updateReminder(editingReminder.id, payload);
-        toast.success(t('reminders.edit_reminder'));
+        toast.success(t('reminders.reminder_updated'));
       } catch {
-        toast.error('Failed to update reminder');
+        toast.error(t('reminders.update_error'));
       }
     } else {
       try {
         await window.api?.createReminder(payload);
-        toast.success(t('reminders.new_reminder'));
+        toast.success(t('reminders.reminder_created'));
       } catch {
-        toast.error('Failed to create reminder');
+        toast.error(t('reminders.create_error'));
       }
     }
 
@@ -154,7 +142,7 @@ const ReminderHistory: React.FC = () => {
     try {
       const untilIso = new Date(Date.now() + hours * 3600000).toISOString();
       await window.api?.snoozeReminder(id, untilIso);
-      toast.success(t('reminders.snoozed'));
+      toast.success(t('reminders.snoozed_hours', { hours }));
     } catch {
       console.log('snoozeReminder', id, hours);
     }

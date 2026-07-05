@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Shield, Search, RefreshCw, Filter, Eye, Undo2, RotateCcw, X
+  Shield, Search, RefreshCw, Filter, Eye, Undo2, RotateCcw
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { Button } from '../components/ui/button';
@@ -20,21 +20,21 @@ const actionVariants: Record<string, 'default' | 'secondary' | 'destructive' | '
 
 const canReverse = (log: any): boolean => {
   if (log.reversedAt) return false;
-  if (log.action === 'soft_delete' && (log.entityType === 'item' || log.entityType === 'customer')) return true;
-  if (log.action === 'restore_item' || log.action === 'restore_customer') return true;
+  if ((log.action === 'soft_delete' || log.action === 'archive') && (log.entityType === 'item' || log.entityType === 'customer')) return true;
+  if (log.action === 'restore_item' || log.action === 'restore_customer' || log.action === 'restore') return true;
   if ((log.action === 'update' || log.action === 'insert') && log.fieldName && log.oldValue !== null) return true;
   return false;
 };
 
-const reverseLabel = (log: any): string => {
-  if (log.action === 'soft_delete') return log.entityType === 'item' ? 'Restore Item' : 'Restore Customer';
-  if (log.action === 'restore_item') return 'Re-delete Item';
-  if (log.action === 'restore_customer') return 'Re-delete Customer';
-  return 'Undo Change';
+const reverseLabel = (log: any, t: (key: string) => string): string => {
+  if (log.action === 'soft_delete' || log.action === 'archive') return log.entityType === 'item' ? t('audit_logs.restore_item') : t('audit_logs.restore_customer');
+  if (log.action === 'restore_item' || (log.action === 'restore' && log.entityType === 'item')) return t('audit_logs.redelete_item');
+  if (log.action === 'restore_customer' || (log.action === 'restore' && log.entityType === 'customer')) return t('audit_logs.redelete_customer');
+  return t('audit_logs.undo_change');
 };
 
 const AuditLogs: React.FC = () => {
-  const { t, formatDate, formatTime, formatDateTime } = useSettings();
+  const { t, formatDateTime } = useSettings();
   const [logs, setLogs] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [entityFilter, setEntityFilter] = useState('');
@@ -71,10 +71,10 @@ const AuditLogs: React.FC = () => {
     setReversingId(log.id);
     try {
       await window.api.reverseAuditLogEntry({ logId: log.id });
-      toast.success('Change reversed successfully');
+      toast.success(t('audit_logs.reverse_success'));
       loadLogs();
     } catch (err: any) {
-      toast.error(err?.message || 'Failed to reverse');
+      toast.error(err?.message || t('audit_logs.reverse_error'));
     } finally {
       setReversingId(null);
     }
@@ -108,24 +108,24 @@ const AuditLogs: React.FC = () => {
           <select value={actionFilter} onChange={e => setActionFilter(e.target.value)}
             className="h-9 px-3 rounded-xl border bg-background text-[10px] font-bold">
             <option value="">{t('audit_logs.all_actions')}</option>
-            <option value="void_sale">Void Sale</option>
-            <option value="reverse_payment">Reverse Payment</option>
-            <option value="reverse_adjustment">Reverse Adjustment</option>
-            <option value="restore">Restore</option>
-            <option value="soft_delete">Soft Delete</option>
-            <option value="delete">Delete</option>
-            <option value="update">Update</option>
-            <option value="insert">Insert</option>
+            <option value="void_sale">{t('audit_logs.action_void_sale')}</option>
+            <option value="reverse_payment">{t('audit_logs.action_reverse_payment')}</option>
+            <option value="reverse_adjustment">{t('audit_logs.action_reverse_adjustment')}</option>
+            <option value="restore">{t('audit_logs.action_restore')}</option>
+            <option value="soft_delete">{t('audit_logs.action_soft_delete')}</option>
+            <option value="delete">{t('audit_logs.action_delete')}</option>
+            <option value="update">{t('audit_logs.action_update')}</option>
+            <option value="insert">{t('audit_logs.action_insert')}</option>
           </select>
           <select value={entityFilter} onChange={e => setEntityFilter(e.target.value)}
             className="h-9 px-3 rounded-xl border bg-background text-[10px] font-bold">
             <option value="">{t('audit_logs.all_entities')}</option>
-            <option value="sale">Sale</option>
-            <option value="item">Item</option>
-            <option value="customer">Customer</option>
-            <option value="supplier">Supplier</option>
-            <option value="payment">Payment</option>
-            <option value="adjustment">Adjustment</option>
+            <option value="sale">{t('audit_logs.entity_sale')}</option>
+            <option value="item">{t('audit_logs.entity_item')}</option>
+            <option value="customer">{t('audit_logs.entity_customer')}</option>
+            <option value="supplier">{t('audit_logs.entity_supplier')}</option>
+            <option value="payment">{t('audit_logs.entity_payment')}</option>
+            <option value="adjustment">{t('audit_logs.entity_adjustment')}</option>
           </select>
           <Button size="sm" variant="outline" className="h-9 text-[10px] font-black uppercase tracking-widest" onClick={loadLogs}>
             <Filter size={14} className="mr-2" /> {t('audit_logs.filter')}
@@ -169,7 +169,7 @@ const AuditLogs: React.FC = () => {
                         <span className="text-[9px] font-bold text-muted-foreground">#{log.entityId}</span>
                       )}
                       {log.reversedAt && (
-                        <Badge variant="secondary" className="text-[8px] font-black uppercase">Reversed</Badge>
+                        <Badge variant="secondary" className="text-[8px] font-black uppercase">{t('audit_logs.reversed')}</Badge>
                       )}
                       <span className="text-[9px] text-muted-foreground ml-auto">
                         {log.createdAt ? formatDateTime(log.createdAt) : ''}
@@ -179,16 +179,16 @@ const AuditLogs: React.FC = () => {
                       <div className="mt-1.5 space-y-1">
                         <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">{log.fieldName}</p>
                         <div className="flex items-center gap-2 text-xs">
-                          <span className="line-through text-destructive">{log.oldValue || '(empty)'}</span>
+                          <span className="line-through text-destructive">{log.oldValue || t('audit_logs.empty_value')}</span>
                           <Eye size={12} className="text-muted-foreground" />
-                          <span className="text-green-600 font-semibold">{log.newValue || '(empty)'}</span>
+                          <span className="text-green-600 font-semibold">{log.newValue || t('audit_logs.empty_value')}</span>
                         </div>
                       </div>
                     ) : (
                       <p className="text-xs font-semibold mt-1.5 break-words">{log.description}</p>
                     )}
                     <div className="flex items-center gap-1.5 mt-1">
-                      <span className="text-[9px] text-muted-foreground font-medium">{t('audit_logs.by')} {log.changedBy || 'unknown'}</span>
+                      <span className="text-[9px] text-muted-foreground font-medium">{t('audit_logs.by')} {log.changedBy || t('common.unknown')}</span>
                     </div>
                   </div>
                   <div className="flex items-start gap-1 shrink-0">
@@ -205,7 +205,7 @@ const AuditLogs: React.FC = () => {
                         ) : (
                           <Undo2 size={11} className="mr-1" />
                         )}
-                        {reverseLabel(log)}
+                        {reverseLabel(log, t)}
                       </Button>
                     )}
                   </div>

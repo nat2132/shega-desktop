@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
   Plus, Repeat, TrendingDown, 
-  DollarSign, PieChart,
-  Briefcase, CheckCircle, ArrowDownRight, Trash2, Edit, Eye, FileText,
+  PieChart,
+  Briefcase, Trash2, Edit, FileText,
   List, Wallet
 } from 'lucide-react';
 import {
@@ -42,6 +42,7 @@ interface Expense {
   date: string;
   isRecurring: number;
   frequency: string;
+  startDate: string;
   nextBillingDate: string;
 }
 
@@ -51,7 +52,7 @@ const Expenses: React.FC = () => {
   const [analytics, setAnalytics] = useState<any>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery] = useState('');
 
   const [formData, setFormData] = useState({
     name: '', amount: '', category: 'Other', date: new Date().toISOString().split('T')[0],
@@ -110,29 +111,29 @@ const Expenses: React.FC = () => {
 
   const handleSetBudget = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!budgetFormData.amount || parseFloat(budgetFormData.amount) <= 0) { toast.error('Valid budget amount is required'); return; }
+    if (!budgetFormData.amount || parseFloat(budgetFormData.amount) <= 0) { toast.error(t('budgets.budget_amount_error') || 'Please enter a valid budget amount'); return; }
     try {
       const result = await window.api?.setBudget({
         category: budgetFormData.category,
         amount: parseFloat(budgetFormData.amount),
         period: budgetFormData.period
       });
-      if (result?.success) toast.success('Budget saved');
+      if (result?.success) toast.success(t('budgets.budget_set') || 'Budget saved');
       setBudgetModal(false);
       resetBudgetForm();
       loadBudgets();
     } catch {
-      toast.error('Failed to save budget');
+      toast.error(t('budgets.budget_save_error') || 'Failed to save budget');
     }
   };
 
   const handleDeleteBudget = async (id: number) => {
     try {
       await window.api?.deleteBudget(id);
-      toast.success('Budget deleted');
+      toast.success(t('budgets.budget_deleted') || 'Budget deleted');
       loadBudgets();
     } catch {
-      toast.error('Failed to delete budget');
+      toast.error(t('budgets.budget_delete_error') || 'Failed to delete budget');
     }
   };
 
@@ -148,7 +149,7 @@ const Expenses: React.FC = () => {
     const peakCat = [...new Set(expenses.map(e => e.category))].reduce((best, cat) => {
       const sum = expenses.filter(e => e.category === cat).reduce((s, e) => s + e.amount, 0);
       return sum > best.sum ? { cat, sum } : best;
-    }, { cat: 'Salaries', sum: 0 });
+    }, { cat: t('expense.salaries'), sum: 0 });
 
     return [
       { 
@@ -175,7 +176,7 @@ const Expenses: React.FC = () => {
       { 
         title: t('expense.peak'), 
         value: peakCat.cat, 
-        trend: 'High', 
+        trend: t('dashboard.trend_high'), 
         trendType: 'up',
         footerTitle: t('expense.largest'),
         footerSub: t('expense.operational_focus')
@@ -185,7 +186,7 @@ const Expenses: React.FC = () => {
 
   const chartData = useMemo(() => {
     if (!analytics?.expenseData) return [];
-    return analytics.expenseData.map(d => ({
+    return analytics.expenseData.map((d: any) => ({
       date: d.date,
       outflow: d.amount
     }));
@@ -205,16 +206,16 @@ const Expenses: React.FC = () => {
   ];
 
   const BUDGET_CATEGORIES = [
-    { id: 'Utilities', label: 'Utilities' },
-    { id: 'Rent', label: 'Rent' },
-    { id: 'Salaries', label: 'Salaries' },
-    { id: 'Marketing', label: 'Marketing' },
-    { id: 'Maintenance', label: 'Maintenance' },
-    { id: 'Transport', label: 'Transport' },
-    { id: 'Office Supplies', label: 'Office Supplies' },
-    { id: 'Taxes', label: 'Taxes' },
-    { id: 'Insurance', label: 'Insurance' },
-    { id: 'Other', label: 'Other' },
+    { id: 'Utilities', label: t('expense.utilities') },
+    { id: 'Rent', label: t('expense.rent') },
+    { id: 'Salaries', label: t('expense.salaries') },
+    { id: 'Marketing', label: t('expense.marketing') || 'Marketing' },
+    { id: 'Maintenance', label: t('expense.maintenance') || 'Maintenance' },
+    { id: 'Transport', label: t('expense.transport') },
+    { id: 'Office Supplies', label: t('expense.office_supplies') || 'Office Supplies' },
+    { id: 'Taxes', label: t('expense.taxes') || 'Taxes' },
+    { id: 'Insurance', label: t('expense.insurance') || 'Insurance' },
+    { id: 'Other', label: t('expense.other') },
   ];
 
   const columns: ColumnDef<Expense>[] = [
@@ -298,8 +299,8 @@ const Expenses: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name.trim()) { toast.error('Expense name is required'); return; }
-    if (!formData.amount || parseFloat(formData.amount) <= 0) { toast.error('Valid amount is required'); return; }
+    if (!formData.name.trim()) { toast.error(t('expense.name_required') || 'Expense name is required'); return; }
+    if (!formData.amount || parseFloat(formData.amount) <= 0) { toast.error(t('expense.amount_required') || 'Valid amount is required'); return; }
     const expense = {
       ...formData,
       amount: parseFloat(formData.amount),
@@ -333,16 +334,16 @@ const Expenses: React.FC = () => {
   };
 
   const exportExpensesCSV = () => {
-    const h = ['Name', 'Amount', 'Category', 'Date', 'Recurring', 'Frequency'];
-    const r = expenses.map(e => [e.name, e.amount, e.category, e.date, e.isRecurring ? 'Yes' : 'No', e.frequency || '']);
+    const h = [t('expense.export_name') || 'Name', t('expense.export_amount') || 'Amount', t('expense.export_category') || 'Category', t('expense.export_date') || 'Date', t('expense.export_recurring') || 'Recurring', t('expense.export_frequency') || 'Frequency'];
+    const r = expenses.map(e => [e.name, e.amount, e.category, e.date, e.isRecurring ? (t('expense.export_yes') || 'Yes') : (t('expense.export_no') || 'No'), e.frequency || '']);
     exportCSV(h, r, 'expenses');
   };
 
   const exportExpensesPDF = () => {
-    const h = ['Name', 'Amount', 'Category', 'Date', 'Recurring', 'Frequency'];
-    const r = expenses.map(e => [e.name, String(e.amount), e.category, e.date, e.isRecurring ? 'Yes' : 'No', e.frequency || '']);
-    exportPDF('Expenses Report', h, r, 'expenses');
-    toast.success('Report exported successfully');
+    const h = [t('expense.export_name') || 'Name', t('expense.export_amount') || 'Amount', t('expense.export_category') || 'Category', t('expense.export_date') || 'Date', t('expense.export_recurring') || 'Recurring', t('expense.export_frequency') || 'Frequency'];
+    const r = expenses.map(e => [e.name, String(e.amount), e.category, e.date, e.isRecurring ? (t('expense.export_yes') || 'Yes') : (t('expense.export_no') || 'No'), e.frequency || '']);
+    exportPDF(t('data_transfer.expenses_report'), h, r, 'expenses');
+    toast.success(t('reports.report_generated'));
   };
 
   return (
@@ -355,7 +356,7 @@ const Expenses: React.FC = () => {
                 <List className="w-4 h-4 mr-2" /> {t('expense.header')}
               </TabsTrigger>
               <TabsTrigger value="budget" className="rounded-xl data-[state=active]:bg-background data-[state=active]:shadow-sm font-black text-[10px] uppercase tracking-widest">
-                <PieChart className="w-4 h-4 mr-2" /> Budget
+                <PieChart className="w-4 h-4 mr-2" /> {t('budgets.tab_budgets')}
               </TabsTrigger>
             </TabsList>
           </div>
@@ -393,7 +394,7 @@ const Expenses: React.FC = () => {
                 </div>
                 <div className="text-right pr-12 hidden md:block">
                   <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground opacity-40 mb-1">{t('expense.projected_savings')}</p>
-                  <p className="text-2xl font-black text-green-600">-12% {t('expense.savings_potential')}</p>
+                  <p className="text-2xl font-black text-green-600">{t('expense.projected_savings_value') || '-12%'} {t('expense.savings_potential')}</p>
                 </div>
               </div>
             </div>
@@ -405,8 +406,8 @@ const Expenses: React.FC = () => {
                 title={t('expense.header')}
               />
               <div className="flex gap-2 justify-end mt-2">
-                <Button variant="outline" size="sm" onClick={exportExpensesCSV}><FileText size={14} className="mr-1" /> CSV</Button>
-                <Button variant="outline" size="sm" onClick={exportExpensesPDF}><FileText size={14} className="mr-1" /> PDF</Button>
+                <Button variant="outline" size="sm" onClick={exportExpensesCSV}><FileText size={14} className="mr-1" /> {t('reports.export_csv')}</Button>
+                <Button variant="outline" size="sm" onClick={exportExpensesPDF}><FileText size={14} className="mr-1" /> {t('reports.export_pdf')}</Button>
               </div>
             </div>
 
@@ -417,11 +418,11 @@ const Expenses: React.FC = () => {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('expense.desc_payee')}</label>
-                      <Input required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="h-12 bg-card rounded-xl font-bold" placeholder="e.g. Office Rent - May" />
+                      <Input required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="h-12 bg-card rounded-xl font-bold" placeholder={t('expense.placeholder_name') || 'e.g. Office Rent - May'} />
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('common.amount')} ({t('common.etb')})</label>
-                      <Input required type="number" value={formData.amount} onChange={e => setFormData({...formData, amount: e.target.value})} className="h-12 bg-card rounded-xl font-black text-lg" placeholder="0.00" />
+                      <Input required type="number" value={formData.amount} onChange={e => setFormData({...formData, amount: e.target.value})} className="h-12 bg-card rounded-xl font-black text-lg" placeholder={t('expense.placeholder_amount') || '0.00'} />
                     </div>
                   </div>
                 </div>
@@ -502,12 +503,12 @@ const Expenses: React.FC = () => {
             <div className="px-4 lg:px-6 space-y-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="text-2xl font-black tracking-tight">Budget Management</h2>
-                  <p className="text-sm text-muted-foreground font-medium">Set and monitor spending limits</p>
+                  <h2 className="text-2xl font-black tracking-tight">{t('budgets.title')}</h2>
+                  <p className="text-sm text-muted-foreground font-medium">{t('expense.budget_subtitle')}</p>
                 </div>
                 <Button onClick={() => { resetBudgetForm(); setBudgetModal(true); }}
                   className="h-11 text-[10px] font-black uppercase tracking-widest rounded-2xl">
-                  <Plus className="w-4 h-4 mr-2" /> Set Budget
+                  <Plus className="w-4 h-4 mr-2" /> {t('budgets.set_budget')}
                 </Button>
               </div>
 
@@ -539,13 +540,13 @@ const Expenses: React.FC = () => {
                     </svg>
                     <div className="space-y-1">
                       <p className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground">
-                        {isOver ? 'Over Budget' : 'Budget Health'}
+                        {isOver ? t('expense.budget_over') : t('expense.budget_health')}
                       </p>
                       <p className="text-2xl font-black tracking-tight">
-                        Spent {t('common.etb')} {totalSpent.toLocaleString()}
+                        {t('expense.budget_spent')} {t('common.etb')} {totalSpent.toLocaleString()}
                       </p>
                       <p className="text-sm text-muted-foreground font-medium">
-                        of {t('common.etb')} {totalBudget.toLocaleString()} budget
+                        {t('expense.budget_of', { amount: `${t('common.etb')} ${totalBudget.toLocaleString()}` })}
                       </p>
                     </div>
                   </div>
@@ -557,8 +558,8 @@ const Expenses: React.FC = () => {
                   <div className="h-16 w-16 rounded-3xl bg-muted flex items-center justify-center">
                     <PieChart className="h-8 w-8 text-muted-foreground" />
                   </div>
-                  <h3 className="text-lg font-black">No Budgets Set</h3>
-                  <p className="text-sm text-muted-foreground max-w-md">Create your first budget to start tracking spending limits across categories.</p>
+                  <h3 className="text-lg font-black">{t('expense.budget_no_budgets')}</h3>
+                  <p className="text-sm text-muted-foreground max-w-md">{t('expense.budget_create_first')}</p>
                 </div>
               ) : (
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -573,7 +574,7 @@ const Expenses: React.FC = () => {
                         {isOver && (
                           <div className="absolute top-0 right-0">
                             <Badge variant="destructive" className="rounded-bl-2xl rounded-tr-3xl text-[9px] font-black uppercase px-3 py-1.5">
-                              Over Budget
+                              {t('expense.budget_over')}
                             </Badge>
                           </div>
                         )}
@@ -584,7 +585,7 @@ const Expenses: React.FC = () => {
                             </div>
                             <div>
                               <h3 className="font-bold text-base">{budget.category}</h3>
-                              <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest">{budget.period} budget</p>
+                              <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest">{t('expense.budget_period', { period: budget.period })}</p>
                             </div>
                           </div>
                           <AlertDialog>
@@ -595,18 +596,18 @@ const Expenses: React.FC = () => {
                             </AlertDialogTrigger>
                             <AlertDialogContent className="rounded-[32px] bg-background border-border shadow-2xl">
                               <AlertDialogHeader>
-                                <AlertDialogTitle className="text-xl font-black uppercase tracking-tight">Delete Budget</AlertDialogTitle>
+                                <AlertDialogTitle className="text-xl font-black uppercase tracking-tight">{t('expense.budget_delete_title')}</AlertDialogTitle>
                                 <AlertDialogDescription className="text-xs font-medium text-muted-foreground leading-relaxed">
-                                  Are you sure you want to delete the budget for {budget.category}?
+                                  {t('expense.budget_delete_confirm', { category: budget.category })}
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter className="gap-3">
-                                <AlertDialogCancel className="rounded-xl border-border h-11 text-[10px] font-black uppercase tracking-widest">Cancel</AlertDialogCancel>
+                                <AlertDialogCancel className="rounded-xl border-border h-11 text-[10px] font-black uppercase tracking-widest">{t('common.cancel')}</AlertDialogCancel>
                                 <AlertDialogAction 
                                   onClick={() => handleDeleteBudget(budget.id)}
                                   className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-[10px] font-black uppercase tracking-widest"
                                 >
-                                  Delete
+                                  {t('common.delete')}
                                 </AlertDialogAction>
                               </AlertDialogFooter>
                             </AlertDialogContent>
@@ -615,15 +616,15 @@ const Expenses: React.FC = () => {
 
                         <div className="grid grid-cols-3 gap-4">
                           <div>
-                            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Budget</p>
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.budget')}</p>
                             <p className="text-lg font-black">{t('common.etb')} {budget.amount.toLocaleString()}</p>
                           </div>
                           <div>
-                            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Spent</p>
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.spent')}</p>
                             <p className={`text-lg font-black ${isOver ? 'text-destructive' : ''}`}>{t('common.etb')} {spent.toLocaleString()}</p>
                           </div>
                           <div>
-                            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Remaining</p>
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.remaining')}</p>
                             <p className={`text-lg font-black ${remaining < 0 ? 'text-destructive' : 'text-green-600'}`}>{t('common.etb')} {Math.max(0, remaining).toLocaleString()}</p>
                           </div>
                         </div>
@@ -641,8 +642,8 @@ const Expenses: React.FC = () => {
                             />
                           </div>
                           <div className="flex justify-between text-[10px] font-bold text-muted-foreground">
-                            <span>{Math.round(percentage)}% used</span>
-                            {isOver && <span className="text-destructive">{Math.round(percentage - 100)}% over</span>}
+                            <span>{t('budgets.percent_used', { percent: Math.round(percentage) })}</span>
+                            {isOver && <span className="text-destructive">{t('expense.budget_overage', { percent: Math.round(percentage - 100) })}</span>}
                           </div>
                         </div>
                       </div>
@@ -652,13 +653,13 @@ const Expenses: React.FC = () => {
               )}
             </div>
 
-            <Modal isOpen={budgetModal} onClose={() => setBudgetModal(false)} title="Set Budget" size="lg">
+            <Modal isOpen={budgetModal} onClose={() => setBudgetModal(false)} title={t('budgets.set_budget')} size="lg">
               <form onSubmit={handleSetBudget} className="space-y-8 py-4">
                 <div className="space-y-6">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">Budget Details</h4>
+                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('expense.budget_details')}</h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Category</label>
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.category')}</label>
                       <Select value={budgetFormData.category} onValueChange={val => setBudgetFormData({...budgetFormData, category: val})}>
                         <SelectTrigger className="h-12 bg-muted/30 border-border/50 rounded-xl">
                           <SelectValue />
@@ -671,28 +672,28 @@ const Expenses: React.FC = () => {
                       </Select>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Amount ({t('common.etb')})</label>
-                      <Input required type="number" value={budgetFormData.amount} onChange={e => setBudgetFormData({...budgetFormData, amount: e.target.value})} className="h-12 bg-card rounded-xl font-black text-lg" placeholder="0.00" />
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.amount')} ({t('common.etb')})</label>
+                      <Input required type="number" value={budgetFormData.amount} onChange={e => setBudgetFormData({...budgetFormData, amount: e.target.value})} className="h-12 bg-card rounded-xl font-black text-lg" placeholder={t('expense.placeholder_amount') || '0.00'} />
                     </div>
                   </div>
                   <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Period</label>
+                    <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.period')}</label>
                     <Select value={budgetFormData.period} onValueChange={val => setBudgetFormData({...budgetFormData, period: val})}>
                       <SelectTrigger className="h-12 bg-muted/30 border-border/50 rounded-xl max-w-xs">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent className="rounded-xl">
-                        <SelectItem value="monthly">Monthly</SelectItem>
-                        <SelectItem value="quarterly">Quarterly</SelectItem>
-                        <SelectItem value="yearly">Yearly</SelectItem>
+                        <SelectItem value="monthly">{t('budgets.monthly')}</SelectItem>
+                        <SelectItem value="quarterly">{t('budgets.quarterly')}</SelectItem>
+                        <SelectItem value="yearly">{t('budgets.yearly')}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                 </div>
 
                 <div className="flex gap-4 pt-4 sticky bottom-0 bg-background/80 backdrop-blur-md pb-2">
-                  <Button type="submit" className="flex-1 py-6 text-xs font-black uppercase tracking-[0.2em] rounded-2xl shadow-lg">Save Budget</Button>
-                  <Button type="button" variant="ghost" onClick={() => setBudgetModal(false)} className="py-6 font-bold uppercase tracking-widest opacity-40 hover:bg-transparent">Cancel</Button>
+                  <Button type="submit" className="flex-1 py-6 text-xs font-black uppercase tracking-[0.2em] rounded-2xl shadow-lg">{t('expense.budget_save')}</Button>
+                  <Button type="button" variant="ghost" onClick={() => setBudgetModal(false)} className="py-6 font-bold uppercase tracking-widest opacity-40 hover:bg-transparent">{t('common.cancel')}</Button>
                 </div>
               </form>
             </Modal>

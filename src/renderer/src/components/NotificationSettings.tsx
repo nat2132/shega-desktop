@@ -88,7 +88,7 @@ const NotificationSettings: React.FC = () => {
       setPrefs(p || []);
       setReminders(r || []);
     } catch (e: any) {
-      toast.error(e.message || 'Failed to load preferences');
+      toast.error(e.message || t('notifications.load_error', 'Failed to load preferences'));
     } finally {
       setLoading(false);
     }
@@ -113,7 +113,7 @@ const NotificationSettings: React.FC = () => {
       await window.api.updateNotificationPreference(key, updated);
       setPrefs(prev => prev.map(p => p.key === key ? updated : p));
     } catch (e: any) {
-      toast.error(e.message || 'Update failed');
+      toast.error(e.message || t('notifications.update_error', 'Update failed'));
     } finally {
       setSavingKey(null);
     }
@@ -123,19 +123,19 @@ const NotificationSettings: React.FC = () => {
     try {
       const result = await window.api.runReminderEngine();
       if (result?.fired > 0) {
-        toast.success(`${result.fired} reminder(s) triggered`);
+        toast.success(t('notifications.reminder_triggered', '{count} reminder(s) triggered').replace('{count}', String(result.fired)));
       }
     } catch (_) {}
   };
 
   const createReminder = async () => {
-    if (!newReminder.title.trim()) return toast.error('Title is required');
+    if (!newReminder.title.trim()) return toast.error(t('notifications.title_required', 'Title is required'));
     try {
       await window.api.createReminder({
         ...newReminder,
         triggerDate: new Date(newReminder.triggerDate).toISOString(),
       });
-      toast.success('Reminder created');
+      toast.success(t('notifications.reminder_created', 'Reminder created'));
       setShowAddReminder(false);
       setNewReminder({ title: '', message: '', category: 'system', triggerDate: new Date().toISOString().split('T')[0], repeatInterval: '' });
       await Promise.all([loadData(), fireReminderEngine()]);
@@ -148,7 +148,7 @@ const NotificationSettings: React.FC = () => {
     const until = new Date(Date.now() + hours * 3600 * 1000).toISOString();
     try {
       await window.api.snoozeReminder(id, until);
-      toast.success(`Snoozed for ${hours}h`);
+      toast.success(t('notifications.snoozed_hours', 'Snoozed for {hours}h').replace('{hours}', String(hours)));
       await Promise.all([loadData(), fireReminderEngine()]);
     } catch (e: any) { toast.error(e.message); }
   };
@@ -156,13 +156,13 @@ const NotificationSettings: React.FC = () => {
   const completeReminder = async (id: number) => {
     try {
       await window.api.completeReminder(id);
-      toast.success('Marked complete');
+      toast.success(t('notifications.marked_complete', 'Marked complete'));
       await Promise.all([loadData(), fireReminderEngine()]);
     } catch (e: any) { toast.error(e.message); }
   };
 
   const deleteReminder = async (id: number) => {
-    if (!window.confirm('Delete this reminder?')) return;
+    if (!window.confirm(t('notifications.delete_confirm', 'Delete this reminder?'))) return;
     try {
       await window.api.deleteReminder(id);
       await loadData();
@@ -179,7 +179,7 @@ const NotificationSettings: React.FC = () => {
       });
       toast.success(t('quiet_hours.saved'));
     } catch (e: any) {
-      toast.error(e.message || 'Failed to save quiet hours');
+      toast.error(e.message || t('quiet_hours.save_error', 'Failed to save quiet hours'));
     } finally {
       setSavingQuietHours(false);
     }
@@ -189,9 +189,9 @@ const NotificationSettings: React.FC = () => {
     try {
       await window.api.deleteQuietHours();
       setQuietHours({ startTime: '22:00', endTime: '07:00', active: false });
-      toast.success('Quiet hours deleted');
+      toast.success(t('quiet_hours.deleted', 'Quiet hours deleted'));
     } catch (e: any) {
-      toast.error(e.message || 'Failed to delete quiet hours');
+      toast.error(e.message || t('quiet_hours.delete_error', 'Failed to delete quiet hours'));
     }
   };
 
@@ -204,8 +204,8 @@ const NotificationSettings: React.FC = () => {
         urgency: 'normal'
       });
       setTestStatus(r.shown ? 'ok' : 'unsupported');
-      if (r.shown) toast.success('Notification sent!');
-      else toast.error('Not supported in this environment');
+      if (r.shown) toast.success(t('notifications.test_sent', 'Notification sent!'));
+      else toast.error(t('notifications.test_unsupported', 'Not supported in this environment'));
     } catch {
       setTestStatus('unsupported');
     }
@@ -256,12 +256,12 @@ const NotificationSettings: React.FC = () => {
           if (catPrefs.length === 0) return null;
           return (
             <div key={cat.key} className="bg-card border rounded-lg p-4 space-y-3">
-              <h3 className="font-semibold text-sm">{cat.label}</h3>
+              <h3 className="font-semibold text-sm">{t(`notifications.cat_${cat.key}`, cat.label)}</h3>
               <div className="space-y-2">
                 {catPrefs.map(p => (
                   <div key={p.key} className="flex items-center gap-3 p-2 rounded hover:bg-muted/20">
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm">{CATEGORY_LABELS[p.key] || p.key}</p>
+                      <p className="text-sm">{t(`notifications.pref_${p.key.replace('.', '_')}`, CATEGORY_LABELS[p.key] || p.key)}</p>
                       <p className="text-[10px] text-muted-foreground font-mono">{p.key}</p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -328,7 +328,7 @@ const NotificationSettings: React.FC = () => {
                 value={newReminder.category}
                 onChange={e => setNewReminder({ ...newReminder, category: e.target.value })}
               >
-                {CATEGORIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                {CATEGORIES.map(c => <option key={c.key} value={c.key}>{t(`notifications.cat_${c.key}`, c.label)}</option>)}
               </select>
               <DatePicker
                 value={newReminder.triggerDate}
@@ -435,7 +435,7 @@ const NotificationSettings: React.FC = () => {
 
         <div className="flex gap-2 justify-end">
           <Button variant="outline" size="sm" onClick={deleteQuietHours}>
-            <Trash2 className="h-4 w-4 mr-1" />Delete
+            <Trash2 className="h-4 w-4 mr-1" />{t('quiet_hours.delete', 'Delete')}
           </Button>
           <Button size="sm" onClick={saveQuietHours} disabled={savingQuietHours}>
             {savingQuietHours ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Save className="h-4 w-4 mr-1" />}

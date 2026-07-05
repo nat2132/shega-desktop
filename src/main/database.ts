@@ -14,7 +14,7 @@ if (!existsSync(dbDir)) {
 }
 
 const dbPath = path.join(dbDir, 'shega_desktop.db');
-const db = new Database(dbPath);
+const db: InstanceType<typeof Database> = new Database(dbPath);
 
 db.pragma('journal_mode = WAL');
 db.pragma('busy_timeout = 5000');
@@ -41,7 +41,8 @@ const ALL_PERMISSIONS = [
   'employees.view', 'employees.add', 'employees.edit', 'employees.delete',
   'employees.attendance', 'employees.performance',
   'settings.manage', 'settings.users', 'settings.roles', 'settings.backup',
-  'audit.view', 'audit.export', 'sales.void', 'payments.reverse', 'adjustments.reverse', 'records.restore'
+  'audit.view', 'audit.export', 'sales.void', 'payments.reverse', 'adjustments.reverse', 'records.restore',
+  'orders.view', 'orders.create', 'orders.edit', 'orders.delete', 'orders.convert', 'orders.cancel'
 ];
 
 const DEFAULT_ROLES: { name: string; description: string; permissions: string[] }[] = [
@@ -305,7 +306,44 @@ export function initDB() {
       period TEXT DEFAULT 'monthly',
       month TEXT,
       year TEXT,
+      budgetType TEXT DEFAULT 'business',
+      referenceName TEXT,
+      isRecurring INTEGER DEFAULT 0,
+      notes TEXT,
+      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (businessId) REFERENCES businesses(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS budget_adjustments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      budgetId INTEGER NOT NULL,
+      businessId INTEGER,
+      previousAmount REAL NOT NULL,
+      newAmount REAL NOT NULL,
+      reason TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      requestedBy TEXT,
+      approvedBy TEXT,
+      approvedAt TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (budgetId) REFERENCES budgets(id),
+      FOREIGN KEY (businessId) REFERENCES businesses(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS budget_alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      budgetId INTEGER,
+      businessId INTEGER,
+      category TEXT NOT NULL,
+      alertType TEXT NOT NULL,
+      threshold REAL,
+      message TEXT,
+      month TEXT,
+      year TEXT,
+      acknowledged INTEGER DEFAULT 0,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (budgetId) REFERENCES budgets(id),
       FOREIGN KEY (businessId) REFERENCES businesses(id)
     );
 
@@ -477,16 +515,6 @@ export function initDB() {
       updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
-    CREATE TABLE IF NOT EXISTS activity_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      employeeId INTEGER REFERENCES employees(id),
-      action TEXT NOT NULL,
-      entityType TEXT,
-      entityId INTEGER,
-      details TEXT,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-
     CREATE TABLE IF NOT EXISTS audit_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       businessId INTEGER REFERENCES businesses(id),
@@ -522,6 +550,27 @@ export function initDB() {
       notes TEXT,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(employeeId, date)
+    );
+
+    CREATE TABLE IF NOT EXISTS pin_recovery_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employeeId INTEGER UNIQUE REFERENCES employees(id) ON DELETE CASCADE,
+      adminId INTEGER REFERENCES admins(id) ON DELETE CASCADE,
+      recoveryKey TEXT NOT NULL,
+      keyHint TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      usedAt TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS pin_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entityType TEXT NOT NULL,
+      entityId INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      performedBy TEXT NOT NULL,
+      performedById INTEGER,
+      details TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE IF NOT EXISTS employee_performance (
@@ -692,6 +741,69 @@ export function initDB() {
   if (!notifColNames.includes('requiresAction')) db.exec("ALTER TABLE notifications ADD COLUMN requiresAction INTEGER DEFAULT 0");
   if (!notifColNames.includes('expiresAt')) db.exec("ALTER TABLE notifications ADD COLUMN expiresAt TEXT");
 
+  // Migration: add new columns to budgets if missing
+  const budgetCols = db.prepare("PRAGMA table_info(budgets)").all() as any[];
+  const budgetColNames = budgetCols.map((c: any) => c.name);
+  if (!budgetColNames.includes('budgetType')) db.exec("ALTER TABLE budgets ADD COLUMN budgetType TEXT DEFAULT 'business'");
+  if (!budgetColNames.includes('referenceName')) db.exec("ALTER TABLE budgets ADD COLUMN referenceName TEXT");
+  if (!budgetColNames.includes('isRecurring')) db.exec("ALTER TABLE budgets ADD COLUMN isRecurring INTEGER DEFAULT 0");
+  if (!budgetColNames.includes('notes')) db.exec("ALTER TABLE budgets ADD COLUMN notes TEXT");
+  if (!budgetColNames.includes('updatedAt')) db.exec("ALTER TABLE budgets ADD COLUMN updatedAt TEXT DEFAULT CURRENT_TIMESTAMP");
+
+  // Migration: add new columns to budget_alerts if missing
+  const alertCols = db.prepare("PRAGMA table_info(budget_alerts)").all() as any[];
+  const alertColNames = alertCols.map((c: any) => c.name);
+  if (!alertColNames.includes('month')) db.exec("ALTER TABLE budget_alerts ADD COLUMN month TEXT");
+  if (!alertColNames.includes('year')) db.exec("ALTER TABLE budget_alerts ADD COLUMN year TEXT");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER,
+      orderNumber TEXT UNIQUE NOT NULL,
+      customerName TEXT,
+      customerPhone TEXT,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'Order',
+      totalAmount REAL NOT NULL DEFAULT 0,
+      createdBy INTEGER,
+      createdByName TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      convertedAt TEXT,
+      convertedBy TEXT,
+      cancelledAt TEXT,
+      cancelledBy TEXT,
+      cancelReason TEXT,
+      uuid TEXT UNIQUE,
+      is_deleted INTEGER DEFAULT 0,
+      FOREIGN KEY (businessId) REFERENCES businesses(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      orderId INTEGER NOT NULL,
+      itemId INTEGER,
+      itemName TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      unit TEXT,
+      unitType TEXT DEFAULT 'base',
+      unitPrice REAL NOT NULL DEFAULT 0,
+      totalPrice REAL NOT NULL DEFAULT 0,
+      FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE,
+      FOREIGN KEY (itemId) REFERENCES items(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS order_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      orderId INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      performedBy TEXT,
+      notes TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE
+    );
+  `);
+
   // Performance indexes
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_items_businessId ON items(businessId);
@@ -718,9 +830,6 @@ export function initDB() {
     CREATE INDEX IF NOT EXISTS idx_stock_movements_warehouseId ON stock_movements(warehouseId);
     CREATE INDEX IF NOT EXISTS idx_stock_movements_itemId ON stock_movements(itemId);
     CREATE INDEX IF NOT EXISTS idx_stock_movements_createdAt ON stock_movements(createdAt);
-    CREATE INDEX IF NOT EXISTS idx_activity_logs_createdAt ON activity_logs(createdAt);
-    CREATE INDEX IF NOT EXISTS idx_activity_logs_entityType ON activity_logs(entityType);
-    CREATE INDEX IF NOT EXISTS idx_activity_logs_employeeId ON activity_logs(employeeId);
     CREATE INDEX IF NOT EXISTS idx_attendance_employeeId ON attendance(employeeId);
     CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date);
     CREATE INDEX IF NOT EXISTS idx_login_history_accountId ON login_history(accountId);
@@ -766,6 +875,12 @@ export function initDB() {
     CREATE INDEX IF NOT EXISTS idx_supplier_payments_supplierId ON supplier_payments(supplierId);
     CREATE INDEX IF NOT EXISTS idx_supplier_payments_purchaseId ON supplier_payments(purchaseId);
     CREATE INDEX IF NOT EXISTS idx_supplier_payments_paymentDate ON supplier_payments(paymentDate);
+    CREATE INDEX IF NOT EXISTS idx_orders_businessId ON orders(businessId);
+    CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+    CREATE INDEX IF NOT EXISTS idx_orders_createdAt ON orders(createdAt);
+    CREATE INDEX IF NOT EXISTS idx_orders_customerName ON orders(customerName);
+    CREATE INDEX IF NOT EXISTS idx_order_items_orderId ON order_items(orderId);
+    CREATE INDEX IF NOT EXISTS idx_order_history_orderId ON order_history(orderId);
   `);
 
   // Migration: Add columns to employees if missing
@@ -1061,7 +1176,7 @@ export function initDB() {
 
   // Migration: Add new audit/reversal permissions to all system roles that have related permissions
   const allRoles = db.prepare("SELECT id, name, permissions, isSystem FROM employee_roles").all() as any[];
-  const newPerms = ['audit.view', 'audit.export', 'sales.void', 'payments.reverse', 'adjustments.reverse', 'records.restore'];
+  const newPerms = ['audit.view', 'audit.export', 'sales.void', 'payments.reverse', 'adjustments.reverse', 'records.restore', 'orders.view', 'orders.create', 'orders.edit', 'orders.delete', 'orders.convert', 'orders.cancel'];
   for (const role of allRoles) {
     if (!role.isSystem) continue;
     const perms: string[] = JSON.parse(role.permissions || '[]');
@@ -1096,26 +1211,7 @@ export function initDB() {
     }
   }
 
-  // Migration: Backfill audit_logs from existing activity_logs
-  const auditCount = (db.prepare("SELECT COUNT(*) as c FROM audit_logs").get() as any).c;
-  if (auditCount === 0) {
-    const bizId = (db.prepare("SELECT value FROM settings WHERE key = 'active_business_id'").get() as any)?.value;
-    if (bizId) {
-      const existing = db.prepare("SELECT id, action, entityType, entityId, details, createdAt FROM activity_logs ORDER BY createdAt ASC").all() as any[];
-      const insert = db.prepare('INSERT INTO audit_logs (businessId, action, entityType, entityId, fieldName, oldValue, newValue, changedBy, changedById, description, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-      const tx = db.transaction(() => {
-        for (const row of existing) {
-          let changedBy = null;
-          if (row.details) {
-            const m = row.details.match(/— by (.+)$/);
-            if (m) changedBy = m[1];
-          }
-          insert.run(bizId, row.action, row.entityType || null, row.entityId || null, null, null, null, changedBy || 'system', null, row.details, row.createdAt);
-        }
-      });
-      tx();
-    }
-  }
+
 }
 
 export { ALL_PERMISSIONS, DEFAULT_ROLES };

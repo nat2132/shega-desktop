@@ -13,7 +13,6 @@ const Adjustments = lazy(() => import('./pages/Adjustments'))
 const Warehouses = lazy(() => import('./pages/Warehouses'))
 const Employees = lazy(() => import('./pages/Employees'))
 const Shipments = lazy(() => import('./pages/Shipments'))
-const ActivityLogs = lazy(() => import('./pages/ActivityLogs'))
 const AuditLogs = lazy(() => import('./pages/AuditLogs'))
 const UsersEmployees = lazy(() => import('./pages/UsersEmployees'))
 const Suppliers = lazy(() => import('./pages/Suppliers'))
@@ -21,13 +20,18 @@ const AdminManagement = lazy(() => import('./pages/AdminManagement'))
 const DebtManagement = lazy(() => import('./pages/DebtManagement'))
 const ReminderHistory = lazy(() => import('./pages/ReminderHistory'))
 const Reports = lazy(() => import('./pages/Reports'))
+const BudgetManagement = lazy(() => import('./pages/BudgetManagement'))
 const Contacts = lazy(() => import('./pages/Contacts'))
+const Orders = lazy(() => import('./pages/Orders'))
+const OrderDetail = lazy(() => import('./pages/OrderDetail'))
 import { useAuth } from './context/AuthContext'
+import { useSettings } from './context/SettingsContext'
 import { initSound, playSound } from './utils/sound'
 
 // Pre-launch screens
 import SplashScreen from './components/pre-launch/SplashScreen'
 import AuthScreen from './components/pre-launch/AuthScreen'
+import RecoveryKeyDisplay from './components/pre-launch/RecoveryKeyDisplay'
 import BusinessSetup from './components/pre-launch/BusinessSetup'
 import OnboardingWizard from './components/pre-launch/OnboardingWizard'
 import LoadingScreen from './components/pre-launch/LoadingScreen'
@@ -42,10 +46,15 @@ import { Toaster } from './components/ui/sonner'
 import NotificationBanners from './components/NotificationBanners'
 import NotificationModal from './components/NotificationModal'
 
-type AppPhase = 'splash' | 'auth' | 'business-setup' | 'onboarding' | 'loading' | 'ready' | 'error'
+type AppPhase = 'splash' | 'auth' | 'recovery-key' | 'business-setup' | 'onboarding' | 'loading' | 'ready' | 'error'
 
-function ProtectedRoute({ children, permission }: { children: React.ReactNode; permission?: string }) {
+function ProtectedRoute({ children, permission, moduleId }: { children: React.ReactNode; permission?: string; moduleId?: string }) {
   const { hasPermission } = useAuth();
+  const { isModuleEnabled } = useSettings();
+  
+  if (moduleId && !isModuleEnabled(moduleId)) {
+    return <Navigate to="/" replace />;
+  }
   
   if (permission && !hasPermission(permission)) {
     return <Navigate to="/" replace />;
@@ -65,11 +74,12 @@ function SuperAdminRoute({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
-  const { isAuthenticated, login, currentAdmin } = useAuth();
+  const { isAuthenticated, login } = useAuth();
   const [phase, setPhase] = useState<AppPhase>('splash');
   const [hasAdmins, setHasAdmins] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
   const [isFirstTime, setIsFirstTime] = useState(false);
+  const [recoveryKeyData, setRecoveryKeyData] = useState<{ key: string; username: string } | null>(null);
 
   // Check system state on mount
   useEffect(() => {
@@ -111,21 +121,37 @@ function App() {
       const allPermissions = [
         'dashboard', 'inventory', 'sales', 'expenses',
         'customers', 'analytics', 'adjustments', 'settings',
-        'warehouses', 'employees', 'shipments', 'activity_logs'
+        'warehouses', 'employees', 'shipments'
       ];
-      await window.api?.insertAdmin({
+      const result = await window.api?.insertAdmin({
         name, username, pin, role: 'super_admin', permissions: allPermissions
       });
+      // Generate recovery key
+      let recoveryKey = '';
+      if (result?.id) {
+        const keyData = await window.api?.generateRecoveryKey('admin', result.id);
+        recoveryKey = keyData?.recoveryKey || '';
+      }
       // Auto-login after registration
       const loginResult = await login(username, pin);
       if (loginResult.success) {
         setHasAdmins(true);
-        setPhase('business-setup');
+        if (recoveryKey) {
+          setRecoveryKeyData({ key: recoveryKey, username });
+          setPhase('recovery-key');
+        } else {
+          setPhase('business-setup');
+        }
       }
       return loginResult;
     } catch (err: any) {
       return { success: false, error: err.message || 'Registration failed' };
     }
+  };
+
+  const handleRecoveryKeyAcknowledged = () => {
+    setRecoveryKeyData(null);
+    setPhase('business-setup');
   };
 
   const handleBusinessSetupComplete = () => {
@@ -167,6 +193,17 @@ function App() {
     );
   }
 
+  // Phase: Recovery Key Display
+  if (phase === 'recovery-key' && recoveryKeyData) {
+    return (
+      <RecoveryKeyDisplay
+        recoveryKey={recoveryKeyData.key}
+        username={recoveryKeyData.username}
+        onAcknowledged={handleRecoveryKeyAcknowledged}
+      />
+    );
+  }
+
   // Phase: Business Setup
   if (phase === 'business-setup') {
     return <BusinessSetup onComplete={handleBusinessSetupComplete} />;
@@ -203,24 +240,26 @@ function App() {
               <Suspense fallback={<div className="flex items-center justify-center h-full py-32"><div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" /></div>}>
               <Routes>
                 <Route path="/" element={<ProtectedRoute permission="dashboard"><Dashboard /></ProtectedRoute>} />
-                <Route path="/inventory" element={<ProtectedRoute permission="inventory"><Inventory /></ProtectedRoute>} />
-                <Route path="/sales" element={<ProtectedRoute permission="sales"><Sales /></ProtectedRoute>} />
-                <Route path="/sales/:id" element={<ProtectedRoute permission="sales"><SaleDetail /></ProtectedRoute>} />
-                <Route path="/expenses" element={<ProtectedRoute permission="expenses"><Expenses /></ProtectedRoute>} />
-                <Route path="/customers" element={<ProtectedRoute permission="customers"><Customers /></ProtectedRoute>} />
-                <Route path="/analytics" element={<ProtectedRoute permission="analytics"><Analytics /></ProtectedRoute>} />
-                <Route path="/adjustments" element={<ProtectedRoute permission="adjustments"><Adjustments /></ProtectedRoute>} />
-                <Route path="/warehouses" element={<ProtectedRoute permission="warehouses"><Warehouses /></ProtectedRoute>} />
-                <Route path="/employees" element={<ProtectedRoute permission="employees"><Employees /></ProtectedRoute>} />
-                <Route path="/users" element={<ProtectedRoute permission="employees"><UsersEmployees /></ProtectedRoute>} />
-                <Route path="/shipments" element={<ProtectedRoute permission="shipments"><Shipments /></ProtectedRoute>} />
-                <Route path="/suppliers" element={<ProtectedRoute permission="suppliers"><Suppliers /></ProtectedRoute>} />
-                <Route path="/activity-logs" element={<ProtectedRoute permission="activity_logs"><ActivityLogs /></ProtectedRoute>} />
+                <Route path="/inventory" element={<ProtectedRoute permission="inventory" moduleId="inventory"><Inventory /></ProtectedRoute>} />
+                <Route path="/sales" element={<ProtectedRoute permission="sales" moduleId="sales"><Sales /></ProtectedRoute>} />
+                <Route path="/sales/:id" element={<ProtectedRoute permission="sales" moduleId="sales"><SaleDetail /></ProtectedRoute>} />
+                <Route path="/expenses" element={<ProtectedRoute permission="expenses" moduleId="expenses"><Expenses /></ProtectedRoute>} />
+                <Route path="/customers" element={<ProtectedRoute permission="customers" moduleId="customers"><Customers /></ProtectedRoute>} />
+                <Route path="/analytics" element={<ProtectedRoute permission="analytics" moduleId="analytics"><Analytics /></ProtectedRoute>} />
+                <Route path="/adjustments" element={<ProtectedRoute permission="adjustments" moduleId="adjustments"><Adjustments /></ProtectedRoute>} />
+                <Route path="/warehouses" element={<ProtectedRoute permission="warehouses" moduleId="warehouses"><Warehouses /></ProtectedRoute>} />
+                <Route path="/employees" element={<ProtectedRoute permission="employees" moduleId="employees"><Employees /></ProtectedRoute>} />
+                <Route path="/users" element={<ProtectedRoute permission="employees" moduleId="employees"><UsersEmployees /></ProtectedRoute>} />
+                <Route path="/shipments" element={<ProtectedRoute permission="shipments" moduleId="shipments"><Shipments /></ProtectedRoute>} />
+                <Route path="/suppliers" element={<ProtectedRoute permission="suppliers" moduleId="suppliers"><Suppliers /></ProtectedRoute>} />
                 <Route path="/audit-logs" element={<ProtectedRoute permission="audit.view"><AuditLogs /></ProtectedRoute>} />
-                <Route path="/debt-management" element={<ProtectedRoute permission="customers"><DebtManagement /></ProtectedRoute>} />
+                <Route path="/debt-management" element={<ProtectedRoute permission="customers" moduleId="customers"><DebtManagement /></ProtectedRoute>} />
                 <Route path="/reminders" element={<ProtectedRoute permission="dashboard"><ReminderHistory /></ProtectedRoute>} />
-                <Route path="/reports" element={<ProtectedRoute permission="analytics"><Reports /></ProtectedRoute>} />
-                <Route path="/contacts" element={<ProtectedRoute permission="customers"><Contacts /></ProtectedRoute>} />
+                <Route path="/reports" element={<ProtectedRoute permission="analytics" moduleId="analytics"><Reports /></ProtectedRoute>} />
+                <Route path="/budgets" element={<ProtectedRoute permission="expenses" moduleId="expenses"><BudgetManagement /></ProtectedRoute>} />
+                <Route path="/contacts" element={<ProtectedRoute permission="customers" moduleId="customers"><Contacts /></ProtectedRoute>} />
+                <Route path="/orders" element={<ProtectedRoute permission="orders.view" moduleId="sales"><Orders /></ProtectedRoute>} />
+                <Route path="/orders/:id" element={<ProtectedRoute permission="orders.view" moduleId="sales"><OrderDetail /></ProtectedRoute>} />
                 <Route path="/admin-management" element={<SuperAdminRoute><AdminManagement /></SuperAdminRoute>} />
                 <Route path="/settings" element={<ProtectedRoute permission="settings"><Settings /></ProtectedRoute>} />
               </Routes>

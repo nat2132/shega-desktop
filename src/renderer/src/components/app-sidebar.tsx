@@ -3,28 +3,28 @@ import {
   LayoutDashboard,
   Package,
   ShoppingCart,
+  ShoppingBag,
   Receipt,
   Users,
   BarChart3,
   SlidersHorizontal,
   Settings,
-  ShieldCheck,
-  Search,
   HelpCircle,
-  UserCog,
   Warehouse,
   Truck,
-  History,
+  Building2,
   Shield,
   PiggyBank,
   Bell,
   FileText,
   Contact,
+  PieChart,
 } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 
 import { useAuth } from "../context/AuthContext"
 import { useSettings } from "../context/SettingsContext"
+import { NAV_ITEM_MODULE } from "../utils/feature-modules"
 import { NavUser } from "@renderer/components/nav-user"
 import {
   Sidebar,
@@ -42,20 +42,21 @@ const navMain = [
   { title: "sales", url: "/sales", icon: ShoppingCart, permission: "sales" },
   { title: "expense", url: "/expenses", icon: Receipt, permission: "expenses" },
   { title: "customers", url: "/customers", icon: Users, permission: "customers" },
+  { title: "orders", url: "/orders", icon: ShoppingBag, permission: "orders.view" },
   { title: "debt_management", url: "/debt-management", icon: PiggyBank, permission: "customers" },
   { title: "analytics", url: "/analytics", icon: BarChart3, permission: "analytics" },
   { title: "warehouses", url: "/warehouses", icon: Warehouse, permission: "warehouses" },
   { title: "users_employees", url: "/users", icon: Users, permission: "employees" },
   { title: "shipments", url: "/shipments", icon: Truck, permission: "shipments" },
-  { title: "suppliers", url: "/suppliers", icon: Truck, permission: "suppliers" },
+  { title: "suppliers", url: "/suppliers", icon: Building2, permission: "suppliers" },
   { title: "logistics", url: "/adjustments", icon: SlidersHorizontal, permission: "adjustments" },
   { title: "reports", url: "/reports", icon: FileText, permission: "analytics" },
+  { title: "budgets", url: "/budgets", icon: PieChart, permission: "expenses" },
   { title: "contacts", url: "/contacts", icon: Contact, permission: "customers" },
 ]
 
 const navSecondary = [
   { title: "reminders", url: "/reminders", icon: Bell, permission: "dashboard" },
-  { title: "activity_logs", url: "/activity-logs", icon: History, permission: "activity_logs" },
   { title: "audit_logs", url: "/audit-logs", icon: Shield, permission: "audit.view" },
   { title: "settings", url: "/settings", icon: Settings, permission: "settings" },
   { title: "get_help", url: "https://shega.tech/support", icon: HelpCircle, permission: null },
@@ -65,15 +66,26 @@ import { BrandedLogo } from "./branded-logo"
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const location = useLocation();
-  const { currentAdmin, hasPermission, isSuperAdmin } = useAuth();
-  const { t, currentBusiness } = useSettings();
+  const { currentAdmin, hasPermission } = useAuth();
+  const { t, currentBusiness, isModuleEnabled } = useSettings();
 
-  const filteredMain = navMain.filter(item => hasPermission(item.permission));
-  const filteredSecondary = navSecondary.filter(item => !item.permission || hasPermission(item.permission));
+  const filteredMain = navMain.filter(item => {
+    if (!hasPermission(item.permission)) return false;
+    const moduleId = NAV_ITEM_MODULE[item.title];
+    return !moduleId || isModuleEnabled(moduleId);
+  });
+  const filteredSecondary = navSecondary.filter(item => {
+    if (item.permission && !hasPermission(item.permission)) return false;
+    return true;
+  });
 
   const user = {
-    name: currentAdmin?.name || "Unknown",
-    email: currentAdmin?.isEmployee ? currentAdmin.role : currentAdmin?.role === 'super_admin' ? 'Super Admin' : 'Admin',
+    name: currentAdmin?.name || t('common.unknown'),
+    email: currentAdmin?.isEmployee
+      ? (currentAdmin.role || t('common.employee'))
+      : currentAdmin?.role === 'super_admin'
+        ? t('common.super_admin')
+        : t('common.admin'),
     avatar: currentAdmin?.avatar || "/avatars/admin.jpg",
   };
 
@@ -86,8 +98,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               <Link to="/">
                 <BrandedLogo size="sm" logoSrc={currentBusiness?.logo} />
                 <div className="flex flex-col gap-0.5 leading-none ml-2">
-                  <span className="font-bold uppercase tracking-tighter text-sm">Shega OS</span>
-                  <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground/60">Terminal v2.4</span>
+                  <span className="font-bold uppercase tracking-tighter text-sm">{currentBusiness?.businessName || t('common.app_name')}</span>
+                  <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground/60">{t('common.terminal_version')}</span>
                 </div>
               </Link>
             </SidebarMenuButton>

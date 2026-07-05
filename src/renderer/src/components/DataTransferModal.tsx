@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Download, Upload, FileSpreadsheet, FileText, Database, Check, AlertCircle } from 'lucide-react';
+import { Download, Upload, FileSpreadsheet, FileText, Database, Check, AlertCircle, AlertTriangle, FileDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSettings } from '../context/SettingsContext';
-import { exportCSV, exportPDF } from '../lib/export-utils';
+import { exportPDF } from '../lib/export-utils';
+import { getSchema, generateCSVTemplate, parseCSV, matchColumns, validateRow, type ColumnMatch, type ValidationError, generateCSVExport } from '../lib/schemas';
 import {
   Dialog,
   DialogContent,
@@ -30,11 +31,12 @@ interface DataTransferModalProps {
 }
 
 type ExportFormat = 'pdf' | 'csv';
-type DataType = 'sales' | 'inventory' | 'expenses' | 'customers' | 'all';
+type DataType = 'sales' | 'inventory' | 'expenses' | 'customers' | 'suppliers' | 'shipments' | 'adjustments' | 'orders' | 'contacts' | 'employees' | 'warehouses' | 'supplier-purchases' | 'all';
 
-interface PreviewRow {
+interface PreviewData {
   headers: string[];
   rows: string[][];
+  rawRows: Record<string, string>[];
 }
 
 const DATATYPE_OPTIONS: { value: DataType; labelKey: string }[] = [
@@ -42,23 +44,36 @@ const DATATYPE_OPTIONS: { value: DataType; labelKey: string }[] = [
   { value: 'inventory', labelKey: 'data_transfer.inventory' },
   { value: 'expenses', labelKey: 'data_transfer.expenses' },
   { value: 'customers', labelKey: 'data_transfer.customers' },
+  { value: 'suppliers', labelKey: 'data_transfer.suppliers' },
+  { value: 'shipments', labelKey: 'data_transfer.shipments' },
+  { value: 'adjustments', labelKey: 'data_transfer.adjustments' },
+  { value: 'orders', labelKey: 'data_transfer.orders' },
+  { value: 'contacts', labelKey: 'data_transfer.contacts' },
+  { value: 'employees', labelKey: 'data_transfer.employees' },
+  { value: 'warehouses', labelKey: 'data_transfer.warehouses' },
+  { value: 'supplier-purchases', labelKey: 'data_transfer.supplier_purchases' },
   { value: 'all', labelKey: 'data_transfer.all' },
 ];
 
 const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) => {
-  const { t, formatDate, formatTime, formatDateTime } = useSettings();
+  const { t, formatDate } = useSettings();
   const [step, setStep] = useState<'export' | 'import'>('export');
   const [exportFormat, setExportFormat] = useState<ExportFormat>('csv');
   const [dataType, setDataType] = useState<DataType>('sales');
+  const [importDataType, setImportDataType] = useState<DataType>('sales');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<PreviewRow | null>(null);
+  const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [columnMap, setColumnMap] = useState<ColumnMatch[]>([]);
+  const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
+  const [importResult, setImportResult] = useState<{ success: boolean; imported: number; errors: { row: number; message: string }[]; skipped: number } | null>(null);
   const [backups, setBackups] = useState<{ name: string; size: number; createdAt: string }[]>([]);
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
 
   const showDateRange = dataType === 'sales' || dataType === 'expenses';
+  const currentSchema = getSchema(importDataType === 'all' ? 'sales' : importDataType);
 
   useEffect(() => {
     if (open && step === 'import') {
@@ -69,6 +84,8 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] || null;
     setSelectedFile(file);
+    setImportResult(null);
+    setValidationErrors([]);
     if (!file) { setPreview(null); return; }
 
     const reader = new FileReader();
@@ -80,19 +97,46 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
           const data = Array.isArray(parsed) ? parsed : parsed.data || [];
           const headers = data.length > 0 ? Object.keys(data[0]) : [];
           const rows = data.slice(0, 5).map((r: any) => headers.map((h) => String(r[h] ?? '')));
-          setPreview({ headers, rows });
+          setPreview({ headers, rows, rawRows: data });
         } else {
-          const lines = text.split('\n').filter(Boolean);
-          if (lines.length < 2) { setPreview(null); return; }
-          const headers = lines[0].split(',').map((h) => h.replace(/^"|"$/g, ''));
-          const rows = lines.slice(1, 6).map((l) => l.split(',').map((c) => c.replace(/^"|"$/g, '')));
-          setPreview({ headers, rows });
+          const parsed = parseCSV(text);
+          const rawRows = parsed.rows.map(r => {
+            const obj: Record<string, string> = {};
+            parsed.headers.forEach((h, i) => { obj[h] = r[i] || '' });
+            return obj;
+          });
+          setPreview({ headers: parsed.headers, rows: parsed.rows.slice(0, 5), rawRows });
+
+          if (currentSchema) {
+            const map = matchColumns(currentSchema, parsed.headers);
+            setColumnMap(map);
+
+            const allRows = parseCSV(text);
+            const errors: ValidationError[] = [];
+            allRows.rows.forEach((row, i) => {
+              errors.push(...validateRow(currentSchema, row, map, i + 1));
+            });
+            setValidationErrors(errors.slice(0, 50));
+          }
         }
       } catch {
         setPreview(null);
       }
     };
     reader.readAsText(file);
+  }, [currentSchema]);
+
+  const handleDownloadTemplate = useCallback((module: string) => {
+    const csv = generateCSVTemplate(module);
+    if (!csv) return;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `shega-${module}-template.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Template downloaded for ${module}`);
   }, []);
 
   const handleExport = async () => {
@@ -112,43 +156,63 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
         return;
       }
 
-      const params: any = { limit: 10000 };
+      const params: any = { limit: 50000 };
       if (showDateRange) {
         if (startDate) params.startDate = startDate;
         if (endDate) params.endDate = endDate;
       }
 
-      let rows: string[][] = [];
-      let headers: string[] = [];
-      let title: string = '';
+      let rows: Record<string, any>[] = [];
 
       switch (dataType) {
         case 'sales': {
-          const data = await window.api?.getSales(params) || [];
-          headers = [t('common.id'), t('common.date'), t('common.customer'), t('common.total'), t('common.status')];
-          title = t('data_transfer.sales_report');
-          rows = data.map((s: any) => [s.id, s.created_at || s.date, s.customer_name || '-', s.total, s.status]);
+          rows = await window.api?.getSales(params) || [];
           break;
         }
         case 'inventory': {
-          const data = await window.api?.getItems(params) || [];
-          headers = [t('common.id'), t('common.name'), t('common.sku'), t('common.price'), t('common.stock')];
-          title = t('data_transfer.inventory_report');
-          rows = data.map((i: any) => [i.id, i.name, i.sku || '-', i.selling_price, i.stock_quantity]);
+          rows = await window.api?.getItems(params) || [];
           break;
         }
         case 'expenses': {
-          const data = await window.api?.getExpenses(params) || [];
-          headers = [t('common.id'), t('common.date'), t('common.category'), t('common.amount'), t('common.note')];
-          title = t('data_transfer.expenses_report');
-          rows = data.map((e: any) => [e.id, e.date, e.category_name || e.category, e.amount, e.note || '-']);
+          rows = await window.api?.getExpenses(params) || [];
           break;
         }
         case 'customers': {
-          const data = await window.api?.getCustomers() || [];
-          headers = [t('common.id'), t('common.name'), t('common.phone'), t('common.email'), t('common.balance')];
-          title = t('data_transfer.customers_report');
-          rows = data.map((c: any) => [c.id, c.name, c.phone || '-', c.email || '-', c.balance || '0']);
+          rows = await window.api?.getCustomers() || [];
+          break;
+        }
+        case 'suppliers': {
+          const sup = await window.api?.getSuppliers(params) || { rows: [] };
+          rows = Array.isArray(sup) ? sup : sup.rows || [];
+          break;
+        }
+        case 'shipments': {
+          rows = await window.api?.getShipments(params) || [];
+          break;
+        }
+        case 'adjustments': {
+          rows = await window.api?.getAdjustments(params) || [];
+          break;
+        }
+        case 'orders': {
+          rows = await window.api?.getOrders(params) || [];
+          break;
+        }
+        case 'contacts': {
+          rows = await window.api?.getContacts(params) || [];
+          break;
+        }
+        case 'employees': {
+          rows = await window.api?.getEmployees(params) || [];
+          break;
+        }
+        case 'warehouses': {
+          rows = await window.api?.getWarehouses() || [];
+          break;
+        }
+        case 'supplier-purchases': {
+          const sp = await window.api?.getSupplierPurchases(params) || { rows: [] };
+          rows = Array.isArray(sp) ? sp : sp.rows || [];
           break;
         }
         default: {
@@ -158,9 +222,23 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
       }
 
       if (exportFormat === 'csv') {
-        exportCSV(headers, rows, `shega-${dataType}`);
+        const csv = generateCSVExport(dataType, rows);
+        if (csv) {
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `shega-${dataType}-${Date.now()}.csv`;
+          a.click();
+          URL.revokeObjectURL(url);
+        }
       } else {
-        exportPDF(title, headers, rows, `shega-${dataType}`);
+        const schema = getSchema(dataType);
+        const headers = schema ? schema.fields.map(f => f.label) : Object.keys(rows[0] || {});
+        const dataRows = rows.map(r =>
+          schema ? schema.fields.map(f => String(r[f.key] ?? '')) : Object.values(r).map(v => String(v ?? ''))
+        );
+        exportPDF(t(`data_transfer.${dataType}_report`), headers, dataRows, `shega-${dataType}`);
       }
       toast.success(t('data_transfer.export_success'));
     } catch (err: any) {
@@ -170,28 +248,61 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
   };
 
   const handleImportCSV = async () => {
-    toast.info(t('data_transfer.coming_soon'));
-  };
+    if (!selectedFile || !preview) return;
+    const module = importDataType;
+    if (validationErrors.some(e => e.message.includes('missing'))) {
+      toast.error('Fix required field mappings before importing');
+      return;
+    }
 
-  const handleRestoreFromBackup = async (name: string) => {
     setImporting(true);
+    setImportResult(null);
     try {
-      const result = await window.api?.restoreBackup(name);
-      if (result?.success) {
-        toast.success(t('data_transfer.restore_success'));
-        setTimeout(() => window.location.reload(), 1500);
-      } else {
-        toast.error(result?.error || t('data_transfer.restore_error'));
+      const schema = getSchema(module);
+      if (!schema) { toast.error('Unknown module'); setImporting(false); return; }
+
+      const text = await selectedFile.text();
+      const parsed = parseCSV(text);
+      const map = matchColumns(schema, parsed.headers);
+
+      if (map.every(m => m.confidence === 'none')) {
+        toast.error('Could not match CSV columns to database fields. Check the CSV headers match the template.');
+        setImporting(false);
+        return;
+      }
+
+      const rawRows = parsed.rows.map(r => {
+        const obj: Record<string, string> = {};
+        map.forEach(m => {
+          if (m.headerIndex >= 0) {
+            obj[m.fieldKey] = r[m.headerIndex]?.trim() ?? '';
+          }
+        });
+        return obj;
+      });
+
+      const result = await window.api?.importData(module, rawRows);
+      if (result) {
+        setImportResult(result);
+        if (result.success) {
+          toast.success(`Imported ${result.imported} ${module} records${result.skipped > 0 ? ` (${result.skipped} skipped as duplicates)` : ''}`);
+        } else {
+          toast.error(`Import failed with ${result.errors.length} errors`);
+        }
+        if (result.errors.length > 0) {
+          const first = result.errors[0];
+          toast.error(`Row ${first.row}: ${first.message}`);
+        }
       }
     } catch (err: any) {
-      toast.error(err?.message || t('data_transfer.restore_error'));
+      toast.error(err?.message || 'Import failed');
     }
     setImporting(false);
   };
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-lg rounded-3xl border-border/50 max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-2xl rounded-3xl border-border/50 max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-lg font-black uppercase tracking-widest">
             {t('data_transfer.title')}
@@ -260,6 +371,20 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                   </Select>
                 </div>
 
+                {dataType !== 'all' && (
+                  <div className="flex items-center justify-end">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDownloadTemplate(dataType)}
+                      className="rounded-xl text-[9px] font-black uppercase tracking-widest h-8"
+                    >
+                      <FileDown className="h-3 w-3 mr-1.5" />
+                      Download CSV Template
+                    </Button>
+                  </div>
+                )}
+
                 {showDateRange && (
                   <div className="space-y-2">
                     <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
@@ -299,6 +424,35 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
               <CardContent className="p-4 space-y-4">
                 <div className="space-y-2">
                   <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                    {t('data_transfer.data_type')}
+                  </p>
+                  <div className="flex gap-2">
+                    <Select value={importDataType} onValueChange={(v) => setImportDataType(v as DataType)}>
+                      <SelectTrigger className="w-full text-xs rounded-xl">
+                        <SelectValue placeholder={t('data_transfer.select_type')} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {DATATYPE_OPTIONS.filter(o => o.value !== 'all').map((opt) => (
+                          <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                            {t(opt.labelKey)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDownloadTemplate(importDataType)}
+                      className="rounded-xl text-[9px] font-black uppercase tracking-widest h-10 shrink-0"
+                    >
+                      <FileDown className="h-3 w-3 mr-1" />
+                      Template
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
                     {t('data_transfer.upload_file')}
                   </p>
                   <Input
@@ -315,6 +469,56 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                   </div>
                 </div>
 
+                {currentSchema && columnMap.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      Column Mapping
+                    </p>
+                    <div className="grid grid-cols-2 gap-1">
+                      {columnMap.filter(m => m.confidence !== 'none').map(m => {
+                        const field = currentSchema.fields.find(f => f.key === m.fieldKey);
+                        return (
+                          <div key={m.fieldKey} className="flex items-center gap-1.5 text-[9px]">
+                            <Check className={`h-2.5 w-2.5 ${m.confidence === 'exact' ? 'text-emerald-500' : 'text-amber-500'}`} />
+                            <span className="font-medium text-foreground/80">{field?.label || m.fieldKey}</span>
+                            <span className="text-muted-foreground">→</span>
+                            <span className="text-muted-foreground">{preview?.headers[m.headerIndex]}</span>
+                          </div>
+                        );
+                      })}
+                      {columnMap.filter(m => m.confidence === 'none').map(m => {
+                        const field = currentSchema.fields.find(f => f.key === m.fieldKey);
+                        return field?.required ? (
+                          <div key={m.fieldKey} className="flex items-center gap-1.5 text-[9px] text-destructive">
+                            <AlertTriangle className="h-2.5 w-2.5" />
+                            <span className="font-medium">{field.label}</span>
+                            <span className="text-destructive/70">(missing - required)</span>
+                          </div>
+                        ) : null;
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {validationErrors.length > 0 && (
+                  <div className="space-y-1 p-2 rounded-lg bg-red-500/5 border border-red-500/20">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-destructive flex items-center gap-1.5">
+                      <AlertTriangle className="h-3 w-3" />
+                      {validationErrors.length} Validation {validationErrors.length === 1 ? 'Error' : 'Errors'}
+                    </p>
+                    <div className="max-h-24 overflow-y-auto space-y-0.5">
+                      {validationErrors.slice(0, 10).map((e, i) => (
+                        <p key={i} className="text-[9px] text-destructive/80">
+                          Row {e.row}: {e.message}
+                        </p>
+                      ))}
+                      {validationErrors.length > 10 && (
+                        <p className="text-[9px] text-muted-foreground">...and {validationErrors.length - 10} more</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {preview && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
@@ -329,7 +533,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                       <table className="w-full text-[10px]">
                         <thead>
                           <tr className="border-b border-border/40 bg-muted/30">
-                            {preview.headers.slice(0, 6).map((h, i) => (
+                            {preview.headers.slice(0, 7).map((h, i) => (
                               <th key={i} className="px-2 py-1.5 text-left font-semibold uppercase tracking-wider text-muted-foreground">
                                 {h}
                               </th>
@@ -339,7 +543,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                         <tbody>
                           {preview.rows.map((row, ri) => (
                             <tr key={ri} className="border-b border-border/20 last:border-0">
-                              {row.slice(0, 6).map((cell, ci) => (
+                              {row.slice(0, 7).map((cell, ci) => (
                                 <td key={ci} className="px-2 py-1.5 truncate max-w-[120px]">
                                   {cell}
                                 </td>
@@ -349,12 +553,32 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                         </tbody>
                       </table>
                     </div>
-                    {selectedFile?.name.endsWith('.csv') && (
-                      <div className="flex items-center gap-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
-                        <AlertCircle className="h-3 w-3 text-amber-500 shrink-0" />
-                        <span className="text-[10px] text-amber-500/80">
-                          {t('data_transfer.csv_warning')}
-                        </span>
+                  </div>
+                )}
+
+                {importResult && (
+                  <div className={`space-y-1 p-3 rounded-lg border ${
+                    importResult.success && importResult.imported > 0
+                      ? 'bg-emerald-500/5 border-emerald-500/20'
+                      : 'bg-red-500/5 border-red-500/20'
+                  }`}>
+                    <p className="text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5">
+                      {importResult.success ? (
+                        <><Check className="h-3 w-3 text-emerald-500" /> Import Complete</>
+                      ) : (
+                        <><AlertTriangle className="h-3 w-3 text-destructive" /> Import Failed</>
+                      )}
+                    </p>
+                    <div className="flex gap-3 text-[9px] text-muted-foreground">
+                      <span>Imported: <strong>{importResult.imported}</strong></span>
+                      {importResult.skipped > 0 && <span>Skipped: <strong>{importResult.skipped}</strong></span>}
+                      {importResult.errors.length > 0 && <span>Errors: <strong className="text-destructive">{importResult.errors.length}</strong></span>}
+                    </div>
+                    {importResult.errors.length > 0 && (
+                      <div className="max-h-20 overflow-y-auto mt-1 space-y-0.5">
+                        {importResult.errors.slice(0, 5).map((e, i) => (
+                          <p key={i} className="text-[9px] text-destructive/80">Row {e.row}: {e.message}</p>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -371,18 +595,14 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                   </Button>
                 )}
 
-                {(!selectedFile || selectedFile.name.endsWith('.csv')) && (
+                {selectedFile?.name.endsWith('.csv') && (
                   <Button
                     onClick={handleImportCSV}
-                    className="w-full rounded-xl text-[10px] font-black uppercase tracking-widest relative overflow-hidden"
+                    disabled={importing || validationErrors.some(e => e.message.includes('missing'))}
+                    className="w-full rounded-xl text-[10px] font-black uppercase tracking-widest"
                   >
                     <Upload className="h-3.5 w-3.5" />
-                    {t('data_transfer.import_action')}
-                    <span className="absolute inset-0 flex items-center justify-center bg-background/80 backdrop-blur-[1px]">
-                      <Badge variant="secondary" className="text-[9px] font-black uppercase tracking-widest">
-                        {t('data_transfer.coming_soon')}
-                      </Badge>
-                    </span>
+                    {importing ? t('common.loading') : t('data_transfer.import_action')}
                   </Button>
                 )}
 
@@ -420,6 +640,22 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
       </DialogContent>
     </Dialog>
   );
+
+  async function handleRestoreFromBackup(name: string) {
+    setImporting(true);
+    try {
+      const result = await window.api?.restoreBackup(name);
+      if (result?.success) {
+        toast.success(t('data_transfer.restore_success'));
+        setTimeout(() => window.location.reload(), 1500);
+      } else {
+        toast.error(result?.error || t('data_transfer.restore_error'));
+      }
+    } catch (err: any) {
+      toast.error(err?.message || t('data_transfer.restore_error'));
+    }
+    setImporting(false);
+  }
 };
 
 export default DataTransferModal;

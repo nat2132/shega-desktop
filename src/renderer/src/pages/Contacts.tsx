@@ -67,7 +67,7 @@ const Contacts: React.FC = () => {
   const loadContacts = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await window.api.getContacts({
+      const result: any = await window.api.getContacts({
         search: search || undefined,
         category: categoryFilter === 'all' ? undefined : categoryFilter,
         limit: 10000, offset: 0,
@@ -75,7 +75,7 @@ const Contacts: React.FC = () => {
       const rows: Contact[] = result.rows || result || [];
       setContacts(Array.isArray(rows) ? rows : []);
     } catch (e: any) {
-      toast.error(e.message || 'Failed to load contacts');
+      toast.error(e.message || t('contacts.load_error'));
     } finally {
       setLoading(false);
     }
@@ -123,15 +123,15 @@ const Contacts: React.FC = () => {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.name.trim()) {
-      toast.error('Name is required');
+      toast.error(t('contacts.name_required'));
       return;
     }
     if (!form.phone.trim()) {
-      toast.error('Phone is required');
+      toast.error(t('contacts.phone_required'));
       return;
     }
     if (!form.category) {
-      toast.error('Category is required');
+      toast.error(t('contacts.category_required'));
       return;
     }
     try {
@@ -147,7 +147,7 @@ const Contacts: React.FC = () => {
       setEditingId(null);
       loadContacts();
     } catch (e: any) {
-      toast.error(e.message || 'Save failed');
+      toast.error(e.message || t('contacts.save_error'));
     }
   };
 
@@ -165,13 +165,13 @@ const Contacts: React.FC = () => {
       setDeleteTarget(null);
       loadContacts();
     } catch (e: any) {
-      toast.error(e.message || 'Delete failed');
+      toast.error(e.message || t('contacts.delete_error'));
     }
   };
 
   const handleCopyPhone = (phone: string) => {
     navigator.clipboard.writeText(phone);
-    toast.success(t('contacts.call') || 'Phone number copied');
+    toast.success(t('contacts.phone_copied'));
   };
 
   const categoryBadge = (cat: string) => {
@@ -182,10 +182,10 @@ const Contacts: React.FC = () => {
       other: 'destructive',
     };
     const labelMap: Record<string, string> = {
-      supplier: t('contacts.supplier') || 'Supplier',
-      worker: t('contacts.worker') || 'Worker',
-      service: t('contacts.service') || 'Service',
-      other: t('contacts.other') || 'Other',
+      supplier: t('contacts.supplier'),
+      worker: t('contacts.worker'),
+      service: t('contacts.service'),
+      other: t('contacts.other'),
     };
     return (
       <Badge variant={variantMap[cat] || 'outline'} className="text-[10px] gap-1">
@@ -236,7 +236,7 @@ const Contacts: React.FC = () => {
             }`}
           >
             {cat === 'all'
-              ? t('contacts.all') || 'All'
+              ? t('common.all')
               : CATEGORY_ICONS[cat]
               ? <span className="flex items-center gap-1.5">{CATEGORY_ICONS[cat]}{t(`contacts.${cat}`)}</span>
               : t(`contacts.${cat}`)}
@@ -277,7 +277,7 @@ const Contacts: React.FC = () => {
                       size="icon"
                       className="h-8 w-8"
                       onClick={() => openEditForm(contact)}
-                      title={t('contacts.edit_contact') || 'Edit'}
+                      title={t('common.edit')}
                     >
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
@@ -286,7 +286,7 @@ const Contacts: React.FC = () => {
                       size="icon"
                       className="h-8 w-8 text-red-500 hover:text-red-600"
                       onClick={() => handleDeleteClick(contact)}
-                      title={t('contacts.delete_contact') || 'Delete'}
+                      title={t('common.delete')}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -296,7 +296,7 @@ const Contacts: React.FC = () => {
                 <button
                   onClick={() => handleCopyPhone(contact.phone)}
                   className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors mb-2 w-full text-left"
-                  title={t('contacts.call') || 'Copy phone number'}
+                  title={t('contacts.copy_phone')}
                 >
                   <Phone className="h-3.5 w-3.5 shrink-0" />
                   <span className="truncate">{contact.phone}</span>
@@ -306,7 +306,7 @@ const Contacts: React.FC = () => {
                 {contact.subCategory && (
                   <div className="text-xs text-muted-foreground mb-1">
                     <span className="text-[10px] font-black uppercase tracking-widest">
-                      {t('contacts.sub_category') || 'Sub Category'}:
+                      {t('contacts.sub_category')}:
                     </span>{' '}
                     {contact.subCategory}
                   </div>
@@ -339,7 +339,7 @@ const Contacts: React.FC = () => {
                 required
                 value={form.name}
                 onChange={e => setForm({ ...form, name: e.target.value })}
-                placeholder="Contact name"
+                placeholder={t('contacts.name')}
               />
             </div>
             <div className="space-y-1.5">
@@ -350,7 +350,7 @@ const Contacts: React.FC = () => {
                 required
                 value={form.phone}
                 onChange={e => setForm({ ...form, phone: e.target.value })}
-                placeholder="+251..."
+                placeholder={t('contacts.phone_placeholder')}
               />
             </div>
             <div className="space-y-1.5">
@@ -362,7 +362,7 @@ const Contacts: React.FC = () => {
                 onValueChange={v => setForm({ ...form, category: v })}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select category" />
+                  <SelectValue placeholder={t('contacts.select_category')} />
                 </SelectTrigger>
                 <SelectContent>
                   {CATEGORIES.map(cat => (
@@ -383,7 +383,7 @@ const Contacts: React.FC = () => {
               <Input
                 value={form.subCategory}
                 onChange={e => setForm({ ...form, subCategory: e.target.value })}
-                placeholder="e.g. Plumber, Electrician"
+                placeholder={t('contacts.sub_category_placeholder')}
               />
             </div>
             <div className="space-y-1.5">
@@ -394,7 +394,7 @@ const Contacts: React.FC = () => {
                 value={form.notes}
                 onChange={e => setForm({ ...form, notes: e.target.value })}
                 rows={3}
-                placeholder="Additional notes..."
+                placeholder={t('contacts.notes_placeholder')}
               />
             </div>
             <div className="flex justify-end gap-2 pt-2">
@@ -403,9 +403,9 @@ const Contacts: React.FC = () => {
                 variant="outline"
                 onClick={() => { setShowForm(false); setForm(DEFAULT_FORM); setEditingId(null); }}
               >
-                Cancel
+                {t('common.cancel')}
               </Button>
-              <Button type="submit">{editingId ? 'Update' : 'Save'}</Button>
+              <Button type="submit">{editingId ? t('contacts.edit_contact') : t('common.save')}</Button>
             </div>
           </form>
         </DialogContent>
@@ -421,7 +421,7 @@ const Contacts: React.FC = () => {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setDeleteTarget(null)}>
-              Cancel
+              {t('common.cancel')}
             </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"

@@ -16,7 +16,6 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Separator } from '../components/ui/separator';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -61,21 +60,6 @@ interface Sale {
   status?: string;
 }
 
-interface Item {
-  id: number;
-  name: string;
-  baseUnit: string;
-  purchaseUnit: string;
-  unitsPerPack: number;
-  totalBaseQuantity: number;
-  totalPackQuantity: number;
-  baseSellingPrice: number;
-  packSellingPrice: number;
-  allowSellByBaseUnit: number;
-  allowSellByPackUnit: number;
-  basePurchasePrice: number;
-}
-
 interface DebtPayment {
   id: number;
   saleId: number;
@@ -92,7 +76,6 @@ const SaleDetail: React.FC = () => {
   const { hasPermission } = useAuth();
 
   const [sale, setSale] = useState<Sale | null>(null);
-  const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const [paymentHistory, setPaymentHistory] = useState<DebtPayment[]>([]);
 
@@ -124,7 +107,7 @@ const SaleDetail: React.FC = () => {
     try {
       const saleData = await window.api?.getSale(Number(id));
       if (!saleData) {
-        toast.error('Sale not found');
+        toast.error(t('sale_detail.not_found'));
         navigate('/sales');
         return;
       }
@@ -137,15 +120,12 @@ const SaleDetail: React.FC = () => {
         quantity: saleData.quantity,
       });
 
-      const itemsData = await window.api?.getItems({}) || [];
-      setItems(itemsData);
-
       if (saleData.paymentStatus === 'Debt' || saleData.paymentStatus === t('sales.debt')) {
         const payments = await window.api?.getDebtPayments(saleData.id) || [];
         setPaymentHistory(payments);
       }
     } catch (err) {
-      toast.error('Failed to load sale details');
+      toast.error(t('sale_detail.load_error'));
       navigate('/sales');
     } finally {
       setLoading(false);
@@ -170,11 +150,11 @@ const SaleDetail: React.FC = () => {
       reason: returnReason,
     });
     if (result?.success) {
-      toast.success('Return processed');
+      toast.success(t('sale_detail.return_processed'));
       setShowReturnModal(false);
       loadSale();
     } else {
-      toast.error(result?.error || 'Return failed');
+      toast.error(result?.error || t('sale_detail.return_failed'));
     }
   };
 
@@ -192,12 +172,12 @@ const SaleDetail: React.FC = () => {
       if (result?.error) {
         toast.error(result.error);
       } else {
-        toast.success('Sale updated');
+        toast.success(t('sale_detail.updated'));
         setShowEditDialog(false);
         loadSale();
       }
     } catch {
-      toast.error('Failed to update sale');
+      toast.error(t('sale_detail.update_error'));
     } finally {
       setSaving(false);
     }
@@ -208,10 +188,10 @@ const SaleDetail: React.FC = () => {
     setDeleting(true);
     try {
       await window.api?.deleteSale(sale.id);
-      toast.success('Sale deleted');
+      toast.success(t('sale_detail.deleted'));
       navigate('/sales');
     } catch {
-      toast.error('Failed to delete sale');
+      toast.error(t('sale_detail.delete_error'));
       setDeleting(false);
     }
   };
@@ -225,11 +205,11 @@ const SaleDetail: React.FC = () => {
     if (!sale || !voidReason.trim()) return;
     try {
       await window.api?.voidSale({ saleId: sale.id, reason: voidReason.trim() });
-      toast.success(`Sale #${sale.id} voided successfully`);
+      toast.success(t('sale_detail.voided', { id: sale.id }));
       setVoidReason('');
       loadSale();
     } catch (err: any) {
-      toast.error(err.message || 'Failed to void sale');
+      toast.error(err.message || t('sale_detail.void_error'));
     }
   };
 
@@ -244,7 +224,7 @@ const SaleDetail: React.FC = () => {
   if (!sale) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
-        <p className="text-muted-foreground text-sm font-bold uppercase tracking-widest">Sale not found</p>
+        <p className="text-muted-foreground text-sm font-bold uppercase tracking-widest">{t('sale_detail.not_found')}</p>
       </div>
     );
   }
@@ -292,33 +272,33 @@ const SaleDetail: React.FC = () => {
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="destructive" size="sm" className="h-8 text-[10px] font-black uppercase tracking-widest">
-                  <Ban size={14} className="mr-2" /> Void Sale
+                  <Ban size={14} className="mr-2" /> {t('sale_detail.void_sale')}
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
-                  <AlertDialogTitle>Void Sale #{sale.id}</AlertDialogTitle>
+                  <AlertDialogTitle>{t('sale_detail.void_title', { id: sale.id })}</AlertDialogTitle>
                   <AlertDialogDescription>
-                    This will restore inventory and mark the sale as voided. This action cannot be undone.
+                    {t('sale_detail.void_description')}
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <div className="py-4">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Reason for voiding</label>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">{t('sale_detail.void_reason_label')}</label>
                   <textarea
                     className="w-full h-24 px-3 py-2 rounded-xl border bg-background text-xs resize-none"
-                    placeholder="Enter reason..."
+                    placeholder={t('sale_detail.void_reason_placeholder')}
                     value={voidReason}
                     onChange={e => setVoidReason(e.target.value)}
                   />
                 </div>
                 <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
                   <AlertDialogAction
                     disabled={!voidReason.trim()}
                     onClick={handleVoidSale}
                     className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                   >
-                    Confirm Void
+                    {t('sale_detail.confirm_void')}
                   </AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>

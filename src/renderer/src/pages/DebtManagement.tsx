@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import {
-  CreditCard, TrendingUp, Users, AlertTriangle,
-  Banknote, Search, ChevronDown, ChevronUp, Clock,
-  CircleDollarSign, History, ArrowRight, X,
+  AlertTriangle,
+  Banknote, Search, ChevronDown, ChevronUp,
+  CircleDollarSign, History, X,
   MoreHorizontal, Filter, Ban
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -89,6 +89,13 @@ const DebtManagement: React.FC = () => {
   const [reversePaymentTarget, setReversePaymentTarget] = useState<DebtPayment | null>(null);
   const [reversePaymentReason, setReversePaymentReason] = useState('');
 
+  const paymentMethodKeys: Record<string, string> = {
+    Cash: 'debt.payment_cash',
+    'Bank Transfer': 'debt.payment_bank_transfer',
+    'Mobile Money': 'debt.payment_mobile_money',
+    Check: 'debt.payment_check',
+  };
+
   useEffect(() => {
     loadDebts();
   }, []);
@@ -112,7 +119,7 @@ const DebtManagement: React.FC = () => {
     if (!selectedDebt || !paymentAmount) return;
     const amount = parseFloat(paymentAmount);
     if (amount <= 0) {
-      toast.error('Amount must be greater than zero');
+      toast.error(t('debt.amount_positive'));
       return;
     }
     const result = await window.api?.payDebt(selectedDebt.id, amount);
@@ -134,7 +141,7 @@ const DebtManagement: React.FC = () => {
 
   const handleMarkAsLoss = async () => {
     if (!lossTarget) return;
-    const result = await window.api?.payDebt(lossTarget.id, lossTarget.totalPrice - lossTarget.paidAmount, { type: 'loss', note: 'Marked as loss' });
+    const result = await window.api?.payDebt(lossTarget.id, lossTarget.totalPrice - lossTarget.paidAmount, { type: 'loss', note: t('debt.marked_as_loss') });
     if (result?.error) {
       toast.error(result.error);
       return;
@@ -149,7 +156,7 @@ const DebtManagement: React.FC = () => {
     if (!reversePaymentTarget) return;
     try {
       await window.api.reverseDebtPayment({ paymentId: reversePaymentTarget.id, reason: reversePaymentReason });
-      toast.success('Payment reversed successfully');
+      toast.success(t('debt.payment_reversed'));
       const saleId = reversePaymentTarget.saleId;
       setReversePaymentTarget(null);
       setReversePaymentReason('');
@@ -159,7 +166,7 @@ const DebtManagement: React.FC = () => {
       }
       loadDebts();
     } catch (error) {
-      toast.error('Failed to reverse payment');
+      toast.error(t('debt.reverse_error'));
     }
   };
 
@@ -286,7 +293,7 @@ const DebtManagement: React.FC = () => {
             </SheetTrigger>
             <SheetContent side="right" className="w-[400px] sm:w-[540px] border-l-border/40 p-0 flex flex-col">
               <SheetHeader className="border-b border-border/50 p-6">
-                <SheetTitle className="text-2xl font-black uppercase tracking-tight">{t('debt.filter_title') || 'Date Filters'}</SheetTitle>
+                <SheetTitle className="text-2xl font-black uppercase tracking-tight">{t('debt.filter_title')}</SheetTitle>
                 <SheetDescription className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">{t('inventory.refine_view')}</SheetDescription>
               </SheetHeader>
 
@@ -346,7 +353,6 @@ const DebtManagement: React.FC = () => {
             <tbody className="text-sm">
               {filteredDebts.map(debt => {
                 const outstanding = debt.totalPrice - debt.paidAmount;
-                const overdue = daysOverdue(debt.dueDate);
                 const isSettled = outstanding === 0;
                 return (
                   <React.Fragment key={debt.id}>
@@ -416,7 +422,7 @@ const DebtManagement: React.FC = () => {
                               <History size={12} /> {t('debt.payment_history')}
                             </h4>
                             {loadingHistory === debt.id ? (
-                              <p className="text-xs text-muted-foreground">Loading...</p>
+                              <p className="text-xs text-muted-foreground">{t('common.loading')}</p>
                             ) : paymentHistories[debt.id] && paymentHistories[debt.id].length > 0 ? (
                               <div className="space-y-2">
                                 {paymentHistories[debt.id].map(p => (
@@ -427,7 +433,7 @@ const DebtManagement: React.FC = () => {
                                       </div>
                                       <div>
                                         <p className="text-sm font-bold">{t('common.etb')} {p.amount.toLocaleString()}</p>
-                                        <p className="text-[10px] text-muted-foreground">{p.paymentMethod}</p>
+                                        <p className="text-[10px] text-muted-foreground">{t(paymentMethodKeys[p.paymentMethod] || p.paymentMethod)}</p>
                                       </div>
                                     </div>
                                     <div className="flex items-center gap-2">
@@ -504,9 +510,10 @@ const DebtManagement: React.FC = () => {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {PAYMENT_METHODS.map(m => (
-                    <SelectItem key={m} value={m}>{m}</SelectItem>
-                  ))}
+                  {PAYMENT_METHODS.map(m => {
+                    const methodKey: Record<string, string> = { Cash: 'suppliers.payment_cash', 'Bank Transfer': 'suppliers.payment_bank', 'Mobile Money': 'suppliers.payment_mobile', Check: 'suppliers.payment_check' };
+                    return <SelectItem key={m} value={m}>{t(methodKey[m] || m)}</SelectItem>;
+                  })}
                 </SelectContent>
               </Select>
             </div>
@@ -517,7 +524,7 @@ const DebtManagement: React.FC = () => {
               <Input
                 value={paymentNote}
                 onChange={e => setPaymentNote(e.target.value)}
-                placeholder="Optional note..."
+                placeholder={t('debt.payment_note_placeholder')}
               />
             </div>
             <div className="flex gap-2">
@@ -535,9 +542,9 @@ const DebtManagement: React.FC = () => {
       <AlertDialog open={reversePaymentTarget !== null} onOpenChange={(open) => { if (!open) { setReversePaymentTarget(null); setReversePaymentReason(''); } }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Reverse Payment</AlertDialogTitle>
+            <AlertDialogTitle>{t('debt.reverse_payment')}</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to reverse this payment of {t('common.etb')} {reversePaymentTarget?.amount.toLocaleString()}?
+              {t('debt.reverse_payment_confirm', { amount: `${t('common.etb')} ${reversePaymentTarget?.amount.toLocaleString()}` })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-4">
@@ -550,7 +557,7 @@ const DebtManagement: React.FC = () => {
                 value={reversePaymentReason}
                 onChange={(e) => setReversePaymentReason(e.target.value)}
                 className="bg-background resize-none"
-                placeholder="Reason for reversal..."
+                placeholder={t('debt.reverse_reason_placeholder')}
               />
             </div>
           </div>
@@ -561,7 +568,7 @@ const DebtManagement: React.FC = () => {
               disabled={!reversePaymentReason}
               onClick={handleReverseDebtPayment}
             >
-              <Ban size={14} className="mr-1" /> Reverse
+              <Ban size={14} className="mr-1" /> {t('debt.reverse')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

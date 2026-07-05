@@ -1,7 +1,6 @@
 import { Search, Bell, ChevronDown, User, LogOut, Settings, Moon, Sun } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { Button } from './ui/button';
-import { Input } from './ui/input';
 import { 
   DropdownMenu, 
   DropdownMenuContent, 
@@ -19,15 +18,15 @@ interface HeaderProps {
   onSearch?: (query: string) => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ title, subtitle, onSearch }) => {
-  const { theme, setTheme } = useSettings();
+const Header: React.FC<HeaderProps> = () => {
+  const { theme, setTheme, t } = useSettings();
 
   return (
     <header className="h-24 flex items-center justify-between px-8 md:px-16 lg:px-24 max-w-[1800px] mx-auto bg-card/40 backdrop-blur-2xl saturate-150 border-b border-white/10 shadow-2xl sticky top-0 z-30 transition-all">
       
       <div className="flex items-center gap-4">
         <h1 className="text-xl md:text-2xl font-black tracking-tighter text-foreground flex items-center gap-2">
-          Retail <span className="text-muted-foreground font-medium">Inventory</span>
+          {t('header.title_part1', 'Retail')} <span className="text-muted-foreground font-medium">{t('header.title_part2', 'Inventory')}</span>
         </h1>
       </div>
 
@@ -76,22 +75,22 @@ const Header: React.FC<HeaderProps> = ({ title, subtitle, onSearch }) => {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56 mt-2 rounded-2xl bg-card/95 backdrop-blur-xl border-white/10 shadow-2xl p-2">
               <DropdownMenuLabel className="px-3 py-2">
-                <p className="text-xs font-black uppercase tracking-widest text-foreground">Master Admin</p>
+                <p className="text-xs font-black uppercase tracking-widest text-foreground">{t('header.master_admin', 'Master Admin')}</p>
                 <p className="text-[10px] font-medium text-muted-foreground">admin@shega.app</p>
               </DropdownMenuLabel>
               <DropdownMenuSeparator className="bg-border/50 mx-2" />
               <DropdownMenuItem className="rounded-xl px-3 py-2.5 focus:bg-primary focus:text-primary-foreground cursor-pointer transition-colors mt-1">
                 <User className="mr-3 h-4 w-4" />
-                <span className="text-[10px] font-black uppercase tracking-widest">My Profile</span>
+                <span className="text-[10px] font-black uppercase tracking-widest">{t('header.my_profile', 'My Profile')}</span>
               </DropdownMenuItem>
               <DropdownMenuItem className="rounded-xl px-3 py-2.5 focus:bg-primary focus:text-primary-foreground cursor-pointer transition-colors">
                 <Settings className="mr-3 h-4 w-4" />
-                <span className="text-[10px] font-black uppercase tracking-widest">Preferences</span>
+                <span className="text-[10px] font-black uppercase tracking-widest">{t('header.preferences', 'Preferences')}</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator className="bg-border/50 mx-2" />
               <DropdownMenuItem className="rounded-xl px-3 py-2.5 focus:bg-destructive focus:text-destructive-foreground cursor-pointer transition-colors text-destructive">
                 <LogOut className="mr-3 h-4 w-4" />
-                <span className="text-[10px] font-black uppercase tracking-widest">Terminate Session</span>
+                <span className="text-[10px] font-black uppercase tracking-widest">{t('nav_user.terminate_session', 'Terminate Session')}</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

@@ -174,7 +174,7 @@ const Reports: React.FC = () => {
       }
       setReportGenerated(true);
     } catch (e: any) {
-      setError(e.message || 'Failed to generate report');
+      setError(e.message || t('reports.gen_failed'));
     } finally {
       setLoading(false);
     }
@@ -198,7 +198,7 @@ const Reports: React.FC = () => {
       })));
       setLowStockFetched(true);
     } catch (e: any) {
-      setError(e.message || 'Failed to fetch low stock items');
+      setError(e.message || t('reports.low_stock_failed'));
     } finally {
       setLowStockLoading(false);
     }
@@ -255,152 +255,152 @@ const Reports: React.FC = () => {
 
   const exportSalesCSV = () => {
     if (!analytics) return;
-    const headers = ['Date', 'Revenue', 'Units Sold', 'Profit'];
+    const headers = [t('reports.header_date'), t('reports.header_revenue'), t('reports.header_units_sold'), t('reports.header_profit')];
     const rows = analytics.salesData.map(s => [s.date, s.revenue, s.units, s.profit]);
     exportCSV(headers, rows, 'sales-performance');
   };
 
   const exportSalesPDF = () => {
     if (!analytics) return;
-    const headers = ['Date', 'Revenue', 'Units Sold', 'Profit'];
+    const headers = [t('reports.header_date'), t('reports.header_revenue'), t('reports.header_units_sold'), t('reports.header_profit')];
     const rows = analytics.salesData.map(s => [s.date, String(s.revenue), String(s.units), String(s.profit)]);
     const totalUnits = analytics.salesData.reduce((a, s) => a + s.units, 0);
-    exportPDF('Sales Performance Report', headers, rows, 'sales-performance', ['', 'Total', String(totalUnits), String(analytics.summary.totalProfit)], undefined, currentBusiness);
-    toast.success('Report exported successfully');
+    exportPDF(t('reports.report_sales_performance'), headers, rows, 'sales-performance', ['', t('common.total'), String(totalUnits), String(analytics.summary.totalProfit)], undefined, currentBusiness);
+    toast.success(t('reports.report_exported'));
   };
 
   const exportValuationCSV = () => {
-    const headers = ['Product', 'Category', 'Base Qty', 'Unit', 'Unit Cost', 'Total Value'];
+    const headers = [t('reports.header_product'), t('reports.header_category'), t('reports.header_base_qty'), t('reports.header_unit'), t('reports.header_unit_cost'), t('reports.header_total_value')];
     const rows = items.map(i => [i.name, i.categoryName || '', i.totalBaseQuantity, i.baseUnit, i.basePurchasePrice, (i.totalBaseQuantity * i.basePurchasePrice).toLocaleString()]);
     exportCSV(headers, rows, 'stock-valuation');
   };
 
   const exportValuationPDF = () => {
-    const headers = ['Product', 'Category', 'Base Qty', 'Unit', 'Unit Cost', 'Total Value'];
+    const headers = [t('reports.header_product'), t('reports.header_category'), t('reports.header_base_qty'), t('reports.header_unit'), t('reports.header_unit_cost'), t('reports.header_total_value')];
     const rows = items.map(i => [i.name, i.categoryName || '', String(i.totalBaseQuantity), i.baseUnit, String(i.basePurchasePrice), String(i.totalBaseQuantity * i.basePurchasePrice)]);
     const total = items.reduce((s, i) => s + (i.totalBaseQuantity * i.basePurchasePrice), 0);
-    exportPDF('Stock Valuation Report', headers, rows, 'stock-valuation', ['', '', '', '', 'Grand Total', String(total)], undefined, currentBusiness);
-    toast.success('Report exported successfully');
+    exportPDF(t('reports.report_stock_valuation'), headers, rows, 'stock-valuation', ['', '', '', '', t('reports.header_total_value'), String(total)], undefined, currentBusiness);
+    toast.success(t('reports.report_exported'));
   };
 
   const exportExpenseCSV = () => {
-    const headers = ['Date', 'Name', 'Category', 'Amount'];
+    const headers = [t('reports.header_date'), t('reports.header_name'), t('reports.header_category'), t('reports.header_amount')];
     const rows = expenses.map(e => [e.date, e.name, e.category, e.amount]);
     exportCSV(headers, rows, 'expense-report');
   };
 
   const exportExpensePDF = () => {
-    const headers = ['Date', 'Name', 'Category', 'Amount'];
+    const headers = [t('reports.header_date'), t('reports.header_name'), t('reports.header_category'), t('reports.header_amount')];
     const rows = expenses.map(e => [e.date, e.name, e.category, String(e.amount)]);
     const total = expenses.reduce((s, e) => s + e.amount, 0);
-    exportPDF('Expense Report', headers, rows, 'expense-report', ['', '', 'Total', String(total)], undefined, currentBusiness);
-    toast.success('Report exported successfully');
+    exportPDF(t('reports.report_expense'), headers, rows, 'expense-report', ['', '', t('common.total'), String(total)], undefined, currentBusiness);
+    toast.success(t('reports.report_exported'));
   };
 
   const exportPNLCSV = () => {
     if (!analytics) return;
-    const headers = ['Metric', 'Value'];
+    const headers = [t('reports.col_metric'), t('reports.col_value')];
     const rows = [
-      ['Total Revenue', analytics.summary.totalRevenue],
-      ['Total Expenses', analytics.summary.totalExpenses],
-      ['Gross Profit', analytics.summary.totalProfit],
-      ['Net Profit', analytics.summary.netProfit],
+      [t('reports.col_total_revenue'), analytics.summary.totalRevenue],
+      [t('reports.col_total_expenses'), analytics.summary.totalExpenses],
+      [t('reports.col_gross_profit'), analytics.summary.totalProfit],
+      [t('reports.col_net_profit'), analytics.summary.netProfit],
     ];
     exportCSV(headers, rows, 'profit-loss');
   };
 
   const exportPNLPDF = () => {
     if (!analytics) return;
-    const headers = ['Metric', 'Value'];
+    const headers = [t('reports.col_metric'), t('reports.col_value')];
     const rows = [
-      ['Total Revenue', String(analytics.summary.totalRevenue)],
-      ['Total Expenses', String(analytics.summary.totalExpenses)],
-      ['Gross Profit', String(analytics.summary.totalProfit)],
-      ['Net Profit', String(analytics.summary.netProfit)],
+      [t('reports.col_total_revenue'), String(analytics.summary.totalRevenue)],
+      [t('reports.col_total_expenses'), String(analytics.summary.totalExpenses)],
+      [t('reports.col_gross_profit'), String(analytics.summary.totalProfit)],
+      [t('reports.col_net_profit'), String(analytics.summary.netProfit)],
     ];
-    exportPDF('Profit & Loss Report', headers, rows, 'profit-loss', undefined, undefined, currentBusiness);
-    toast.success('Report exported successfully');
+    exportPDF(t('reports.report_pnl'), headers, rows, 'profit-loss', undefined, undefined, currentBusiness);
+    toast.success(t('reports.report_exported'));
   };
 
   const exportCatalogCSV = () => {
-    const headers = ['Product', 'Category', 'Brand', 'Base Qty', 'Unit', 'Selling Price', 'Purchase Price'];
+    const headers = [t('reports.header_product'), t('reports.header_category'), t('reports.header_brand'), t('reports.header_base_qty'), t('reports.header_unit'), t('reports.header_selling_price'), t('reports.header_purchase_price')];
     const rows = items.map(i => [i.name, i.categoryName || '', i.companyName || '', i.totalBaseQuantity, i.baseUnit, i.baseSellingPrice, i.basePurchasePrice]);
     exportCSV(headers, rows, 'product-catalog');
   };
 
   const exportCatalogPDF = () => {
-    const headers = ['Product', 'Category', 'Brand', 'Base Qty', 'Unit', 'Selling Price', 'Purchase Price'];
+    const headers = [t('reports.header_product'), t('reports.header_category'), t('reports.header_brand'), t('reports.header_base_qty'), t('reports.header_unit'), t('reports.header_selling_price'), t('reports.header_purchase_price')];
     const rows = items.map(i => [i.name, i.categoryName || '', i.companyName || '', String(i.totalBaseQuantity), i.baseUnit, String(i.baseSellingPrice), String(i.basePurchasePrice)]);
-    exportPDF('Product Catalog Report', headers, rows, 'product-catalog', undefined, undefined, currentBusiness);
-    toast.success('Report exported successfully');
+    exportPDF(t('reports.report_catalog'), headers, rows, 'product-catalog', undefined, undefined, currentBusiness);
+    toast.success(t('reports.report_exported'));
   };
 
   const exportSupplierSummaryCSV = () => {
-    const headers = ['Supplier', 'Total Purchases', 'Total Payments', 'Outstanding Balance'];
+    const headers = [t('reports.header_supplier'), t('reports.header_total_purchases'), t('reports.header_total_payments'), t('reports.header_outstanding_balance')];
     const rows = supplierSummary.map((r: any) => [r.supplierName, r.totalPurchases, r.totalPayments, r.outstandingBalance]);
     exportCSV(headers, rows, 'supplier-summary');
   };
 
   const exportSupplierSummaryPDF = () => {
-    const headers = ['Supplier', 'Total Purchases', 'Total Payments', 'Outstanding Balance'];
+    const headers = [t('reports.header_supplier'), t('reports.header_total_purchases'), t('reports.header_total_payments'), t('reports.header_outstanding_balance')];
     const rows = supplierSummary.map((r: any) => [r.supplierName, String(r.totalPurchases), String(r.totalPayments), String(r.outstandingBalance)]);
     const totalPurchases = supplierSummary.reduce((s: number, r: any) => s + (r.totalPurchases || 0), 0);
     const totalPayments = supplierSummary.reduce((s: number, r: any) => s + (r.totalPayments || 0), 0);
     const totalOutstanding = supplierSummary.reduce((s: number, r: any) => s + (r.outstandingBalance || 0), 0);
-    exportPDF('Supplier Summary Report', headers, rows, 'supplier-summary', ['Total', String(totalPurchases), String(totalPayments), String(totalOutstanding)], undefined, currentBusiness);
-    toast.success('Report exported successfully');
+    exportPDF(t('reports.report_supplier_summary'), headers, rows, 'supplier-summary', [t('common.total'), String(totalPurchases), String(totalPayments), String(totalOutstanding)], undefined, currentBusiness);
+    toast.success(t('reports.report_exported'));
   };
 
   const exportSupplierTransactionsCSV = () => {
-    const headers = ['Supplier', 'Order#', 'Date', 'Total Amount', 'Paid Amount', 'Balance', 'Status'];
+    const headers = [t('reports.header_supplier'), t('reports.header_order_num'), t('reports.header_date'), t('reports.header_total_amount'), t('reports.header_paid_amount'), t('reports.header_balance'), t('reports.header_status')];
     const rows = supplierTransactions.map((r: any) => [r.supplierName, r.purchaseNumber || `#${r.id}`, r.purchaseDate, r.totalAmount, r.paidAmount, r.remainingBalance, r.status]);
     exportCSV(headers, rows, 'supplier-transactions');
   };
 
   const exportSupplierTransactionsPDF = () => {
-    const headers = ['Supplier', 'Order#', 'Date', 'Total Amount', 'Paid Amount', 'Balance', 'Status'];
+    const headers = [t('reports.header_supplier'), t('reports.header_order_num'), t('reports.header_date'), t('reports.header_total_amount'), t('reports.header_paid_amount'), t('reports.header_balance'), t('reports.header_status')];
     const rows = supplierTransactions.map((r: any) => [r.supplierName, r.purchaseNumber || `#${r.id}`, r.purchaseDate, String(r.totalAmount), String(r.paidAmount), String(r.remainingBalance), r.status]);
-    exportPDF('Supplier Transaction Report', headers, rows, 'supplier-transactions', [], undefined, currentBusiness);
-    toast.success('Report exported successfully');
+    exportPDF(t('reports.report_supplier_transactions'), headers, rows, 'supplier-transactions', [], undefined, currentBusiness);
+    toast.success(t('reports.report_exported'));
   };
 
   const exportInventoryBySupplierCSV = () => {
-    const headers = ['Supplier', 'Product Count', 'Stock Quantity', 'Inventory Value', 'Last Supply Date'];
+    const headers = [t('reports.header_supplier'), t('reports.header_product_count'), t('reports.header_stock_quantity'), t('reports.header_inventory_value'), t('reports.header_last_supply')];
     const rows = inventoryBySupplier.map((r: any) => [r.supplierName, r.productCount, r.totalStockQuantity, r.inventoryValue, r.lastSupplyDate || '']);
     exportCSV(headers, rows, 'inventory-by-supplier');
   };
 
   const exportInventoryBySupplierPDF = () => {
-    const headers = ['Supplier', 'Product Count', 'Stock Quantity', 'Inventory Value', 'Last Supply Date'];
+    const headers = [t('reports.header_supplier'), t('reports.header_product_count'), t('reports.header_stock_quantity'), t('reports.header_inventory_value'), t('reports.header_last_supply')];
     const rows = inventoryBySupplier.map((r: any) => [r.supplierName, String(r.productCount), String(r.totalStockQuantity), String(r.inventoryValue), r.lastSupplyDate || '']);
-    exportPDF('Inventory by Supplier Report', headers, rows, 'inventory-by-supplier', [], undefined, currentBusiness);
-    toast.success('Report exported successfully');
+    exportPDF(t('reports.report_inventory_supplier'), headers, rows, 'inventory-by-supplier', [], undefined, currentBusiness);
+    toast.success(t('reports.report_exported'));
   };
 
   const exportVoidedSalesCSV = () => {
-    const headers = ['Sale #', 'Product', 'Amount', 'Reason', 'Voided By', 'Date'];
+    const headers = [t('reports.header_sale_num'), t('reports.header_product'), t('reports.header_amount'), t('reports.header_reason'), t('reports.header_voided_by'), t('reports.header_date')];
     const rows = voidedSales.map((r: any) => [r.id, r.name || `Item #${r.itemId}`, r.totalPrice, r.voidReason || '', r.voidedBy || '', r.voidedAt || '']);
     exportCSV(headers, rows, 'voided-sales');
   };
 
   const exportVoidedSalesPDF = () => {
-    const headers = ['Sale #', 'Product', 'Amount', 'Reason', 'Voided By', 'Date'];
+    const headers = [t('reports.header_sale_num'), t('reports.header_product'), t('reports.header_amount'), t('reports.header_reason'), t('reports.header_voided_by'), t('reports.header_date')];
     const rows = voidedSales.map((r: any) => [String(r.id), r.name || `Item #${r.itemId}`, String(r.totalPrice), r.voidReason || '', r.voidedBy || '', r.voidedAt || '']);
-    exportPDF('Voided Sales Report', headers, rows, 'voided-sales', [], undefined, currentBusiness);
-    toast.success('Report exported successfully');
+    exportPDF(t('reports.report_voided_sales'), headers, rows, 'voided-sales', [], undefined, currentBusiness);
+    toast.success(t('reports.report_exported'));
   };
 
   const exportReversalsCSV = () => {
-    const headers = ['Action', 'Entity', 'Entity ID', 'Description', 'Changed By', 'Date'];
+    const headers = [t('reports.header_action'), t('reports.header_entity'), t('reports.header_entity_id'), t('reports.header_description'), t('reports.header_changed_by'), t('reports.header_date')];
     const rows = reversalData.map((r: any) => [r.action, r.entityType || '', String(r.entityId || ''), r.description || '', r.changedBy || '', r.createdAt || '']);
     exportCSV(headers, rows, 'reversals');
   };
 
   const exportReversalsPDF = () => {
-    const headers = ['Action', 'Entity', 'Entity ID', 'Description', 'Changed By', 'Date'];
+    const headers = [t('reports.header_action'), t('reports.header_entity'), t('reports.header_entity_id'), t('reports.header_description'), t('reports.header_changed_by'), t('reports.header_date')];
     const rows = reversalData.map((r: any) => [r.action, r.entityType || '', String(r.entityId || ''), r.description || '', r.changedBy || '', r.createdAt || '']);
-    exportPDF('Reversals Report', headers, rows, 'reversals', [], undefined, currentBusiness);
-    toast.success('Report exported successfully');
+    exportPDF(t('reports.report_reversals'), headers, rows, 'reversals', [], undefined, currentBusiness);
+    toast.success(t('reports.report_exported'));
   };
 
   const formattedRange = useMemo(() => {
@@ -633,7 +633,7 @@ const Reports: React.FC = () => {
               <CardContent className="p-5">
                 <div className="flex justify-between items-start mb-3">
                   <div className="p-2 bg-muted rounded-xl text-foreground"><AlertTriangle size={20} /></div>
-                  <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest">Outstanding</Badge>
+                  <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest">{t('reports.outstanding_badge')}</Badge>
                 </div>
                 <p className="text-muted-foreground text-[9px] font-black uppercase tracking-widest mb-1">{t('suppliers.stat_outstanding')}</p>
                 <h3 className="text-2xl font-black tracking-tight text-red-600">{t('common.etb')} {supplierSummary.reduce((s: number, r: any) => s + (r.outstandingBalance || 0), 0).toLocaleString()}</h3>
@@ -699,7 +699,7 @@ const Reports: React.FC = () => {
                   <div className="p-2 bg-muted rounded-xl text-foreground"><Boxes size={20} /></div>
                   <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest">{t('inventory.qty')}</Badge>
                 </div>
-                  <p className="text-muted-foreground text-[9px] font-black uppercase tracking-widest mb-1">Total Stock</p>
+                  <p className="text-muted-foreground text-[9px] font-black uppercase tracking-widest mb-1">{t('reports.total_stock_badge')}</p>
                 <h3 className="text-2xl font-black tracking-tight">{Math.round(inventoryBySupplier.reduce((s: number, r: any) => s + (r.totalStockQuantity || 0), 0)).toLocaleString()}</h3>
               </CardContent>
             </Card>
@@ -707,7 +707,7 @@ const Reports: React.FC = () => {
               <CardContent className="p-5">
                 <div className="flex justify-between items-start mb-3">
                   <div className="p-2 bg-muted rounded-xl text-foreground"><DollarSign size={20} /></div>
-                  <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest">Value</Badge>
+                  <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest">{t('reports.value_badge')}</Badge>
                 </div>
                 <p className="text-muted-foreground text-[9px] font-black uppercase tracking-widest mb-1">{t('inventory.total_value')}</p>
                 <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {Math.round(inventoryBySupplier.reduce((s: number, r: any) => s + (r.inventoryValue || 0), 0)).toLocaleString()}</h3>
@@ -820,8 +820,8 @@ const Reports: React.FC = () => {
                 </div>
                 <p className="text-muted-foreground text-[9px] font-black uppercase tracking-widest mb-1">{t('reports.types')}</p>
                 <h3 className="text-lg font-black tracking-tight">
-                  Payments: {reversalData.filter((r: any) => r.action === 'reverse_payment').length} / 
-                  Adjustments: {reversalData.filter((r: any) => r.action === 'reverse_adjustment').length}
+                  {t('reports.payments_label', { count: reversalData.filter((r: any) => r.action === 'reverse_payment').length })} / 
+                  {t('reports.adjustments_label', { count: reversalData.filter((r: any) => r.action === 'reverse_adjustment').length })}
                 </h3>
               </CardContent>
             </Card>
@@ -1029,7 +1029,7 @@ const Reports: React.FC = () => {
         return (
           <Card className="rounded-3xl border-border">
             <CardHeader>
-              <CardTitle className="text-sm font-black uppercase tracking-widest">Supplier Summary</CardTitle>
+              <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.supplier_summary_card')}</CardTitle>
               <CardDescription className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">{t('reports.as_of_date')} {formatDate(new Date())}</CardDescription>
             </CardHeader>
             <CardContent className="p-0">
@@ -1065,7 +1065,7 @@ const Reports: React.FC = () => {
           <div className="space-y-6">
             <Card className="rounded-3xl border-border">
               <CardHeader>
-                <CardTitle className="text-sm font-black uppercase tracking-widest">Purchase Transactions</CardTitle>
+                <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.purchase_transactions_card')}</CardTitle>
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
@@ -1100,7 +1100,7 @@ const Reports: React.FC = () => {
             </Card>
             <Card className="rounded-3xl border-border">
               <CardHeader>
-                <CardTitle className="text-sm font-black uppercase tracking-widest">Payment Transactions</CardTitle>
+                <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.payment_transactions_card')}</CardTitle>
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
@@ -1137,7 +1137,7 @@ const Reports: React.FC = () => {
         return (
           <Card className="rounded-3xl border-border">
             <CardHeader>
-              <CardTitle className="text-sm font-black uppercase tracking-widest">Inventory by Supplier</CardTitle>
+              <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.inventory_supplier_card')}</CardTitle>
               <CardDescription className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">{t('reports.as_of_date')} {formatDate(new Date())}</CardDescription>
             </CardHeader>
             <CardContent className="p-0">
@@ -1218,7 +1218,7 @@ const Reports: React.FC = () => {
                   <TableRow>
                     <TableHead className="text-[10px] font-black uppercase tracking-widest">{t('reports.action')}</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-widest">{t('reports.entity')}</TableHead>
-                    <TableHead className="text-[10px] font-black uppercase tracking-widest text-right">ID</TableHead>
+                    <TableHead className="text-[10px] font-black uppercase tracking-widest text-right">{t('reports.id_header')}</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-widest">{t('reports.description')}</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-widest">{t('audit_logs.by')}</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-widest text-right">{t('common.date')}</TableHead>
@@ -1229,7 +1229,7 @@ const Reports: React.FC = () => {
                     <TableRow key={row.id || i}>
                       <TableCell>
                         <Badge variant={row.action === 'reverse_payment' ? 'default' : 'secondary'} className="text-[8px] font-black uppercase">
-                          {row.action === 'reverse_payment' ? 'Payment' : 'Adjustment'}
+                          {row.action === 'reverse_payment' ? t('reports.badge_payment') : t('reports.badge_adjustment')}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-xs">{row.entityType || '-'}</TableCell>
@@ -1315,12 +1315,12 @@ const Reports: React.FC = () => {
       <div className="flex gap-2 justify-end">
         {showCSV && (
           <Button variant="outline" size="sm" onClick={csvHandler} className="text-[10px] font-bold uppercase tracking-widest">
-            <FileText size={14} className="mr-1" /> CSV
+            <FileText size={14} className="mr-1" /> {t('reports.csv')}
           </Button>
         )}
         {showPDF && (
           <Button variant="outline" size="sm" onClick={pdfHandler} className="text-[10px] font-bold uppercase tracking-widest">
-            <Download size={14} className="mr-1" /> PDF
+            <Download size={14} className="mr-1" /> {t('reports.pdf')}
           </Button>
         )}
       </div>
@@ -1356,13 +1356,13 @@ const Reports: React.FC = () => {
               {t('reports.catalog')}
             </TabsTrigger>
             <TabsTrigger value="supplier_summary" className="text-[10px] font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
-              <Truck className="h-3 w-3 mr-1" />Suppliers
+              <Truck className="h-3 w-3 mr-1" />{t('reports.tab_suppliers')}
             </TabsTrigger>
             <TabsTrigger value="supplier_transactions" className="text-[10px] font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
-              <Receipt className="h-3 w-3 mr-1" />Transactions
+              <Receipt className="h-3 w-3 mr-1" />{t('reports.tab_transactions')}
             </TabsTrigger>
             <TabsTrigger value="inventory_by_supplier" className="text-[10px] font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
-              <Package className="h-3 w-3 mr-1" />By Supplier
+              <Package className="h-3 w-3 mr-1" />{t('reports.tab_by_supplier')}
             </TabsTrigger>
             <TabsTrigger value="voided_sales" className="text-[10px] font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
               <Ban className="h-3 w-3 mr-1" />{t('reports.voided_sales')}
