@@ -316,6 +316,9 @@ export interface ElectronAPI {
   // Business Assistant Insights
   getBusinessInsights: () => Promise<BusinessInsight[]>;
 
+  // Debug
+  debugPing: () => Promise<{ ok: boolean; timestamp: string; handlersRegistered: boolean }>;
+
   // Order Management
 
   getOrders: (options?: any) => Promise<any[]>;

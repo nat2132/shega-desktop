@@ -831,6 +831,102 @@ function initDB() {
     );
   `);
   db.exec(`
+    CREATE TABLE IF NOT EXISTS subscription_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      tier TEXT NOT NULL CHECK(tier IN ('basic', 'premium')),
+      durationMonths INTEGER NOT NULL,
+      price REAL NOT NULL,
+      currency TEXT DEFAULT 'ETB',
+      description TEXT,
+      features TEXT,
+      isActive INTEGER DEFAULT 1,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER NOT NULL UNIQUE,
+      planId INTEGER,
+      tier TEXT NOT NULL DEFAULT 'basic' CHECK(tier IN ('basic', 'premium', 'trial')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'expired', 'cancelled', 'pending')),
+      startedAt TEXT,
+      expiresAt TEXT,
+      trialStartedAt TEXT,
+      trialEndsAt TEXT,
+      isTrial INTEGER DEFAULT 0,
+      autoRenew INTEGER DEFAULT 0,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (businessId) REFERENCES businesses(id),
+      FOREIGN KEY (planId) REFERENCES subscription_plans(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS payment_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER,
+      transactionId TEXT,
+      businessName TEXT NOT NULL,
+      phoneNumber TEXT NOT NULL,
+      selectedPlan TEXT NOT NULL,
+      amount REAL NOT NULL,
+      currency TEXT DEFAULT 'ETB',
+      paymentDate TEXT NOT NULL,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'cancelled')),
+      adminNotes TEXT,
+      verifiedBy INTEGER,
+      verifiedAt TEXT,
+      subscriptionId INTEGER,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (businessId) REFERENCES businesses(id),
+      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS subscription_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subscriptionId INTEGER,
+      businessId INTEGER,
+      action TEXT NOT NULL,
+      oldTier TEXT,
+      newTier TEXT,
+      oldStatus TEXT,
+      newStatus TEXT,
+      details TEXT,
+      changedBy TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id),
+      FOREIGN KEY (businessId) REFERENCES businesses(id)
+    );
+  `);
+  const planCount = db.prepare("SELECT COUNT(*) as count FROM subscription_plans").get();
+  if (planCount.count === 0) {
+    const insertPlan = db.prepare("INSERT INTO subscription_plans (name, tier, durationMonths, price, description, features) VALUES (?, ?, ?, ?, ?, ?)");
+    insertPlan.run("Basic 1 Month", "basic", 1, 2499, "Run your daily business.", JSON.stringify(["inventory", "sales", "customers", "adjustments"]));
+    insertPlan.run("Basic 3 Months", "basic", 3, 5499, "Run your daily business.", JSON.stringify(["inventory", "sales", "customers", "adjustments"]));
+    insertPlan.run("Premium 1 Month", "premium", 1, 4499, "Manage and grow your business with advanced tools.", JSON.stringify(["inventory", "sales", "customers", "adjustments", "employees", "users", "audit", "suppliers", "shipments", "analytics", "reports"]));
+    insertPlan.run("Premium 3 Months", "premium", 3, 11499, "Manage and grow your business with advanced tools.", JSON.stringify(["inventory", "sales", "customers", "adjustments", "employees", "users", "audit", "suppliers", "shipments", "analytics", "reports"]));
+  }
+  const bizList = db.prepare("SELECT id FROM businesses").all();
+  for (const biz of bizList) {
+    const existing = db.prepare("SELECT id FROM subscriptions WHERE businessId = ?").get(biz.id);
+    if (!existing) {
+      const now = /* @__PURE__ */ new Date();
+      const trialEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1e3);
+      db.prepare(`
+        INSERT INTO subscriptions (businessId, tier, status, isTrial, trialStartedAt, trialEndsAt, startedAt, expiresAt)
+        VALUES (?, 'trial', 'active', 1, ?, ?, ?, ?)
+      `).run(biz.id, now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString());
+    }
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_businessId ON subscriptions(businessId);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+    CREATE INDEX IF NOT EXISTS idx_payment_transactions_businessId ON payment_transactions(businessId);
+    CREATE INDEX IF NOT EXISTS idx_payment_transactions_status ON payment_transactions(status);
+    CREATE INDEX IF NOT EXISTS idx_subscription_history_subscriptionId ON subscription_history(subscriptionId);
+  `);
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_items_businessId ON items(businessId);
     CREATE INDEX IF NOT EXISTS idx_items_categoryId ON items(categoryId);
     CREATE INDEX IF NOT EXISTS idx_items_totalBaseQuantity ON items(totalBaseQuantity);
@@ -1991,6 +2087,7 @@ function insertAuditLog(action, entityType, entityId, fieldName, oldValue, newVa
   }
 }
 function registerIPCHandlers() {
+  console.log("[Handlers] registerIPCHandlers called");
   electron.ipcMain.handle("get-active-business", () => {
     const id = getActiveBusinessId();
     return db.prepare("SELECT * FROM businesses WHERE id = ?").get(id);
@@ -6630,11 +6727,15 @@ function registerIPCHandlers() {
     insertAuditLog("cancel_order", "order", data.orderId, "status", "Order", "Cancelled", `Order #${data.orderId} cancelled by ${currentUserName || "unknown"}. Reason: ${data.reason || "N/A"}`);
     return { success: true };
   });
+  console.log("[Handlers] Registered global-search");
   electron.ipcMain.handle("global-search", (_, query) => {
     const bizId = getActiveBusinessId();
     if (!query || query.trim().length < 1) return [];
     const q = `%${query.trim()}%`;
     const results = [];
+    console.log("[Search] bizId:", bizId, "query:", query);
+    console.log("[Search] items count:", db.prepare("SELECT COUNT(*) as c FROM items WHERE businessId = ?").get(bizId)?.c);
+    console.log("[Search] sales count:", db.prepare("SELECT COUNT(*) as c FROM sales WHERE businessId = ?").get(bizId)?.c);
     try {
       const items = db.prepare(`
         SELECT id, name, companyName, categoryId, totalBaseQuantity, baseUnit, baseSellingPrice,
@@ -7042,8 +7143,11 @@ function registerIPCHandlers() {
     else rating = "Needs Attention";
     return { score: finalScore, rating, factors, recommendations };
   });
+  console.log("[Handlers] Registered get-business-insights");
   electron.ipcMain.handle("get-business-insights", () => {
     const bizId = getActiveBusinessId();
+    console.log("[Insights] Called with bizId:", bizId);
+    console.log("[Insights] items:", db.prepare("SELECT COUNT(*) as c FROM items WHERE businessId = ?").get(bizId)?.c);
     const now = /* @__PURE__ */ new Date();
     const today = now.toISOString().split("T")[0];
     const sevenDaysAgo = new Date(now.getTime() - 7 * 864e5).toISOString().split("T")[0];
@@ -7194,9 +7298,9 @@ function registerIPCHandlers() {
           COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) as spent
         FROM budgets b
         WHERE b.businessId = ? AND b.month = ? AND b.year = ?
-        HAVING spent > budgetAmount
-        ORDER BY (spent - budgetAmount) DESC LIMIT 3
-      `).all(bizId, bizId, monthStart, today, bizId, String(now.getMonth() + 1).padStart(2, "0"), String(now.getFullYear()));
+          AND COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) > b.amount
+        ORDER BY (COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) - b.amount) DESC LIMIT 3
+      `).all(bizId, monthStart, today, bizId, String(now.getMonth() + 1).padStart(2, "0"), String(now.getFullYear()), bizId, monthStart, today, bizId, monthStart, today);
       if (overrunBudgets.length > 0) {
         insights.push({
           type: "budget_overrun",
@@ -7395,6 +7499,179 @@ function registerIPCHandlers() {
       return (order[a.severity] ?? 4) - (order[b.severity] ?? 4);
     });
   });
+  electron.ipcMain.handle("get-subscription-plans", () => {
+    return db.prepare("SELECT * FROM subscription_plans WHERE isActive = 1 ORDER BY price ASC").all();
+  });
+  electron.ipcMain.handle("get-current-subscription", () => {
+    const bizId = getActiveBusinessId();
+    const sub = db.prepare("SELECT * FROM subscriptions WHERE businessId = ?").get(bizId);
+    if (!sub) return null;
+    const now = /* @__PURE__ */ new Date();
+    if (sub.isTrial && sub.trialEndsAt && new Date(sub.trialEndsAt) < now && sub.status === "active") {
+      sub.tier = "basic";
+      sub.status = "active";
+      sub.isTrial = 0;
+      db.prepare("UPDATE subscriptions SET tier = ?, isTrial = 0, updatedAt = ? WHERE id = ?").run("basic", now.toISOString(), sub.id);
+      db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)").run(sub.id, bizId, "trial_expired", "trial", "basic", "Trial period ended, auto-downgraded to Basic", "system");
+      sub.tier = "basic";
+      sub.isTrial = 0;
+    }
+    if (sub.expiresAt && new Date(sub.expiresAt) < now && sub.status === "active" && !sub.isTrial) {
+      const oldTier = sub.tier;
+      sub.tier = "basic";
+      sub.status = "expired";
+      db.prepare("UPDATE subscriptions SET status = ?, updatedAt = ? WHERE id = ?").run("expired", now.toISOString(), sub.id);
+      db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, oldStatus, newStatus, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(sub.id, bizId, "subscription_expired", oldTier, "basic", "active", "expired", "Subscription period ended", "system");
+      sub.status = "expired";
+      sub.tier = "basic";
+    }
+    const plan = sub.planId ? db.prepare("SELECT * FROM subscription_plans WHERE id = ?").get(sub.planId) : null;
+    return { ...sub, plan };
+  });
+  electron.ipcMain.handle("start-trial", () => {
+    const bizId = getActiveBusinessId();
+    const now = /* @__PURE__ */ new Date();
+    const trialEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1e3);
+    const existing = db.prepare("SELECT id, isTrial, status FROM subscriptions WHERE businessId = ?").get(bizId);
+    if (existing) {
+      if (existing.isTrial) return { success: true, message: "Trial already active" };
+      if (!existing.isTrial && existing.status !== "expired") {
+        return { success: false, error: "Subscription already active" };
+      }
+      db.prepare("UPDATE subscriptions SET tier = ?, status = ?, isTrial = 1, trialStartedAt = ?, trialEndsAt = ?, startedAt = ?, expiresAt = ?, updatedAt = ? WHERE id = ?").run("trial", "active", now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString(), now.toISOString(), existing.id);
+    } else {
+      db.prepare("INSERT INTO subscriptions (businessId, tier, status, isTrial, trialStartedAt, trialEndsAt, startedAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(bizId, "trial", "active", 1, now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString());
+    }
+    db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)").run(existing?.id || db.prepare("SELECT id FROM subscriptions WHERE businessId = ?").get(bizId).id, bizId, "trial_started", existing?.tier || "none", "trial", "7-day premium trial started", currentUserName || "system");
+    return { success: true };
+  });
+  electron.ipcMain.handle("submit-payment", (_, data) => {
+    const bizId = getActiveBusinessId();
+    const result = db.prepare(`
+      INSERT INTO payment_transactions (businessId, transactionId, businessName, phoneNumber, selectedPlan, amount, paymentDate, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(bizId, data.transactionId, data.businessName, data.phoneNumber, data.selectedPlan, data.amount, data.paymentDate, data.notes || null);
+    db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, details, changedBy) VALUES (?, ?, ?, ?, ?)").run(null, bizId, "payment_submitted", `Payment submitted for plan "${data.selectedPlan}" (Transaction: ${data.transactionId})`, currentUserName || "system");
+    return { success: true, id: result.lastInsertRowid };
+  });
+  electron.ipcMain.handle("get-payment-transactions", (_, options) => {
+    const bizId = getActiveBusinessId();
+    let query = "SELECT * FROM payment_transactions WHERE businessId = ?";
+    const params = [bizId];
+    if (options?.status) {
+      query += " AND status = ?";
+      params.push(options.status);
+    }
+    query += " ORDER BY createdAt DESC";
+    return db.prepare(query).all(...params);
+  });
+  electron.ipcMain.handle("get-all-payment-transactions", (_, options) => {
+    requirePermission("settings");
+    let query = "SELECT pt.*, b.businessName as bizName FROM payment_transactions pt LEFT JOIN businesses b ON pt.businessId = b.id";
+    const params = [];
+    if (options?.status) {
+      query += " WHERE pt.status = ?";
+      params.push(options.status);
+    }
+    query += " ORDER BY pt.createdAt DESC";
+    return db.prepare(query).all(...params);
+  });
+  electron.ipcMain.handle("approve-payment", (_, data) => {
+    requirePermission("settings");
+    getActiveBusinessId();
+    const tx = db.prepare("SELECT * FROM payment_transactions WHERE id = ?").get(data.transactionId);
+    if (!tx) return { success: false, error: "Transaction not found" };
+    const plan = db.prepare("SELECT * FROM subscription_plans WHERE name = ?").get(tx.selectedPlan);
+    if (!plan) return { success: false, error: "Plan not found" };
+    const now = /* @__PURE__ */ new Date();
+    const expiresAt = new Date(now.getTime() + plan.durationMonths * 30 * 24 * 60 * 60 * 1e3);
+    const existingSub = db.prepare("SELECT id, tier FROM subscriptions WHERE businessId = ?").get(tx.businessId);
+    const oldTier = existingSub?.tier || "basic";
+    if (existingSub) {
+      db.prepare(`
+        UPDATE subscriptions SET planId = ?, tier = ?, status = 'active', isTrial = 0, startedAt = ?, expiresAt = ?, updatedAt = ?
+        WHERE id = ?
+      `).run(plan.id, plan.tier, now.toISOString(), expiresAt.toISOString(), now.toISOString(), existingSub.id);
+    } else {
+      const r = db.prepare(`
+        INSERT INTO subscriptions (businessId, planId, tier, status, startedAt, expiresAt)
+        VALUES (?, ?, ?, 'active', ?, ?)
+      `).run(tx.businessId, plan.id, plan.tier, now.toISOString(), expiresAt.toISOString());
+      data.subscriptionId = r.lastInsertRowid;
+    }
+    db.prepare("UPDATE payment_transactions SET status = ?, verifiedBy = ?, verifiedAt = ?, subscriptionId = ? WHERE id = ?").run("approved", currentAdminId, now.toISOString(), existingSub?.id || data.subscriptionId, data.transactionId);
+    db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)").run(existingSub?.id || data.subscriptionId, tx.businessId, "payment_approved", oldTier, plan.tier, `Payment #${tx.id} approved. Plan: ${tx.selectedPlan}`, currentUserName || "system");
+    return { success: true };
+  });
+  electron.ipcMain.handle("reject-payment", (_, data) => {
+    requirePermission("settings");
+    const tx = db.prepare("SELECT * FROM payment_transactions WHERE id = ?").get(data.transactionId);
+    if (!tx) return { success: false, error: "Transaction not found" };
+    db.prepare("UPDATE payment_transactions SET status = ?, adminNotes = ?, verifiedBy = ?, verifiedAt = ? WHERE id = ?").run("rejected", data.reason, currentAdminId, (/* @__PURE__ */ new Date()).toISOString(), data.transactionId);
+    db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, details, changedBy) VALUES (?, ?, ?, ?, ?)").run(null, tx.businessId, "payment_rejected", `Payment #${tx.id} rejected. Reason: ${data.reason}`, currentUserName || "system");
+    return { success: true };
+  });
+  electron.ipcMain.handle("get-subscription-history", () => {
+    const bizId = getActiveBusinessId();
+    return db.prepare("SELECT * FROM subscription_history WHERE businessId = ? ORDER BY createdAt DESC").all(bizId);
+  });
+  electron.ipcMain.handle("get-renewal-info", () => {
+    const bizId = getActiveBusinessId();
+    const sub = db.prepare("SELECT * FROM subscriptions WHERE businessId = ?").get(bizId);
+    if (!sub || !sub.expiresAt) return null;
+    const now = /* @__PURE__ */ new Date();
+    const expiry = new Date(sub.expiresAt);
+    const daysRemaining = Math.ceil((expiry.getTime() - now.getTime()) / (1e3 * 60 * 60 * 24));
+    return {
+      daysRemaining: Math.max(0, daysRemaining),
+      expiresAt: sub.expiresAt,
+      isExpired: daysRemaining <= 0,
+      needsRenewal: daysRemaining <= 7,
+      tier: sub.tier,
+      status: sub.status,
+      isTrial: !!sub.isTrial
+    };
+  });
+  electron.ipcMain.handle("check-premium-feature", (_, feature) => {
+    const bizId = getActiveBusinessId();
+    const sub = db.prepare("SELECT tier, isTrial, status, expiresAt FROM subscriptions WHERE businessId = ?").get(bizId);
+    if (!sub) return { allowed: false, reason: "no_subscription" };
+    if (sub.status !== "active") return { allowed: false, reason: "subscription_not_active" };
+    const isPremium = sub.tier === "premium" || sub.isTrial;
+    if (!isPremium) return { allowed: false, reason: "requires_premium" };
+    if (!sub.isTrial && sub.expiresAt && new Date(sub.expiresAt) < /* @__PURE__ */ new Date()) {
+      return { allowed: false, reason: "subscription_expired" };
+    }
+    return { allowed: true };
+  });
+  electron.ipcMain.handle("get-subscription-stats", () => {
+    const allSubs = db.prepare(`
+      SELECT s.tier, s.status, s.isTrial, s.expiresAt, s.businessId, b.businessName as bizName
+      FROM subscriptions s LEFT JOIN businesses b ON s.businessId = b.id
+    `).all();
+    return {
+      total: allSubs.length,
+      active: allSubs.filter((s) => s.status === "active").length,
+      trial: allSubs.filter((s) => s.isTrial).length,
+      premium: allSubs.filter((s) => s.tier === "premium").length,
+      basic: allSubs.filter((s) => s.tier === "basic" && !s.isTrial).length,
+      expired: allSubs.filter((s) => s.status === "expired").length,
+      pendingPayments: db.prepare("SELECT COUNT(*) as c FROM payment_transactions WHERE status = 'pending'").get().c
+    };
+  });
+  electron.ipcMain.handle("check-trial-availability", () => {
+    const bizId = getActiveBusinessId();
+    const sub = db.prepare("SELECT isTrial, tier, status FROM subscriptions WHERE businessId = ?").get(bizId);
+    if (!sub) return { available: true };
+    if (sub.isTrial) return { available: false, reason: "already_on_trial", trialActive: true };
+    if (sub.status === "expired" && !sub.isTrial) return { available: false, reason: "already_used_trial" };
+    if (sub.status === "active" && sub.tier !== "basic") return { available: false, reason: "already_subscribed" };
+    return { available: true };
+  });
+  electron.ipcMain.handle("debug:ping", () => {
+    return { ok: true, timestamp: (/* @__PURE__ */ new Date()).toISOString(), handlersRegistered: true };
+  });
+  console.log("[Handlers] All IPC handlers registered successfully");
 }
 process.on("uncaughtException", (error) => {
   console.error("[FATAL] Uncaught exception:", error);

@@ -1,5 +1,6 @@
 import React from 'react';
-import { Sparkles, Check, ArrowRight, BarChart3, Building2, Cloud, Headphones, Palette } from 'lucide-react';
+import { Sparkles, Crown, ArrowRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useSettings } from '../context/SettingsContext';
 import {
   Dialog,
@@ -17,16 +18,14 @@ interface PremiumUpsellModalProps {
   feature?: string;
 }
 
-const premiumFeatures = [
-  { key: 'feature_1', icon: BarChart3 },
-  { key: 'feature_2', icon: Building2 },
-  { key: 'feature_3', icon: Cloud },
-  { key: 'feature_4', icon: Headphones },
-  { key: 'feature_5', icon: Palette },
-];
-
 const PremiumUpsellModal: React.FC<PremiumUpsellModalProps> = ({ open, onClose, feature }) => {
   const { t } = useSettings();
+  const navigate = useNavigate();
+
+  const handleUpgrade = () => {
+    onClose();
+    navigate('/subscription');
+  };
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -37,41 +36,39 @@ const PremiumUpsellModal: React.FC<PremiumUpsellModalProps> = ({ open, onClose, 
               <Sparkles className="h-5 w-5 text-amber-500" />
             </div>
             <Badge variant="secondary" className="text-[9px] font-black uppercase tracking-widest bg-amber-500/10 text-amber-500 border-amber-500/20">
-              {t('premium.coming_soon')}
+              {t('premium.badge')}
             </Badge>
           </div>
           <DialogTitle className="text-lg font-black uppercase tracking-widest">
-            {t('premium.title')}
+            {t('premium.locked_title')}
           </DialogTitle>
           <DialogDescription className="text-[11px] text-muted-foreground">
-            {feature ? `"${feature}" is a Premium feature.` : t('premium.subtitle')}
+            {feature ? `"${feature}" is a Premium feature.` : t('premium.locked_desc')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3 py-2">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-            {t('premium.features')}
-          </p>
-          {premiumFeatures.map((feat) => {
-            const Icon = feat.icon;
-            return (
-              <div key={feat.key} className="flex items-center gap-3">
-                <div className="p-1 rounded-full bg-emerald-500/10">
-                  <Check className="h-3 w-3 text-emerald-500" />
-                </div>
-                <Icon className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-[11px] font-medium">{t(`premium.${feat.key}`)}</span>
-              </div>
-            );
-          })}
+          <div className="flex items-center gap-3 p-3 rounded-2xl bg-gradient-to-br from-amber-500/[0.04] to-transparent border border-amber-500/10">
+            <div className="p-2 rounded-full bg-amber-500/10">
+              <Crown className="h-5 w-5 text-amber-500" />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-amber-500">{t('premium.get_premium')}</p>
+              <p className="text-[10px] text-muted-foreground">{t('premium.subtitle')}</p>
+            </div>
+          </div>
         </div>
 
         <div className="flex gap-2 pt-2">
           <Button variant="outline" size="sm" onClick={onClose} className="rounded-xl text-[10px] font-black uppercase tracking-widest flex-1">
             {t('contact_us') || 'Close'}
           </Button>
-          <Button size="sm" className="rounded-xl text-[10px] font-black uppercase tracking-widest flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700">
-            {t('premium.learn_more')} <ArrowRight className="h-3 w-3 ml-1" />
+          <Button
+            size="sm"
+            onClick={handleUpgrade}
+            className="rounded-xl text-[10px] font-black uppercase tracking-widest flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
+          >
+            {t('premium.locked_upgrade')} <ArrowRight className="h-3 w-3 ml-1" />
           </Button>
         </div>
       </DialogContent>

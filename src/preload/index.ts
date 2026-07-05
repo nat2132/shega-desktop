@@ -333,4 +333,22 @@ contextBridge.exposeInMainWorld('api', {
 
   // Business Assistant Insights
   getBusinessInsights: () => ipcRenderer.invoke('get-business-insights'),
+
+  // Subscription System
+  getSubscriptionPlans: () => ipcRenderer.invoke('get-subscription-plans'),
+  getCurrentSubscription: () => ipcRenderer.invoke('get-current-subscription'),
+  startTrial: () => ipcRenderer.invoke('start-trial'),
+  submitPayment: (data: any) => ipcRenderer.invoke('submit-payment', data),
+  getPaymentTransactions: (options?: any) => ipcRenderer.invoke('get-payment-transactions', options),
+  getAllPaymentTransactions: (options?: any) => ipcRenderer.invoke('get-all-payment-transactions', options),
+  approvePayment: (data: any) => ipcRenderer.invoke('approve-payment', data),
+  rejectPayment: (data: any) => ipcRenderer.invoke('reject-payment', data),
+  getSubscriptionHistory: () => ipcRenderer.invoke('get-subscription-history'),
+  getRenewalInfo: () => ipcRenderer.invoke('get-renewal-info'),
+  checkPremiumFeature: (feature: string) => ipcRenderer.invoke('check-premium-feature', feature),
+  getSubscriptionStats: () => ipcRenderer.invoke('get-subscription-stats'),
+  checkTrialAvailability: () => ipcRenderer.invoke('check-trial-availability'),
+
+  // Debug
+  debugPing: () => ipcRenderer.invoke('debug:ping'),
 })

@@ -804,6 +804,110 @@ export function initDB() {
     );
   `);
 
+  // ========== SUBSCRIPTION SYSTEM TABLES ==========
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS subscription_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      tier TEXT NOT NULL CHECK(tier IN ('basic', 'premium')),
+      durationMonths INTEGER NOT NULL,
+      price REAL NOT NULL,
+      currency TEXT DEFAULT 'ETB',
+      description TEXT,
+      features TEXT,
+      isActive INTEGER DEFAULT 1,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER NOT NULL UNIQUE,
+      planId INTEGER,
+      tier TEXT NOT NULL DEFAULT 'basic' CHECK(tier IN ('basic', 'premium', 'trial')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'expired', 'cancelled', 'pending')),
+      startedAt TEXT,
+      expiresAt TEXT,
+      trialStartedAt TEXT,
+      trialEndsAt TEXT,
+      isTrial INTEGER DEFAULT 0,
+      autoRenew INTEGER DEFAULT 0,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (businessId) REFERENCES businesses(id),
+      FOREIGN KEY (planId) REFERENCES subscription_plans(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS payment_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER,
+      transactionId TEXT,
+      businessName TEXT NOT NULL,
+      phoneNumber TEXT NOT NULL,
+      selectedPlan TEXT NOT NULL,
+      amount REAL NOT NULL,
+      currency TEXT DEFAULT 'ETB',
+      paymentDate TEXT NOT NULL,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'cancelled')),
+      adminNotes TEXT,
+      verifiedBy INTEGER,
+      verifiedAt TEXT,
+      subscriptionId INTEGER,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (businessId) REFERENCES businesses(id),
+      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS subscription_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subscriptionId INTEGER,
+      businessId INTEGER,
+      action TEXT NOT NULL,
+      oldTier TEXT,
+      newTier TEXT,
+      oldStatus TEXT,
+      newStatus TEXT,
+      details TEXT,
+      changedBy TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id),
+      FOREIGN KEY (businessId) REFERENCES businesses(id)
+    );
+  `);
+
+  // Seed subscription plans
+  const planCount = db.prepare('SELECT COUNT(*) as count FROM subscription_plans').get() as any;
+  if (planCount.count === 0) {
+    const insertPlan = db.prepare('INSERT INTO subscription_plans (name, tier, durationMonths, price, description, features) VALUES (?, ?, ?, ?, ?, ?)');
+    insertPlan.run('Basic 1 Month', 'basic', 1, 2499, 'Run your daily business.', JSON.stringify(['inventory', 'sales', 'customers', 'adjustments']));
+    insertPlan.run('Basic 3 Months', 'basic', 3, 5499, 'Run your daily business.', JSON.stringify(['inventory', 'sales', 'customers', 'adjustments']));
+    insertPlan.run('Premium 1 Month', 'premium', 1, 4499, 'Manage and grow your business with advanced tools.', JSON.stringify(['inventory', 'sales', 'customers', 'adjustments', 'employees', 'users', 'audit', 'suppliers', 'shipments', 'analytics', 'reports']));
+    insertPlan.run('Premium 3 Months', 'premium', 3, 11499, 'Manage and grow your business with advanced tools.', JSON.stringify(['inventory', 'sales', 'customers', 'adjustments', 'employees', 'users', 'audit', 'suppliers', 'shipments', 'analytics', 'reports']));
+  }
+
+  // Initialize trial for businesses without subscription
+  const bizList = db.prepare('SELECT id FROM businesses').all() as any[];
+  for (const biz of bizList) {
+    const existing = db.prepare('SELECT id FROM subscriptions WHERE businessId = ?').get(biz.id);
+    if (!existing) {
+      const now = new Date();
+      const trialEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      db.prepare(`
+        INSERT INTO subscriptions (businessId, tier, status, isTrial, trialStartedAt, trialEndsAt, startedAt, expiresAt)
+        VALUES (?, 'trial', 'active', 1, ?, ?, ?, ?)
+      `).run(biz.id, now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString());
+    }
+  }
+
+  // Subscription indexes
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_businessId ON subscriptions(businessId);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+    CREATE INDEX IF NOT EXISTS idx_payment_transactions_businessId ON payment_transactions(businessId);
+    CREATE INDEX IF NOT EXISTS idx_payment_transactions_status ON payment_transactions(status);
+    CREATE INDEX IF NOT EXISTS idx_subscription_history_subscriptionId ON subscription_history(subscriptionId);
+  `);
+
   // Performance indexes
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_items_businessId ON items(businessId);

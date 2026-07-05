@@ -281,5 +281,21 @@ electron.contextBridge.exposeInMainWorld("api", {
   // Business Health Score
   getBusinessHealthScore: () => electron.ipcRenderer.invoke("get-business-health-score"),
   // Business Assistant Insights
-  getBusinessInsights: () => electron.ipcRenderer.invoke("get-business-insights")
+  getBusinessInsights: () => electron.ipcRenderer.invoke("get-business-insights"),
+  // Subscription System
+  getSubscriptionPlans: () => electron.ipcRenderer.invoke("get-subscription-plans"),
+  getCurrentSubscription: () => electron.ipcRenderer.invoke("get-current-subscription"),
+  startTrial: () => electron.ipcRenderer.invoke("start-trial"),
+  submitPayment: (data) => electron.ipcRenderer.invoke("submit-payment", data),
+  getPaymentTransactions: (options) => electron.ipcRenderer.invoke("get-payment-transactions", options),
+  getAllPaymentTransactions: (options) => electron.ipcRenderer.invoke("get-all-payment-transactions", options),
+  approvePayment: (data) => electron.ipcRenderer.invoke("approve-payment", data),
+  rejectPayment: (data) => electron.ipcRenderer.invoke("reject-payment", data),
+  getSubscriptionHistory: () => electron.ipcRenderer.invoke("get-subscription-history"),
+  getRenewalInfo: () => electron.ipcRenderer.invoke("get-renewal-info"),
+  checkPremiumFeature: (feature) => electron.ipcRenderer.invoke("check-premium-feature", feature),
+  getSubscriptionStats: () => electron.ipcRenderer.invoke("get-subscription-stats"),
+  checkTrialAvailability: () => electron.ipcRenderer.invoke("check-trial-availability"),
+  // Debug
+  debugPing: () => electron.ipcRenderer.invoke("debug:ping")
 });

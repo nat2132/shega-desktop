@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, Suspense, lazy } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Inventory = lazy(() => import('./pages/Inventory'))
@@ -24,8 +24,14 @@ const BudgetManagement = lazy(() => import('./pages/BudgetManagement'))
 const Contacts = lazy(() => import('./pages/Contacts'))
 const Orders = lazy(() => import('./pages/Orders'))
 const OrderDetail = lazy(() => import('./pages/OrderDetail'))
+const SubscriptionDashboard = lazy(() => import('./pages/SubscriptionDashboard'))
+const SubscriptionPayment = lazy(() => import('./pages/SubscriptionPayment'))
 import { useAuth } from './context/AuthContext'
 import { useSettings } from './context/SettingsContext'
+import { SubscriptionProvider, useSubscription } from './context/SubscriptionContext'
+import { ROUTE_PREMIUM } from './utils/feature-modules'
+import PremiumBadge from './components/PremiumBadge'
+import LockedFeatureModal from './components/LockedFeatureModal'
 import { initSound, playSound } from './utils/sound'
 
 // Pre-launch screens
@@ -34,6 +40,7 @@ import AuthScreen from './components/pre-launch/AuthScreen'
 import RecoveryKeyDisplay from './components/pre-launch/RecoveryKeyDisplay'
 import BusinessSetup from './components/pre-launch/BusinessSetup'
 import OnboardingWizard from './components/pre-launch/OnboardingWizard'
+import SubscriptionWelcome from './components/pre-launch/SubscriptionWelcome'
 import LoadingScreen from './components/pre-launch/LoadingScreen'
 import ErrorScreen from './components/pre-launch/ErrorScreen'
 
@@ -46,7 +53,7 @@ import { Toaster } from './components/ui/sonner'
 import NotificationBanners from './components/NotificationBanners'
 import NotificationModal from './components/NotificationModal'
 
-type AppPhase = 'splash' | 'auth' | 'recovery-key' | 'business-setup' | 'onboarding' | 'loading' | 'ready' | 'error'
+type AppPhase = 'splash' | 'auth' | 'recovery-key' | 'business-setup' | 'onboarding' | 'subscription-welcome' | 'loading' | 'ready' | 'error'
 
 function ProtectedRoute({ children, permission, moduleId }: { children: React.ReactNode; permission?: string; moduleId?: string }) {
   const { hasPermission } = useAuth();
@@ -71,6 +78,17 @@ function SuperAdminRoute({ children }: { children: React.ReactNode }) {
   }
   
   return <>{children}</>;
+}
+
+function PremiumRoute({ children, premiumFeature }: { children: React.ReactNode; premiumFeature: string }) {
+  const { isPremium, isTrial } = useSubscription();
+  const [showLocked, setShowLocked] = React.useState(false);
+  const location = useLocation();
+
+  if (isPremium || isTrial) return <>{children}</>;
+
+  // If not premium, redirect to subscription page
+  return <Navigate to="/subscription" state={{ lockedFeature: premiumFeature, from: location }} replace />;
 }
 
 function App() {
@@ -159,6 +177,10 @@ function App() {
   };
 
   const handleOnboardingComplete = () => {
+    setPhase('subscription-welcome');
+  };
+
+  const handleSubscriptionWelcomeComplete = () => {
     setPhase('loading');
   };
 
@@ -214,6 +236,11 @@ function App() {
     return <OnboardingWizard onComplete={handleOnboardingComplete} />;
   }
 
+  // Phase: Subscription Welcome
+  if (phase === 'subscription-welcome') {
+    return <SubscriptionWelcome onComplete={handleSubscriptionWelcomeComplete} />;
+  }
+
   // Phase: Loading
   if (phase === 'loading') {
     return <LoadingScreen onComplete={handleLoadingComplete} />;
@@ -221,6 +248,7 @@ function App() {
 
   // Phase: Ready — main app
   return (
+    <SubscriptionProvider>
     <TooltipProvider>
       <Toaster />
       <SidebarProvider
@@ -248,18 +276,20 @@ function App() {
                 <Route path="/analytics" element={<ProtectedRoute permission="analytics" moduleId="analytics"><Analytics /></ProtectedRoute>} />
                 <Route path="/adjustments" element={<ProtectedRoute permission="adjustments" moduleId="adjustments"><Adjustments /></ProtectedRoute>} />
                 <Route path="/warehouses" element={<ProtectedRoute permission="warehouses" moduleId="warehouses"><Warehouses /></ProtectedRoute>} />
-                <Route path="/employees" element={<ProtectedRoute permission="employees" moduleId="employees"><Employees /></ProtectedRoute>} />
-                <Route path="/users" element={<ProtectedRoute permission="employees" moduleId="employees"><UsersEmployees /></ProtectedRoute>} />
-                <Route path="/shipments" element={<ProtectedRoute permission="shipments" moduleId="shipments"><Shipments /></ProtectedRoute>} />
-                <Route path="/suppliers" element={<ProtectedRoute permission="suppliers" moduleId="suppliers"><Suppliers /></ProtectedRoute>} />
-                <Route path="/audit-logs" element={<ProtectedRoute permission="audit.view"><AuditLogs /></ProtectedRoute>} />
+                <Route path="/employees" element={<PremiumRoute premiumFeature="employees"><ProtectedRoute permission="employees" moduleId="employees"><Employees /></ProtectedRoute></PremiumRoute>} />
+                <Route path="/users" element={<PremiumRoute premiumFeature="users"><ProtectedRoute permission="employees" moduleId="employees"><UsersEmployees /></ProtectedRoute></PremiumRoute>} />
+                <Route path="/shipments" element={<PremiumRoute premiumFeature="shipments"><ProtectedRoute permission="shipments" moduleId="shipments"><Shipments /></ProtectedRoute></PremiumRoute>} />
+                <Route path="/suppliers" element={<PremiumRoute premiumFeature="suppliers"><ProtectedRoute permission="suppliers" moduleId="suppliers"><Suppliers /></ProtectedRoute></PremiumRoute>} />
+                <Route path="/audit-logs" element={<PremiumRoute premiumFeature="audit"><ProtectedRoute permission="audit.view"><AuditLogs /></ProtectedRoute></PremiumRoute>} />
                 <Route path="/debt-management" element={<ProtectedRoute permission="customers" moduleId="customers"><DebtManagement /></ProtectedRoute>} />
                 <Route path="/reminders" element={<ProtectedRoute permission="dashboard"><ReminderHistory /></ProtectedRoute>} />
-                <Route path="/reports" element={<ProtectedRoute permission="analytics" moduleId="analytics"><Reports /></ProtectedRoute>} />
+                <Route path="/reports" element={<PremiumRoute premiumFeature="reports"><ProtectedRoute permission="analytics" moduleId="analytics"><Reports /></ProtectedRoute></PremiumRoute>} />
                 <Route path="/budgets" element={<ProtectedRoute permission="expenses" moduleId="expenses"><BudgetManagement /></ProtectedRoute>} />
                 <Route path="/contacts" element={<ProtectedRoute permission="customers" moduleId="customers"><Contacts /></ProtectedRoute>} />
                 <Route path="/orders" element={<ProtectedRoute permission="orders.view" moduleId="sales"><Orders /></ProtectedRoute>} />
                 <Route path="/orders/:id" element={<ProtectedRoute permission="orders.view" moduleId="sales"><OrderDetail /></ProtectedRoute>} />
+                <Route path="/subscription" element={<ProtectedRoute permission="dashboard"><SubscriptionDashboard /></ProtectedRoute>} />
+                <Route path="/subscription/payment" element={<ProtectedRoute permission="dashboard"><SubscriptionPayment /></ProtectedRoute>} />
                 <Route path="/admin-management" element={<SuperAdminRoute><AdminManagement /></SuperAdminRoute>} />
                 <Route path="/settings" element={<ProtectedRoute permission="settings"><Settings /></ProtectedRoute>} />
               </Routes>
@@ -270,6 +300,7 @@ function App() {
       </SidebarProvider>
       <NotificationModal />
     </TooltipProvider>
+    </SubscriptionProvider>
   )
 }
 
