@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import { motion } from 'framer-motion';
 import {
   Clock, Truck, AlertCircle, RefreshCw,
   Loader2, ShoppingBag, Receipt, Sliders,
   DollarSign, AlertTriangle, Package, Ban,
-  RotateCcw, ArrowLeftRight
+  RotateCcw, ArrowLeftRight, TrendingUp, TrendingDown
 } from 'lucide-react';
-import { 
-  ColumnDef 
+import {
+  ColumnDef
 } from '@tanstack/react-table';
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Cell } from 'recharts';
 
@@ -34,6 +35,27 @@ import {
 import {
   toEthiopianDate, getEthiopianDayName, getEthiopianMonthName
 } from '../utils/ethiopian-calendar';
+
+const containerVariants = {
+  hidden: {},
+  visible: {
+    transition: {
+      staggerChildren: 0.06,
+    },
+  },
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 16 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      duration: 0.45,
+      ease: [0.28, 0, 0.22, 1],
+    },
+  },
+};
 
 const Dashboard: React.FC = () => {
   const { t, formatDate, calendarType, language } = useSettings();
@@ -64,7 +86,6 @@ const Dashboard: React.FC = () => {
     loadData();
   }, []);
 
-  // Reload analytics when period changes
   useEffect(() => {
     window.api?.getAnalytics(revPeriod === 'week' ? 'month' : revPeriod)
       .then(data => setAnalytics(data || { salesData: [] }));
@@ -101,13 +122,11 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // ── Revenue chart data aggregation ──
   const revenueChartData = useMemo(() => {
     if (!analytics?.salesData) return [];
     const salesData = analytics.salesData as { date: string; revenue: number; units: number }[];
 
     if (revPeriod === 'week') {
-      // Current week: Sunday → Saturday
       const now = new Date();
       const todayStr = now.toISOString().split('T')[0];
       const sun = new Date(now);
@@ -134,7 +153,6 @@ const Dashboard: React.FC = () => {
     }
 
     if (revPeriod === 'month') {
-      // Current month split into weeks
       const now = new Date();
       const todayStr = now.toISOString().split('T')[0];
       const first = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -165,9 +183,7 @@ const Dashboard: React.FC = () => {
       return weeks;
     }
 
-    // Year view
     if (calendarType === 'ethiopian') {
-      // 13 Ethiopian months
       const ethNow = toEthiopianDate(new Date());
       const months: { label: string; revenue: number; isToday: boolean }[] = [];
       for (let m = 1; m <= 13; m++) {
@@ -180,7 +196,6 @@ const Dashboard: React.FC = () => {
       }
       return months;
     } else {
-      // 12 Gregorian months
       const now = new Date();
       const curMonth = now.getMonth();
       const loc = language === 'am' ? 'am-ET' : language === 'om' ? 'om-ET' : language === 'ti' ? 'ti-ET' : 'en-US';
@@ -203,34 +218,34 @@ const Dashboard: React.FC = () => {
   };
 
   const kpiCards: SectionCardData[] = useMemo(() => [
-    { 
-      title: t('sales.revenue'), 
-      value: `${t('common.etb')} ${(stats?.todayRevenue || 0).toLocaleString()}`, 
-      trend: stats?.yesterdayRevenue > 0 ? `${((Number(stats.todayRevenue || 0) - Number(stats.yesterdayRevenue || 0)) / Number(stats.yesterdayRevenue || 0) * 100).toFixed(1)}%` : '0%', 
+    {
+      title: t('sales.revenue'),
+      value: `${t('common.etb')} ${(stats?.todayRevenue || 0).toLocaleString()}`,
+      trend: stats?.yesterdayRevenue > 0 ? `${((Number(stats.todayRevenue || 0) - Number(stats.yesterdayRevenue || 0)) / Number(stats.yesterdayRevenue || 0) * 100).toFixed(1)}%` : '0%',
       trendType: (Number(stats?.todayRevenue || 0) >= Number(stats?.yesterdayRevenue || 0)) ? 'up' : 'down',
       footerTitle: t('dashboard.today_revenue'),
       footerSub: `${t('dashboard.yesterday')}: ${t('common.etb')} ${(stats?.yesterdayRevenue || 0).toLocaleString()}`
     },
-    { 
-      title: t('sales.profit'), 
-      value: `${t('common.etb')} ${(stats?.todayProfit || 0).toLocaleString()}`, 
-      trend: stats?.yesterdayProfit > 0 ? `${((Number(stats.todayProfit || 0) - Number(stats.yesterdayProfit || 0)) / Number(stats.yesterdayProfit || 0) * 100).toFixed(1)}%` : '0%', 
+    {
+      title: t('sales.profit'),
+      value: `${t('common.etb')} ${(stats?.todayProfit || 0).toLocaleString()}`,
+      trend: stats?.yesterdayProfit > 0 ? `${((Number(stats.todayProfit || 0) - Number(stats.yesterdayProfit || 0)) / Number(stats.yesterdayProfit || 0) * 100).toFixed(1)}%` : '0%',
       trendType: (Number(stats?.todayProfit || 0) >= Number(stats?.yesterdayProfit || 0)) ? 'up' : 'down',
       footerTitle: t('dashboard.gross_profit'),
       footerSub: `${t('dashboard.yesterday')}: ${t('common.etb')} ${(stats?.yesterdayProfit || 0).toLocaleString()}`
     },
-    { 
-      title: t('sales.transactions'), 
-      value: (stats?.todaySales || 0).toLocaleString(), 
-      trend: stats?.yesterdaySales > 0 ? `${((Number(stats.todaySales || 0) - Number(stats.yesterdaySales || 0)) / Number(stats.yesterdaySales || 0) * 100).toFixed(1)}%` : '0%', 
+    {
+      title: t('sales.transactions'),
+      value: (stats?.todaySales || 0).toLocaleString(),
+      trend: stats?.yesterdaySales > 0 ? `${((Number(stats.todaySales || 0) - Number(stats.yesterdaySales || 0)) / Number(stats.yesterdaySales || 0) * 100).toFixed(1)}%` : '0%',
       trendType: (Number(stats?.todaySales || 0) >= Number(stats?.yesterdaySales || 0)) ? 'up' : 'down',
       footerTitle: t('dashboard.units_sold'),
       footerSub: `${t('dashboard.yesterday')}: ${stats?.yesterdaySales || 0}`
     },
-    { 
-      title: t('inventory.low'), 
-      value: stats?.lowStock || 0, 
-      trend: stats?.lowStock > 5 ? t('dashboard.trend_high') : t('dashboard.trend_normal'), 
+    {
+      title: t('inventory.low'),
+      value: stats?.lowStock || 0,
+      trend: stats?.lowStock > 5 ? t('dashboard.trend_high') : t('dashboard.trend_normal'),
       trendType: stats?.lowStock > 5 ? 'up' : 'down',
       footerTitle: t('dashboard.low_stock'),
       footerSub: t('inventory.refill_needed')
@@ -243,7 +258,7 @@ const Dashboard: React.FC = () => {
       header: t('common.description'),
       cell: ({ row }) => (
         <button
-          className="font-medium hover:text-primary transition-colors text-left cursor-pointer"
+          className="font-medium text-sm hover:text-primary transition-colors text-left cursor-pointer"
           onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}
         >
           {row.original.description}
@@ -254,30 +269,30 @@ const Dashboard: React.FC = () => {
       accessorKey: "type",
       header: t('common.category'),
       cell: ({ row }) => (
-        <Badge variant="outline" className="capitalize cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>{t(`dashboard.${row.original.type.toLowerCase()}`)}</Badge>
+        <Badge variant="secondary" className="cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>{t(`dashboard.${row.original.type.toLowerCase()}`)}</Badge>
       )
     },
     {
       accessorKey: "amount",
       header: () => <div className="text-right">{t('common.amount')}</div>,
       cell: ({ row }) => (
-        <div className="text-right font-medium cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>{t('common.etb')} {row.original.amount.toLocaleString()}</div>
+        <div className="text-right font-medium tabular-nums cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>{t('common.etb')} {row.original.amount.toLocaleString()}</div>
       )
     },
     {
       accessorKey: "extra",
       header: t('common.details'),
       cell: ({ row }) => (
-        <Badge variant="secondary" className="text-[10px] font-bold uppercase tracking-widest cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>
+        <span className="text-xs text-muted-foreground/70 cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>
           {row.original.extra || t('dashboard.system_entry')}
-        </Badge>
+        </span>
       )
     },
     {
       accessorKey: "date",
       header: t('common.date'),
       cell: ({ row }) => (
-        <div className="text-muted-foreground text-[10px] font-bold uppercase tracking-widest cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>
+        <div className="text-muted-foreground text-xs tabular-nums cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>
           {formatDate(new Date(row.original.date), { month: 'short', day: 'numeric' })}
         </div>
       )
@@ -285,171 +300,153 @@ const Dashboard: React.FC = () => {
   ];
 
   return (
-    <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 fade-in">
+    <motion.div
+      className="flex flex-col gap-4 py-4 md:gap-6 md:py-6"
+      variants={containerVariants}
+      initial="hidden"
+      animate="visible"
+    >
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
       ) : error ? (
-        <div className="px-4 lg:px-6">
+        <motion.div variants={itemVariants} className="px-4 lg:px-6">
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertDescription>{error}</AlertDescription>
           </Alert>
-          <Button variant="outline" size="sm" onClick={loadData} className="mt-2">
+          <Button variant="outline" size="sm" onClick={loadData} className="mt-3">
             <RefreshCw className="h-4 w-4 mr-1" /> {t('common.retry')}
           </Button>
-        </div>
+        </motion.div>
       ) : !stats ? (
-        <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-          <AlertCircle className="h-12 w-12 mb-4 opacity-30" />
-          <p className="text-lg font-medium">{t('common.no_data')}</p>
-        </div>
+        <motion.div variants={itemVariants} className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+          <AlertCircle className="h-12 w-12 mb-4 opacity-20" />
+          <p className="text-base font-medium">{t('common.no_data')}</p>
+        </motion.div>
       ) : (
         <>
-          <div className="px-4 lg:px-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h1 className="text-2xl md:text-3xl font-black tracking-tight">
-                    {t(`dashboard.${greeting}`)}, {currentAdmin?.name?.split(' ')[0] || 'Admin'}
-                  </h1>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    {t('dashboard.welcome')}
-                  </p>
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground font-bold uppercase tracking-widest">
-                    <Clock className="h-4 w-4" />
-                    <span className="text-[10px] font-black uppercase tracking-[0.3em]">
-                      {formatDate(new Date(), { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
-                    </span>
-                  </div>
-                </div>
+          <motion.div variants={itemVariants} className="px-4 lg:px-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-xl md:text-2xl font-semibold tracking-tight">
+                  {t(`dashboard.${greeting}`)}, {currentAdmin?.name?.split(' ')[0] || 'Admin'}
+                </h1>
+                <p className="text-sm text-muted-foreground/70 mt-0.5">
+                  {t('dashboard.welcome')}
+                </p>
               </div>
-          </div>
-
-          <SectionCards cards={kpiCards} />
-
-          <div className="px-4 lg:px-6">
-            <DashboardAlerts />
-          </div>
-
-          {empStats && (
-            <div className="px-4 lg:px-6">
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('dashboard.total_employees')}</p>
-                  <p className="text-2xl font-black">{empStats.total || 0}</p>
-                </div>
-                <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('common.active')}</p>
-                  <p className="text-2xl font-black text-green-600">{empStats.active || 0}</p>
-                </div>
-                <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('dashboard.online_now')}</p>
-                  <p className="text-2xl font-black text-blue-600">{empStats.online || 0}</p>
-                </div>
-                <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('dashboard.clocked_in')}</p>
-                  <p className="text-2xl font-black text-amber-600">{empStats.clockedIn || 0}</p>
-                </div>
-                <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('common.pending')}</p>
-                  <p className="text-2xl font-black text-destructive">{empStats.pendingApprovals || 0}</p>
+              <div className="flex items-center gap-4">
+                <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground/60">
+                  <Clock className="h-4 w-4" />
+                  <span className="text-xs font-medium tabular-nums">
+                    {formatDate(new Date(), { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+                  </span>
                 </div>
               </div>
             </div>
+          </motion.div>
+
+          <motion.div variants={itemVariants}>
+            <SectionCards cards={kpiCards} />
+          </motion.div>
+
+          <motion.div variants={itemVariants} className="px-4 lg:px-6">
+            <DashboardAlerts />
+          </motion.div>
+
+          {empStats && (
+            <motion.div variants={itemVariants} className="px-4 lg:px-6">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                {[
+                  { label: t('dashboard.total_employees'), value: empStats.total || 0, color: 'text-foreground' },
+                  { label: t('common.active'), value: empStats.active || 0, color: 'text-emerald-600' },
+                  { label: t('dashboard.online_now'), value: empStats.online || 0, color: 'text-primary' },
+                  { label: t('dashboard.clocked_in'), value: empStats.clockedIn || 0, color: 'text-amber-600' },
+                  { label: t('common.pending'), value: empStats.pendingApprovals || 0, color: 'text-destructive' },
+                ].map((item, idx) => (
+                  <div key={idx} className="rounded-2xl border border-border/40 bg-card/50 p-4 space-y-1.5">
+                    <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">{item.label}</p>
+                    <p className={`text-2xl font-semibold tracking-tight tabular-nums ${item.color}`}>{item.value}</p>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
           )}
 
           {reversalStats && (
-            <div className="px-4 lg:px-6">
-              <h3 className="text-sm font-black uppercase tracking-widest text-muted-foreground flex items-center gap-2 mb-3">
-                <ArrowLeftRight className="h-4 w-4" /> {t('reports.reversals')}
+            <motion.div variants={itemVariants} className="px-4 lg:px-6">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 flex items-center gap-2 mb-3">
+                <ArrowLeftRight className="h-3.5 w-3.5" /> {t('reports.reversals')}
               </h3>
               <div className="grid grid-cols-3 gap-3">
-                <div className="rounded-xl border bg-card/40 p-3 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1">
-                    <Ban className="h-3 w-3" /> {t('reports.voided_sales')}
-                  </p>
-                  <p className="text-xl font-black">{reversalStats.voidedSales || 0}</p>
-                </div>
-                <div className="rounded-xl border bg-card/40 p-3 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1">
-                    <RotateCcw className="h-3 w-3" /> {t('dashboard.reversed_payments')}
-                  </p>
-                  <p className="text-xl font-black">{reversalStats.reversedPayments || 0}</p>
-                </div>
-                <div className="rounded-xl border bg-card/40 p-3 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1">
-                    <RotateCcw className="h-3 w-3" /> {t('dashboard.reversed_adjustments')}
-                  </p>
-                  <p className="text-xl font-black">{reversalStats.reversedAdjustments || 0}</p>
-                </div>
+                {[
+                  { label: t('reports.voided_sales'), value: reversalStats.voidedSales || 0, icon: Ban },
+                  { label: t('dashboard.reversed_payments'), value: reversalStats.reversedPayments || 0, icon: RotateCcw },
+                  { label: t('dashboard.reversed_adjustments'), value: reversalStats.reversedAdjustments || 0, icon: RotateCcw },
+                ].map((item, idx) => (
+                  <div key={idx} className="rounded-2xl border border-border/40 bg-card/50 p-3.5 space-y-1.5">
+                    <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70 flex items-center gap-1.5">
+                      <item.icon className="h-3 w-3" /> {item.label}
+                    </p>
+                    <p className="text-xl font-semibold tracking-tight tabular-nums">{item.value}</p>
+                  </div>
+                ))}
               </div>
-            </div>
+            </motion.div>
           )}
 
           {supplierStats && (
-            <div className="px-4 lg:px-6 space-y-4">
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-black uppercase tracking-widest text-muted-foreground flex items-center gap-2">
-                  <Truck className="h-4 w-4" />{t('suppliers.title')}
+            <motion.div variants={itemVariants} className="px-4 lg:px-6 space-y-4">
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 flex items-center gap-2">
+                  <Truck className="h-3.5 w-3.5" />{t('suppliers.title')}
                 </h3>
                 <Button variant="ghost" size="sm" onClick={() => window.location.hash = '/suppliers'} className="text-xs">{t('common.view_all')} →</Button>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-                <div className="rounded-xl border bg-card/40 p-3 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('suppliers.kpi_total')}</p>
-                  <p className="text-xl font-black">{supplierStats.totalSuppliers || 0}</p>
-                </div>
-                <div className="rounded-xl border bg-card/40 p-3 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('suppliers.kpi_active')}</p>
-                  <p className="text-xl font-black text-green-600">{supplierStats.activeSuppliers || 0}</p>
-                </div>
-                <div className="rounded-xl border bg-card/40 p-3 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('suppliers.kpi_outstanding')}</p>
-                  <p className="text-sm font-black text-red-600">{t('common.etb')} {(supplierStats.outstandingBalance || 0).toLocaleString()}</p>
-                </div>
-                <div className="rounded-xl border bg-card/40 p-3 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('suppliers.kpi_month')}</p>
-                  <p className="text-sm font-black">{t('common.etb')} {(supplierStats.monthPurchases || 0).toLocaleString()}</p>
-                </div>
-                <div className="rounded-xl border bg-card/40 p-3 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('suppliers.kpi_top')}</p>
-                  <p className="text-sm font-black truncate">{supplierStats.topSupplier?.supplierName || '-'}</p>
-                </div>
-                <div className="rounded-xl border bg-card/40 p-3 space-y-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('suppliers.kpi_recent')}</p>
-                  <p className="text-sm font-black">{(supplierStats.recent || []).length}</p>
-                </div>
+                {[
+                  { label: t('suppliers.kpi_total'), value: supplierStats.totalSuppliers || 0 },
+                  { label: t('suppliers.kpi_active'), value: supplierStats.activeSuppliers || 0, color: 'text-emerald-600' },
+                  { label: t('suppliers.kpi_outstanding'), value: `${t('common.etb')} ${(supplierStats.outstandingBalance || 0).toLocaleString()}`, color: 'text-destructive', small: true },
+                  { label: t('suppliers.kpi_month'), value: `${t('common.etb')} ${(supplierStats.monthPurchases || 0).toLocaleString()}`, small: true },
+                  { label: t('suppliers.kpi_top'), value: supplierStats.topSupplier?.supplierName || '-', small: true },
+                  { label: t('suppliers.kpi_recent'), value: (supplierStats.recent || []).length },
+                ].map((item, idx) => (
+                  <div key={idx} className="rounded-2xl border border-border/40 bg-card/50 p-3.5 space-y-1.5">
+                    <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">{item.label}</p>
+                    <p className={`${item.small ? 'text-sm' : 'text-xl'} font-semibold tracking-tight tabular-nums ${item.color || ''} truncate`}>{item.value}</p>
+                  </div>
+                ))}
               </div>
 
               {supplierUnpaidOrders.length > 0 && (
-                <Card className="border-red-200 dark:border-red-900">
+                <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm flex items-center gap-2">
-                      <DollarSign className="h-4 w-4 text-red-500" />
+                      <DollarSign className="h-4 w-4 text-destructive" />
                       {t('dashboard.unpaid_supplier_orders', { count: supplierUnpaidOrders.length })}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-0">
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
-                        <thead className="bg-muted/30">
+                        <thead className="bg-muted/20">
                           <tr>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('suppliers.col_supplier')}</th>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('reports.header_order_num')}</th>
-                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">{t('common.balance')}</th>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('common.due')}</th>
+                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
+                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('reports.header_order_num')}</th>
+                            <th className="text-right p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.balance')}</th>
+                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.due')}</th>
                           </tr>
                         </thead>
                         <tbody>
                           {supplierUnpaidOrders.slice(0, 5).map(o => (
-                            <tr key={o.id} className="border-t hover:bg-muted/20">
-                              <td className="p-2 text-xs font-medium">{o.supplierName}</td>
-                              <td className="p-2 font-mono text-xs">{o.purchaseNumber || `#${o.id}`}</td>
-                              <td className="p-2 text-right text-xs text-red-600 font-semibold">{t('common.etb')} {o.remainingBalance.toLocaleString()}</td>
-                              <td className="p-2 text-xs">{o.dueDate ? formatDate(o.dueDate) : '-'}</td>
+                            <tr key={o.id} className="border-t border-border/20 hover:bg-muted/10 transition-colors">
+                              <td className="p-2.5 text-xs font-medium">{o.supplierName}</td>
+                              <td className="p-2.5 text-xs font-mono text-muted-foreground">{o.purchaseNumber || `#${o.id}`}</td>
+                              <td className="p-2.5 text-right text-xs text-destructive font-semibold tabular-nums">{t('common.etb')} {o.remainingBalance.toLocaleString()}</td>
+                              <td className="p-2.5 text-xs text-muted-foreground">{o.dueDate ? formatDate(o.dueDate) : '-'}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -460,7 +457,7 @@ const Dashboard: React.FC = () => {
               )}
 
               {supplierPaymentAlerts.length > 0 && (
-                <Card className="border-amber-200 dark:border-amber-900">
+                <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <AlertTriangle className="h-4 w-4 text-amber-500" />
@@ -470,26 +467,26 @@ const Dashboard: React.FC = () => {
                   <CardContent className="p-0">
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
-                        <thead className="bg-muted/30">
+                        <thead className="bg-muted/20">
                           <tr>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('suppliers.col_supplier')}</th>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('reports.header_order_num')}</th>
-                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">{t('common.amount')}</th>
-                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">{t('dashboard.due_in')}</th>
+                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
+                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('reports.header_order_num')}</th>
+                            <th className="text-right p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.amount')}</th>
+                            <th className="text-right p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('dashboard.due_in')}</th>
                           </tr>
                         </thead>
                         <tbody>
                           {supplierPaymentAlerts.slice(0, 5).map(a => (
-                            <tr key={a.id} className="border-t hover:bg-muted/20">
-                              <td className="p-2 text-xs font-medium">{a.supplierName}</td>
-                              <td className="p-2 font-mono text-xs">{a.purchaseNumber || `#${a.id}`}</td>
-                              <td className="p-2 text-right text-xs text-amber-600 font-semibold">{t('common.etb')} {a.remainingBalance.toLocaleString()}</td>
-                              <td className="p-2 text-xs">
+                            <tr key={a.id} className="border-t border-border/20 hover:bg-muted/10 transition-colors">
+                              <td className="p-2.5 text-xs font-medium">{a.supplierName}</td>
+                              <td className="p-2.5 text-xs font-mono text-muted-foreground">{a.purchaseNumber || `#${a.id}`}</td>
+                              <td className="p-2.5 text-right text-xs text-amber-600 font-semibold tabular-nums">{t('common.etb')} {a.remainingBalance.toLocaleString()}</td>
+                              <td className="p-2.5 text-right text-xs">
                                 {a.daysUntilDue !== null && a.daysUntilDue !== undefined ? (
                                   a.daysUntilDue <= 0 ? (
-                                    <Badge variant="destructive" className="text-[9px]">{t('common.overdue')}</Badge>
+                                    <Badge variant="destructive" className="text-[10px]">{t('common.overdue')}</Badge>
                                   ) : (
-                                    <span className="text-amber-600 font-semibold">{a.daysUntilDue} {t('common.days')}</span>
+                                    <span className="text-amber-600 font-semibold tabular-nums">{a.daysUntilDue} {t('common.days')}</span>
                                   )
                                 ) : '-'}
                               </td>
@@ -503,31 +500,31 @@ const Dashboard: React.FC = () => {
               )}
 
               {supplierLowStock.length > 0 && (
-                <Card className="border-orange-200 dark:border-orange-900">
+                <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm flex items-center gap-2">
-                      <Package className="h-4 w-4 text-orange-500" />
+                      <Package className="h-4 w-4 text-amber-500" />
                       {t('dashboard.low_stock_supplier')}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-0">
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
-                        <thead className="bg-muted/30">
+                        <thead className="bg-muted/20">
                           <tr>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('inventory.product')}</th>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('suppliers.col_supplier')}</th>
-                            <th className="text-right p-2 text-[10px] font-bold uppercase tracking-widest">{t('common.stock')}</th>
-                            <th className="text-left p-2 text-[10px] font-bold uppercase tracking-widest">{t('common.category')}</th>
+                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('inventory.product')}</th>
+                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
+                            <th className="text-right p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.stock')}</th>
+                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.category')}</th>
                           </tr>
                         </thead>
                         <tbody>
                           {supplierLowStock.map(p => (
-                            <tr key={p.id} className="border-t hover:bg-muted/20">
-                              <td className="p-2 text-xs font-medium">{p.name}</td>
-                              <td className="p-2 text-xs">{p.supplierName}</td>
-                              <td className="p-2 text-right text-xs text-red-600 font-semibold">{p.totalBaseQuantity} {p.baseUnit}</td>
-                              <td className="p-2 text-xs text-muted-foreground">{p.categoryName || '-'}</td>
+                            <tr key={p.id} className="border-t border-border/20 hover:bg-muted/10 transition-colors">
+                              <td className="p-2.5 text-xs font-medium">{p.name}</td>
+                              <td className="p-2.5 text-xs text-muted-foreground">{p.supplierName}</td>
+                              <td className="p-2.5 text-right text-xs text-destructive font-semibold tabular-nums">{p.totalBaseQuantity} {p.baseUnit}</td>
+                              <td className="p-2.5 text-xs text-muted-foreground/70">{p.categoryName || '-'}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -536,23 +533,20 @@ const Dashboard: React.FC = () => {
                   </CardContent>
                 </Card>
               )}
-            </div>
+            </motion.div>
           )}
 
-          {/* ── Business Assistant ── */}
-          <div className="px-4 lg:px-6">
+          <motion.div variants={itemVariants} className="px-4 lg:px-6">
             <BusinessAssistant />
-          </div>
+          </motion.div>
 
-          {/* ── Test Data Generator (dev mode only) ── */}
           {(window.location.protocol === 'http:' || window.location.hostname === 'localhost') && (
-            <div className="px-4 lg:px-6">
+            <motion.div variants={itemVariants} className="px-4 lg:px-6">
               <TestDataGenerator />
-            </div>
+            </motion.div>
           )}
 
-          {/* ── Revenue Intelligence Bar Chart ── */}
-          <div className="px-4 lg:px-6">
+          <motion.div variants={itemVariants} className="px-4 lg:px-6">
             <Card className="@container/card">
               <CardHeader>
                 <CardTitle>{t('dashboard.revenue_intelligence')}</CardTitle>
@@ -565,7 +559,6 @@ const Dashboard: React.FC = () => {
                     type="single"
                     value={revPeriod}
                     onValueChange={(v) => v && setRevPeriod(v as any)}
-                    variant="outline"
                     className="*:data-[slot=toggle-group-item]:px-4!"
                   >
                     <ToggleGroupItem value="week">{t('analytics.week')}</ToggleGroupItem>
@@ -577,7 +570,7 @@ const Dashboard: React.FC = () => {
               <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
                 <ChartContainer config={chartConfig} className="aspect-auto h-[250px] w-full">
                   <BarChart data={revenueChartData} barGap={4} barCategoryGap="20%">
-                    <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                    <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" />
                     <XAxis
                       dataKey="label"
                       tickLine={false}
@@ -598,14 +591,14 @@ const Dashboard: React.FC = () => {
                     />
                     <Bar
                       dataKey="revenue"
-                      radius={[6, 6, 0, 0]}
+                      radius={[8, 8, 0, 0]}
                       maxBarSize={48}
                     >
                       {revenueChartData.map((entry: any, idx: number) => (
                         <Cell
                           key={idx}
                           fill={entry.isToday ? 'var(--primary)' : 'var(--primary)'}
-                          opacity={entry.isToday ? 1 : 0.35}
+                          opacity={entry.isToday ? 1 : 0.3}
                         />
                       ))}
                     </Bar>
@@ -613,61 +606,66 @@ const Dashboard: React.FC = () => {
                 </ChartContainer>
               </CardContent>
             </Card>
-          </div>
+          </motion.div>
 
-          <div className="px-4 lg:px-6">
+          <motion.div variants={itemVariants} className="px-4 lg:px-6">
             <CategorySalesChart data={analytics?.categoryBreakdown || []} />
-          </div>
+          </motion.div>
 
-          <div className="px-4 lg:px-6">
-            <DataTable 
-              columns={columns} 
-              data={recentActivity} 
+          <motion.div variants={itemVariants} className="px-4 lg:px-6">
+            <DataTable
+              columns={columns}
+              data={recentActivity}
               title={t('dashboard.recent_activity')}
               addLabel={t('sales.new_btn')}
               onAddClick={() => {}}
             />
-          </div>
+          </motion.div>
 
           <Modal isOpen={showActivityDetail} onClose={() => setShowActivityDetail(false)} title={t('common.details')} size="md">
             {selectedActivity && (
-              <div className="space-y-6">
-                <div className="p-5 rounded-2xl bg-muted/30 border border-border/50 flex items-center gap-4">
+              <motion.div
+                className="space-y-6"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+              >
+                <div className="p-5 rounded-2xl bg-muted/30 border border-border/40 flex items-center gap-4">
                   <div className="h-12 w-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
                     {selectedActivity.type === 'sale' ? <ShoppingBag className="h-6 w-6 text-primary" /> :
                      selectedActivity.type === 'expense' ? <Receipt className="h-6 w-6 text-destructive" /> :
                      <Sliders className="h-6 w-6 text-amber-500" />}
                   </div>
                   <div>
-                    <h3 className="font-bold text-lg">{selectedActivity.description}</h3>
+                    <h3 className="font-semibold text-base">{selectedActivity.description}</h3>
                     <Badge variant="outline" className="mt-1 capitalize">{selectedActivity.type}</Badge>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 rounded-xl border border-border/40 bg-card/50">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1">{t('common.amount')}</p>
-                    <p className="text-xl font-black text-primary">{t('common.etb')} {selectedActivity.amount.toLocaleString()}</p>
+                  <div className="p-4 rounded-xl border border-border/30 bg-card/50">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.amount')}</p>
+                    <p className="text-xl font-semibold tabular-nums text-primary">{t('common.etb')} {selectedActivity.amount.toLocaleString()}</p>
                   </div>
-                  <div className="p-4 rounded-xl border border-border/40 bg-card/50">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1">{t('common.date')}</p>
-                    <p className="text-xl font-black">{formatDate(new Date(selectedActivity.date), { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</p>
+                  <div className="p-4 rounded-xl border border-border/30 bg-card/50">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.date')}</p>
+                    <p className="text-base font-semibold">{formatDate(new Date(selectedActivity.date), { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</p>
                   </div>
-                  <div className="p-4 rounded-xl border border-border/40 bg-card/50 col-span-2">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1">{t('common.details')}</p>
-                    <p className="font-medium">{selectedActivity.extra || t('dashboard.system_entry')}</p>
+                  <div className="p-4 rounded-xl border border-border/30 bg-card/50 col-span-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.details')}</p>
+                    <p className="text-sm">{selectedActivity.extra || t('dashboard.system_entry')}</p>
                   </div>
                 </div>
 
-                <Button onClick={() => setShowActivityDetail(false)} className="w-full h-10 rounded-xl font-bold uppercase tracking-widest">
+                <Button onClick={() => setShowActivityDetail(false)} className="w-full h-10 font-semibold">
                   {t('inventory.close_specs')}
                 </Button>
-              </div>
+              </motion.div>
             )}
           </Modal>
         </>
       )}
-    </div>
+    </motion.div>
   );
 };
 

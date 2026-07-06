@@ -1,4 +1,5 @@
 import * as React from "react"
+import { motion, AnimatePresence } from "framer-motion"
 import {
   LayoutDashboard,
   Package,
@@ -98,16 +99,18 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   };
 
   return (
-    <Sidebar collapsible="offcanvas" {...props} className="border-r border-border/50">
-      <SidebarHeader className="p-4">
+    <Sidebar collapsible="icon" {...props}>
+      <SidebarHeader className="p-3">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
-              <Link to="/">
-                <BrandedLogo size="sm" logoSrc={currentBusiness?.logo} />
-                <div className="flex flex-col gap-0.5 leading-none ml-2">
-                  <span className="font-bold uppercase tracking-tighter text-sm">{currentBusiness?.businessName || t('common.app_name')}</span>
-                  <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground/60">{t('common.terminal_version')}</span>
+              <Link to="/" className="gap-3">
+                <div className="flex size-8 items-center justify-center rounded-xl bg-primary/10">
+                  <BrandedLogo size="xs" logoSrc={currentBusiness?.logo} />
+                </div>
+                <div className="flex flex-col gap-0 leading-none">
+                  <span className="text-xs font-semibold tracking-tight">{currentBusiness?.businessName || t('common.app_name')}</span>
+                  <span className="text-[9px] font-medium uppercase tracking-wider text-muted-foreground/60">{t('common.terminal_version')}</span>
                 </div>
               </Link>
             </SidebarMenuButton>
@@ -115,61 +118,70 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent className="px-2">
-        <SidebarMenu>
-          <div className="space-y-1 py-4">
-            <p className="px-4 text-[9px] font-semibold uppercase tracking-[0.3em] text-muted-foreground mb-2">{t('tabs.main_terminal')}</p>
-            {filteredMain.map((item) => {
-              const isPremiumItem = NAV_ITEM_PREMIUM[item.title];
-              const isLocked = isPremiumItem && !isPremium && !isTrial;
-              return (
-              <SidebarMenuItem key={item.title}>
-                <SidebarMenuButton 
-                  asChild 
-                  isActive={location.pathname === item.url}
-                  className={`transition-all duration-200 hover:bg-muted/50 active:scale-95 ${isLocked ? 'opacity-60' : ''}`}
-                >
-                  <Link to={item.url} className="flex items-center gap-3">
-                    <item.icon className="size-4" />
-                    <span className="text-[10px] font-medium uppercase tracking-widest">{t(`tabs.${item.title}` as any)}</span>
-                    {isPremiumItem && !isPremium && !isTrial && (
-                      <PremiumBadge size="sm" showIcon={false} className="ml-auto" />
-                    )}
-                    {item.title === 'subscription' && (isPremium || isTrial) && (
-                      <Sparkles className="h-2.5 w-2.5 text-amber-500 ml-auto" />
-                    )}
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            )})}
-          </div>
+        <AnimatePresence mode="wait">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.3 }}
+          >
+            <SidebarMenu>
+              <div className="space-y-0.5 py-2">
+                <p className="px-3 py-1.5 text-[9px] font-semibold uppercase tracking-[0.2em] text-muted-foreground/50">{t('tabs.main_terminal')}</p>
+                {filteredMain.map((item) => {
+                  const isPremiumItem = NAV_ITEM_PREMIUM[item.title];
+                  const isLocked = isPremiumItem && !isPremium && !isTrial;
+                  const isActive = location.pathname === item.url;
+                  return (
+                  <SidebarMenuItem key={item.title}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={isActive}
+                      className={`relative overflow-hidden transition-all duration-200 ${isActive ? 'bg-accent/60 font-medium' : 'hover:bg-accent/30'} ${isLocked ? 'opacity-60' : ''}`}
+                    >
+                      <Link to={item.url} className="flex items-center gap-3">
+                        <item.icon className="size-[18px]" />
+                        <span className="text-xs font-medium tracking-wide">{t(`tabs.${item.title}` as any)}</span>
+                        {isPremiumItem && !isPremium && !isTrial && (
+                          <PremiumBadge size="sm" showIcon={false} className="ml-auto" />
+                        )}
+                        {item.title === 'subscription' && (isPremium || isTrial) && (
+                          <Sparkles className="h-3 w-3 text-amber-500 ml-auto" />
+                        )}
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )})}
+              </div>
 
-          <div className="space-y-1 py-4">
-            <p className="px-4 text-[9px] font-semibold uppercase tracking-[0.3em] text-muted-foreground mb-2">{t('tabs.system_config')}</p>
-            {filteredSecondary.map((item) => (
-              <SidebarMenuItem key={item.title}>
-                <SidebarMenuButton 
-                  asChild 
-                  isActive={location.pathname === item.url}
-                  className="transition-all duration-200 hover:bg-muted/50 active:scale-95"
-                >
-                  {item.url.startsWith('http') ? (
-                    <button onClick={() => window.api.openExternal(item.url)} className="flex items-center gap-3 w-full">
-                      <item.icon className="size-4" />
-                      <span className="text-[10px] font-medium uppercase tracking-widest">{t(`tabs.${item.title}` as any)}</span>
-                    </button>
-                  ) : (
-                    <Link to={item.url} className="flex items-center gap-3">
-                      <item.icon className="size-4" />
-                      <span className="text-[10px] font-medium uppercase tracking-widest">{t(`tabs.${item.title}` as any)}</span>
-                    </Link>
-                  )}
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))}
-          </div>
-        </SidebarMenu>
+              <div className="space-y-0.5 py-2">
+                <p className="px-3 py-1.5 text-[9px] font-semibold uppercase tracking-[0.2em] text-muted-foreground/50">{t('tabs.system_config')}</p>
+                {filteredSecondary.map((item) => (
+                  <SidebarMenuItem key={item.title}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={location.pathname === item.url}
+                      className="transition-all duration-200 hover:bg-accent/30"
+                    >
+                      {item.url.startsWith('http') ? (
+                        <button onClick={() => window.api.openExternal(item.url)} className="flex items-center gap-3 w-full">
+                          <item.icon className="size-[18px]" />
+                          <span className="text-xs font-medium tracking-wide">{t(`tabs.${item.title}` as any)}</span>
+                        </button>
+                      ) : (
+                        <Link to={item.url} className="flex items-center gap-3">
+                          <item.icon className="size-[18px]" />
+                          <span className="text-xs font-medium tracking-wide">{t(`tabs.${item.title}` as any)}</span>
+                        </Link>
+                      )}
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </div>
+            </SidebarMenu>
+          </motion.div>
+        </AnimatePresence>
       </SidebarContent>
-      <SidebarFooter className="p-4 border-t border-border/50">
+      <SidebarFooter className="p-3 border-t border-border/30">
         <NavUser user={user} />
       </SidebarFooter>
     </Sidebar>

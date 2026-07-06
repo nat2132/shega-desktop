@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Check, Loader2 } from 'lucide-react';
 import { useSettings } from '../../context/SettingsContext';
 
@@ -8,7 +8,9 @@ interface LoadingScreenProps {
 
 const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
   const { t } = useSettings();
-  
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
+
   const loadingSteps = [
     { label: t('loading.step_1'), delay: 400 },
     { label: t('loading.step_2'), delay: 800 },
@@ -27,8 +29,8 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
       }, step.delay);
     });
 
-    setTimeout(() => onComplete(), 2400);
-  }, [onComplete]);
+    setTimeout(() => onCompleteRef.current(), 2400);
+  }, []);
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center" style={{ background: '#0B0705' }}>

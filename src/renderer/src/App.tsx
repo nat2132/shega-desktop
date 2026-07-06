@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, Suspense, lazy } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { motion, AnimatePresence } from 'framer-motion'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Inventory = lazy(() => import('./pages/Inventory'))
@@ -93,6 +94,7 @@ function PremiumRoute({ children, premiumFeature }: { children: React.ReactNode;
 
 function App() {
   const { isAuthenticated, login } = useAuth();
+  const location = useLocation();
   const [phase, setPhase] = useState<AppPhase>('splash');
   const [hasAdmins, setHasAdmins] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
@@ -184,9 +186,19 @@ function App() {
     setPhase('loading');
   };
 
+  const { settingsLoaded } = useSettings();
+
   const handleLoadingComplete = useCallback(() => {
-    setPhase('ready');
-  }, []);
+    if (settingsLoaded) {
+      setPhase('ready');
+    }
+  }, [settingsLoaded]);
+
+  useEffect(() => {
+    if (phase === 'loading' && settingsLoaded) {
+      setPhase('ready');
+    }
+  }, [settingsLoaded, phase]);
 
   const handleRetry = () => {
     setPhase('splash');
@@ -263,36 +275,46 @@ function App() {
         <SidebarInset>
           <SiteHeader />
           <NotificationBanners />
-          <main className="flex flex-1 flex-col overflow-y-auto">
+          <main className="flex flex-1 flex-col overflow-y-auto scrollbar-apple">
             <div className="@container/main flex flex-1 flex-col gap-2">
-              <Suspense fallback={<div className="flex items-center justify-center h-full py-32"><div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" /></div>}>
-              <Routes>
-                <Route path="/" element={<ProtectedRoute permission="dashboard"><Dashboard /></ProtectedRoute>} />
-                <Route path="/inventory" element={<ProtectedRoute permission="inventory" moduleId="inventory"><Inventory /></ProtectedRoute>} />
-                <Route path="/sales" element={<ProtectedRoute permission="sales" moduleId="sales"><Sales /></ProtectedRoute>} />
-                <Route path="/sales/:id" element={<ProtectedRoute permission="sales" moduleId="sales"><SaleDetail /></ProtectedRoute>} />
-                <Route path="/expenses" element={<ProtectedRoute permission="expenses" moduleId="expenses"><Expenses /></ProtectedRoute>} />
-                <Route path="/customers" element={<ProtectedRoute permission="customers" moduleId="customers"><Customers /></ProtectedRoute>} />
-                <Route path="/analytics" element={<ProtectedRoute permission="analytics" moduleId="analytics"><Analytics /></ProtectedRoute>} />
-                <Route path="/adjustments" element={<ProtectedRoute permission="adjustments" moduleId="adjustments"><Adjustments /></ProtectedRoute>} />
-                <Route path="/warehouses" element={<ProtectedRoute permission="warehouses" moduleId="warehouses"><Warehouses /></ProtectedRoute>} />
-                <Route path="/employees" element={<PremiumRoute premiumFeature="employees"><ProtectedRoute permission="employees" moduleId="employees"><Employees /></ProtectedRoute></PremiumRoute>} />
-                <Route path="/users" element={<PremiumRoute premiumFeature="users"><ProtectedRoute permission="employees" moduleId="employees"><UsersEmployees /></ProtectedRoute></PremiumRoute>} />
-                <Route path="/shipments" element={<PremiumRoute premiumFeature="shipments"><ProtectedRoute permission="shipments" moduleId="shipments"><Shipments /></ProtectedRoute></PremiumRoute>} />
-                <Route path="/suppliers" element={<PremiumRoute premiumFeature="suppliers"><ProtectedRoute permission="suppliers" moduleId="suppliers"><Suppliers /></ProtectedRoute></PremiumRoute>} />
-                <Route path="/audit-logs" element={<PremiumRoute premiumFeature="audit"><ProtectedRoute permission="audit.view"><AuditLogs /></ProtectedRoute></PremiumRoute>} />
-                <Route path="/debt-management" element={<ProtectedRoute permission="customers" moduleId="customers"><DebtManagement /></ProtectedRoute>} />
-                <Route path="/reminders" element={<ProtectedRoute permission="dashboard"><ReminderHistory /></ProtectedRoute>} />
-                <Route path="/reports" element={<PremiumRoute premiumFeature="reports"><ProtectedRoute permission="analytics" moduleId="analytics"><Reports /></ProtectedRoute></PremiumRoute>} />
-                <Route path="/budgets" element={<ProtectedRoute permission="expenses" moduleId="expenses"><BudgetManagement /></ProtectedRoute>} />
-                <Route path="/contacts" element={<ProtectedRoute permission="customers" moduleId="customers"><Contacts /></ProtectedRoute>} />
-                <Route path="/orders" element={<ProtectedRoute permission="orders.view" moduleId="sales"><Orders /></ProtectedRoute>} />
-                <Route path="/orders/:id" element={<ProtectedRoute permission="orders.view" moduleId="sales"><OrderDetail /></ProtectedRoute>} />
-                <Route path="/subscription" element={<ProtectedRoute permission="dashboard"><SubscriptionDashboard /></ProtectedRoute>} />
-                <Route path="/subscription/payment" element={<ProtectedRoute permission="dashboard"><SubscriptionPayment /></ProtectedRoute>} />
-                <Route path="/admin-management" element={<SuperAdminRoute><AdminManagement /></SuperAdminRoute>} />
-                <Route path="/settings" element={<ProtectedRoute permission="settings"><Settings /></ProtectedRoute>} />
-              </Routes>
+              <Suspense fallback={<div className="flex items-center justify-center h-full py-32"><div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" /></div>}>
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={location.pathname}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.25, ease: [0.28, 0, 0.22, 1] }}
+                >
+                  <Routes location={location}>
+                    <Route path="/" element={<ProtectedRoute permission="dashboard"><Dashboard /></ProtectedRoute>} />
+                    <Route path="/inventory" element={<ProtectedRoute permission="inventory" moduleId="inventory"><Inventory /></ProtectedRoute>} />
+                    <Route path="/sales" element={<ProtectedRoute permission="sales" moduleId="sales"><Sales /></ProtectedRoute>} />
+                    <Route path="/sales/:id" element={<ProtectedRoute permission="sales" moduleId="sales"><SaleDetail /></ProtectedRoute>} />
+                    <Route path="/expenses" element={<ProtectedRoute permission="expenses" moduleId="expenses"><Expenses /></ProtectedRoute>} />
+                    <Route path="/customers" element={<ProtectedRoute permission="customers" moduleId="customers"><Customers /></ProtectedRoute>} />
+                    <Route path="/analytics" element={<ProtectedRoute permission="analytics" moduleId="analytics"><Analytics /></ProtectedRoute>} />
+                    <Route path="/adjustments" element={<ProtectedRoute permission="adjustments" moduleId="adjustments"><Adjustments /></ProtectedRoute>} />
+                    <Route path="/warehouses" element={<ProtectedRoute permission="warehouses" moduleId="warehouses"><Warehouses /></ProtectedRoute>} />
+                    <Route path="/employees" element={<PremiumRoute premiumFeature="employees"><ProtectedRoute permission="employees" moduleId="employees"><Employees /></ProtectedRoute></PremiumRoute>} />
+                    <Route path="/users" element={<PremiumRoute premiumFeature="users"><ProtectedRoute permission="employees" moduleId="employees"><UsersEmployees /></ProtectedRoute></PremiumRoute>} />
+                    <Route path="/shipments" element={<PremiumRoute premiumFeature="shipments"><ProtectedRoute permission="shipments" moduleId="shipments"><Shipments /></ProtectedRoute></PremiumRoute>} />
+                    <Route path="/suppliers" element={<PremiumRoute premiumFeature="suppliers"><ProtectedRoute permission="suppliers" moduleId="suppliers"><Suppliers /></ProtectedRoute></PremiumRoute>} />
+                    <Route path="/audit-logs" element={<PremiumRoute premiumFeature="audit"><ProtectedRoute permission="audit.view"><AuditLogs /></ProtectedRoute></PremiumRoute>} />
+                    <Route path="/debt-management" element={<ProtectedRoute permission="customers" moduleId="customers"><DebtManagement /></ProtectedRoute>} />
+                    <Route path="/reminders" element={<ProtectedRoute permission="dashboard"><ReminderHistory /></ProtectedRoute>} />
+                    <Route path="/reports" element={<PremiumRoute premiumFeature="reports"><ProtectedRoute permission="analytics" moduleId="analytics"><Reports /></ProtectedRoute></PremiumRoute>} />
+                    <Route path="/budgets" element={<ProtectedRoute permission="expenses" moduleId="expenses"><BudgetManagement /></ProtectedRoute>} />
+                    <Route path="/contacts" element={<ProtectedRoute permission="customers" moduleId="customers"><Contacts /></ProtectedRoute>} />
+                    <Route path="/orders" element={<ProtectedRoute permission="orders.view" moduleId="sales"><Orders /></ProtectedRoute>} />
+                    <Route path="/orders/:id" element={<ProtectedRoute permission="orders.view" moduleId="sales"><OrderDetail /></ProtectedRoute>} />
+                    <Route path="/subscription" element={<ProtectedRoute permission="dashboard"><SubscriptionDashboard /></ProtectedRoute>} />
+                    <Route path="/subscription/payment" element={<ProtectedRoute permission="dashboard"><SubscriptionPayment /></ProtectedRoute>} />
+                    <Route path="/admin-management" element={<SuperAdminRoute><AdminManagement /></SuperAdminRoute>} />
+                    <Route path="/settings" element={<ProtectedRoute permission="settings"><Settings /></ProtectedRoute>} />
+                  </Routes>
+                </motion.div>
+              </AnimatePresence>
               </Suspense>
             </div>
           </main>

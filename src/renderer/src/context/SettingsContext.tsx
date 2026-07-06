@@ -26,6 +26,7 @@ interface SettingsContextType {
   enabledModules: string[];
   setEnabledModules: (modules: string[]) => void;
   isModuleEnabled: (moduleId: string) => boolean;
+  settingsLoaded: boolean;
   currency: string;
 }
 
@@ -38,6 +39,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [theme, setTheme] = useState<Theme>('dark');
   const [currentBusiness, setCurrentBusiness] = useState<any | null>(null);
   const [enabledModules, setEnabledModulesState] = useState<string[]>([...ALL_MODULES]);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   const refreshBusiness = async () => {
     try {
@@ -72,6 +74,10 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (savedModules && Array.isArray(savedModules)) {
         setEnabledModulesState(savedModules);
       }
+      setSettingsLoaded(true);
+    }).catch((err) => {
+      console.error('Failed to load settings:', err);
+      setSettingsLoaded(true);
     });
     refreshBusiness();
   }, []);
@@ -194,7 +200,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       theme, setTheme,
       currentBusiness, refreshBusiness,
       t, formatDate, formatTime, formatDateTime,
-      enabledModules, setEnabledModules, isModuleEnabled,
+      enabledModules, setEnabledModules, isModuleEnabled, settingsLoaded,
       currency: currentBusiness?.currency || 'ETB'
     }}>
       {children}

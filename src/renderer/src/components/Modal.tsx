@@ -19,17 +19,17 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, size = 
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent 
-        className={`${sizeClasses[size]} w-full bg-background rounded-[32px] shadow-2xl border-border flex flex-col max-h-[90vh] p-0 gap-0 sm:rounded-[32px]`}
+      <DialogContent
+        className={`${sizeClasses[size]} w-full bg-card border-border/50 p-0 gap-0 sm:rounded-2xl shadow-2xl flex flex-col max-h-[85vh]`}
       >
-        <DialogHeader className="p-8 border-b border-border/50 shrink-0">
-          <DialogTitle className="text-2xl font-black tracking-tighter text-foreground uppercase">
+        <DialogHeader className="px-6 py-5 border-b border-border/30 shrink-0">
+          <DialogTitle className="text-base font-semibold tracking-tight text-foreground">
             {title}
           </DialogTitle>
           <DialogDescription className="hidden">Dialog</DialogDescription>
         </DialogHeader>
-        
-        <div className="p-8 overflow-y-auto custom-scrollbar">
+
+        <div className="p-6 overflow-y-auto scrollbar-apple">
           {children}
         </div>
       </DialogContent>

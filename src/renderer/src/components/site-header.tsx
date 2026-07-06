@@ -21,33 +21,33 @@ export function SiteHeader() {
   };
 
   return (
-    <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b border-border/50 bg-background/50 backdrop-blur-md sticky top-0 z-30 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-(--header-height)">
-      <div className="flex w-full items-center gap-1 px-4 lg:gap-2 lg:px-6">
+    <header className="apple-frost flex h-(--header-height) shrink-0 items-center gap-2 sticky top-0 z-30 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-(--header-height)">
+      <div className="flex w-full items-center gap-2 px-4 lg:gap-3 lg:px-6">
         <SidebarTrigger className="-ml-1" />
         <Separator
           orientation="vertical"
-          className="mx-2 data-[orientation=vertical]:h-4"
+          className="mx-1 data-[orientation=vertical]:h-5"
         />
 
-        <div className="flex flex-col hidden sm:flex">
-          <h1 className="text-[10px] font-black uppercase tracking-[0.3em] text-foreground">{getPageTitle()}</h1>
-          <p className="text-[8px] font-black uppercase tracking-[0.2em] text-muted-foreground">{t('header.terminal_active')}</p>
+        <div className="flex flex-col">
+          <h1 className="text-xs font-semibold tracking-tight text-foreground">{getPageTitle()}</h1>
+          <p className="text-[9px] font-medium text-muted-foreground/60">{t('header.terminal_active')}</p>
         </div>
 
-        <div className="mx-4 flex-1 max-w-md">
+        <div className="mx-3 flex-1 max-w-sm">
           <GlobalSearch />
         </div>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-2">
           <NotificationCenter />
 
           <Button
             variant="ghost"
             size="icon"
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="size-8 rounded-lg hover:bg-muted/50"
+            className="size-8 rounded-full text-muted-foreground/70 hover:text-foreground hover:bg-accent/50"
           >
-            {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
+            {theme === 'dark' ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}
           </Button>
         </div>
       </div>
