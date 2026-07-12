@@ -1,0 +1,738 @@
+import React, { useState, useEffect, useCallback, useRef, useId } from 'react';
+import { createPortal } from 'react-dom';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  X, ChevronLeft, ChevronRight, SkipForward, RotateCcw, Pause, Play,
+  HelpCircle, Target, MousePointerClick, CheckCircle2, Sparkles,
+} from 'lucide-react';
+import { useTutorial } from '../../context/TutorialContext';
+import { TargetRect } from './types';
+import { Button } from '../ui/button';
+import { cn } from '../../utils/shadcn';
+
+const TOOLTIP_WIDTH = 380;
+const GAP = 16;
+const PADDING = 16;
+const SPOTLIGHT_PAD = 8;
+const BADGE_HEIGHT = 26;
+
+function throttle<T extends (...args: unknown[]) => void>(fn: T, ms: number): (...args: Parameters<T>) => void {
+  let last = 0;
+  return (...args: Parameters<T>) => {
+    const now = Date.now();
+    if (now - last >= ms) {
+      last = now;
+      fn(...args);
+    }
+  };
+}
+
+function getPointerPosition(rect: TargetRect): { x: number; y: number } {
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  };
+}
+
+export default function TutorialOverlay() {
+  const {
+    isActive,
+    isPaused,
+    currentTutorial,
+    currentStepIndex,
+    currentStep,
+    nextStep,
+    prevStep,
+    skipTutorial,
+    pauseTutorial,
+    resumeTutorial,
+    restartTutorial,
+  } = useTutorial();
+
+  const [targetRect, setTargetRect] = useState<TargetRect | null>(null);
+  const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0 });
+  const [interactionDone, setInteractionDone] = useState(false);
+  const [elementVisible, setElementVisible] = useState(true);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const pulseRef = useRef<HTMLDivElement>(null);
+  const pointerRef = useRef<HTMLDivElement>(null);
+  const maskId = useId();
+  const interactionCheckInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const updateTargetRect = useCallback(() => {
+    if (!currentStep?.targetSelector) {
+      setTargetRect(null);
+      setElementVisible(true);
+      return;
+    }
+
+    const el = document.querySelector(currentStep.targetSelector);
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      const isOffscreen = rect.bottom < 0 || rect.top > window.innerHeight ||
+                          rect.right < 0 || rect.left > window.innerWidth;
+      setElementVisible(!isOffscreen);
+      setTargetRect({
+        top: rect.top,
+        left: rect.left,
+        width: rect.width,
+        height: rect.height,
+        bottom: rect.bottom,
+        right: rect.right,
+      });
+    } else {
+      setTargetRect(null);
+      setElementVisible(false);
+    }
+  }, [currentStep?.targetSelector]);
+
+  const throttledUpdate = useCallback(
+    throttle(updateTargetRect, 100),
+    [updateTargetRect]
+  );
+
+  useEffect(() => {
+    updateTargetRect();
+    setInteractionDone(false);
+    setShowSuccess(false);
+
+    if (!currentStep?.targetSelector) return;
+
+    const el = document.querySelector(currentStep.targetSelector);
+    if (!el) return;
+
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    const observer = new ResizeObserver(throttledUpdate);
+    observer.observe(el);
+    window.addEventListener('scroll', throttledUpdate, true);
+    window.addEventListener('resize', throttledUpdate);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('scroll', throttledUpdate, true);
+      window.removeEventListener('resize', throttledUpdate);
+    };
+  }, [currentStep, updateTargetRect, throttledUpdate]);
+
+  useEffect(() => {
+    if (!currentStep?.waitForInteraction || !currentStep.targetSelector || isPaused) return;
+
+    const el = document.querySelector(currentStep.targetSelector);
+    if (!el) return;
+
+    const handler = () => {
+      setInteractionDone(true);
+      setShowSuccess(true);
+      setTimeout(() => {
+        setShowSuccess(false);
+        nextStep();
+      }, 800);
+    };
+
+    const events: (keyof HTMLElementEventMap)[] = ['click', 'change', 'input', 'keydown'];
+    events.forEach(evt => el.addEventListener(evt, handler, { once: true }));
+
+    if (interactionCheckInterval.current) clearInterval(interactionCheckInterval.current);
+    interactionCheckInterval.current = setInterval(() => {
+      const inputEl = document.querySelector(currentStep.targetSelector!) as HTMLInputElement | null;
+      if (inputEl && 'value' in inputEl && inputEl.value && inputEl.value.length > 0) {
+        handler();
+      }
+    }, 500);
+
+    return () => {
+      events.forEach(evt => el.removeEventListener(evt, handler));
+      if (interactionCheckInterval.current) {
+        clearInterval(interactionCheckInterval.current);
+        interactionCheckInterval.current = null;
+      }
+    };
+  }, [currentStep, nextStep, isPaused]);
+
+  useEffect(() => {
+    if (!currentStep?.autoAdvance || !currentStep.autoAdvanceDelay || isPaused) return;
+    const timer = setTimeout(() => nextStep(), currentStep.autoAdvanceDelay);
+    return () => clearTimeout(timer);
+  }, [currentStep, nextStep, isPaused]);
+
+  useEffect(() => {
+    if (!tooltipRef.current) return;
+
+    const tip = tooltipRef.current.getBoundingClientRect();
+    const position = currentStep?.tooltipPosition || 'bottom';
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    let top = 0;
+    let left = 0;
+
+    if (targetRect) {
+      switch (position) {
+        case 'top':
+          top = targetRect.top - tip.height - GAP;
+          left = targetRect.left + targetRect.width / 2 - tip.width / 2;
+          break;
+        case 'bottom':
+          top = targetRect.bottom + GAP;
+          left = targetRect.left + targetRect.width / 2 - tip.width / 2;
+          break;
+        case 'left':
+          top = targetRect.top + targetRect.height / 2 - tip.height / 2;
+          left = targetRect.left - tip.width - GAP;
+          break;
+        case 'right':
+          top = targetRect.top + targetRect.height / 2 - tip.height / 2;
+          left = targetRect.right + GAP;
+          break;
+        case 'center':
+          top = vh / 2 - tip.height / 2;
+          left = vw / 2 - tip.width / 2;
+          break;
+      }
+    } else {
+      top = vh / 2 - tip.height / 2;
+      left = vw / 2 - tip.width / 2;
+    }
+
+    top = Math.max(PADDING, Math.min(top, vh - tip.height - PADDING));
+    left = Math.max(PADDING, Math.min(left, vw - tip.width - PADDING));
+
+    setTooltipPos({ top, left });
+  }, [targetRect, currentStep?.tooltipPosition, currentStepIndex]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    const handler = (e: KeyboardEvent) => {
+      switch (e.key) {
+        case 'Escape':
+          e.preventDefault();
+          skipTutorial();
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          if (!currentStep?.waitForInteraction || interactionDone) {
+            nextStep();
+          }
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          if (currentStepIndex > 0) prevStep();
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isActive, skipTutorial, nextStep, prevStep, currentStepIndex, currentStep, interactionDone]);
+
+  if (!isActive || !currentTutorial || !currentStep) return null;
+
+  const totalSteps = currentTutorial.steps.length;
+  const progress = ((currentStepIndex + 1) / totalSteps) * 100;
+  const isLastStep = currentStepIndex === totalSteps - 1;
+  const isFirstStep = currentStepIndex === 0;
+  const needsInteraction = !!currentStep.waitForInteraction;
+  const canProceed = !needsInteraction || interactionDone;
+  const pointer = targetRect ? getPointerPosition(targetRect) : null;
+
+  return createPortal(
+    <div ref={overlayRef} className="fixed inset-0 z-[9999]" style={{ pointerEvents: 'none' }}>
+      {/* Spotlight mask */}
+      <AnimatePresence>
+        {targetRect && (
+          <motion.svg
+            key={`spotlight-${currentStep.id}`}
+            className="absolute inset-0 w-full h-full"
+            style={{ pointerEvents: 'none' }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.35, ease: [0.28, 0, 0.22, 1] }}
+          >
+            <defs>
+              <mask id={maskId}>
+                <rect x="0" y="0" width="100%" height="100%" fill="white" />
+                <motion.rect
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ duration: 0.4, ease: [0.28, 0, 0.22, 1] }}
+                  x={targetRect.left - SPOTLIGHT_PAD}
+                  y={targetRect.top - SPOTLIGHT_PAD}
+                  width={targetRect.width + SPOTLIGHT_PAD * 2}
+                  height={targetRect.height + SPOTLIGHT_PAD * 2}
+                  rx={14}
+                  fill="black"
+                />
+              </mask>
+            </defs>
+            <rect
+              x="0" y="0" width="100%" height="100%"
+              fill="rgba(0,0,0,0.55)"
+              mask={`url(#${maskId})`}
+              style={{ pointerEvents: 'none' }}
+            />
+          </motion.svg>
+        )}
+      </AnimatePresence>
+
+      {!targetRect && (
+        <motion.div
+          key="full-overlay"
+          className="absolute inset-0 bg-black/55"
+          style={{ pointerEvents: 'none' }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+        />
+      )}
+
+      {/* Click-blocker zones around spotlight */}
+      <div className="absolute inset-0" style={{ pointerEvents: 'none' }}>
+        {targetRect && (
+          <>
+            <div
+              style={{
+                position: 'fixed',
+                top: 0, left: 0, right: 0,
+                height: targetRect.top - SPOTLIGHT_PAD,
+                pointerEvents: 'auto',
+              }}
+              className="cursor-default"
+              onClick={(e) => { e.stopPropagation(); skipTutorial(); }}
+            />
+            <div
+              style={{
+                position: 'fixed',
+                top: targetRect.bottom + SPOTLIGHT_PAD, left: 0, right: 0, bottom: 0,
+                pointerEvents: 'auto',
+              }}
+              className="cursor-default"
+              onClick={(e) => { e.stopPropagation(); skipTutorial(); }}
+            />
+            <div
+              style={{
+                position: 'fixed',
+                top: targetRect.top - SPOTLIGHT_PAD, left: 0,
+                width: targetRect.left - SPOTLIGHT_PAD,
+                height: targetRect.height + SPOTLIGHT_PAD * 2,
+                pointerEvents: 'auto',
+              }}
+              className="cursor-default"
+              onClick={(e) => { e.stopPropagation(); skipTutorial(); }}
+            />
+            <div
+              style={{
+                position: 'fixed',
+                top: targetRect.top - SPOTLIGHT_PAD,
+                right: 0,
+                width: `calc(100vw - ${targetRect.right + SPOTLIGHT_PAD}px)`,
+                height: targetRect.height + SPOTLIGHT_PAD * 2,
+                pointerEvents: 'auto',
+              }}
+              className="cursor-default"
+              onClick={(e) => { e.stopPropagation(); skipTutorial(); }}
+            />
+          </>
+        )}
+      </div>
+
+      {/* Pulse ring */}
+      <AnimatePresence>
+        {targetRect && (
+          <motion.div
+            key={`pulse-${currentStep.id}`}
+            ref={pulseRef}
+            className={cn(
+              'tutorial-pulse-ring',
+              needsInteraction && !interactionDone && 'tutorial-pulse-ring--interactive'
+            )}
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            transition={{ duration: 0.35, ease: [0.28, 0, 0.22, 1] }}
+            style={{
+              position: 'fixed',
+              left: targetRect.left - 4,
+              top: targetRect.top - 4,
+              width: targetRect.width + 8,
+              height: targetRect.height + 8,
+              borderRadius: 16,
+              pointerEvents: 'none',
+              zIndex: 1,
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Glow highlight on target */}
+      {targetRect && (
+        <motion.div
+          key={`glow-${currentStep.id}`}
+          className={cn(
+            'tutorial-highlight-glow',
+            needsInteraction && !interactionDone && 'tutorial-highlight-glow--interactive'
+          )}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.3 }}
+          style={{
+            position: 'fixed',
+            left: targetRect.left - 2,
+            top: targetRect.top - 2,
+            width: targetRect.width + 4,
+            height: targetRect.height + 4,
+            borderRadius: 16,
+            pointerEvents: 'none',
+            zIndex: 0,
+          }}
+        />
+      )}
+
+      {/* Step number badge on target */}
+      {targetRect && (
+        <motion.div
+          key={`badge-${currentStep.id}`}
+          className="tutorial-step-badge"
+          initial={{ opacity: 0, scale: 0.5, y: 8 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.5, y: -4 }}
+          transition={{ duration: 0.35, delay: 0.1, ease: [0.28, 0, 0.22, 1] }}
+          style={{
+            position: 'fixed',
+            left: targetRect.left + 8,
+            top: targetRect.top - BADGE_HEIGHT / 2 - 2,
+            pointerEvents: 'none',
+            zIndex: 2,
+          }}
+        >
+          <span className="tutorial-step-badge-number">{currentStepIndex + 1}</span>
+          <span className="tutorial-step-badge-label">{currentStep.title}</span>
+          {needsInteraction && !interactionDone && (
+            <span className="tutorial-step-badge-dot" />
+          )}
+          {interactionDone && (
+            <CheckCircle2 className="size-3 text-green-400 shrink-0" />
+          )}
+        </motion.div>
+      )}
+
+      {/* Click pointer indicator for interaction steps */}
+      {targetRect && needsInteraction && !interactionDone && (
+        <motion.div
+          key={`pointer-${currentStep.id}`}
+          ref={pointerRef}
+          className="tutorial-pointer"
+          initial={{ opacity: 0, scale: 0.5 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.5 }}
+          transition={{ duration: 0.4, delay: 0.2, ease: [0.28, 0, 0.22, 1] }}
+          style={{
+            position: 'fixed',
+            left: pointer!.x,
+            top: pointer!.y,
+            pointerEvents: 'none',
+            zIndex: 3,
+          }}
+        >
+          <div className="tutorial-pointer-arrow">
+            <MousePointerClick className="size-5 text-primary" />
+          </div>
+          <div className="tutorial-pointer-label">
+            Click or tap this element
+          </div>
+        </motion.div>
+      )}
+
+      {/* Success burst on interaction complete */}
+      {targetRect && showSuccess && (
+        <motion.div
+          key={`success-${currentStep.id}`}
+          className="tutorial-success-burst"
+          initial={{ opacity: 0, scale: 0.3 }}
+          animate={{ opacity: [0, 1, 1, 0], scale: [0.3, 1.2, 1, 1.5] }}
+          transition={{ duration: 0.8, ease: [0.28, 0, 0.22, 1] }}
+          style={{
+            position: 'fixed',
+            left: targetRect.left + targetRect.width / 2 - 24,
+            top: targetRect.top + targetRect.height / 2 - 24,
+            width: 48,
+            height: 48,
+            pointerEvents: 'none',
+            zIndex: 4,
+          }}
+        >
+          <div className="tutorial-success-burst-inner">
+            <CheckCircle2 className="size-8 text-green-400" strokeWidth={2.5} />
+          </div>
+          {[0, 1, 2].map((i) => (
+            <motion.div
+              key={i}
+              className="tutorial-success-particle"
+              initial={{ opacity: 1, x: 0, y: 0, scale: 1 }}
+              animate={{
+                opacity: 0,
+                x: Math.cos((i / 3) * Math.PI * 2) * 40,
+                y: Math.sin((i / 3) * Math.PI * 2) * 40,
+                scale: 0,
+              }}
+              transition={{ duration: 0.6, delay: 0.05 * i }}
+            />
+          ))}
+        </motion.div>
+      )}
+
+      {/* "Scroll to find" hint */}
+      {!elementVisible && targetRect === null && currentStep.targetSelector && (
+        <div className="fixed inset-0 flex items-center justify-center z-10" style={{ pointerEvents: 'none' }}>
+          <motion.div
+            className="flex items-center gap-2 px-4 py-2 rounded-full bg-card/80 backdrop-blur-md border border-border/50 text-xs text-muted-foreground shadow-lg"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            <Target className="size-3.5 text-primary" />
+            Scroll to find the highlighted element...
+          </motion.div>
+        </div>
+      )}
+
+      {/* Tooltip card */}
+      <AnimatePresence mode="popLayout">
+        <motion.div
+          key={`tooltip-${currentStep.id}`}
+          ref={tooltipRef}
+          layout
+          initial={{ opacity: 0, y: 16, scale: 0.94 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -12, scale: 0.94 }}
+          transition={{ duration: 0.4, ease: [0.28, 0, 0.22, 1] }}
+          className="tutorial-tooltip apple-panel"
+          style={{
+            position: 'fixed',
+            left: tooltipPos.left,
+            top: tooltipPos.top,
+            width: TOOLTIP_WIDTH,
+            maxWidth: 'calc(100vw - 32px)',
+            pointerEvents: 'auto',
+            zIndex: 2,
+          }}
+        >
+          {/* Header */}
+          <div className="flex items-start justify-between mb-3">
+            <div className="flex items-center gap-2.5">
+              <span className={cn(
+                'inline-flex items-center justify-center w-7 h-7 rounded-full text-[11px] font-bold transition-colors',
+                needsInteraction && !interactionDone
+                  ? 'bg-primary/20 text-primary'
+                  : 'bg-green-500/20 text-green-500'
+              )}>
+                {interactionDone ? <CheckCircle2 className="size-3.5" /> : currentStepIndex + 1}
+              </span>
+              <span className="text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider">
+                Step {currentStepIndex + 1} of {totalSteps}
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => restartTutorial()}
+                className="size-7 flex items-center justify-center rounded-full text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-all"
+                title="Restart tutorial"
+              >
+                <RotateCcw className="size-3.5" />
+              </button>
+              {isPaused ? (
+                <button
+                  onClick={resumeTutorial}
+                  className="size-7 flex items-center justify-center rounded-full text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-all"
+                  title="Resume"
+                >
+                  <Play className="size-3.5" />
+                </button>
+              ) : (
+                <button
+                  onClick={pauseTutorial}
+                  className="size-7 flex items-center justify-center rounded-full text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-all"
+                  title="Pause"
+                >
+                  <Pause className="size-3.5" />
+                </button>
+              )}
+              <button
+                onClick={skipTutorial}
+                className="size-7 flex items-center justify-center rounded-full text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-all"
+                title="Skip tutorial"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Content */}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={`content-${currentStep.id}`}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.25, ease: [0.28, 0, 0.22, 1] }}
+            >
+              <h3 className="text-sm font-semibold text-foreground mb-1.5 leading-snug">
+                {currentStep.title}
+              </h3>
+              <p className="text-xs text-muted-foreground/90 leading-relaxed mb-3">
+                {currentStep.description}
+              </p>
+
+              {currentStep.instruction && (
+                <div className={cn(
+                  'rounded-xl px-3.5 py-2.5 mb-4 border transition-colors',
+                  needsInteraction && !interactionDone
+                    ? 'bg-primary/10 border-primary/25'
+                    : 'bg-primary/8 border-primary/15'
+                )}>
+                  <div className="flex items-start gap-2">
+                    {needsInteraction && !interactionDone ? (
+                      <MousePointerClick className="size-3.5 text-primary shrink-0 mt-0.5 animate-bounce-subtle" />
+                    ) : (
+                      <HelpCircle className="size-3.5 text-primary shrink-0 mt-0.5" />
+                    )}
+                    <p className="text-[11px] text-foreground/80 leading-relaxed whitespace-pre-line">
+                      {currentStep.instruction}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </AnimatePresence>
+
+          {/* Interaction status */}
+          {needsInteraction && (
+            <motion.div
+              className={cn(
+                'flex items-center gap-2 px-3 py-2 rounded-xl mb-3 text-[11px] font-medium transition-all',
+                interactionDone
+                  ? 'bg-green-500/10 text-green-500 border border-green-500/20'
+                  : 'bg-primary/8 text-primary border border-primary/15'
+              )}
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              {interactionDone ? (
+                <>
+                  <CheckCircle2 className="size-3.5 shrink-0" />
+                  <span>Done! Moving to next step...</span>
+                  <motion.div
+                    className="ml-auto flex gap-0.5"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                  >
+                    {[0, 1, 2].map((i) => (
+                      <motion.span
+                        key={i}
+                        className="size-1 rounded-full bg-green-400"
+                        animate={{ opacity: [0.3, 1, 0.3] }}
+                        transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.2 }}
+                      />
+                    ))}
+                  </motion.div>
+                </>
+              ) : (
+                <>
+                  <MousePointerClick className="size-3.5 shrink-0 animate-bounce-subtle" />
+                  <span>Interact with the highlighted element to continue</span>
+                </>
+              )}
+            </motion.div>
+          )}
+
+          {/* Progress bar */}
+          <div className="mb-3">
+            <div className="h-1 bg-muted/60 rounded-full overflow-hidden">
+              <motion.div
+                className="h-full bg-primary rounded-full"
+                initial={{ width: `${((currentStepIndex) / totalSteps) * 100}%` }}
+                animate={{ width: `${progress}%` }}
+                transition={{ duration: 0.5, ease: [0.28, 0, 0.22, 1] }}
+              />
+            </div>
+          </div>
+
+          {/* Navigation */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              {!isFirstStep && (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={prevStep}
+                  className="text-muted-foreground/70 hover:text-foreground"
+                >
+                  <ChevronLeft className="size-3.5 mr-1" />
+                  Back
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={skipTutorial}
+                className="text-muted-foreground/50 hover:text-muted-foreground"
+              >
+                <SkipForward className="size-3 mr-1" />
+                Skip
+              </Button>
+            </div>
+
+            <Button
+              size="xs"
+              onClick={nextStep}
+              className={cn(
+                'transition-all relative',
+                !canProceed ? 'opacity-60 cursor-not-allowed' : 'opacity-100'
+              )}
+              disabled={!canProceed}
+            >
+              {needsInteraction && !interactionDone && (
+                <span className="absolute -top-1 -right-1 size-2">
+                  <span className="absolute inset-0 rounded-full bg-muted-foreground/30 animate-ping" />
+                  <span className="absolute inset-0 rounded-full bg-muted-foreground/50" />
+                </span>
+              )}
+              {isLastStep ? (
+                <span className="flex items-center gap-1.5">
+                  <Sparkles className="size-3" />
+                  Complete
+                </span>
+              ) : (
+                <>
+                  Next
+                  <ChevronRight className="size-3.5 ml-1" />
+                </>
+              )}
+            </Button>
+          </div>
+
+          {/* Keyboard shortcuts */}
+          <div className="mt-3 pt-2.5 border-t border-border/20 flex items-center justify-center gap-3">
+            <kbd className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-muted/80 text-[9px] text-muted-foreground/60 font-mono">
+              <ChevronLeft className="size-2.5" />
+            </kbd>
+            <span className="text-[9px] text-muted-foreground/40">Back</span>
+            <kbd className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-muted/80 text-[9px] text-muted-foreground/60 font-mono">
+              <ChevronRight className="size-2.5" />
+            </kbd>
+            <span className="text-[9px] text-muted-foreground/40">Next</span>
+            <kbd className="inline-flex items-center px-1.5 py-0.5 rounded bg-muted/80 text-[9px] text-muted-foreground/60 font-mono">
+              Esc
+            </kbd>
+            <span className="text-[9px] text-muted-foreground/40">Skip</span>
+          </div>
+        </motion.div>
+      </AnimatePresence>
+    </div>,
+    document.body
+  );
+}

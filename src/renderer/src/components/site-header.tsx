@@ -8,6 +8,7 @@ import { useSettings } from "../context/SettingsContext"
 import { useLocation } from "react-router-dom"
 import NotificationCenter from "./NotificationCenter"
 import { GlobalSearch } from "./GlobalSearch"
+import TutorialButton from "./tutorial/TutorialButton"
 
 export function SiteHeader() {
   const { theme, setTheme, t } = useSettings();
@@ -40,6 +41,8 @@ export function SiteHeader() {
 
         <div className="ml-auto flex items-center gap-2">
           <NotificationCenter />
+
+          <TutorialButton />
 
           <Button
             variant="ghost"

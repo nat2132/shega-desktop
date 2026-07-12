@@ -33,6 +33,7 @@ import { SubscriptionProvider, useSubscription } from './context/SubscriptionCon
 import { ROUTE_PREMIUM } from './utils/feature-modules'
 import PremiumBadge from './components/PremiumBadge'
 import LockedFeatureModal from './components/LockedFeatureModal'
+import { TutorialOverlay } from './components/tutorial'
 import { initSound, playSound } from './utils/sound'
 
 // Pre-launch screens
@@ -321,6 +322,7 @@ function App() {
         </SidebarInset>
       </SidebarProvider>
       <NotificationModal />
+      <TutorialOverlay />
     </TooltipProvider>
     </SubscriptionProvider>
   )
