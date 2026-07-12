@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X, ChevronLeft, ChevronRight, SkipForward, RotateCcw, Pause, Play,
-  HelpCircle, Target, MousePointerClick, CheckCircle2, Sparkles,
+  HelpCircle, Target, MousePointerClick, CheckCircle2, Sparkles, Lightbulb,
 } from 'lucide-react';
 import { useTutorial } from '../../context/TutorialContext';
 import { TargetRect } from './types';
@@ -12,8 +12,12 @@ import { cn } from '../../utils/shadcn';
 
 const TOOLTIP_WIDTH = 380;
 const GAP = 16;
+const FORM_GAP = 20;
 const PADDING = 16;
 const SPOTLIGHT_PAD = 8;
+const FORM_SPOTLIGHT_PAD = 16;
+const SPOTLIGHT_OPACITY = 0.55;
+const FORM_SPOTLIGHT_OPACITY = 0.25;
 const BADGE_HEIGHT = 26;
 
 function throttle<T extends (...args: unknown[]) => void>(fn: T, ms: number): (...args: Parameters<T>) => void {
@@ -31,6 +35,91 @@ function getPointerPosition(rect: TargetRect): { x: number; y: number } {
   return {
     x: rect.left + rect.width / 2,
     y: rect.top + rect.height / 2,
+  };
+}
+
+function isFormElement(el: Element): boolean {
+  const tag = el.tagName.toLowerCase();
+  const type = (el as HTMLInputElement).type?.toLowerCase();
+  const role = el.getAttribute('role');
+  const dataSlot = el.getAttribute('data-slot');
+  return (
+    tag === 'input' || tag === 'textarea' || tag === 'select' ||
+    dataSlot === 'input' || dataSlot === 'select-trigger' || dataSlot === 'switch' ||
+    type === 'checkbox' || type === 'radio' ||
+    role === 'switch' || role === 'combobox'
+  );
+}
+
+function isTextInput(el: Element): boolean {
+  const tag = el.tagName.toLowerCase();
+  const type = (el as HTMLInputElement).type?.toLowerCase();
+  return (
+    tag === 'textarea' ||
+    (tag === 'input' && ['text', 'search', 'email', 'tel', 'url', 'password', 'number', 'date', 'time', 'datetime-local', 'month', 'week'].includes(type ?? ''))
+  );
+}
+
+function isSelectTrigger(el: Element): boolean {
+  return (
+    el.tagName.toLowerCase() === 'select' ||
+    el.getAttribute('data-slot') === 'select-trigger' ||
+    el.getAttribute('role') === 'combobox'
+  );
+}
+
+function calcTooltipPosition(
+  targetRect: TargetRect,
+  tipW: number,
+  tipH: number,
+  preferred: string,
+  isFormField: boolean
+): { top: number; left: number } {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const gap = isFormField ? FORM_GAP : GAP;
+
+  const positions = isFormField
+    ? ['right', 'left', ...(preferred === 'bottom' ? [] : [preferred]), 'bottom', 'top']
+    : [preferred, 'bottom', 'top', 'left', 'right'];
+
+  for (const pos of new Set(positions)) {
+    let top = 0, left = 0;
+    switch (pos) {
+      case 'top':
+        top = targetRect.top - tipH - gap;
+        left = targetRect.left + targetRect.width / 2 - tipW / 2;
+        break;
+      case 'bottom':
+        top = targetRect.bottom + gap;
+        left = targetRect.left + targetRect.width / 2 - tipW / 2;
+        break;
+      case 'left':
+        top = targetRect.top + targetRect.height / 2 - tipH / 2;
+        left = targetRect.left - tipW - gap;
+        break;
+      case 'right':
+        top = targetRect.top + targetRect.height / 2 - tipH / 2;
+        left = targetRect.right + gap;
+        break;
+      default:
+        top = vh / 2 - tipH / 2;
+        left = vw / 2 - tipW / 2;
+    }
+
+    top = Math.max(PADDING, Math.min(top, vh - tipH - PADDING));
+    left = Math.max(PADDING, Math.min(left, vw - tipW - PADDING));
+
+    const visibleW = Math.min(tipW, vw - left) - Math.max(0, PADDING - left);
+    const visibleH = Math.min(tipH, vh - top) - Math.max(0, PADDING - top);
+    if (pos === 'center' || (visibleW >= tipW * 0.7 && visibleH >= tipH * 0.7)) {
+      return { top, left };
+    }
+  }
+
+  return {
+    top: Math.max(PADDING, Math.min(vh / 2 - tipH / 2, vh - tipH - PADDING)),
+    left: Math.max(PADDING, Math.min(vw / 2 - tipW / 2, vw - tipW - PADDING)),
   };
 }
 
@@ -54,17 +143,23 @@ export default function TutorialOverlay() {
   const [interactionDone, setInteractionDone] = useState(false);
   const [elementVisible, setElementVisible] = useState(true);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [isFormField, setIsFormField] = useState(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const pulseRef = useRef<HTMLDivElement>(null);
   const pointerRef = useRef<HTMLDivElement>(null);
   const maskId = useId();
   const interactionCheckInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const originalInputsRef = useRef<Map<string, { placeholder: string; value: string }>>(new Map());
+
+  const spotlightPad = isFormField ? FORM_SPOTLIGHT_PAD : SPOTLIGHT_PAD;
+  const spotlightOpacity = isFormField ? FORM_SPOTLIGHT_OPACITY : SPOTLIGHT_OPACITY;
 
   const updateTargetRect = useCallback(() => {
     if (!currentStep?.targetSelector) {
       setTargetRect(null);
       setElementVisible(true);
+      setIsFormField(false);
       return;
     }
 
@@ -74,6 +169,7 @@ export default function TutorialOverlay() {
       const isOffscreen = rect.bottom < 0 || rect.top > window.innerHeight ||
                           rect.right < 0 || rect.left > window.innerWidth;
       setElementVisible(!isOffscreen);
+      setIsFormField(isFormElement(el));
       setTargetRect({
         top: rect.top,
         left: rect.left,
@@ -85,6 +181,7 @@ export default function TutorialOverlay() {
     } else {
       setTargetRect(null);
       setElementVisible(false);
+      setIsFormField(false);
     }
   }, [currentStep?.targetSelector]);
 
@@ -123,7 +220,7 @@ export default function TutorialOverlay() {
     const el = document.querySelector(currentStep.targetSelector);
     if (!el) return;
 
-    const handler = () => {
+    const complete = () => {
       setInteractionDone(true);
       setShowSuccess(true);
       setTimeout(() => {
@@ -132,25 +229,151 @@ export default function TutorialOverlay() {
       }, 800);
     };
 
-    const events: (keyof HTMLElementEventMap)[] = ['click', 'change', 'input', 'keydown'];
-    events.forEach(evt => el.addEventListener(evt, handler, { once: true }));
+    if (isTextInput(el)) {
+      let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-    if (interactionCheckInterval.current) clearInterval(interactionCheckInterval.current);
-    interactionCheckInterval.current = setInterval(() => {
-      const inputEl = document.querySelector(currentStep.targetSelector!) as HTMLInputElement | null;
-      if (inputEl && 'value' in inputEl && inputEl.value && inputEl.value.length > 0) {
-        handler();
+      const onInput = () => {
+        const input = el as HTMLInputElement;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (input.value.trim().length > 0) {
+            complete();
+          }
+        }, 800);
+      };
+
+      const onChange = () => {
+        const input = el as HTMLInputElement;
+        if (input.value.trim().length > 0) {
+          if (debounceTimer) clearTimeout(debounceTimer);
+          complete();
+        }
+      };
+
+      const onBlur = () => {
+        const input = el as HTMLInputElement;
+        if (input.value.trim().length > 0) {
+          if (debounceTimer) clearTimeout(debounceTimer);
+          complete();
+        }
+      };
+
+      el.addEventListener('input', onInput);
+      el.addEventListener('change', onChange);
+      el.addEventListener('blur', onBlur);
+
+      if (interactionCheckInterval.current) clearInterval(interactionCheckInterval.current);
+      interactionCheckInterval.current = setInterval(() => {
+        const inputEl = document.querySelector(currentStep.targetSelector!) as HTMLInputElement | null;
+        if (inputEl && inputEl.value && inputEl.value.trim().length > 0 && document.activeElement !== inputEl) {
+          if (debounceTimer) clearTimeout(debounceTimer);
+          complete();
+        }
+      }, 500);
+
+      return () => {
+        el.removeEventListener('input', onInput);
+        el.removeEventListener('change', onChange);
+        el.removeEventListener('blur', onBlur);
+        if (debounceTimer) clearTimeout(debounceTimer);
+        if (interactionCheckInterval.current) {
+          clearInterval(interactionCheckInterval.current);
+          interactionCheckInterval.current = null;
+        }
+      };
+    }
+
+    if (isSelectTrigger(el)) {
+      if (el.tagName.toLowerCase() === 'select') {
+        const onChange = () => {
+          const select = el as HTMLSelectElement;
+          if (select.value && select.selectedIndex > 0) {
+            complete();
+          }
+        };
+        el.addEventListener('change', onChange);
+        return () => el.removeEventListener('change', onChange);
       }
-    }, 500);
+
+      const initialText = el.textContent || '';
+      const observer = new MutationObserver(() => {
+        const currentText = el.textContent || '';
+        if (currentText !== initialText && currentText.trim().length > 0) {
+          observer.disconnect();
+          complete();
+        }
+      });
+      observer.observe(el, { childList: true, subtree: true, characterData: true });
+
+      if (interactionCheckInterval.current) clearInterval(interactionCheckInterval.current);
+      interactionCheckInterval.current = setInterval(() => {
+        const currentText = el.textContent || '';
+        if (currentText !== initialText && currentText.trim().length > 0) {
+          observer.disconnect();
+          if (interactionCheckInterval.current) {
+            clearInterval(interactionCheckInterval.current);
+            interactionCheckInterval.current = null;
+          }
+          complete();
+        }
+      }, 300);
+
+      return () => {
+        observer.disconnect();
+        if (interactionCheckInterval.current) {
+          clearInterval(interactionCheckInterval.current);
+          interactionCheckInterval.current = null;
+        }
+      };
+    }
+
+    const onClick = () => complete();
+    el.addEventListener('click', onClick, { once: true });
+    return () => el.removeEventListener('click', onClick);
+  }, [currentStep, nextStep, isPaused]);
+
+  useEffect(() => {
+    originalInputsRef.current.forEach((orig, selector) => {
+      const el = document.querySelector(selector) as HTMLInputElement | null;
+      if (el) {
+        if (orig.placeholder !== undefined) el.placeholder = orig.placeholder;
+        if (orig.value !== undefined) el.value = orig.value;
+      }
+    });
+    originalInputsRef.current.clear();
+
+    if (!currentStep?.targetSelector) return;
+    if (!currentStep.placeholderText && !currentStep.exampleValue) return;
+
+    const el = document.querySelector(currentStep.targetSelector) as HTMLInputElement | null;
+    if (!el) return;
+
+    const orig: { placeholder: string; value: string } = { placeholder: '', value: '' };
+
+    if (currentStep.placeholderText) {
+      orig.placeholder = el.placeholder;
+      el.placeholder = currentStep.placeholderText;
+    }
+
+    if (currentStep.exampleValue) {
+      orig.value = el.value;
+      el.value = currentStep.exampleValue;
+    }
+
+    originalInputsRef.current.set(currentStep.targetSelector, orig);
 
     return () => {
-      events.forEach(evt => el.removeEventListener(evt, handler));
-      if (interactionCheckInterval.current) {
-        clearInterval(interactionCheckInterval.current);
-        interactionCheckInterval.current = null;
+      const saved = originalInputsRef.current.get(currentStep.targetSelector!);
+      if (saved) {
+        const savedEl = document.querySelector(currentStep.targetSelector!) as HTMLInputElement | null;
+        if (savedEl) {
+          if (saved.placeholder !== undefined) savedEl.placeholder = saved.placeholder;
+          if (saved.value !== undefined) savedEl.value = saved.value;
+        }
+        originalInputsRef.current.delete(currentStep.targetSelector!);
       }
     };
-  }, [currentStep, nextStep, isPaused]);
+  }, [currentStep]);
 
   useEffect(() => {
     if (!currentStep?.autoAdvance || !currentStep.autoAdvanceDelay || isPaused) return;
@@ -159,49 +382,13 @@ export default function TutorialOverlay() {
   }, [currentStep, nextStep, isPaused]);
 
   useEffect(() => {
-    if (!tooltipRef.current) return;
+    if (!tooltipRef.current || !targetRect) return;
 
     const tip = tooltipRef.current.getBoundingClientRect();
     const position = currentStep?.tooltipPosition || 'bottom';
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-
-    let top = 0;
-    let left = 0;
-
-    if (targetRect) {
-      switch (position) {
-        case 'top':
-          top = targetRect.top - tip.height - GAP;
-          left = targetRect.left + targetRect.width / 2 - tip.width / 2;
-          break;
-        case 'bottom':
-          top = targetRect.bottom + GAP;
-          left = targetRect.left + targetRect.width / 2 - tip.width / 2;
-          break;
-        case 'left':
-          top = targetRect.top + targetRect.height / 2 - tip.height / 2;
-          left = targetRect.left - tip.width - GAP;
-          break;
-        case 'right':
-          top = targetRect.top + targetRect.height / 2 - tip.height / 2;
-          left = targetRect.right + GAP;
-          break;
-        case 'center':
-          top = vh / 2 - tip.height / 2;
-          left = vw / 2 - tip.width / 2;
-          break;
-      }
-    } else {
-      top = vh / 2 - tip.height / 2;
-      left = vw / 2 - tip.width / 2;
-    }
-
-    top = Math.max(PADDING, Math.min(top, vh - tip.height - PADDING));
-    left = Math.max(PADDING, Math.min(left, vw - tip.width - PADDING));
-
+    const { top, left } = calcTooltipPosition(targetRect, tip.width, tip.height, position, isFormField);
     setTooltipPos({ top, left });
-  }, [targetRect, currentStep?.tooltipPosition, currentStepIndex]);
+  }, [targetRect, currentStep?.tooltipPosition, currentStepIndex, isFormField]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -260,10 +447,10 @@ export default function TutorialOverlay() {
                   initial={{ scale: 0.8, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   transition={{ duration: 0.4, ease: [0.28, 0, 0.22, 1] }}
-                  x={targetRect.left - SPOTLIGHT_PAD}
-                  y={targetRect.top - SPOTLIGHT_PAD}
-                  width={targetRect.width + SPOTLIGHT_PAD * 2}
-                  height={targetRect.height + SPOTLIGHT_PAD * 2}
+                  x={targetRect.left - spotlightPad}
+                  y={targetRect.top - spotlightPad}
+                  width={targetRect.width + spotlightPad * 2}
+                  height={targetRect.height + spotlightPad * 2}
                   rx={14}
                   fill="black"
                 />
@@ -271,7 +458,7 @@ export default function TutorialOverlay() {
             </defs>
             <rect
               x="0" y="0" width="100%" height="100%"
-              fill="rgba(0,0,0,0.55)"
+              fill={`rgba(0,0,0,${spotlightOpacity})`}
               mask={`url(#${maskId})`}
               style={{ pointerEvents: 'none' }}
             />
@@ -298,7 +485,7 @@ export default function TutorialOverlay() {
               style={{
                 position: 'fixed',
                 top: 0, left: 0, right: 0,
-                height: targetRect.top - SPOTLIGHT_PAD,
+                height: targetRect.top - spotlightPad,
                 pointerEvents: 'auto',
               }}
               className="cursor-default"
@@ -307,7 +494,7 @@ export default function TutorialOverlay() {
             <div
               style={{
                 position: 'fixed',
-                top: targetRect.bottom + SPOTLIGHT_PAD, left: 0, right: 0, bottom: 0,
+                top: targetRect.bottom + spotlightPad, left: 0, right: 0, bottom: 0,
                 pointerEvents: 'auto',
               }}
               className="cursor-default"
@@ -316,9 +503,9 @@ export default function TutorialOverlay() {
             <div
               style={{
                 position: 'fixed',
-                top: targetRect.top - SPOTLIGHT_PAD, left: 0,
-                width: targetRect.left - SPOTLIGHT_PAD,
-                height: targetRect.height + SPOTLIGHT_PAD * 2,
+                top: targetRect.top - spotlightPad, left: 0,
+                width: targetRect.left - spotlightPad,
+                height: targetRect.height + spotlightPad * 2,
                 pointerEvents: 'auto',
               }}
               className="cursor-default"
@@ -327,10 +514,10 @@ export default function TutorialOverlay() {
             <div
               style={{
                 position: 'fixed',
-                top: targetRect.top - SPOTLIGHT_PAD,
+                top: targetRect.top - spotlightPad,
                 right: 0,
-                width: `calc(100vw - ${targetRect.right + SPOTLIGHT_PAD}px)`,
-                height: targetRect.height + SPOTLIGHT_PAD * 2,
+                width: `calc(100vw - ${targetRect.right + spotlightPad}px)`,
+                height: targetRect.height + spotlightPad * 2,
                 pointerEvents: 'auto',
               }}
               className="cursor-default"
@@ -445,6 +632,29 @@ export default function TutorialOverlay() {
           <div className="tutorial-pointer-label">
             Click or tap this element
           </div>
+        </motion.div>
+      )}
+
+      {/* Example data badge */}
+      {targetRect && currentStep.exampleValue && (
+        <motion.div
+          key={`example-${currentStep.id}`}
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.35, delay: 0.15, ease: [0.28, 0, 0.22, 1] }}
+          style={{
+            position: 'fixed',
+            left: targetRect.left + 8,
+            top: targetRect.bottom + 4,
+            pointerEvents: 'none',
+            zIndex: 3,
+          }}
+        >
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/25 text-[9px] font-medium text-amber-600 dark:text-amber-400 whitespace-nowrap">
+            <Lightbulb className="size-2.5" />
+            Example — {currentStep.exampleValue}
+          </span>
         </motion.div>
       )}
 

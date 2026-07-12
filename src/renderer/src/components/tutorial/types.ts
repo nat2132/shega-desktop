@@ -8,6 +8,8 @@ export interface TutorialStep {
   waitForInteraction?: boolean;
   autoAdvance?: boolean;
   autoAdvanceDelay?: number;
+  placeholderText?: string;
+  exampleValue?: string;
   media?: string;
 }
 

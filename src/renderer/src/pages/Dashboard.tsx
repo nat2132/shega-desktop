@@ -358,7 +358,7 @@ const Dashboard: React.FC = () => {
 
           {empStats && (
             <motion.div variants={itemVariants} className="px-4 lg:px-6">
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div data-tutorial-section="employee-stats" className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 {[
                   { label: t('dashboard.total_employees'), value: empStats.total || 0, color: 'text-foreground' },
                   { label: t('common.active'), value: empStats.active || 0, color: 'text-emerald-600' },
@@ -376,7 +376,7 @@ const Dashboard: React.FC = () => {
           )}
 
           {reversalStats && (
-            <motion.div variants={itemVariants} className="px-4 lg:px-6">
+            <motion.div data-tutorial-section="reversals" variants={itemVariants} className="px-4 lg:px-6">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 flex items-center gap-2 mb-3">
                 <ArrowLeftRight className="h-3.5 w-3.5" /> {t('reports.reversals')}
               </h3>
@@ -398,7 +398,7 @@ const Dashboard: React.FC = () => {
           )}
 
           {supplierStats && (
-            <motion.div variants={itemVariants} className="px-4 lg:px-6 space-y-4">
+            <motion.div data-tutorial-section="suppliers" variants={itemVariants} className="px-4 lg:px-6 space-y-4">
               <div className="flex items-center justify-between mb-1">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 flex items-center gap-2">
                   <Truck className="h-3.5 w-3.5" />{t('suppliers.title')}
@@ -422,7 +422,7 @@ const Dashboard: React.FC = () => {
               </div>
 
               {supplierUnpaidOrders.length > 0 && (
-                <Card>
+                <Card data-tutorial-section="unpaid-supplier-orders">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <DollarSign className="h-4 w-4 text-destructive" />
@@ -536,7 +536,7 @@ const Dashboard: React.FC = () => {
             </motion.div>
           )}
 
-          <motion.div variants={itemVariants} className="px-4 lg:px-6">
+          <motion.div data-tutorial-section="business-assistant" variants={itemVariants} className="px-4 lg:px-6">
             <BusinessAssistant />
           </motion.div>
 
@@ -547,7 +547,7 @@ const Dashboard: React.FC = () => {
           )}
 
           <motion.div variants={itemVariants} className="px-4 lg:px-6">
-            <Card className="@container/card">
+            <Card data-tutorial-section="revenue-chart" className="@container/card">
               <CardHeader>
                 <CardTitle>{t('dashboard.revenue_intelligence')}</CardTitle>
                 <CardDescription>
@@ -608,11 +608,11 @@ const Dashboard: React.FC = () => {
             </Card>
           </motion.div>
 
-          <motion.div variants={itemVariants} className="px-4 lg:px-6">
+          <motion.div data-tutorial-section="category-sales" variants={itemVariants} className="px-4 lg:px-6">
             <CategorySalesChart data={analytics?.categoryBreakdown || []} />
           </motion.div>
 
-          <motion.div variants={itemVariants} className="px-4 lg:px-6">
+          <motion.div data-tutorial-section="recent-activity" variants={itemVariants} className="px-4 lg:px-6">
             <DataTable
               columns={columns}
               data={recentActivity}
