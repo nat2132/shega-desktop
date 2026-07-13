@@ -6738,7 +6738,7 @@ function registerIPCHandlers() {
     console.log("[Search] sales count:", db.prepare("SELECT COUNT(*) as c FROM sales WHERE businessId = ?").get(bizId)?.c);
     try {
       const items = db.prepare(`
-        SELECT id, name, companyName, categoryId, totalBaseQuantity, baseUnit, baseSellingPrice,
+        SELECT items.id, items.name, items.companyName, items.categoryId, items.totalBaseQuantity, items.baseUnit, items.baseSellingPrice,
           categories.name as categoryName
         FROM items LEFT JOIN categories ON items.categoryId = categories.id
         WHERE items.businessId = ? AND items.is_deleted = 0

@@ -32,25 +32,25 @@ interface Reminder {
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
-  'inventory.low_stock': 'Low Stock Alerts',
-  'inventory.out_of_stock': 'Out of Stock Alerts',
-  'inventory.expiring': 'Expiring Product Alerts',
-  'inventory.adjustment': 'Inventory Adjustments',
-  'sales.completed': 'Sale Completed',
-  'sales.refund': 'Sale Refund',
-  'customers.overdue_balance': 'Overdue Customer Balances',
-  'customers.payment_due': 'Customer Payment Due',
-  'suppliers.overdue_balance': 'Overdue Supplier Balances',
-  'suppliers.payment_due': 'Supplier Payment Due',
-  'suppliers.purchase_received': 'Purchase Received',
-  'expenses.recurring_due': 'Recurring Expense Due',
-  'expenses.overdue': 'Overdue Expenses',
-  'system.backup_complete': 'Backup Completed',
-  'system.backup_reminder': 'Backup Reminder',
-  'system.update_available': 'App Update Available',
-  'system.license_expiring': 'License Expiring',
-  'employees.account_locked': 'Account Locked',
-  'employees.shift_reminder': 'Shift Reminder',
+  'inventory.low_stock': 'notification_settings.low_stock_alerts',
+  'inventory.out_of_stock': 'notification_settings.out_of_stock_alerts',
+  'inventory.expiring': 'notification_settings.expiring_alerts',
+  'inventory.adjustment': 'notification_settings.adjustment_alerts',
+  'sales.completed': 'notification_settings.sale_completed',
+  'sales.refund': 'notification_settings.sale_refund',
+  'customers.overdue_balance': 'notification_settings.overdue_customer',
+  'customers.payment_due': 'notification_settings.customer_payment_due',
+  'suppliers.overdue_balance': 'notification_settings.overdue_supplier',
+  'suppliers.payment_due': 'notification_settings.supplier_payment_due',
+  'suppliers.purchase_received': 'notification_settings.purchase_received',
+  'expenses.recurring_due': 'notification_settings.recurring_expense',
+  'expenses.overdue': 'notification_settings.overdue_expenses',
+  'system.backup_complete': 'notification_settings.backup_complete',
+  'system.backup_reminder': 'notification_settings.backup_reminder',
+  'system.update_available': 'notification_settings.update_available',
+  'system.license_expiring': 'notification_settings.license_expiring',
+  'employees.account_locked': 'notification_settings.account_locked',
+  'employees.shift_reminder': 'notification_settings.shift_reminder',
 };
 
 const CATEGORIES = [
@@ -261,7 +261,7 @@ const NotificationSettings: React.FC = () => {
                 {catPrefs.map(p => (
                   <div key={p.key} className="flex items-center gap-3 p-2 rounded hover:bg-muted/20">
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm">{t(`notifications.pref_${p.key.replace('.', '_')}`, CATEGORY_LABELS[p.key] || p.key)}</p>
+                      <p className="text-sm">{t(CATEGORY_LABELS[p.key] || p.key)}</p>
                       <p className="text-[10px] text-muted-foreground font-mono">{p.key}</p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -372,10 +372,10 @@ const NotificationSettings: React.FC = () => {
                 </div>
                 {r.status === 'pending' && (
                   <>
-                    <Button variant="ghost" size="sm" onClick={() => snoozeReminder(r.id, 1)} title="Snooze 1h">
+                    <Button variant="ghost" size="sm" onClick={() => snoozeReminder(r.id, 1)} title={t('notification_settings.snooze_1h')}>
                       <Clock className="h-3 w-3" />
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => completeReminder(r.id)} title="Mark complete">
+                    <Button variant="ghost" size="sm" onClick={() => completeReminder(r.id)} title={t('notification_settings.mark_complete')}>
                       <CheckCircle2 className="h-3 w-3 text-green-600" />
                     </Button>
                   </>

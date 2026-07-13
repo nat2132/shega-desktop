@@ -2,9 +2,11 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { GraduationCap, Play, CheckCircle2 } from 'lucide-react';
 import { useTutorial } from '../../context/TutorialContext';
+import { useSettings } from '../../context/SettingsContext';
 import { Button } from '../ui/button';
 
 export default function TutorialButton() {
+  const { t } = useSettings();
   const {
     availableTutorial,
     isActive,
@@ -63,7 +65,7 @@ export default function TutorialButton() {
         className="gap-1.5 rounded-full text-muted-foreground/70 hover:text-foreground hover:bg-accent/50 text-[11px] font-medium"
       >
         <GraduationCap className="size-3.5" />
-        How to Use
+        {t('tutorial.how_to_use')}
         {(isCompleted || hasProgress) && (
           <span className="size-1.5 rounded-full bg-primary animate-pulse-soft" />
         )}
@@ -89,9 +91,9 @@ export default function TutorialButton() {
                 >
                   <Play className="size-3.5 text-primary" />
                   <div>
-                    <span className="font-medium">Resume Tutorial</span>
+                    <span className="font-medium">{t('tutorial.resume_tutorial')}</span>
                     <span className="block text-[10px] text-muted-foreground/70">
-                      Step {progress.lastStepIndex + 1}
+                      {t('tutorial.step_n').replace('{n}', String(progress.lastStepIndex + 1))}
                     </span>
                   </div>
                 </button>
@@ -100,7 +102,7 @@ export default function TutorialButton() {
               {isCompleted && (
                 <div className="flex items-center gap-2.5 px-3 py-2 text-xs text-muted-foreground">
                   <CheckCircle2 className="size-3.5 text-green-500" />
-                  <span>Tutorial completed</span>
+                  <span>{t('tutorial.completed')}</span>
                 </div>
               )}
 
@@ -112,7 +114,7 @@ export default function TutorialButton() {
                 className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left text-foreground hover:bg-accent/60 transition-all"
               >
                 <Play className="size-3.5 text-primary" />
-                {isCompleted ? 'Replay Tutorial' : 'Start from Beginning'}
+                {isCompleted ? t('tutorial.replay') : t('tutorial.start_beginning')}
               </button>
 
               {availableTutorial && (

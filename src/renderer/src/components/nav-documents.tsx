@@ -24,6 +24,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@renderer/components/ui/sidebar"
+import { useSettings } from "@renderer/context/SettingsContext"
 
 export function NavDocuments({
   items,
@@ -35,6 +36,7 @@ export function NavDocuments({
   }[]
 }) {
   const { isMobile } = useSidebar()
+  const { t } = useSettings()
 
   return (
     <SidebarGroup className="group-data-[collapsible=icon]:hidden">

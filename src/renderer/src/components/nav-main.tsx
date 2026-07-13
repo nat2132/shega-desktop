@@ -8,6 +8,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@renderer/components/ui/sidebar"
+import { useSettings } from "@renderer/context/SettingsContext"
 
 export function NavMain({
   items,
@@ -18,6 +19,7 @@ export function NavMain({
     icon?: Icon
   }[]
 }) {
+  const { t } = useSettings()
   return (
     <SidebarGroup>
       <SidebarGroupContent className="flex flex-col gap-2">

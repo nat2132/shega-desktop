@@ -66,7 +66,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onRegister, hasAdmins 
 
   const handleVerifyRecoveryKey = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !recoveryKey.trim()) { setError('Username and recovery key are required'); return; }
+    if (!username.trim() || !recoveryKey.trim()) { setError(t('auth.username_recovery_required')); return; }
     setLoading(true); setError('');
     try {
       const result = await window.api.verifyRecoveryKey(username.trim(), recoveryKey.trim());
@@ -74,33 +74,33 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onRegister, hasAdmins 
         setRecoveryMode('reset');
         setError('');
       } else {
-        setError(result.error || 'Invalid recovery key');
+        setError(result.error || t('auth.invalid_recovery_key'));
         setRecoveryKey('');
       }
     } catch (err: any) {
-      setError(err.message || 'Verification failed');
+      setError(err.message || t('auth.verification_failed'));
     }
     setLoading(false);
   };
 
   const handleRecoveryReset = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPin || newPin.length < 4) { setError('PIN must be at least 4 characters'); return; }
-    if (newPin !== confirmNewPin) { setError('PINs do not match'); return; }
+    if (!newPin || newPin.length < 4) { setError(t('auth.pin_min_length')); return; }
+    if (newPin !== confirmNewPin) { setError(t('auth.pins_no_match')); return; }
     setLoading(true); setError('');
     try {
       const result = await window.api.resetPinWithRecovery(username.trim(), recoveryKey.trim(), newPin);
       if (result.success) {
         setRecoveryMode('done');
-        setRecoverySuccess('PIN has been reset successfully. You can now log in with your new PIN.');
+        setRecoverySuccess(t('auth.pin_reset_success'));
         setPin('');
         setNewPin('');
         setConfirmNewPin('');
       } else {
-        setError(result.error || 'Failed to reset PIN');
+        setError(result.error || t('auth.failed_reset_pin'));
       }
     } catch (err: any) {
-      setError(err.message || 'Reset failed');
+      setError(err.message || t('auth.reset_failed'));
     }
     setLoading(false);
   };
@@ -200,7 +200,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onRegister, hasAdmins 
               className="w-full text-center text-[10px] font-bold uppercase tracking-widest text-white/20 hover:text-white/40 transition-colors py-2"
             >
               <KeyRound size={10} className="inline mr-1.5 -mt-0.5" />
-              Forgot PIN?
+              {t('auth.forgot_pin')}
             </button>
           </form>
         ) : recoveryMode === 'verify' ? (
@@ -212,26 +212,26 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onRegister, hasAdmins 
                 <ArrowLeft size={16} />
               </button>
               <div className="text-left">
-                <h2 className="text-sm font-black text-white tracking-tight uppercase">Recover PIN</h2>
-                <p className="text-[9px] font-bold uppercase tracking-widest text-white/20">Enter your recovery key</p>
+                <h2 className="text-sm font-black text-white tracking-tight uppercase">{t('auth.recover_pin')}</h2>
+                <p className="text-[9px] font-bold uppercase tracking-widest text-white/20">{t('auth.enter_recovery_key')}</p>
               </div>
             </div>
             <div className="space-y-1.5 text-left">
-              <label className="text-[10px] font-black uppercase tracking-widest text-white/30 px-1">Username</label>
+              <label className="text-[10px] font-black uppercase tracking-widest text-white/30 px-1">{t('auth.username_label')}</label>
               <input
                 type="text" value={username}
                 onChange={e => { setUsername(e.target.value); setError(''); }}
                 className="w-full bg-white/5 rounded-2xl text-sm px-6 py-4 font-bold border-2 border-transparent focus:border-white/20 transition-all outline-none text-white placeholder:text-white/15"
-                placeholder="Your username" autoFocus
+                placeholder={t('auth.username_placeholder')} autoFocus
               />
             </div>
             <div className="space-y-1.5 text-left">
-              <label className="text-[10px] font-black uppercase tracking-widest text-white/30 px-1">Recovery Key</label>
+              <label className="text-[10px] font-black uppercase tracking-widest text-white/30 px-1">{t('auth.recovery_key_label')}</label>
               <input
                 type="text" value={recoveryKey}
                 onChange={e => { setRecoveryKey(e.target.value.replace(/\s/g, '')); setError(''); }}
                 className="w-full bg-white/5 rounded-2xl text-sm px-6 py-4 font-mono font-bold border-2 border-transparent focus:border-white/20 transition-all outline-none text-white placeholder:text-white/15"
-                placeholder="Paste your recovery key"
+                placeholder={t('auth.recovery_key_placeholder')}
               />
             </div>
             {error && (
@@ -242,7 +242,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onRegister, hasAdmins 
             <button type="submit" disabled={loading}
               className="w-full py-5 bg-white text-[#0B0705] rounded-2xl font-black uppercase tracking-[0.3em] text-sm hover:bg-white/90 active:scale-[0.98] transition-all disabled:opacity-30"
             >
-              {loading ? 'Verifying...' : 'Verify Recovery Key'}
+              {loading ? t('auth.verifying') : t('auth.verify_recovery_key')}
             </button>
           </form>
         ) : recoveryMode === 'reset' ? (
@@ -254,12 +254,12 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onRegister, hasAdmins 
                 <ArrowLeft size={16} />
               </button>
               <div className="text-left">
-                <h2 className="text-sm font-black text-white tracking-tight uppercase">Create New PIN</h2>
-                <p className="text-[9px] font-bold uppercase tracking-widest text-white/20">Key verified — set a new PIN</p>
+                <h2 className="text-sm font-black text-white tracking-tight uppercase">{t('auth.create_new_pin')}</h2>
+                <p className="text-[9px] font-bold uppercase tracking-widest text-white/20">{t('auth.key_verified')}</p>
               </div>
             </div>
             <div className="space-y-1.5 text-left">
-              <label className="text-[10px] font-black uppercase tracking-widest text-white/30 px-1">New PIN</label>
+              <label className="text-[10px] font-black uppercase tracking-widest text-white/30 px-1">{t('auth.new_pin')}</label>
               <input
                 type={showPin ? 'text' : 'password'} maxLength={4} value={newPin}
                 onChange={e => { setNewPin(e.target.value.replace(/\D/g, '')); setError(''); }}
@@ -268,7 +268,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onRegister, hasAdmins 
               />
             </div>
             <div className="space-y-1.5 text-left">
-              <label className="text-[10px] font-black uppercase tracking-widest text-white/30 px-1">Confirm New PIN</label>
+              <label className="text-[10px] font-black uppercase tracking-widest text-white/30 px-1">{t('auth.confirm_new_pin')}</label>
               <input
                 type={showPin ? 'text' : 'password'} maxLength={4} value={confirmNewPin}
                 onChange={e => { setConfirmNewPin(e.target.value.replace(/\D/g, '')); setError(''); }}
@@ -284,7 +284,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onRegister, hasAdmins 
             <button type="submit" disabled={loading}
               className="w-full py-5 bg-white text-[#0B0705] rounded-2xl font-black uppercase tracking-[0.3em] text-sm hover:bg-white/90 active:scale-[0.98] transition-all disabled:opacity-30"
             >
-              {loading ? 'Resetting...' : 'Reset PIN'}
+              {loading ? t('auth.resetting') : t('auth.reset_pin')}
             </button>
           </form>
         ) : recoveryMode === 'done' ? (
@@ -296,8 +296,8 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onRegister, hasAdmins 
                 <ArrowLeft size={16} />
               </button>
               <div className="text-left">
-                <h2 className="text-sm font-black text-white tracking-tight uppercase">PIN Reset Complete</h2>
-                <p className="text-[9px] font-bold uppercase tracking-widest text-white/20">Success</p>
+                <h2 className="text-sm font-black text-white tracking-tight uppercase">{t('auth.pin_reset_complete')}</h2>
+                <p className="text-[9px] font-bold uppercase tracking-widest text-white/20">{t('common.success')}</p>
               </div>
             </div>
             <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
@@ -308,7 +308,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onRegister, hasAdmins 
             <button type="button" onClick={handleBackToLogin}
               className="w-full py-5 bg-white text-[#0B0705] rounded-2xl font-black uppercase tracking-[0.3em] text-sm hover:bg-white/90 active:scale-[0.98] transition-all"
             >
-              Back to Login
+              {t('auth.back_to_login')}
             </button>
           </div>
         ) : (

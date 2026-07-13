@@ -9,8 +9,8 @@ interface SubscriptionWelcomeProps {
   onComplete: () => void;
 }
 
-const basicFeatures = ['Inventory', 'Sales', 'Contacts', 'Stock Adjustments'];
-const premiumFeatures = ['User Management', 'Employee Management', 'Audit Logs', 'Supplier Management', 'Shipment Management', 'Advanced Dashboards & Reports'];
+const basicFeatureKeys = ['subscription.feature_inventory', 'subscription.feature_sales', 'subscription.feature_contacts', 'subscription.feature_stock_adjustments'];
+const premiumFeatureKeys = ['subscription.feature_user_mgmt', 'subscription.feature_employee_mgmt', 'subscription.feature_audit_logs', 'subscription.feature_supplier_mgmt', 'subscription.feature_shipment_mgmt', 'subscription.feature_advanced_reports'];
 
 const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete }) => {
   const { t } = useSettings();
@@ -64,12 +64,12 @@ const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete })
               <p className="text-[11px] text-white/30 mb-4">/ {t('subscription.month')}</p>
               <p className="text-[12px] text-white/50 mb-4">{t('subscription.basic_desc')}</p>
               <div className="space-y-2 mb-6">
-                {basicFeatures.map((f, i) => (
+                {basicFeatureKeys.map((f, i) => (
                   <div key={i} className="flex items-center gap-2.5">
                     <div className="h-4 w-4 rounded-full bg-white/10 flex items-center justify-center shrink-0">
                       <Check size={9} className="text-white/40" />
                     </div>
-                    <span className="text-[11px] text-white/40">{f}</span>
+                    <span className="text-[11px] text-white/40">{t(f)}</span>
                   </div>
                 ))}
               </div>
@@ -95,24 +95,24 @@ const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete })
               <p className="text-[11px] text-white/30 mb-4">/ {t('subscription.month')}</p>
               <p className="text-[12px] text-white/50 mb-4">{t('subscription.premium_desc')}</p>
               <div className="space-y-2 mb-4">
-                {basicFeatures.map((f, i) => (
+                {basicFeatureKeys.map((f, i) => (
                   <div key={i} className="flex items-center gap-2.5">
                     <div className="h-4 w-4 rounded-full bg-white/10 flex items-center justify-center shrink-0">
                       <Check size={9} className="text-white/40" />
                     </div>
-                    <span className="text-[11px] text-white/40">{f}</span>
+                    <span className="text-[11px] text-white/40">{t(f)}</span>
                   </div>
                 ))}
               </div>
               <div className="border-t border-white/10 pt-4 mb-6">
                 <p className="text-[9px] font-black uppercase tracking-widest text-amber-400/60 mb-2">{t('subscription.premium_features')}</p>
                 <div className="space-y-2">
-                  {premiumFeatures.map((f, i) => (
+                  {premiumFeatureKeys.map((f, i) => (
                     <div key={i} className="flex items-center gap-2.5">
                       <div className="h-4 w-4 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
                         <Check size={9} className="text-amber-400" />
                       </div>
-                      <span className="text-[11px] text-white/40">{f}</span>
+                      <span className="text-[11px] text-white/40">{t(f)}</span>
                     </div>
                   ))}
                 </div>

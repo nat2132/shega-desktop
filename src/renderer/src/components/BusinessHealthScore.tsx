@@ -2,14 +2,16 @@ import { useEffect, useState } from 'react';
 import { HeartPulse, TrendingDown, AlertTriangle, CheckCircle, Lightbulb, RefreshCw, Loader2 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Alert, AlertDescription } from './ui/alert';
+import { useSettings } from '../context/SettingsContext';
 
-const STATUS_CONFIG: Record<string, { color: string; bg: string; label: string }> = {
-  good: { color: 'text-green-500', bg: 'bg-green-500/10', label: 'Good' },
-  warning: { color: 'text-amber-500', bg: 'bg-amber-500/10', label: 'Warning' },
-  critical: { color: 'text-red-500', bg: 'bg-red-500/10', label: 'Critical' },
+const STATUS_CONFIG: Record<string, { color: string; bg: string; labelKey: string }> = {
+  good: { color: 'text-green-500', bg: 'bg-green-500/10', labelKey: 'health.status_good' },
+  warning: { color: 'text-amber-500', bg: 'bg-amber-500/10', labelKey: 'health.status_warning' },
+  critical: { color: 'text-red-500', bg: 'bg-red-500/10', labelKey: 'health.status_critical' },
 };
 
 export function BusinessHealthScore() {
+  const { t } = useSettings();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +62,7 @@ export function BusinessHealthScore() {
         <AlertTriangle className="h-4 w-4" />
         <AlertDescription>{error}</AlertDescription>
         <Button variant="outline" size="sm" onClick={loadData} className="mt-2">
-          <RefreshCw className="h-4 w-4 mr-1" /> Retry
+          <RefreshCw className="h-4 w-4 mr-1" /> {t('health.refresh')}
         </Button>
       </Alert>
     );
@@ -70,7 +72,7 @@ export function BusinessHealthScore() {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
         <HeartPulse className="h-12 w-12 mb-4 opacity-30" />
-        <p className="text-lg font-medium">No data available</p>
+        <p className="text-lg font-medium">{t('health.no_data')}</p>
       </div>
     );
   }
@@ -81,9 +83,9 @@ export function BusinessHealthScore() {
   return (
     <div className="space-y-8">
       <div className="space-y-1">
-        <h3 className="text-xl font-black tracking-tight">Business Health Score</h3>
+        <h3 className="text-xl font-black tracking-tight">{t('health.title')}</h3>
         <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">
-          Comprehensive assessment of your business performance
+          {t('health.subtitle')}
         </p>
       </div>
 
@@ -122,7 +124,7 @@ export function BusinessHealthScore() {
 
         {/* Factors Breakdown */}
         <div className="lg:col-span-2 space-y-4">
-          <h4 className="text-sm font-black uppercase tracking-widest text-muted-foreground">Score Factors</h4>
+          <h4 className="text-sm font-black uppercase tracking-widest text-muted-foreground">{t('health.score_factors')}</h4>
           <div className="grid grid-cols-1 gap-3">
             {data.factors.map((factor: any, idx: number) => {
               const statusCfg = STATUS_CONFIG[factor.status] || STATUS_CONFIG.warning;
@@ -166,7 +168,7 @@ export function BusinessHealthScore() {
         <div className="space-y-4">
           <div className="flex items-center gap-2">
             <Lightbulb className="h-4 w-4 text-amber-500" />
-            <h4 className="text-sm font-black uppercase tracking-widest text-muted-foreground">Recommendations</h4>
+            <h4 className="text-sm font-black uppercase tracking-widest text-muted-foreground">{t('health.recommendations')}</h4>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {data.recommendations.map((rec: string, idx: number) => (
@@ -179,7 +181,7 @@ export function BusinessHealthScore() {
       )}
 
       <Button variant="outline" size="sm" onClick={loadData} className="text-[10px] font-black uppercase tracking-widest">
-        <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Refresh Score
+        <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> {t('health.refresh')}
       </Button>
     </div>
   );

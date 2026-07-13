@@ -2,26 +2,21 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Search, Package, ShoppingCart, Users, Truck, Receipt, PiggyBank, Hash, Warehouse, ClipboardList, Bell, FileEdit, Loader2, ArrowRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Input } from './ui/input';
+import { useSettings } from '../context/SettingsContext';
 
-const TYPE_CONFIG: Record<string, { icon: React.ElementType; color: string }> = {
-  item: { icon: Package, color: 'text-blue-500' },
-  sale: { icon: ShoppingCart, color: 'text-green-500' },
-  customer: { icon: Users, color: 'text-purple-500' },
-  supplier: { icon: Truck, color: 'text-orange-500' },
-  expense: { icon: Receipt, color: 'text-red-500' },
-  budget: { icon: PiggyBank, color: 'text-emerald-500' },
-  category: { icon: Hash, color: 'text-cyan-500' },
-  warehouse: { icon: Warehouse, color: 'text-amber-500' },
-  purchase: { icon: ClipboardList, color: 'text-indigo-500' },
-  adjustment: { icon: ArrowRight, color: 'text-rose-500' },
-  notification: { icon: Bell, color: 'text-yellow-500' },
-  draft: { icon: FileEdit, color: 'text-slate-500' },
-};
-
-const TYPE_LABELS: Record<string, string> = {
-  item: 'Inventory', sale: 'Sales', customer: 'Customers', supplier: 'Suppliers',
-  expense: 'Expenses', budget: 'Budgets', category: 'Categories', warehouse: 'Warehouses',
-  purchase: 'Purchases', adjustment: 'Adjustments', notification: 'Notifications', draft: 'Drafts',
+const TYPE_CONFIG: Record<string, { icon: React.ElementType; color: string; labelKey: string }> = {
+  item: { icon: Package, color: 'text-blue-500', labelKey: 'global_search.type_item' },
+  sale: { icon: ShoppingCart, color: 'text-green-500', labelKey: 'global_search.type_sale' },
+  customer: { icon: Users, color: 'text-purple-500', labelKey: 'global_search.type_customer' },
+  supplier: { icon: Truck, color: 'text-orange-500', labelKey: 'global_search.type_supplier' },
+  expense: { icon: Receipt, color: 'text-red-500', labelKey: 'global_search.type_expense' },
+  budget: { icon: PiggyBank, color: 'text-emerald-500', labelKey: 'global_search.type_budget' },
+  category: { icon: Hash, color: 'text-cyan-500', labelKey: 'global_search.type_category' },
+  warehouse: { icon: Warehouse, color: 'text-amber-500', labelKey: 'global_search.type_warehouse' },
+  purchase: { icon: ClipboardList, color: 'text-indigo-500', labelKey: 'global_search.type_purchase' },
+  adjustment: { icon: ArrowRight, color: 'text-rose-500', labelKey: 'global_search.type_adjustment' },
+  notification: { icon: Bell, color: 'text-yellow-500', labelKey: 'global_search.type_notification' },
+  draft: { icon: FileEdit, color: 'text-slate-500', labelKey: 'global_search.type_draft' },
 };
 
 interface GlobalSearchProps {
@@ -31,6 +26,7 @@ interface GlobalSearchProps {
 
 export function GlobalSearch({ placeholder, onSelect }: GlobalSearchProps) {
   const navigate = useNavigate();
+  const { t } = useSettings();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -122,7 +118,7 @@ export function GlobalSearch({ placeholder, onSelect }: GlobalSearchProps) {
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => { if (results.length > 0) setIsOpen(true); }}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder || 'Search anything...'}
+          placeholder={placeholder || t('global_search.placeholder')}
           className="pl-9 pr-4 h-9 w-64 rounded-xl bg-muted/50 border-none text-sm focus-visible:ring-1 focus-visible:ring-primary/30"
         />
         {loading && (
@@ -142,7 +138,7 @@ export function GlobalSearch({ placeholder, onSelect }: GlobalSearchProps) {
                 <div className="flex items-center gap-2 px-4 py-2 bg-muted/30 sticky top-0">
                   <Icon className={`h-3.5 w-3.5 ${config.color}`} />
                   <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                    {TYPE_LABELS[type] || type}
+                    {t(config.labelKey)}
                   </span>
                   <span className="text-[9px] text-muted-foreground/50 ml-auto">{items.length}</span>
                 </div>
@@ -167,8 +163,8 @@ export function GlobalSearch({ placeholder, onSelect }: GlobalSearchProps) {
           {results.length === 0 && query.trim().length > 0 && !loading && (
             <div className="p-8 text-center text-muted-foreground">
               <Search className="h-8 w-8 mx-auto mb-3 opacity-30" />
-              <p className="text-sm font-medium">No results found</p>
-              <p className="text-[11px] mt-1">Try a different search term</p>
+              <p className="text-sm font-medium">{t('global_search.no_results')}</p>
+              <p className="text-[11px] mt-1">{t('global_search.try_different')}</p>
             </div>
           )}
         </div>

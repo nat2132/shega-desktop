@@ -56,7 +56,7 @@ const SubscriptionPayment: React.FC = () => {
 
   const handleSubmit = async () => {
     if (!form.transactionId.trim() || !form.businessName.trim() || !form.phoneNumber.trim()) {
-      toast.error('Please fill in all required fields');
+      toast.error(t('subscription.please_fill_required'));
       return;
     }
     if (!selectedPlan) return;
@@ -79,7 +79,7 @@ const SubscriptionPayment: React.FC = () => {
         await refresh();
       }
     } catch (err: any) {
-      toast.error(err.message || 'Submission failed');
+      toast.error(err.message || t('subscription.submission_failed'));
     } finally {
       setSubmitting(false);
     }
@@ -97,7 +97,7 @@ const SubscriptionPayment: React.FC = () => {
       <div className="space-y-6 p-6">
         <button onClick={() => navigate('/subscription')} className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors">
           <ArrowLeft className="h-3 w-3" />
-          {t('back') || 'Back'}
+          {t('common.go_back')}
         </button>
 
         <div>
@@ -114,7 +114,7 @@ const SubscriptionPayment: React.FC = () => {
               <Card key={plan.id} className="rounded-2xl border-border/50 cursor-pointer hover:border-primary/30 transition-all" onClick={() => handleSelectPlan(plan)}>
                 <CardContent className="p-5">
                   <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">{plan.name}</p>
-                  <p className="text-3xl font-black">{plan.price.toLocaleString()} <span className="text-sm text-muted-foreground font-bold">ETB</span></p>
+                  <p className="text-3xl font-black">{plan.price.toLocaleString()} <span className="text-sm text-muted-foreground font-bold">{t('subscription.etb')}</span></p>
                   <p className="text-[11px] text-muted-foreground mt-2">{plan.description}</p>
                   <Button size="sm" className="mt-4 rounded-xl text-[10px] font-black uppercase tracking-widest w-full">
                     {t('subscription.choose_plan')}
@@ -138,7 +138,7 @@ const SubscriptionPayment: React.FC = () => {
                     <p className="text-[9px] font-black uppercase tracking-widest text-amber-500">{plan.name}</p>
                     <PremiumBadge size="sm" />
                   </div>
-                  <p className="text-3xl font-black">{plan.price.toLocaleString()} <span className="text-sm text-muted-foreground font-bold">ETB</span></p>
+                  <p className="text-3xl font-black">{plan.price.toLocaleString()} <span className="text-sm text-muted-foreground font-bold">{t('subscription.etb')}</span></p>
                   <p className="text-[11px] text-muted-foreground mt-2">{plan.description}</p>
                   <Button size="sm" className="mt-4 rounded-xl text-[10px] font-black uppercase tracking-widest w-full bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700">
                     {t('subscription.choose_plan')}
@@ -158,7 +158,7 @@ const SubscriptionPayment: React.FC = () => {
       <div className="space-y-6 p-6 max-w-2xl mx-auto">
         <button onClick={() => setStep('select')} className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors">
           <ArrowLeft className="h-3 w-3" />
-          {t('back') || 'Back'}
+          {t('common.go_back')}
         </button>
 
         <div>
@@ -188,7 +188,7 @@ const SubscriptionPayment: React.FC = () => {
               </div>
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xl font-black">{selectedPlan?.price.toLocaleString()} ETB</p>
+                  <p className="text-xl font-black">{selectedPlan?.price.toLocaleString()} {t('subscription.etb')}</p>
                   <p className="text-[11px] text-muted-foreground">{selectedPlan?.name}</p>
                 </div>
               </div>
@@ -202,7 +202,7 @@ const SubscriptionPayment: React.FC = () => {
                 </div>
                 <button onClick={copyNumber} className="flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-primary hover:text-primary/80 transition-colors">
                   {copied ? <CheckCheck className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                  {copied ? 'Copied' : 'Copy'}
+                  {copied ? t('subscription.copied') : t('subscription.copy')}
                 </button>
               </div>
               <div className="flex items-center gap-2 p-3 rounded-xl bg-muted/20 border border-border/50">
@@ -235,7 +235,7 @@ const SubscriptionPayment: React.FC = () => {
             <div>
               <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1.5">{t('subscription.business_name')} *</p>
               <Input
-                placeholder="Your business name"
+                placeholder={t('subscription.business_name_placeholder')}
                 value={form.businessName}
                 onChange={e => setForm(prev => ({ ...prev, businessName: e.target.value }))}
                 className="rounded-xl text-[11px]"
@@ -244,7 +244,7 @@ const SubscriptionPayment: React.FC = () => {
             <div>
               <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1.5">{t('subscription.phone_number')} *</p>
               <Input
-                placeholder="09XX XXX XXX"
+                placeholder={t('subscription.phone_placeholder')}
                 value={form.phoneNumber}
                 onChange={e => setForm(prev => ({ ...prev, phoneNumber: e.target.value }))}
                 className="rounded-xl text-[11px]"

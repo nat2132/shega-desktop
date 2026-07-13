@@ -140,7 +140,7 @@ const SubscriptionDashboard: React.FC = () => {
                 {t('premium.locked_title')}
               </p>
               <p className="text-[10px] text-muted-foreground mt-0.5">
-                {t('premium.locked_desc')} Upgrade to access {lockedFeature} features.
+                {t('premium.locked_desc')} {t('subscription.upgrade_access', { feature: lockedFeature }).replace('{{feature}}', lockedFeature)}
               </p>
             </div>
             <Button
@@ -318,7 +318,7 @@ const SubscriptionDashboard: React.FC = () => {
                 </div>
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-widest">{t('subscription.support')}</p>
-                  <p className="text-[9px] text-muted-foreground">shega.tech/support</p>
+                  <p className="text-[9px] text-muted-foreground">{t('subscription.support_url')}</p>
                 </div>
                 <ArrowRight className="h-4 w-4 text-muted-foreground ml-auto" />
               </CardContent>

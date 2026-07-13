@@ -1,8 +1,11 @@
 export interface TutorialStep {
   id: string;
   title: string;
+  titleKey?: string;
   description: string;
+  descriptionKey?: string;
   instruction?: string;
+  instructionKey?: string;
   targetSelector?: string;
   tooltipPosition?: 'top' | 'bottom' | 'left' | 'right' | 'center';
   waitForInteraction?: boolean;
@@ -17,8 +20,11 @@ export interface ScreenTutorial {
   id: string;
   screenPath: string;
   screenName: string;
+  screenNameKey?: string;
   title: string;
+  titleKey?: string;
   description: string;
+  descriptionKey?: string;
   steps: TutorialStep[];
   estimatedDuration: number;
 }

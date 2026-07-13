@@ -43,7 +43,7 @@ const PremiumUpsellModal: React.FC<PremiumUpsellModalProps> = ({ open, onClose, 
             {t('premium.locked_title')}
           </DialogTitle>
           <DialogDescription className="text-[11px] text-muted-foreground">
-            {feature ? `"${feature}" is a Premium feature.` : t('premium.locked_desc')}
+            {feature ? t('premium.feature_locked', `"${feature}" is a Premium feature.`) : t('premium.locked_desc')}
           </DialogDescription>
         </DialogHeader>
 

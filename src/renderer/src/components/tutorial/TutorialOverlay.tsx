@@ -9,6 +9,7 @@ import { useTutorial } from '../../context/TutorialContext';
 import { TargetRect } from './types';
 import { Button } from '../ui/button';
 import { cn } from '../../utils/shadcn';
+import { useSettings } from '../../context/SettingsContext';
 
 const TOOLTIP_WIDTH = 380;
 const GAP = 16;
@@ -124,6 +125,7 @@ function calcTooltipPosition(
 }
 
 export default function TutorialOverlay() {
+  const { t } = useSettings();
   const {
     isActive,
     isPaused,
@@ -343,16 +345,16 @@ export default function TutorialOverlay() {
     originalInputsRef.current.clear();
 
     if (!currentStep?.targetSelector) return;
-    if (!currentStep.placeholderText && !currentStep.exampleValue) return;
+    if (!stepPlaceholder && !currentStep.exampleValue) return;
 
     const el = document.querySelector(currentStep.targetSelector) as HTMLInputElement | null;
     if (!el) return;
 
     const orig: { placeholder: string; value: string } = { placeholder: '', value: '' };
 
-    if (currentStep.placeholderText) {
+    if (stepPlaceholder) {
       orig.placeholder = el.placeholder;
-      el.placeholder = currentStep.placeholderText;
+      el.placeholder = stepPlaceholder;
     }
 
     if (currentStep.exampleValue) {
@@ -425,6 +427,16 @@ export default function TutorialOverlay() {
   const needsInteraction = !!currentStep.waitForInteraction;
   const canProceed = !needsInteraction || interactionDone;
   const pointer = targetRect ? getPointerPosition(targetRect) : null;
+
+  // Resolve translatable fields from the current step using auto-generated keys
+  const stepTitle = t(`tut.${currentStep.id}.title`, currentStep.title || '');
+  const stepDescription = t(`tut.${currentStep.id}.desc`, currentStep.description || '');
+  const stepInstruction = currentStep.instruction
+    ? t(`tut.${currentStep.id}.instruction`, currentStep.instruction)
+    : undefined;
+  const stepPlaceholder = currentStep.placeholderText
+    ? t(`tut.${currentStep.id}.placeholder`, currentStep.placeholderText)
+    : undefined;
 
   return createPortal(
     <div ref={overlayRef} className="fixed inset-0 z-[9999]" style={{ pointerEvents: 'none' }}>
@@ -598,7 +610,7 @@ export default function TutorialOverlay() {
           }}
         >
           <span className="tutorial-step-badge-number">{currentStepIndex + 1}</span>
-          <span className="tutorial-step-badge-label">{currentStep.title}</span>
+          <span className="tutorial-step-badge-label">{stepTitle}</span>
           {needsInteraction && !interactionDone && (
             <span className="tutorial-step-badge-dot" />
           )}
@@ -630,7 +642,7 @@ export default function TutorialOverlay() {
             <MousePointerClick className="size-5 text-primary" />
           </div>
           <div className="tutorial-pointer-label">
-            Click or tap this element
+            {t('tutorial.click_element')}
           </div>
         </motion.div>
       )}
@@ -653,7 +665,7 @@ export default function TutorialOverlay() {
         >
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/25 text-[9px] font-medium text-amber-600 dark:text-amber-400 whitespace-nowrap">
             <Lightbulb className="size-2.5" />
-            Example — {currentStep.exampleValue}
+            {t('tutorial.example')} — {currentStep.exampleValue}
           </span>
         </motion.div>
       )}
@@ -705,7 +717,7 @@ export default function TutorialOverlay() {
             animate={{ opacity: 1, y: 0 }}
           >
             <Target className="size-3.5 text-primary" />
-            Scroll to find the highlighted element...
+            {t('tutorial.scroll_find')}
           </motion.div>
         </div>
       )}
@@ -743,14 +755,14 @@ export default function TutorialOverlay() {
                 {interactionDone ? <CheckCircle2 className="size-3.5" /> : currentStepIndex + 1}
               </span>
               <span className="text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider">
-                Step {currentStepIndex + 1} of {totalSteps}
+                {t('tutorial.step_of').replace('{{current}}', String(currentStepIndex + 1)).replace('{{total}}', String(totalSteps))}
               </span>
             </div>
             <div className="flex items-center gap-1">
               <button
                 onClick={() => restartTutorial()}
                 className="size-7 flex items-center justify-center rounded-full text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-all"
-                title="Restart tutorial"
+                title={t('tutorial.restart')}
               >
                 <RotateCcw className="size-3.5" />
               </button>
@@ -758,7 +770,7 @@ export default function TutorialOverlay() {
                 <button
                   onClick={resumeTutorial}
                   className="size-7 flex items-center justify-center rounded-full text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-all"
-                  title="Resume"
+                  title={t('tutorial.resume')}
                 >
                   <Play className="size-3.5" />
                 </button>
@@ -766,7 +778,7 @@ export default function TutorialOverlay() {
                 <button
                   onClick={pauseTutorial}
                   className="size-7 flex items-center justify-center rounded-full text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-all"
-                  title="Pause"
+                  title={t('tutorial.pause')}
                 >
                   <Pause className="size-3.5" />
                 </button>
@@ -774,7 +786,7 @@ export default function TutorialOverlay() {
               <button
                 onClick={skipTutorial}
                 className="size-7 flex items-center justify-center rounded-full text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-all"
-                title="Skip tutorial"
+                title={t('tutorial.skip_tutorial')}
               >
                 <X className="size-3.5" />
               </button>
@@ -791,13 +803,13 @@ export default function TutorialOverlay() {
               transition={{ duration: 0.25, ease: [0.28, 0, 0.22, 1] }}
             >
               <h3 className="text-sm font-semibold text-foreground mb-1.5 leading-snug">
-                {currentStep.title}
+                {stepTitle}
               </h3>
               <p className="text-xs text-muted-foreground/90 leading-relaxed mb-3">
-                {currentStep.description}
+                {stepDescription}
               </p>
 
-              {currentStep.instruction && (
+              {stepInstruction && (
                 <div className={cn(
                   'rounded-xl px-3.5 py-2.5 mb-4 border transition-colors',
                   needsInteraction && !interactionDone
@@ -811,7 +823,7 @@ export default function TutorialOverlay() {
                       <HelpCircle className="size-3.5 text-primary shrink-0 mt-0.5" />
                     )}
                     <p className="text-[11px] text-foreground/80 leading-relaxed whitespace-pre-line">
-                      {currentStep.instruction}
+                      {stepInstruction}
                     </p>
                   </div>
                 </div>
@@ -834,7 +846,7 @@ export default function TutorialOverlay() {
               {interactionDone ? (
                 <>
                   <CheckCircle2 className="size-3.5 shrink-0" />
-                  <span>Done! Moving to next step...</span>
+                  <span>{t('tutorial.done_next')}</span>
                   <motion.div
                     className="ml-auto flex gap-0.5"
                     initial={{ opacity: 0 }}
@@ -853,7 +865,7 @@ export default function TutorialOverlay() {
               ) : (
                 <>
                   <MousePointerClick className="size-3.5 shrink-0 animate-bounce-subtle" />
-                  <span>Interact with the highlighted element to continue</span>
+                  <span>{t('tutorial.interact_continue')}</span>
                 </>
               )}
             </motion.div>
@@ -882,7 +894,7 @@ export default function TutorialOverlay() {
                   className="text-muted-foreground/70 hover:text-foreground"
                 >
                   <ChevronLeft className="size-3.5 mr-1" />
-                  Back
+                  {t('tutorial.back')}
                 </Button>
               )}
               <Button
@@ -892,7 +904,7 @@ export default function TutorialOverlay() {
                 className="text-muted-foreground/50 hover:text-muted-foreground"
               >
                 <SkipForward className="size-3 mr-1" />
-                Skip
+                {t('tutorial.skip')}
               </Button>
             </div>
 
@@ -914,11 +926,11 @@ export default function TutorialOverlay() {
               {isLastStep ? (
                 <span className="flex items-center gap-1.5">
                   <Sparkles className="size-3" />
-                  Complete
+                  {t('tutorial.complete')}
                 </span>
               ) : (
                 <>
-                  Next
+                  {t('tutorial.next')}
                   <ChevronRight className="size-3.5 ml-1" />
                 </>
               )}
@@ -930,15 +942,15 @@ export default function TutorialOverlay() {
             <kbd className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-muted/80 text-[9px] text-muted-foreground/60 font-mono">
               <ChevronLeft className="size-2.5" />
             </kbd>
-            <span className="text-[9px] text-muted-foreground/40">Back</span>
+            <span className="text-[9px] text-muted-foreground/40">{t('tutorial.back')}</span>
             <kbd className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-muted/80 text-[9px] text-muted-foreground/60 font-mono">
               <ChevronRight className="size-2.5" />
             </kbd>
-            <span className="text-[9px] text-muted-foreground/40">Next</span>
+            <span className="text-[9px] text-muted-foreground/40">{t('tutorial.next')}</span>
             <kbd className="inline-flex items-center px-1.5 py-0.5 rounded bg-muted/80 text-[9px] text-muted-foreground/60 font-mono">
               Esc
             </kbd>
-            <span className="text-[9px] text-muted-foreground/40">Skip</span>
+            <span className="text-[9px] text-muted-foreground/40">{t('tutorial.skip')}</span>
           </div>
         </motion.div>
       </AnimatePresence>

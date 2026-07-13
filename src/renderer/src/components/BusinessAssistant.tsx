@@ -12,6 +12,7 @@ import { Badge } from './ui/badge';
 import {
   Card, CardContent, CardHeader, CardTitle
 } from './ui/card';
+import { useSettings } from '../context/SettingsContext';
 
 const INSIGHT_CONFIG: Record<string, { icon: React.ElementType; gradient: string }> = {
   low_stock: { icon: Package, gradient: 'from-amber-500/20 to-amber-600/10' },
@@ -33,15 +34,16 @@ const INSIGHT_CONFIG: Record<string, { icon: React.ElementType; gradient: string
   seasonal_trend: { icon: Zap, gradient: 'from-cyan-500/20 to-cyan-600/10' },
 };
 
-const SEVERITY_BADGE: Record<string, { variant: 'destructive' | 'default' | 'secondary' | 'outline'; label: string }> = {
-  critical: { variant: 'destructive', label: 'Critical' },
-  warning: { variant: 'default', label: 'Warning' },
-  success: { variant: 'secondary', label: 'Insight' },
-  info: { variant: 'outline', label: 'Info' },
+const SEVERITY_BADGE: Record<string, { variant: 'destructive' | 'default' | 'secondary' | 'outline'; labelKey: string }> = {
+  critical: { variant: 'destructive', labelKey: 'business_assistant.severity_critical' },
+  warning: { variant: 'default', labelKey: 'business_assistant.severity_warning' },
+  success: { variant: 'secondary', labelKey: 'business_assistant.severity_insight' },
+  info: { variant: 'outline', labelKey: 'business_assistant.severity_info' },
 };
 
 export function BusinessAssistant() {
   const navigate = useNavigate();
+  const { t } = useSettings();
   const [insights, setInsights] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -73,21 +75,21 @@ export function BusinessAssistant() {
               <Sparkles className="h-4 w-4 text-primary" />
             </div>
             <div>
-              <CardTitle className="text-sm">Business Assistant</CardTitle>
+              <CardTitle className="text-sm">{t('business_assistant.title')}</CardTitle>
               <p className="text-[9px] text-muted-foreground font-black uppercase tracking-widest">
-                AI-powered insights & alerts
+                {t('business_assistant.subtitle')}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             {criticalCount > 0 && (
               <Badge variant="destructive" className="text-[9px] px-1.5 h-5">
-                {criticalCount} critical
+                {t('business_assistant.critical_count', '{count} critical').replace('{count}', String(criticalCount))}
               </Badge>
             )}
             {warningCount > 0 && (
               <Badge variant="default" className="text-[9px] px-1.5 h-5 bg-amber-500/20 text-amber-500 hover:bg-amber-500/30">
-                {warningCount} alerts
+                {t('business_assistant.alerts_count', '{count} alerts').replace('{count}', String(warningCount))}
               </Badge>
             )}
             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={loadInsights} disabled={loading}>
@@ -106,14 +108,14 @@ export function BusinessAssistant() {
             <AlertTriangle className="h-4 w-4" />
             <AlertDescription>{error}</AlertDescription>
             <Button variant="outline" size="sm" onClick={loadInsights} className="mt-2 text-[10px]">
-              <RefreshCw className="h-3 w-3 mr-1" /> Retry
+              <RefreshCw className="h-3 w-3 mr-1" /> {t('business_assistant.retry')}
             </Button>
           </Alert>
         ) : insights.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
             <Sparkles className="h-8 w-8 mb-3 opacity-30" />
-            <p className="text-sm font-medium">No insights yet</p>
-            <p className="text-[10px] mt-1">Add more data to get personalized insights</p>
+            <p className="text-sm font-medium">{t('business_assistant.no_insights')}</p>
+            <p className="text-[10px] mt-1">{t('business_assistant.no_insights_desc')}</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -140,7 +142,7 @@ export function BusinessAssistant() {
                       <div className="flex items-center gap-2 mb-1">
                         <p className="text-xs font-bold truncate">{insight.title}</p>
                         <Badge variant={badge.variant} className="text-[8px] h-4 px-1 shrink-0">
-                          {badge.label}
+                          {t(badge.labelKey)}
                         </Badge>
                       </div>
                       <p className="text-[10px] text-muted-foreground leading-relaxed">{insight.message}</p>

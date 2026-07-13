@@ -13,42 +13,42 @@ import {
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 
-const FEATURE_INFO: Record<string, { icon: any; what: string; why: string; benefits: string }> = {
+const FEATURE_INFO: Record<string, { icon: any; whatKey: string; whyKey: string; benefitsKey: string }> = {
   employees: {
     icon: Users,
-    what: 'Employee management with role-based access, attendance tracking, and performance monitoring.',
-    why: 'Growing businesses need structured workforce management to track labor costs, schedule shifts, and maintain accountability.',
-    benefits: 'Role-based access control, attendance & timesheets, performance analytics, payroll integration',
+    whatKey: 'locked.employees_what',
+    whyKey: 'locked.employees_why',
+    benefitsKey: 'locked.employees_benefits',
   },
   users: {
     icon: Users,
-    what: 'User account management with granular permission controls and secure PIN-based authentication.',
-    why: 'As your team grows, you need to control who accesses what and track individual user activity.',
-    benefits: 'Custom permissions per user, activity tracking, account locking & security, audit trails',
+    whatKey: 'locked.users_what',
+    whyKey: 'locked.users_why',
+    benefitsKey: 'locked.users_benefits',
   },
   audit: {
     icon: Shield,
-    what: 'Comprehensive audit logging of all system changes, data modifications, and user actions.',
-    why: 'Maintain data integrity and compliance by tracking exactly who changed what and when.',
-    benefits: 'Full change history, compliance support, fraud detection, data recovery trails',
+    whatKey: 'locked.audit_what',
+    whyKey: 'locked.audit_why',
+    benefitsKey: 'locked.audit_benefits',
   },
   suppliers: {
     icon: Building2,
-    what: 'Supplier relationship management with purchase orders, pricing history, and performance tracking.',
-    why: 'Manage your supply chain efficiently with structured supplier data and automated purchasing workflows.',
-    benefits: 'Supplier database, purchase order management, price comparison, payment tracking',
+    whatKey: 'locked.suppliers_what',
+    whyKey: 'locked.suppliers_why',
+    benefitsKey: 'locked.suppliers_benefits',
   },
   shipments: {
     icon: Truck,
-    what: 'Shipment tracking with driver assignment, delivery scheduling, and status updates.',
-    why: 'Coordinate deliveries and track shipments from dispatch to final delivery in real-time.',
-    benefits: 'Driver management, delivery scheduling, real-time status, shipment history',
+    whatKey: 'locked.shipments_what',
+    whyKey: 'locked.shipments_why',
+    benefitsKey: 'locked.shipments_benefits',
   },
   reports: {
     icon: FileSearch,
-    what: 'Advanced reporting and analytics dashboards with custom date ranges and export options.',
-    why: 'Deep business insights require powerful reporting tools to identify trends and opportunities.',
-    benefits: 'Custom reports, data export, profit analysis, trend detection',
+    whatKey: 'locked.reports_what',
+    whyKey: 'locked.reports_why',
+    benefitsKey: 'locked.reports_benefits',
   },
 };
 
@@ -65,9 +65,9 @@ const LockedFeatureModal: React.FC<LockedFeatureModalProps> = ({ open, onClose, 
   const { isTrial } = useSubscription();
   const info = FEATURE_INFO[feature] || {
     icon: Lock,
-    what: 'Advanced business management tools designed for growing enterprises.',
-    why: 'Premium features help you scale operations, improve efficiency, and gain deeper business insights.',
-    benefits: 'Advanced tools, deeper insights, operational efficiency, business growth',
+    whatKey: 'locked.default_what',
+    whyKey: 'locked.default_why',
+    benefitsKey: 'locked.default_benefits',
   };
   const Icon = info.icon;
 
@@ -107,7 +107,7 @@ const LockedFeatureModal: React.FC<LockedFeatureModalProps> = ({ open, onClose, 
                 <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
                   {t('premium.locked_what')}
                 </p>
-                <p className="text-xs font-medium mt-0.5">{info.what}</p>
+                <p className="text-xs font-medium mt-0.5">{t(info.whatKey)}</p>
               </div>
             </div>
           </div>
@@ -117,14 +117,14 @@ const LockedFeatureModal: React.FC<LockedFeatureModalProps> = ({ open, onClose, 
               <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1.5">
                 {t('premium.locked_why')}
               </p>
-              <p className="text-[11px] leading-relaxed">{info.why}</p>
+              <p className="text-[11px] leading-relaxed">{t(info.whyKey)}</p>
             </div>
             <div className="p-3 rounded-2xl bg-muted/20 border border-border/50">
               <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1.5">
                 {t('premium.locked_benefits')}
               </p>
               <div className="space-y-1">
-                {info.benefits.split(', ').map((b, i) => (
+                {t(info.benefitsKey).split(', ').map((b, i) => (
                   <div key={i} className="flex items-center gap-1.5">
                     <div className="h-1 w-1 rounded-full bg-amber-500 shrink-0" />
                     <span className="text-[10px]">{b}</span>

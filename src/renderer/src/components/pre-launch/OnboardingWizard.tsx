@@ -27,7 +27,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
       subtitle: t('onboarding.sub_1'),
       description: t('onboarding.desc_1'),
       features: [
-        'Product categories & brands', 'Pack and unit pricing', 'Stock level tracking', 'Expiry date monitoring'
+        t('onboarding.feat_categories'), t('onboarding.feat_pricing'), t('onboarding.feat_stock_tracking'), t('onboarding.feat_expiry')
       ],
     },
     {
@@ -36,7 +36,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
       subtitle: t('onboarding.sub_2'),
       description: t('onboarding.desc_2'),
       features: [
-        'Multi-item cart', 'Discount & VAT support', 'Receipt generation', 'Debt tracking'
+        t('onboarding.feat_cart'), t('onboarding.feat_discount_vat'), t('onboarding.feat_receipt'), t('onboarding.feat_debt_tracking')
       ],
     },
     {
@@ -45,7 +45,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
       subtitle: t('onboarding.sub_3'),
       description: t('onboarding.desc_3'),
       features: [
-        'Expense categories', 'Recurring expenses', 'Date-based tracking', 'Budget insights'
+        t('onboarding.feat_expense_categories'), t('onboarding.feat_recurring'), t('onboarding.feat_date_tracking'), t('onboarding.feat_budget_insights')
       ],
     },
     {
@@ -54,7 +54,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
       subtitle: t('onboarding.sub_4'),
       description: t('onboarding.desc_4'),
       features: [
-        'Price increase/decrease', 'Damaged item logging', 'Adjustment history', 'Stock reconciliation'
+        t('onboarding.feat_price_change'), t('onboarding.feat_damaged'), t('onboarding.feat_adjustment_history'), t('onboarding.feat_reconciliation')
       ],
     },
     {
@@ -63,7 +63,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
       subtitle: t('onboarding.sub_5'),
       description: t('onboarding.desc_5'),
       features: [
-        'Multiple admin accounts', 'Permission controls', 'PIN-based security', 'Activity tracking'
+        t('onboarding.feat_multiple_admins'), t('onboarding.feat_permissions'), t('onboarding.feat_pin_security'), t('onboarding.feat_activity')
       ],
     },
     {
@@ -72,7 +72,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
       subtitle: t('onboarding.sub_6'),
       description: t('onboarding.desc_6'),
       features: [
-        'Cash & bank transfer', 'Check payments', 'Debt management', 'Payment history'
+        t('onboarding.feat_cash_bank'), t('onboarding.feat_check_payments'), t('onboarding.feat_debt_management'), t('onboarding.feat_payment_history')
       ],
     },
   ];
