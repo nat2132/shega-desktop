@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { statSync, copyFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import path from 'path';
 import { app } from 'electron';
+import { appUpdater } from './updater';
 
 
 let activeBusinessId: number | null = null;
@@ -6037,6 +6038,67 @@ export function registerIPCHandlers() {
   // Debug handler
   ipcMain.handle('debug:ping', () => {
     return { ok: true, timestamp: new Date().toISOString(), handlersRegistered: true };
+  });
+
+  // ──────────────────────────────────────────────
+  // Update System IPC Handlers
+  // ──────────────────────────────────────────────
+
+  ipcMain.handle('update:check', async () => {
+    try {
+      return await appUpdater.checkForUpdates();
+    } catch (err: any) {
+      return { status: 'error', error: err.message };
+    }
+  });
+
+  ipcMain.handle('update:download', async () => {
+    try {
+      await appUpdater.downloadUpdate();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('update:install', () => {
+    appUpdater.installUpdate();
+    return { success: true };
+  });
+
+  ipcMain.handle('update:skip-version', (_, version: string) => {
+    appUpdater.skipVersion(version);
+    return { success: true };
+  });
+
+  ipcMain.handle('update:remind-later', (_, hours?: number) => {
+    appUpdater.remindLater(hours ?? 24);
+    return { success: true };
+  });
+
+  ipcMain.handle('update:get-status', () => {
+    return {
+      status: appUpdater.getStatus(),
+      info: appUpdater.getUpdateInfo(),
+      progress: appUpdater.getProgress(),
+      error: appUpdater.getError(),
+      appVersion: appUpdater.getAppVersion(),
+      autoCheckEnabled: appUpdater.isAutoCheckEnabled(),
+    };
+  });
+
+  ipcMain.handle('update:set-auto-check', (_, enabled: boolean) => {
+    appUpdater.setAutoCheckEnabled(enabled);
+    return { success: true };
+  });
+
+  ipcMain.handle('update:get-app-version', () => {
+    return appUpdater.getAppVersion();
+  });
+
+  ipcMain.handle('update:clear-reminder', () => {
+    appUpdater.clearReminder();
+    return { success: true };
   });
 
   console.log('[Handlers] All IPC handlers registered successfully');

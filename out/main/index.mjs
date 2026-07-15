@@ -1,15 +1,20 @@
-"use strict";
-const electron = require("electron");
-const path = require("path");
-const crypto = require("crypto");
-const Database = require("better-sqlite3");
-const fs = require("fs");
-const isDev = !electron.app.isPackaged;
-const dbDir = isDev ? path.join(process.cwd(), "db") : path.join(electron.app.getPath("userData"), "db");
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+var __defProp = Object.defineProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+import { app, ipcMain, BrowserWindow, shell } from "electron";
+import * as path from "path";
+import path__default, { join } from "path";
+import crypto from "crypto";
+import Database from "better-sqlite3";
+import * as fs from "fs";
+import { existsSync, mkdirSync, statSync, copyFileSync, readdirSync, unlinkSync } from "fs";
+import { autoUpdater } from "electron-updater";
+const isDev = !app.isPackaged;
+const dbDir = isDev ? path__default.join(process.cwd(), "db") : path__default.join(app.getPath("userData"), "db");
+if (!existsSync(dbDir)) {
+  mkdirSync(dbDir, { recursive: true });
 }
-const dbPath = path.join(dbDir, "shega_desktop.db");
+const dbPath = path__default.join(dbDir, "shega_desktop.db");
 const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
 db.pragma("busy_timeout = 5000");
@@ -1036,7 +1041,7 @@ function initDB() {
     db.prepare("UPDATE notifications SET businessId = ? WHERE businessId IS NULL").run(businessId);
   } else {
     const defaultBiz = db.prepare("SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1").get();
-    businessId = defaultBiz?.id || 1;
+    businessId = (defaultBiz == null ? void 0 : defaultBiz.id) || 1;
   }
   const warehouseCount = db.prepare("SELECT COUNT(*) as count FROM warehouses").get();
   if (warehouseCount.count === 0) {
@@ -1066,7 +1071,7 @@ function initDB() {
   const adminCount = db.prepare("SELECT COUNT(*) as count FROM admins").get();
   if (adminCount.count === 0) {
     const ownerRole = db.prepare("SELECT id FROM employee_roles WHERE name = 'Owner' LIMIT 1").get();
-    const roleId = ownerRole?.id || 1;
+    const roleId = (ownerRole == null ? void 0 : ownerRole.id) || 1;
     const empResult = db.prepare(
       "INSERT INTO employees (firstName, lastName, roleId, isActive, hireDate) VALUES (?, ?, ?, ?, ?)"
     ).run("Super", "Admin", roleId, 1, (/* @__PURE__ */ new Date()).toISOString().split("T")[0]);
@@ -1276,11 +1281,294 @@ function initDB() {
     }
   }
 }
+const UPDATE_CACHE_TTL = 1e3 * 60 * 60;
+const PREFS_FILE = "update-preferences.json";
+const LOG_FILE = "updater.log";
+class AppUpdater {
+  constructor() {
+    __publicField(this, "mainWindow", null);
+    __publicField(this, "status", "idle");
+    __publicField(this, "updateInfo", null);
+    __publicField(this, "progressInfo", null);
+    __publicField(this, "errorMessage", null);
+    __publicField(this, "prefs", {
+      skippedVersions: [],
+      remindLaterAt: null,
+      autoCheckEnabled: true
+    });
+    __publicField(this, "cache", null);
+    __publicField(this, "logPath");
+    __publicField(this, "prefsPath");
+    __publicField(this, "initialized", false);
+    __publicField(this, "isDev");
+    this.isDev = !app.isPackaged;
+    this.logPath = "";
+    this.prefsPath = "";
+    this.setupAutoUpdater();
+  }
+  ensurePaths() {
+    if (this.logPath) return;
+    const userDataPath = app.getPath("userData");
+    this.logPath = path.join(userDataPath, LOG_FILE);
+    this.prefsPath = path.join(userDataPath, PREFS_FILE);
+    this.loadPreferences();
+  }
+  setupAutoUpdater() {
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
+    autoUpdater.allowPrerelease = false;
+    if (this.isDev) {
+      this.log("Development mode - update checking disabled by default");
+    }
+  }
+  setUpstreamEvents() {
+    autoUpdater.on("checking-for-update", () => {
+      this.log("Checking for updates...");
+      this.status = "checking";
+      this.errorMessage = null;
+      this.emit("update:status", { status: "checking" });
+    });
+    autoUpdater.on("update-available", (info) => {
+      this.log(`Update available: v${info.version}`);
+      this.status = "available";
+      this.updateInfo = info;
+      this.cacheUpdateInfo(info);
+      const formatted = this.formatUpdateInfo(info);
+      this.emit("update:status", { status: "available", info: formatted });
+    });
+    autoUpdater.on("update-not-available", () => {
+      this.log("No updates available");
+      this.status = "not-available";
+      this.updateInfo = null;
+      this.emit("update:status", { status: "not-available" });
+    });
+    autoUpdater.on("download-progress", (progress) => {
+      this.progressInfo = progress;
+      this.emit("update:progress", {
+        bytesPerSecond: progress.bytesPerSecond,
+        percent: progress.percent,
+        total: progress.total,
+        transferred: progress.transferred,
+        eta: this.calculateETA(progress)
+      });
+    });
+    autoUpdater.on("update-downloaded", (info) => {
+      this.log(`Update downloaded successfully: v${info.version}`);
+      this.status = "downloaded";
+      this.emit("update:status", {
+        status: "downloaded",
+        info: this.formatUpdateInfo(info)
+      });
+    });
+    autoUpdater.on("error", (error) => {
+      this.log(`Error: ${error.message}`);
+      this.status = "error";
+      this.errorMessage = error.message;
+      this.emit("update:error", { message: error.message });
+    });
+  }
+  init(mainWindow) {
+    this.mainWindow = mainWindow;
+    this.ensurePaths();
+    if (!this.initialized) {
+      this.setUpstreamEvents();
+      this.initialized = true;
+      this.log("Updater initialized");
+    }
+  }
+  emit(channel, data) {
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send(channel, data);
+    }
+  }
+  log(message) {
+    const ts = (/* @__PURE__ */ new Date()).toISOString();
+    const line = `[${ts}] [UPDATER] ${message}`;
+    console.log(line);
+    if (!this.logPath) return;
+    try {
+      fs.appendFileSync(this.logPath, line + "\n");
+    } catch {
+    }
+  }
+  formatUpdateInfo(info) {
+    let releaseNotes = "";
+    if (typeof info.releaseNotes === "string") {
+      releaseNotes = info.releaseNotes;
+    } else if (Array.isArray(info.releaseNotes)) {
+      releaseNotes = info.releaseNotes.map((n) => typeof n === "string" ? n : n.note || "").join("\n");
+    }
+    return {
+      version: info.version,
+      releaseDate: info.releaseDate || "",
+      releaseNotes,
+      files: (info.files || []).map((f) => ({
+        url: f.url || "",
+        size: f.size || 0
+      }))
+    };
+  }
+  calculateETA(progress) {
+    if (progress.bytesPerSecond <= 0) return 0;
+    const remaining = progress.total - progress.transferred;
+    return Math.ceil(remaining / progress.bytesPerSecond);
+  }
+  cacheUpdateInfo(info) {
+    this.cache = {
+      ...this.formatUpdateInfo(info),
+      cachedAt: Date.now()
+    };
+  }
+  loadPreferences() {
+    if (!this.prefsPath) return;
+    try {
+      if (fs.existsSync(this.prefsPath)) {
+        const raw = fs.readFileSync(this.prefsPath, "utf-8");
+        this.prefs = { ...this.prefs, ...JSON.parse(raw) };
+      }
+    } catch (err) {
+      console.error("[UPDATER] Failed to load preferences:", err);
+    }
+  }
+  savePreferences() {
+    if (!this.prefsPath) return;
+    try {
+      const dir = path.dirname(this.prefsPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(this.prefsPath, JSON.stringify(this.prefs, null, 2));
+    } catch (err) {
+      console.error("[UPDATER] Failed to save preferences:", err);
+    }
+  }
+  isVersionSkipped(version) {
+    return this.prefs.skippedVersions.includes(version);
+  }
+  async checkForUpdates() {
+    if (this.isDev) {
+      this.log("Dev mode - returning up-to-date");
+      this.status = "not-available";
+      return { status: "not-available" };
+    }
+    if (this.cache && Date.now() - this.cache.cachedAt < UPDATE_CACHE_TTL) {
+      this.log(`Using cached update info (v${this.cache.version})`);
+      if (this.isVersionSkipped(this.cache.version)) {
+        this.status = "idle";
+        return { status: "idle" };
+      }
+      this.status = "available";
+      return { status: "available", info: this.cache };
+    }
+    try {
+      this.log("Checking GitHub for updates...");
+      const result = await autoUpdater.checkForUpdates();
+      if (!result || !result.updateInfo) {
+        return { status: "not-available" };
+      }
+      const info = result.updateInfo;
+      const isSkipped = this.isVersionSkipped(info.version);
+      if (isSkipped) {
+        this.log(`Version v${info.version} was skipped by user`);
+        return { status: "idle" };
+      }
+      return { status: "available", info: this.formatUpdateInfo(info) };
+    } catch (error) {
+      this.log(`Check failed: ${error.message}`);
+      this.status = "error";
+      this.errorMessage = error.message;
+      return { status: "error", error: error.message };
+    }
+  }
+  async downloadUpdate() {
+    if (this.isDev) {
+      this.log("Dev mode - download simulated");
+      return;
+    }
+    this.log("Starting update download...");
+    this.status = "downloading";
+    this.emit("update:status", { status: "downloading" });
+    await autoUpdater.downloadUpdate();
+  }
+  installUpdate() {
+    this.log("Installing update...");
+    autoUpdater.quitAndInstall(true, true);
+  }
+  skipVersion(version) {
+    this.log(`User skipped version v${version}`);
+    if (!this.prefs.skippedVersions.includes(version)) {
+      this.prefs.skippedVersions.push(version);
+      this.savePreferences();
+    }
+  }
+  remindLater(hours = 24) {
+    const remindAt = Date.now() + hours * 60 * 60 * 1e3;
+    this.prefs.remindLaterAt = remindAt;
+    this.savePreferences();
+    this.log(`Reminder set for ${new Date(remindAt).toISOString()}`);
+  }
+  clearReminder() {
+    this.prefs.remindLaterAt = null;
+    this.savePreferences();
+  }
+  shouldRemind() {
+    if (!this.prefs.remindLaterAt) return true;
+    return Date.now() >= this.prefs.remindLaterAt;
+  }
+  setAutoCheckEnabled(enabled) {
+    this.prefs.autoCheckEnabled = enabled;
+    this.savePreferences();
+    this.log(`Auto-check ${enabled ? "enabled" : "disabled"}`);
+  }
+  isAutoCheckEnabled() {
+    return this.prefs.autoCheckEnabled;
+  }
+  setAllowPrerelease(allow) {
+    autoUpdater.allowPrerelease = allow;
+    this.log(`Pre-releases ${allow ? "allowed" : "ignored"}`);
+  }
+  getStatus() {
+    return this.status;
+  }
+  getUpdateInfo() {
+    return this.updateInfo ? this.formatUpdateInfo(this.updateInfo) : null;
+  }
+  getProgress() {
+    if (!this.progressInfo) return null;
+    return {
+      bytesPerSecond: this.progressInfo.bytesPerSecond,
+      percent: this.progressInfo.percent,
+      total: this.progressInfo.total,
+      transferred: this.progressInfo.transferred,
+      eta: this.calculateETA(this.progressInfo)
+    };
+  }
+  getError() {
+    return this.errorMessage;
+  }
+  getAppVersion() {
+    return app.getVersion();
+  }
+  async checkOnLaunch() {
+    if (this.isDev) return;
+    if (!this.prefs.autoCheckEnabled) {
+      this.log("Auto-check disabled by user preference");
+      return;
+    }
+    if (!this.shouldRemind()) {
+      this.log("Reminder not due yet, skipping auto-check");
+      return;
+    }
+    this.log("Auto-check on launch...");
+    await this.checkForUpdates();
+  }
+}
+const appUpdater = new AppUpdater();
 function getActiveBusinessId$1() {
   const row = db.prepare("SELECT value FROM settings WHERE key = 'active_business_id'").get();
   if (row) return parseInt(row.value);
   const defaultBiz = db.prepare("SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1").get();
-  return defaultBiz?.id || 1;
+  return (defaultBiz == null ? void 0 : defaultBiz.id) || 1;
 }
 function getDefaultWarehouseId$1() {
   const wh = db.prepare("SELECT id FROM warehouses WHERE isActive = 1 ORDER BY id LIMIT 1").get();
@@ -1292,10 +1580,10 @@ function getDefaultWarehouseId$1() {
   return res.lastInsertRowid;
 }
 function resolveId(table, nameField, nameValue, extraWhere = "", extraParams = []) {
-  if (!nameValue?.trim()) return null;
+  if (!(nameValue == null ? void 0 : nameValue.trim())) return null;
   const bizId = getActiveBusinessId$1();
   const row = db.prepare(`SELECT id FROM ${table} WHERE ${nameField} = ? AND businessId = ? ${extraWhere} LIMIT 1`).get(nameValue.trim(), bizId, ...extraParams);
-  return row?.id ?? null;
+  return (row == null ? void 0 : row.id) ?? null;
 }
 function resolveItemId(name) {
   return resolveId("items", "name", name, "AND is_deleted = 0");
@@ -1304,7 +1592,7 @@ function getOrCreateCustomer(name, phone) {
   const bizId = getActiveBusinessId$1();
   const existing = db.prepare("SELECT id FROM customers WHERE customerName = ? AND businessId = ?").get(name.trim(), bizId);
   if (existing) return existing.id;
-  const res = db.prepare("INSERT INTO customers (businessId, customerName, phone, groupName) VALUES (?, ?, ?, ?)").run(bizId, name.trim(), phone?.trim() || "", "general");
+  const res = db.prepare("INSERT INTO customers (businessId, customerName, phone, groupName) VALUES (?, ?, ?, ?)").run(bizId, name.trim(), (phone == null ? void 0 : phone.trim()) || "", "general");
   return res.lastInsertRowid;
 }
 function resolveSupplierName(name) {
@@ -1320,10 +1608,11 @@ function importSales(rows) {
   const result = { success: true, imported: 0, errors: [], skipped: 0 };
   const bizId = getActiveBusinessId$1();
   const transaction = db.transaction(() => {
+    var _a, _b, _c;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const itemName = r.itemName?.trim();
+        const itemName = (_a = r.itemName) == null ? void 0 : _a.trim();
         if (!itemName) {
           result.errors.push({ row: i + 1, message: "itemName is required" });
           continue;
@@ -1349,8 +1638,8 @@ function importSales(rows) {
         const vat = parseFloat(r.vat) || 0;
         const paymentMethod = r.paymentMethod || "cash";
         const paymentStatus = r.paymentStatus || "Paid";
-        const customerName = r.customerName?.trim() || "";
-        const customerPhone = r.customerPhone?.trim() || "";
+        const customerName = ((_b = r.customerName) == null ? void 0 : _b.trim()) || "";
+        const customerPhone = ((_c = r.customerPhone) == null ? void 0 : _c.trim()) || "";
         const dueDate = r.dueDate || null;
         const paidAmount = parseFloat(r.paidAmount) || 0;
         const createdAt = r.createdAt || (/* @__PURE__ */ new Date()).toISOString();
@@ -1381,7 +1670,7 @@ function importSales(rows) {
         }
         const item = db.prepare("SELECT unitsPerPack, totalBaseQuantity FROM items WHERE id = ?").get(itemId);
         let baseDeduction = quantity;
-        if (unitType === "pack") baseDeduction = quantity * (item?.unitsPerPack || 1);
+        if (unitType === "pack") baseDeduction = quantity * ((item == null ? void 0 : item.unitsPerPack) || 1);
         db.prepare("UPDATE items SET totalBaseQuantity = MAX(0, totalBaseQuantity - ?) WHERE id = ?").run(baseDeduction, itemId);
         const defWhId = getDefaultWarehouseId$1();
         const whRow = db.prepare("SELECT id, quantity FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(defWhId, itemId);
@@ -1406,10 +1695,11 @@ function importItems(rows) {
   const result = { success: true, imported: 0, errors: [], skipped: 0 };
   const bizId = getActiveBusinessId$1();
   const transaction = db.transaction(() => {
+    var _a, _b, _c;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const name = r.name?.trim();
+        const name = (_a = r.name) == null ? void 0 : _a.trim();
         if (!name) {
           result.errors.push({ row: i + 1, message: "Item name is required" });
           continue;
@@ -1420,7 +1710,7 @@ function importItems(rows) {
           continue;
         }
         let categoryId = null;
-        const catName = r.categoryName?.trim();
+        const catName = (_b = r.categoryName) == null ? void 0 : _b.trim();
         if (catName) {
           const cat = db.prepare("SELECT id FROM categories WHERE name = ? AND businessId = ?").get(catName, bizId);
           if (cat) categoryId = cat.id;
@@ -1448,7 +1738,7 @@ function importItems(rows) {
           parseFloat(r.totalPackQuantity) || 0,
           r.expiryDate || null,
           r.notes || null,
-          r.supplierName?.trim() || null,
+          ((_c = r.supplierName) == null ? void 0 : _c.trim()) || null,
           bizId
         );
         result.imported++;
@@ -1469,10 +1759,11 @@ function importExpenses(rows) {
   const result = { success: true, imported: 0, errors: [], skipped: 0 };
   const bizId = getActiveBusinessId$1();
   const transaction = db.transaction(() => {
+    var _a;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const name = r.name?.trim();
+        const name = (_a = r.name) == null ? void 0 : _a.trim();
         if (!name) {
           result.errors.push({ row: i + 1, message: "Expense name is required" });
           continue;
@@ -1515,10 +1806,11 @@ function importCustomers(rows) {
   const result = { success: true, imported: 0, errors: [], skipped: 0 };
   const bizId = getActiveBusinessId$1();
   const transaction = db.transaction(() => {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const name = r.customerName?.trim();
+        const name = (_a = r.customerName) == null ? void 0 : _a.trim();
         if (!name) {
           result.errors.push({ row: i + 1, message: "Customer name is required" });
           continue;
@@ -1531,14 +1823,14 @@ function importCustomers(rows) {
         db.prepare("INSERT INTO customers (businessId, customerName, phone, email, address, city, company, groupName, creditLimit, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
           bizId,
           name,
-          r.phone?.trim() || "",
-          r.email?.trim() || null,
-          r.address?.trim() || null,
-          r.city?.trim() || null,
-          r.company?.trim() || null,
-          r.groupName?.trim() || "general",
+          ((_b = r.phone) == null ? void 0 : _b.trim()) || "",
+          ((_c = r.email) == null ? void 0 : _c.trim()) || null,
+          ((_d = r.address) == null ? void 0 : _d.trim()) || null,
+          ((_e = r.city) == null ? void 0 : _e.trim()) || null,
+          ((_f = r.company) == null ? void 0 : _f.trim()) || null,
+          ((_g = r.groupName) == null ? void 0 : _g.trim()) || "general",
           parseFloat(r.creditLimit) || 0,
-          r.notes?.trim() || null
+          ((_h = r.notes) == null ? void 0 : _h.trim()) || null
         );
         result.imported++;
       } catch (e) {
@@ -1558,10 +1850,11 @@ function importSuppliers(rows) {
   const result = { success: true, imported: 0, errors: [], skipped: 0 };
   const bizId = getActiveBusinessId$1();
   const transaction = db.transaction(() => {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const name = r.supplierName?.trim();
+        const name = (_a = r.supplierName) == null ? void 0 : _a.trim();
         if (!name) {
           result.errors.push({ row: i + 1, message: "Supplier name is required" });
           continue;
@@ -1574,15 +1867,15 @@ function importSuppliers(rows) {
         db.prepare("INSERT INTO suppliers (businessId, supplierName, companyName, contactPerson, phone, email, address, city, paymentTerms, creditLimit, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
           bizId,
           name,
-          r.companyName?.trim() || null,
-          r.contactPerson?.trim() || null,
-          r.phone?.trim() || "",
-          r.email?.trim() || null,
-          r.address?.trim() || null,
-          r.city?.trim() || null,
-          r.paymentTerms?.trim() || null,
+          ((_b = r.companyName) == null ? void 0 : _b.trim()) || null,
+          ((_c = r.contactPerson) == null ? void 0 : _c.trim()) || null,
+          ((_d = r.phone) == null ? void 0 : _d.trim()) || "",
+          ((_e = r.email) == null ? void 0 : _e.trim()) || null,
+          ((_f = r.address) == null ? void 0 : _f.trim()) || null,
+          ((_g = r.city) == null ? void 0 : _g.trim()) || null,
+          ((_h = r.paymentTerms) == null ? void 0 : _h.trim()) || null,
           parseFloat(r.creditLimit) || 0,
-          r.notes?.trim() || null
+          ((_i = r.notes) == null ? void 0 : _i.trim()) || null
         );
         result.imported++;
       } catch (e) {
@@ -1603,29 +1896,30 @@ function importShipments(rows) {
   const bizId = getActiveBusinessId$1();
   const validStatuses = ["pending", "in_transit", "delivered", "cancelled"];
   const transaction = db.transaction(() => {
+    var _a, _b, _c, _d, _e, _f, _g;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const dest = r.destination?.trim();
+        const dest = (_a = r.destination) == null ? void 0 : _a.trim();
         if (!dest) {
           result.errors.push({ row: i + 1, message: "Destination is required" });
           continue;
         }
-        const status = r.status?.trim() || "pending";
+        const status = ((_b = r.status) == null ? void 0 : _b.trim()) || "pending";
         if (!validStatuses.includes(status)) {
           result.errors.push({ row: i + 1, message: `Invalid status "${status}". Must be one of: ${validStatuses.join(", ")}` });
           continue;
         }
         db.prepare("INSERT INTO shipments (businessId, origin, destination, driverName, driverPhone, vehicleInfo, status, scheduledDate, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
           bizId,
-          r.origin?.trim() || null,
+          ((_c = r.origin) == null ? void 0 : _c.trim()) || null,
           dest,
-          r.driverName?.trim() || null,
-          r.driverPhone?.trim() || null,
-          r.vehicleInfo?.trim() || null,
+          ((_d = r.driverName) == null ? void 0 : _d.trim()) || null,
+          ((_e = r.driverPhone) == null ? void 0 : _e.trim()) || null,
+          ((_f = r.vehicleInfo) == null ? void 0 : _f.trim()) || null,
           status,
           r.scheduledDate || null,
-          r.notes?.trim() || null
+          ((_g = r.notes) == null ? void 0 : _g.trim()) || null
         );
         result.imported++;
       } catch (e) {
@@ -1646,10 +1940,11 @@ function importAdjustments(rows) {
   const bizId = getActiveBusinessId$1();
   const validTypes = ["damage", "loss", "add_stock", "price_increase", "price_decrease"];
   const transaction = db.transaction(() => {
+    var _a, _b, _c;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const itemName = r.itemName?.trim();
+        const itemName = (_a = r.itemName) == null ? void 0 : _a.trim();
         if (!itemName) {
           result.errors.push({ row: i + 1, message: "Item name is required" });
           continue;
@@ -1659,7 +1954,7 @@ function importAdjustments(rows) {
           result.errors.push({ row: i + 1, message: `Item "${itemName}" not found` });
           continue;
         }
-        const type = r.type?.trim();
+        const type = (_b = r.type) == null ? void 0 : _b.trim();
         if (!type || !validTypes.includes(type)) {
           result.errors.push({ row: i + 1, message: `Invalid type "${type}". Must be one of: ${validTypes.join(", ")}` });
           continue;
@@ -1679,13 +1974,13 @@ function importAdjustments(rows) {
           null,
           quantity,
           unitType,
-          r.reason?.trim() || null,
+          ((_c = r.reason) == null ? void 0 : _c.trim()) || null,
           date
         );
         if (type === "damage" || type === "loss") {
           const item = db.prepare("SELECT unitsPerPack FROM items WHERE id = ?").get(itemId);
           let baseDeduction = quantity;
-          if (unitType === "pack") baseDeduction = quantity * (item?.unitsPerPack || 1);
+          if (unitType === "pack") baseDeduction = quantity * ((item == null ? void 0 : item.unitsPerPack) || 1);
           db.prepare("UPDATE items SET totalBaseQuantity = MAX(0, totalBaseQuantity - ?) WHERE id = ?").run(baseDeduction, itemId);
           const defWhId = getDefaultWarehouseId$1();
           const whRow = db.prepare("SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(defWhId, itemId);
@@ -1695,7 +1990,7 @@ function importAdjustments(rows) {
         } else if (type === "add_stock") {
           const item = db.prepare("SELECT unitsPerPack FROM items WHERE id = ?").get(itemId);
           let baseAddition = quantity;
-          if (unitType === "pack") baseAddition = quantity * (item?.unitsPerPack || 1);
+          if (unitType === "pack") baseAddition = quantity * ((item == null ? void 0 : item.unitsPerPack) || 1);
           db.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity + ? WHERE id = ?").run(baseAddition, itemId);
           const defWhId = getDefaultWarehouseId$1();
           const whRow = db.prepare("SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(defWhId, itemId);
@@ -1721,15 +2016,16 @@ function importContacts(rows) {
   const result = { success: true, imported: 0, errors: [], skipped: 0 };
   const bizId = getActiveBusinessId$1();
   const transaction = db.transaction(() => {
+    var _a, _b, _c, _d;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const name = r.name?.trim();
+        const name = (_a = r.name) == null ? void 0 : _a.trim();
         if (!name) {
           result.errors.push({ row: i + 1, message: "Name is required" });
           continue;
         }
-        const phone = r.phone?.trim();
+        const phone = (_b = r.phone) == null ? void 0 : _b.trim();
         if (!phone) {
           result.errors.push({ row: i + 1, message: "Phone is required" });
           continue;
@@ -1738,8 +2034,8 @@ function importContacts(rows) {
           bizId,
           name,
           phone,
-          r.category?.trim() || "other",
-          r.notes?.trim() || null
+          ((_c = r.category) == null ? void 0 : _c.trim()) || "other",
+          ((_d = r.notes) == null ? void 0 : _d.trim()) || null
         );
         result.imported++;
       } catch (e) {
@@ -1759,10 +2055,11 @@ function importWarehouses(rows) {
   const result = { success: true, imported: 0, errors: [], skipped: 0 };
   const bizId = getActiveBusinessId$1();
   const transaction = db.transaction(() => {
+    var _a, _b, _c, _d, _e;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const name = r.name?.trim();
+        const name = (_a = r.name) == null ? void 0 : _a.trim();
         if (!name) {
           result.errors.push({ row: i + 1, message: "Warehouse name is required" });
           continue;
@@ -1775,10 +2072,10 @@ function importWarehouses(rows) {
         db.prepare("INSERT INTO warehouses (businessId, name, location, managerName, managerPhone, email) VALUES (?, ?, ?, ?, ?, ?)").run(
           bizId,
           name,
-          r.location?.trim() || null,
-          r.managerName?.trim() || null,
-          r.managerPhone?.trim() || null,
-          r.email?.trim() || null
+          ((_b = r.location) == null ? void 0 : _b.trim()) || null,
+          ((_c = r.managerName) == null ? void 0 : _c.trim()) || null,
+          ((_d = r.managerPhone) == null ? void 0 : _d.trim()) || null,
+          ((_e = r.email) == null ? void 0 : _e.trim()) || null
         );
         result.imported++;
       } catch (e) {
@@ -1798,26 +2095,27 @@ function importEmployees(rows) {
   const result = { success: true, imported: 0, errors: [], skipped: 0 };
   getActiveBusinessId$1();
   const transaction = db.transaction(() => {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const firstName = r.firstName?.trim();
-        const lastName = r.lastName?.trim();
+        const firstName = (_a = r.firstName) == null ? void 0 : _a.trim();
+        const lastName = (_b = r.lastName) == null ? void 0 : _b.trim();
         if (!firstName || !lastName) {
           result.errors.push({ row: i + 1, message: "First name and last name are required" });
           continue;
         }
-        const roleId = r.roleName?.trim() ? resolveRoleName(r.roleName.trim()) : null;
+        const roleId = ((_c = r.roleName) == null ? void 0 : _c.trim()) ? resolveRoleName(r.roleName.trim()) : null;
         db.prepare("INSERT INTO employees (employeeCode, firstName, lastName, phone, email, roleId, department, hireDate, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-          r.employeeCode?.trim() || null,
+          ((_d = r.employeeCode) == null ? void 0 : _d.trim()) || null,
           firstName,
           lastName,
-          r.phone?.trim() || null,
-          r.email?.trim() || null,
+          ((_e = r.phone) == null ? void 0 : _e.trim()) || null,
+          ((_f = r.email) == null ? void 0 : _f.trim()) || null,
           roleId,
-          r.department?.trim() || null,
+          ((_g = r.department) == null ? void 0 : _g.trim()) || null,
           r.hireDate || null,
-          r.notes?.trim() || null
+          ((_h = r.notes) == null ? void 0 : _h.trim()) || null
         );
         result.imported++;
       } catch (e) {
@@ -1837,15 +2135,16 @@ function importSupplierPurchases(rows) {
   const result = { success: true, imported: 0, errors: [], skipped: 0 };
   const bizId = getActiveBusinessId$1();
   const transaction = db.transaction(() => {
+    var _a, _b, _c, _d, _e, _f;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const purchaseNumber = r.purchaseNumber?.trim();
+        const purchaseNumber = (_a = r.purchaseNumber) == null ? void 0 : _a.trim();
         if (!purchaseNumber) {
           result.errors.push({ row: i + 1, message: "purchaseNumber is required" });
           continue;
         }
-        const supplierName = r.supplierName?.trim();
+        const supplierName = (_b = r.supplierName) == null ? void 0 : _b.trim();
         if (!supplierName) {
           result.errors.push({ row: i + 1, message: "supplierName is required" });
           continue;
@@ -1855,7 +2154,7 @@ function importSupplierPurchases(rows) {
           result.errors.push({ row: i + 1, message: `Supplier "${supplierName}" not found` });
           continue;
         }
-        const itemName = r.itemName?.trim();
+        const itemName = (_c = r.itemName) == null ? void 0 : _c.trim();
         if (!itemName) {
           result.errors.push({ row: i + 1, message: "itemName is required" });
           continue;
@@ -1893,8 +2192,8 @@ function importSupplierPurchases(rows) {
           purchaseDate,
           totalPrice,
           r.dueDate || null,
-          r.status?.trim() || "received",
-          r.notes?.trim() || null
+          ((_d = r.status) == null ? void 0 : _d.trim()) || "received",
+          ((_e = r.notes) == null ? void 0 : _e.trim()) || null
         );
         const purchaseId = poResult.lastInsertRowid;
         db.prepare("INSERT INTO supplier_purchase_items (purchaseId, itemId, itemName, quantity, unit, unitPrice, totalPrice, receivedQuantity) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
@@ -1902,7 +2201,7 @@ function importSupplierPurchases(rows) {
           itemId,
           itemName,
           quantity,
-          r.unit?.trim() || "pcs",
+          ((_f = r.unit) == null ? void 0 : _f.trim()) || "pcs",
           unitPrice,
           totalPrice,
           quantity
@@ -1933,10 +2232,11 @@ function importOrders(rows) {
   const result = { success: true, imported: 0, errors: [], skipped: 0 };
   const bizId = getActiveBusinessId$1();
   const transaction = db.transaction(() => {
+    var _a, _b, _c, _d, _e, _f;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
-        const orderNumber = r.orderNumber?.trim();
+        const orderNumber = (_a = r.orderNumber) == null ? void 0 : _a.trim();
         if (!orderNumber) {
           result.errors.push({ row: i + 1, message: "orderNumber is required" });
           continue;
@@ -1949,14 +2249,14 @@ function importOrders(rows) {
         const orderResult = db.prepare("INSERT INTO orders (businessId, orderNumber, customerName, customerPhone, status, totalAmount, notes) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
           bizId,
           orderNumber,
-          r.customerName?.trim() || null,
-          r.customerPhone?.trim() || null,
-          r.status?.trim() || "Order",
+          ((_b = r.customerName) == null ? void 0 : _b.trim()) || null,
+          ((_c = r.customerPhone) == null ? void 0 : _c.trim()) || null,
+          ((_d = r.status) == null ? void 0 : _d.trim()) || "Order",
           0,
-          r.notes?.trim() || null
+          ((_e = r.notes) == null ? void 0 : _e.trim()) || null
         );
         const orderId = orderResult.lastInsertRowid;
-        const itemName = r.itemName?.trim();
+        const itemName = (_f = r.itemName) == null ? void 0 : _f.trim();
         if (itemName) {
           const itemId = resolveItemId(itemName);
           const quantity = parseFloat(r.quantity) || 1;
@@ -2056,7 +2356,7 @@ function getActiveBusinessId() {
     return activeBusinessId;
   }
   const defaultBiz = db.prepare("SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1").get();
-  activeBusinessId = defaultBiz?.id || 1;
+  activeBusinessId = (defaultBiz == null ? void 0 : defaultBiz.id) || 1;
   return activeBusinessId;
 }
 const DEFAULT_LIST_LIMIT = 200;
@@ -2088,29 +2388,29 @@ function insertAuditLog(action, entityType, entityId, fieldName, oldValue, newVa
 }
 function registerIPCHandlers() {
   console.log("[Handlers] registerIPCHandlers called");
-  electron.ipcMain.handle("get-active-business", () => {
+  ipcMain.handle("get-active-business", () => {
     const id = getActiveBusinessId();
     return db.prepare("SELECT * FROM businesses WHERE id = ?").get(id);
   });
-  electron.ipcMain.handle("update-business", (_, id, biz) => {
+  ipcMain.handle("update-business", (_, id, biz) => {
     const stmt = db.prepare("UPDATE businesses SET businessName = ?, storeName = ?, logo = ?, address = ?, phone = ?, email = ?, currency = ? WHERE id = ?");
     return stmt.run(biz.businessName, biz.storeName, biz.logo, biz.address, biz.phone, biz.email, biz.currency, id);
   });
-  electron.ipcMain.handle("get-categories", () => {
+  ipcMain.handle("get-categories", () => {
     const bizId = getActiveBusinessId();
     return db.prepare("SELECT * FROM categories WHERE businessId = ? AND isCustom = 1 ORDER BY name").all(bizId);
   });
-  electron.ipcMain.handle("insert-category", (_, name, icon) => {
+  ipcMain.handle("insert-category", (_, name, icon) => {
     const bizId = getActiveBusinessId();
     const result = db.prepare("INSERT INTO categories (businessId, name, icon, isCustom) VALUES (?, ?, ?, 1)").run(bizId, name, icon || "tag");
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("delete-category", (_, id) => {
+  ipcMain.handle("delete-category", (_, id) => {
     const bizId = getActiveBusinessId();
     db.prepare("SELECT name FROM categories WHERE id = ?").get(id);
     db.prepare("DELETE FROM categories WHERE id = ? AND businessId = ? AND isCustom = 1").run(id, bizId);
   });
-  electron.ipcMain.handle("get-items", (_, options = {}) => {
+  ipcMain.handle("get-items", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     let query = "SELECT items.*, categories.name as categoryName, suppliers.supplierName FROM items LEFT JOIN categories ON items.categoryId = categories.id LEFT JOIN suppliers ON items.supplierId = suppliers.id";
     const params = [];
@@ -2152,7 +2452,7 @@ function registerIPCHandlers() {
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("get-item", (_, id) => {
+  ipcMain.handle("get-item", (_, id) => {
     const bizId = getActiveBusinessId();
     const item = db.prepare(`
       SELECT items.*, categories.name as categoryName, suppliers.supplierName
@@ -2178,7 +2478,7 @@ function registerIPCHandlers() {
     `).get(id);
     return { ...item, ...totalPurchased, ...lastPO };
   });
-  electron.ipcMain.handle("insert-item", (_, item) => {
+  ipcMain.handle("insert-item", (_, item) => {
     if (!item.name || !item.name.trim()) throw new Error("Product name is required");
     const unitsPerPack = validatePositive(item.unitsPerPack ?? 1, "Units per pack");
     const bizId = getActiveBusinessId();
@@ -2258,7 +2558,7 @@ function registerIPCHandlers() {
     }
     return newId;
   });
-  electron.ipcMain.handle("update-item", (_, id, item) => {
+  ipcMain.handle("update-item", (_, id, item) => {
     if (!item.name || !item.name.trim()) throw new Error("Product name is required");
     const unitsPerPack = validatePositive(item.unitsPerPack ?? 1, "Units per pack");
     const bizId = getActiveBusinessId();
@@ -2348,22 +2648,22 @@ function registerIPCHandlers() {
     }
     return result;
   });
-  electron.ipcMain.handle("delete-item", (_, id) => {
+  ipcMain.handle("delete-item", (_, id) => {
     db.prepare("SELECT name FROM items WHERE id = ?").get(id);
     db.prepare("UPDATE items SET is_deleted = 1, deleted_by = ?, deleted_at = CURRENT_TIMESTAMP WHERE id = ?").run(currentUserName || "unknown", id);
     return { success: true };
   });
-  electron.ipcMain.handle("get-low-stock-items", () => {
+  ipcMain.handle("get-low-stock-items", () => {
     const bizId = getActiveBusinessId();
     return db.prepare("SELECT items.*, suppliers.supplierName, suppliers.id as linkedSupplierId FROM items LEFT JOIN suppliers ON items.supplierId = suppliers.id WHERE items.totalBaseQuantity < 10 AND items.businessId = ? ORDER BY items.totalBaseQuantity ASC LIMIT ?").all(bizId, DEFAULT_LIST_LIMIT);
   });
-  electron.ipcMain.handle("get-expiring-items", () => {
+  ipcMain.handle("get-expiring-items", () => {
     const bizId = getActiveBusinessId();
     const thirtyDaysFromNow = /* @__PURE__ */ new Date();
     thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
     return db.prepare("SELECT items.*, suppliers.supplierName, suppliers.id as linkedSupplierId FROM items LEFT JOIN suppliers ON items.supplierId = suppliers.id WHERE items.expiryDate IS NOT NULL AND items.expiryDate <= ? AND items.businessId = ? ORDER BY items.expiryDate ASC LIMIT ?").all(thirtyDaysFromNow.toISOString().split("T")[0], bizId, DEFAULT_LIST_LIMIT);
   });
-  electron.ipcMain.handle("get-items-by-supplier", (_, supplierId) => {
+  ipcMain.handle("get-items-by-supplier", (_, supplierId) => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT items.*, categories.name as categoryName, suppliers.supplierName
@@ -2374,7 +2674,7 @@ function registerIPCHandlers() {
       ORDER BY items.name ASC
     `).all(supplierId, bizId);
   });
-  electron.ipcMain.handle("restock-item", (_, id, quantity) => {
+  ipcMain.handle("restock-item", (_, id, quantity) => {
     const bizId = getActiveBusinessId();
     const item = db.prepare("SELECT name, unitsPerPack FROM items WHERE id = ? AND businessId = ?").get(id, bizId);
     if (!item) throw new Error("Item not found");
@@ -2391,7 +2691,7 @@ function registerIPCHandlers() {
     db.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)").run(defWhId, id, "restock_in", qty, "restock", `Restocked ${qty} ${item.name}`);
     return { success: true };
   });
-  electron.ipcMain.handle("get-sales", (_, options = {}) => {
+  ipcMain.handle("get-sales", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     let query = "SELECT sales.*, items.name as itemName, items.basePurchasePrice, items.unitsPerPack, categories.name as categoryName FROM sales LEFT JOIN items ON sales.itemId = items.id LEFT JOIN categories ON items.categoryId = categories.id";
     const params = [];
@@ -2433,12 +2733,13 @@ function registerIPCHandlers() {
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("get-sale", (_, id) => {
+  ipcMain.handle("get-sale", (_, id) => {
     return db.prepare("SELECT sales.*, items.name as itemName FROM sales LEFT JOIN items ON sales.itemId = items.id WHERE sales.id = ?").get(id);
   });
-  electron.ipcMain.handle("insert-sales-batch", (_, sales) => {
+  ipcMain.handle("insert-sales-batch", (_, sales) => {
     const bizId = getActiveBusinessId();
     const transaction = db.transaction(() => {
+      var _a, _b;
       const results = [];
       for (const sale of sales) {
         const item = db.prepare("SELECT * FROM items WHERE id = ?").get(sale.itemId);
@@ -2468,11 +2769,11 @@ function registerIPCHandlers() {
           sale.dueDate || null,
           sale.paidAmount || 0
         );
-        const cName = sale.customerName?.trim();
+        const cName = (_a = sale.customerName) == null ? void 0 : _a.trim();
         if (cName && sale.paymentStatus === "Debt") {
           const exists = db.prepare("SELECT id FROM customers WHERE customerName = ? AND businessId = ?").get(cName, bizId);
           if (!exists) {
-            db.prepare(`INSERT INTO customers (businessId, customerName, phone, groupName) VALUES (?, ?, ?, ?)`).run(bizId, cName, sale.customerPhone?.trim() || "", "general");
+            db.prepare(`INSERT INTO customers (businessId, customerName, phone, groupName) VALUES (?, ?, ?, ?)`).run(bizId, cName, ((_b = sale.customerPhone) == null ? void 0 : _b.trim()) || "", "general");
           }
         }
         let baseDeduction = sale.quantity;
@@ -2509,13 +2810,14 @@ function registerIPCHandlers() {
     });
     return transaction();
   });
-  electron.ipcMain.handle("insert-sale", (_, sale) => {
+  ipcMain.handle("insert-sale", (_, sale) => {
     const bizId = getActiveBusinessId();
     const item = db.prepare("SELECT * FROM items WHERE id = ?").get(sale.itemId);
     if (!item) throw new Error(`Item ${sale.itemId} not found`);
     const qty = validatePositive(sale.quantity, "Sale quantity");
     sale.quantity = qty;
     const transaction = db.transaction(() => {
+      var _a, _b;
       const stmt = db.prepare(`
         INSERT INTO sales (
           businessId, itemId, quantity, unit, unitType, discount, vat, totalPrice, 
@@ -2539,11 +2841,11 @@ function registerIPCHandlers() {
         sale.dueDate || null,
         sale.paidAmount || 0
       );
-      const cName = sale.customerName?.trim();
+      const cName = (_a = sale.customerName) == null ? void 0 : _a.trim();
       if (cName && sale.paymentStatus === "Debt") {
         const exists = db.prepare("SELECT id FROM customers WHERE customerName = ? AND businessId = ?").get(cName, bizId);
         if (!exists) {
-          db.prepare(`INSERT INTO customers (businessId, customerName, phone, groupName) VALUES (?, ?, ?, ?)`).run(bizId, cName, sale.customerPhone?.trim() || "", "general");
+          db.prepare(`INSERT INTO customers (businessId, customerName, phone, groupName) VALUES (?, ?, ?, ?)`).run(bizId, cName, ((_b = sale.customerPhone) == null ? void 0 : _b.trim()) || "", "general");
         }
       }
       let baseDeduction = sale.quantity;
@@ -2579,7 +2881,7 @@ function registerIPCHandlers() {
     });
     return transaction();
   });
-  electron.ipcMain.handle("update-sale", (_, id, sale) => {
+  ipcMain.handle("update-sale", (_, id, sale) => {
     const bizId = getActiveBusinessId();
     const original = db.prepare("SELECT * FROM sales WHERE id = ? AND businessId = ?").get(id, bizId);
     if (!original) throw new Error("Sale not found");
@@ -2645,7 +2947,7 @@ function registerIPCHandlers() {
     transaction();
     return { success: true };
   });
-  electron.ipcMain.handle("delete-sale", (_, id) => {
+  ipcMain.handle("delete-sale", (_, id) => {
     const sale = db.prepare("SELECT * FROM sales WHERE id = ?").get(id);
     if (!sale) return { success: false };
     const item = db.prepare("SELECT * FROM items WHERE id = ?").get(sale.itemId);
@@ -2680,7 +2982,7 @@ function registerIPCHandlers() {
     transaction();
     return { success: true };
   });
-  electron.ipcMain.handle("create-return", (_, data) => {
+  ipcMain.handle("create-return", (_, data) => {
     const bizId = getActiveBusinessId();
     const sale = db.prepare("SELECT * FROM sales WHERE id = ?").get(data.saleId);
     if (!sale) return { success: false, error: "Sale not found" };
@@ -2723,7 +3025,7 @@ function registerIPCHandlers() {
     });
     return transaction();
   });
-  electron.ipcMain.handle("get-returns", (_e, options) => {
+  ipcMain.handle("get-returns", (_e, options) => {
     const bizId = getActiveBusinessId();
     let query = `
       SELECT r.*, s.customerName, s.itemName, i.name as itemName2
@@ -2733,35 +3035,35 @@ function registerIPCHandlers() {
       WHERE r.businessId = ?
     `;
     const params = [bizId];
-    if (options?.startDate) {
+    if (options == null ? void 0 : options.startDate) {
       query += ` AND r.createdAt >= ?`;
       params.push(options.startDate);
     }
-    if (options?.endDate) {
+    if (options == null ? void 0 : options.endDate) {
       query += ` AND r.createdAt <= ?`;
       params.push(options.endDate);
     }
     query += ` ORDER BY r.createdAt DESC LIMIT ${DEFAULT_LIST_LIMIT}`;
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("get-debt-sales", () => {
+  ipcMain.handle("get-debt-sales", () => {
     const bizId = getActiveBusinessId();
     return db.prepare("SELECT sales.*, items.name as itemName FROM sales LEFT JOIN items ON sales.itemId = items.id WHERE sales.paymentStatus = ? AND sales.businessId = ? ORDER BY sales.dueDate ASC LIMIT ?").all("Debt", bizId, DEFAULT_LIST_LIMIT);
   });
-  electron.ipcMain.handle("pay-debt", (_, saleId, amount, options) => {
+  ipcMain.handle("pay-debt", (_, saleId, amount, options) => {
     const sale = db.prepare("SELECT * FROM sales WHERE id = ?").get(saleId);
     if (!sale) throw new Error("Sale not found");
-    const recordType = options?.type || "payment";
+    const recordType = (options == null ? void 0 : options.type) || "payment";
     const newPaid = (sale.paidAmount || 0) + amount;
     const newStatus = newPaid >= sale.totalPrice ? "Paid" : "Debt";
     const result = db.prepare("UPDATE sales SET paidAmount = ?, paymentStatus = ? WHERE id = ?").run(newPaid, newStatus, saleId);
-    db.prepare("INSERT INTO debt_payments (saleId, customerName, customerPhone, amount, type, note) VALUES (?, ?, ?, ?, ?, ?)").run(saleId, sale.customerName || null, sale.customerPhone || null, amount, recordType, options?.note || null);
+    db.prepare("INSERT INTO debt_payments (saleId, customerName, customerPhone, amount, type, note) VALUES (?, ?, ?, ?, ?, ?)").run(saleId, sale.customerName || null, sale.customerPhone || null, amount, recordType, (options == null ? void 0 : options.note) || null);
     return result;
   });
-  electron.ipcMain.handle("get-debt-payments", (_, saleId) => {
+  ipcMain.handle("get-debt-payments", (_, saleId) => {
     return db.prepare("SELECT * FROM debt_payments WHERE saleId = ? ORDER BY createdAt DESC").all(saleId);
   });
-  electron.ipcMain.handle("get-expenses", (_, options = {}) => {
+  ipcMain.handle("get-expenses", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     let query = "SELECT * FROM expenses";
     const params = [];
@@ -2784,7 +3086,7 @@ function registerIPCHandlers() {
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("insert-expense", (_, expense) => {
+  ipcMain.handle("insert-expense", (_, expense) => {
     const bizId = getActiveBusinessId();
     const result = db.prepare("INSERT INTO expenses (businessId, name, amount, category, date, isRecurring, frequency, nextBillingDate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
       bizId,
@@ -2805,7 +3107,7 @@ function registerIPCHandlers() {
       const budget = db.prepare("SELECT id, amount FROM budgets WHERE businessId = ? AND category = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)").get(bizId, expense.category, month, year);
       if (budget && budget.amount > 0) {
         const spentRow = db.prepare("SELECT SUM(amount) as total FROM expenses WHERE businessId = ? AND category = ? AND date >= ? AND date <= ? AND is_deleted = 0").get(bizId, expense.category, startDate, endDate);
-        const totalSpent = spentRow?.total || 0;
+        const totalSpent = (spentRow == null ? void 0 : spentRow.total) || 0;
         const usagePercent = totalSpent / budget.amount * 100;
         if (totalSpent >= budget.amount) {
           const existingAlert = db.prepare("SELECT id FROM budget_alerts WHERE businessId = ? AND category = ? AND alertType = ? AND month = ? AND year = ?").get(bizId, expense.category, "budget_exceeded", month, year);
@@ -2840,7 +3142,7 @@ function registerIPCHandlers() {
     }
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("update-expense", (_, id, expense) => {
+  ipcMain.handle("update-expense", (_, id, expense) => {
     const result = db.prepare("UPDATE expenses SET name = ?, amount = ?, category = ?, date = ?, isRecurring = ?, frequency = ?, nextBillingDate = ? WHERE id = ?").run(
       expense.name,
       expense.amount,
@@ -2853,11 +3155,11 @@ function registerIPCHandlers() {
     );
     return result;
   });
-  electron.ipcMain.handle("delete-expense", (_, id) => {
+  ipcMain.handle("delete-expense", (_, id) => {
     db.prepare("SELECT name FROM expenses WHERE id = ?").get(id);
     db.prepare("DELETE FROM expenses WHERE id = ?").run(id);
   });
-  electron.ipcMain.handle("get-adjustments", (_, options = {}) => {
+  ipcMain.handle("get-adjustments", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     let query = "SELECT adjustments.*, items.name as itemName FROM adjustments LEFT JOIN items ON adjustments.itemId = items.id";
     const params = [];
@@ -2876,7 +3178,7 @@ function registerIPCHandlers() {
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("insert-adjustment", (_, adjustment) => {
+  ipcMain.handle("insert-adjustment", (_, adjustment) => {
     const validTypes = ["damage", "loss", "add_stock", "price_increase", "price_decrease"];
     if (!validTypes.includes(adjustment.type)) throw new Error(`Invalid adjustment type: ${adjustment.type}`);
     if (["damage", "loss", "add_stock"].includes(adjustment.type)) {
@@ -2936,7 +3238,8 @@ function registerIPCHandlers() {
     });
     return transaction();
   });
-  electron.ipcMain.handle("check-notifications", () => {
+  ipcMain.handle("check-notifications", () => {
+    var _a;
     const bizId = getActiveBusinessId();
     const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
     const notifications = [];
@@ -2956,7 +3259,7 @@ function registerIPCHandlers() {
         const totalOverdue = overdueDebts.reduce((s, d) => s + (d.totalPrice - d.paidAmount), 0);
         notifications.push({
           title: `${overdueDebts.length} Overdue Debt${overdueDebts.length > 1 ? "s" : ""}`,
-          message: `ETB ${totalOverdue.toLocaleString()} in overdue payments. Oldest from ${overdueDebts[overdueDebts.length - 1]?.customerName || "Unknown"}.`,
+          message: `ETB ${totalOverdue.toLocaleString()} in overdue payments. Oldest from ${((_a = overdueDebts[overdueDebts.length - 1]) == null ? void 0 : _a.customerName) || "Unknown"}.`,
           type: "warning",
           group: "debt_alerts"
         });
@@ -3043,7 +3346,7 @@ function registerIPCHandlers() {
           if (n.type === "error" || n.type === "warning") {
             const { Notification: ElectronNotification, nativeImage } = require("electron");
             if (ElectronNotification.isSupported()) {
-              const icon = nativeImage.createFromPath(path.join(electron.app.getAppPath(), "src/assets/images/logo.ico"));
+              const icon = nativeImage.createFromPath(path__default.join(app.getAppPath(), "src/assets/images/logo.ico"));
               new ElectronNotification({ title: n.title, body: n.message, icon, urgency: n.type === "error" ? "critical" : "normal" }).show();
             }
           }
@@ -3057,7 +3360,7 @@ function registerIPCHandlers() {
       bad: notifications.filter((n) => n.type === "warning" || n.type === "error").length
     };
   });
-  electron.ipcMain.handle("get-notifications", (_, options = {}) => {
+  ipcMain.handle("get-notifications", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     let query = "SELECT * FROM notifications WHERE businessId = ?";
     const params = [bizId];
@@ -3086,7 +3389,7 @@ function registerIPCHandlers() {
     params.push(listLimit, offset);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("get-unread-notification-count", () => {
+  ipcMain.handle("get-unread-notification-count", () => {
     const bizId = getActiveBusinessId();
     const row = db.prepare(`
       SELECT COUNT(*) AS c FROM notifications
@@ -3094,9 +3397,9 @@ function registerIPCHandlers() {
         AND (snoozedUntil IS NULL OR snoozedUntil <= CURRENT_TIMESTAMP)
         AND (expiresAt IS NULL OR expiresAt > CURRENT_TIMESTAMP)
     `).get(bizId);
-    return row?.c || 0;
+    return (row == null ? void 0 : row.c) || 0;
   });
-  electron.ipcMain.handle("get-notification-categories", () => {
+  ipcMain.handle("get-notification-categories", () => {
     const bizId = getActiveBusinessId();
     const rows = db.prepare(`
       SELECT category, COUNT(*) AS total, SUM(CASE WHEN isRead = 0 THEN 1 ELSE 0 END) AS unread
@@ -3107,7 +3410,7 @@ function registerIPCHandlers() {
     `).all(bizId);
     return rows;
   });
-  electron.ipcMain.handle("insert-notification", (_, notification) => {
+  ipcMain.handle("insert-notification", (_, notification) => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       INSERT INTO notifications (
@@ -3129,20 +3432,20 @@ function registerIPCHandlers() {
       notification.requiresAction ? 1 : 0
     ).lastInsertRowid;
   });
-  electron.ipcMain.handle("mark-notification-read", (_, id) => {
+  ipcMain.handle("mark-notification-read", (_, id) => {
     return db.prepare("UPDATE notifications SET isRead = 1 WHERE id = ?").run(id);
   });
-  electron.ipcMain.handle("mark-all-notifications-read", () => {
+  ipcMain.handle("mark-all-notifications-read", () => {
     const bizId = getActiveBusinessId();
     return db.prepare("UPDATE notifications SET isRead = 1 WHERE businessId = ?").run(bizId);
   });
-  electron.ipcMain.handle("dismiss-notification", (_, id) => {
+  ipcMain.handle("dismiss-notification", (_, id) => {
     return db.prepare("UPDATE notifications SET isDismissed = 1, isRead = 1 WHERE id = ?").run(id);
   });
-  electron.ipcMain.handle("snooze-notification", (_, id, untilIso) => {
+  ipcMain.handle("snooze-notification", (_, id, untilIso) => {
     return db.prepare("UPDATE notifications SET snoozedUntil = ? WHERE id = ?").run(untilIso, id);
   });
-  electron.ipcMain.handle("clear-notifications", (_, options = {}) => {
+  ipcMain.handle("clear-notifications", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     if (options.olderThanDays) {
       return db.prepare(`DELETE FROM notifications WHERE businessId = ? AND createdAt < datetime('now', '-' || ? || ' days')`).run(bizId, options.olderThanDays);
@@ -3152,10 +3455,10 @@ function registerIPCHandlers() {
     }
     return db.prepare("DELETE FROM notifications WHERE businessId = ?").run(bizId);
   });
-  electron.ipcMain.handle("get-notification-preferences", () => {
+  ipcMain.handle("get-notification-preferences", () => {
     return db.prepare("SELECT * FROM notification_preferences ORDER BY key").all();
   });
-  electron.ipcMain.handle("update-notification-preference", (_, key, prefs) => {
+  ipcMain.handle("update-notification-preference", (_, key, prefs) => {
     const existing = db.prepare("SELECT key FROM notification_preferences WHERE key = ?").get(key);
     if (!existing) {
       db.prepare(`
@@ -3171,7 +3474,7 @@ function registerIPCHandlers() {
     }
     return { success: true };
   });
-  electron.ipcMain.handle("get-active-banners", () => {
+  ipcMain.handle("get-active-banners", () => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT * FROM notification_banners
@@ -3181,10 +3484,10 @@ function registerIPCHandlers() {
       ORDER BY createdAt DESC
     `).all(bizId);
   });
-  electron.ipcMain.handle("dismiss-banner", (_, id) => {
+  ipcMain.handle("dismiss-banner", (_, id) => {
     return db.prepare("UPDATE notification_banners SET dismissedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
   });
-  electron.ipcMain.handle("create-banner", (_, data) => {
+  ipcMain.handle("create-banner", (_, data) => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       INSERT INTO notification_banners (businessId, title, message, severity, dismissible, startsAt, endsAt, actionUrl, actionLabel)
@@ -3201,7 +3504,7 @@ function registerIPCHandlers() {
       data.actionLabel || null
     ).lastInsertRowid;
   });
-  electron.ipcMain.handle("get-reminders", (_, options = {}) => {
+  ipcMain.handle("get-reminders", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     let q = "SELECT * FROM notification_reminders WHERE businessId = ?";
     const params = [bizId];
@@ -3213,7 +3516,7 @@ function registerIPCHandlers() {
     params.push(options.limit ?? DEFAULT_LIST_LIMIT);
     return db.prepare(q).all(...params);
   });
-  electron.ipcMain.handle("create-reminder", (_, data) => {
+  ipcMain.handle("create-reminder", (_, data) => {
     const bizId = getActiveBusinessId();
     if (!data.title || !data.triggerDate) throw new Error("title, triggerDate are required");
     const category = data.category || "general";
@@ -3231,7 +3534,7 @@ function registerIPCHandlers() {
       data.relatedEntityId || null
     ).lastInsertRowid;
   });
-  electron.ipcMain.handle("update-reminder", (_, id, data) => {
+  ipcMain.handle("update-reminder", (_, id, data) => {
     const fields = [];
     const params = [];
     if (data.title !== void 0) {
@@ -3258,16 +3561,16 @@ function registerIPCHandlers() {
     params.push(id);
     return db.prepare(`UPDATE notification_reminders SET ${fields.join(", ")} WHERE id = ?`).run(...params);
   });
-  electron.ipcMain.handle("snooze-reminder", (_, id, untilIso) => {
+  ipcMain.handle("snooze-reminder", (_, id, untilIso) => {
     return db.prepare("UPDATE notification_reminders SET snoozedUntil = ?, status = 'snoozed' WHERE id = ?").run(untilIso, id);
   });
-  electron.ipcMain.handle("complete-reminder", (_, id) => {
+  ipcMain.handle("complete-reminder", (_, id) => {
     return db.prepare(`UPDATE notification_reminders SET status = 'completed', completedAt = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
   });
-  electron.ipcMain.handle("delete-reminder", (_, id) => {
+  ipcMain.handle("delete-reminder", (_, id) => {
     return db.prepare("DELETE FROM notification_reminders WHERE id = ?").run(id);
   });
-  electron.ipcMain.handle("run-reminder-engine", () => {
+  ipcMain.handle("run-reminder-engine", () => {
     const bizId = getActiveBusinessId();
     const now = /* @__PURE__ */ new Date();
     const nowIso = now.toISOString();
@@ -3311,7 +3614,7 @@ function registerIPCHandlers() {
         try {
           const { Notification: ElectronNotification, nativeImage } = require("electron");
           if (ElectronNotification.isSupported()) {
-            const icon = nativeImage.createFromPath(path.join(electron.app.getAppPath(), "src/assets/images/logo.ico"));
+            const icon = nativeImage.createFromPath(path__default.join(app.getAppPath(), "src/assets/images/logo.ico"));
             new ElectronNotification({ title: r.title, body: r.message || "", icon }).show();
           }
         } catch (_) {
@@ -3334,11 +3637,11 @@ function registerIPCHandlers() {
     }
     return { fired };
   });
-  electron.ipcMain.handle("show-desktop-notification", (_, data) => {
+  ipcMain.handle("show-desktop-notification", (_, data) => {
     try {
       const { Notification: ElectronNotification, nativeImage } = require("electron");
       if (!ElectronNotification.isSupported()) return { shown: false, reason: "unsupported" };
-      const icon = nativeImage.createFromPath(path.join(electron.app.getAppPath(), "src/assets/images/logo.ico"));
+      const icon = nativeImage.createFromPath(path__default.join(app.getAppPath(), "src/assets/images/logo.ico"));
       const n = new ElectronNotification({
         title: data.title,
         body: data.body,
@@ -3352,7 +3655,7 @@ function registerIPCHandlers() {
       return { shown: false, reason: e.message };
     }
   });
-  electron.ipcMain.handle("get-dashboard-alerts", () => {
+  ipcMain.handle("get-dashboard-alerts", () => {
     const bizId = getActiveBusinessId();
     const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
     const alerts = [];
@@ -3461,14 +3764,14 @@ function registerIPCHandlers() {
     }
     return alerts;
   });
-  electron.ipcMain.handle("get-setting", (_, key) => {
+  ipcMain.handle("get-setting", (_, key) => {
     const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
     return row ? JSON.parse(row.value) : null;
   });
-  electron.ipcMain.handle("set-setting", (_, key, value) => {
+  ipcMain.handle("set-setting", (_, key, value) => {
     return db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(value));
   });
-  electron.ipcMain.handle("get-dashboard-stats", (_, dateRange) => {
+  ipcMain.handle("get-dashboard-stats", (_, dateRange) => {
     const bizId = getActiveBusinessId();
     const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
     const yesterday = new Date(Date.now() - 864e5).toISOString().split("T")[0];
@@ -3507,18 +3810,18 @@ function registerIPCHandlers() {
       lowStock: lowStock.count
     };
   });
-  electron.ipcMain.handle("get-recent-activity", (_, limit = 10, dateRange) => {
+  ipcMain.handle("get-recent-activity", (_, limit = 10, dateRange) => {
     const bizId = getActiveBusinessId();
     let dateFilter = "WHERE s.businessId = ?";
     let expDateFilter = "WHERE businessId = ?";
     let params = [bizId];
     let expParams = [bizId];
-    if (dateRange?.start && dateRange?.end) {
+    if ((dateRange == null ? void 0 : dateRange.start) && (dateRange == null ? void 0 : dateRange.end)) {
       dateFilter = "WHERE DATE(s.createdAt) >= ? AND DATE(s.createdAt) <= ? AND s.businessId = ?";
       expDateFilter = "WHERE date >= ? AND date <= ? AND businessId = ?";
       params = [dateRange.start, dateRange.end, bizId];
       expParams = [dateRange.start, dateRange.end, bizId];
-    } else if (dateRange?.start) {
+    } else if (dateRange == null ? void 0 : dateRange.start) {
       dateFilter = "WHERE DATE(s.createdAt) = ? AND s.businessId = ?";
       expDateFilter = "WHERE date = ? AND businessId = ?";
       params = [dateRange.start, bizId];
@@ -3545,12 +3848,12 @@ function registerIPCHandlers() {
     all.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     return all.slice(0, limit);
   });
-  electron.ipcMain.handle("get-analytics", (_, period, dateRange) => {
+  ipcMain.handle("get-analytics", (_, period, dateRange) => {
     const bizId = getActiveBusinessId();
     const now = /* @__PURE__ */ new Date();
     let startDate;
     let endDate = null;
-    if (dateRange?.start && dateRange?.end) {
+    if ((dateRange == null ? void 0 : dateRange.start) && (dateRange == null ? void 0 : dateRange.end)) {
       startDate = dateRange.start;
       endDate = dateRange.end;
     } else if (period === "today") {
@@ -3612,7 +3915,7 @@ function registerIPCHandlers() {
       }
     };
   });
-  electron.ipcMain.handle("get-customers", () => {
+  ipcMain.handle("get-customers", () => {
     const bizId = getActiveBusinessId();
     const customers = db.prepare(`
       SELECT c.*,
@@ -3661,7 +3964,7 @@ function registerIPCHandlers() {
       }
     }));
   });
-  electron.ipcMain.handle("get-customer", (_, customerId) => {
+  ipcMain.handle("get-customer", (_, customerId) => {
     const bizId = getActiveBusinessId();
     const customerRaw = db.prepare(`
       SELECT c.*,
@@ -3706,7 +4009,7 @@ function registerIPCHandlers() {
       }
     };
   });
-  electron.ipcMain.handle("get-customer-sales", (_, customerName) => {
+  ipcMain.handle("get-customer-sales", (_, customerName) => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT sales.*, items.name as itemName 
@@ -3716,7 +4019,7 @@ function registerIPCHandlers() {
       LIMIT ?
     `).all(customerName, bizId, DEFAULT_LIST_LIMIT);
   });
-  electron.ipcMain.handle("insert-customer", (_, customer) => {
+  ipcMain.handle("insert-customer", (_, customer) => {
     const bizId = getActiveBusinessId();
     const existing = db.prepare("SELECT id FROM customers WHERE customerName = ? AND businessId = ?").get(customer.customerName, bizId);
     if (existing) return { success: false, error: "Customer name already exists" };
@@ -3726,7 +4029,7 @@ function registerIPCHandlers() {
     `).run(bizId, customer.customerName, customer.phone || "", customer.secondaryPhone || "", customer.email || "", customer.address || "", customer.city || "", customer.company || "", customer.taxNumber || "", customer.groupName || "general", customer.creditLimit || 0, customer.notes || "");
     return { success: true, id: result.lastInsertRowid };
   });
-  electron.ipcMain.handle("update-customer", (_, customer) => {
+  ipcMain.handle("update-customer", (_, customer) => {
     const bizId = getActiveBusinessId();
     const dup = db.prepare("SELECT id FROM customers WHERE customerName = ? AND businessId = ? AND id != ?").get(customer.customerName, bizId, customer.id);
     if (dup) return { success: false, error: "Another customer with this name already exists" };
@@ -3736,21 +4039,21 @@ function registerIPCHandlers() {
     `).run(customer.customerName, customer.phone || "", customer.secondaryPhone || "", customer.email || "", customer.address || "", customer.city || "", customer.company || "", customer.taxNumber || "", customer.groupName || "general", customer.creditLimit || 0, customer.notes || "", customer.id, bizId);
     return { success: true };
   });
-  electron.ipcMain.handle("delete-customer", (_, customerId) => {
+  ipcMain.handle("delete-customer", (_, customerId) => {
     const bizId = getActiveBusinessId();
     const hasSales = db.prepare("SELECT COUNT(*) as count FROM sales WHERE customerName = (SELECT customerName FROM customers WHERE id = ?) AND businessId = ?").get(customerId, bizId);
     if (hasSales.count > 0) return { success: false, error: "Cannot delete customer with sales history. Deactivate instead." };
     db.prepare("UPDATE customers SET is_deleted = 1, deleted_by = ?, deleted_at = CURRENT_TIMESTAMP, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(currentUserName || "unknown", customerId, bizId);
     return { success: true };
   });
-  electron.ipcMain.handle("get-customer-notes", (_, customerId) => {
+  ipcMain.handle("get-customer-notes", (_, customerId) => {
     return db.prepare("SELECT * FROM customer_notes WHERE customerId = ? ORDER BY createdAt DESC LIMIT 50").all(customerId);
   });
-  electron.ipcMain.handle("add-customer-note", (_, customerId, note, createdBy) => {
+  ipcMain.handle("add-customer-note", (_, customerId, note, createdBy) => {
     db.prepare("INSERT INTO customer_notes (customerId, note, createdBy) VALUES (?, ?, ?)").run(customerId, note, createdBy || "");
     return { success: true };
   });
-  electron.ipcMain.handle("export-data", () => {
+  ipcMain.handle("export-data", () => {
     requirePermission("settings.manage");
     const bizId = getActiveBusinessId();
     const tables = ["categories", "items", "item_packs", "sales", "expenses", "adjustments", "settings"];
@@ -3764,7 +4067,7 @@ function registerIPCHandlers() {
     }
     return data;
   });
-  electron.ipcMain.handle("reset-data", () => {
+  ipcMain.handle("reset-data", () => {
     const hasBackupPerm = currentUserPermissions.includes("settings.backup");
     const hasManagePerm = currentUserPermissions.includes("settings.manage");
     const hasWildcard = currentUserPermissions.includes("*");
@@ -3800,7 +4103,7 @@ function registerIPCHandlers() {
     transaction();
     return { success: true };
   });
-  electron.ipcMain.handle("login", (_, username, pin) => {
+  ipcMain.handle("login", (_, username, pin) => {
     const admin = db.prepare(
       "SELECT id, name, username, role, permissions, isActive, businessId, avatar, pin FROM admins WHERE username = ?"
     ).get(username);
@@ -3870,14 +4173,14 @@ function registerIPCHandlers() {
       }
     };
   });
-  electron.ipcMain.handle("get-admins", () => {
+  ipcMain.handle("get-admins", () => {
     const admins = db.prepare("SELECT id, name, username, role, permissions, isActive, avatar, createdAt FROM admins ORDER BY createdAt ASC").all();
     return admins.map((a) => ({
       ...a,
       permissions: a.permissions ? JSON.parse(a.permissions) : []
     }));
   });
-  electron.ipcMain.handle("get-current-admin", (_, id) => {
+  ipcMain.handle("get-current-admin", (_, id) => {
     const admin = db.prepare("SELECT id, name, username, role, permissions, isActive, avatar FROM admins WHERE id = ?").get(id);
     if (!admin) return null;
     return {
@@ -3885,7 +4188,7 @@ function registerIPCHandlers() {
       permissions: admin.permissions ? JSON.parse(admin.permissions) : []
     };
   });
-  electron.ipcMain.handle("insert-admin", (_, admin) => {
+  ipcMain.handle("insert-admin", (_, admin) => {
     requirePermission("settings.users");
     const existing = db.prepare("SELECT id FROM admins WHERE username = ?").get(admin.username);
     if (existing) return { success: false, error: "Username already exists" };
@@ -3902,7 +4205,7 @@ function registerIPCHandlers() {
     );
     return { success: true, id: result.lastInsertRowid };
   });
-  electron.ipcMain.handle("update-admin", (_, id, admin) => {
+  ipcMain.handle("update-admin", (_, id, admin) => {
     if (id !== currentAdminId) {
       requirePermission("settings.users");
     }
@@ -3950,10 +4253,10 @@ function registerIPCHandlers() {
     db.prepare(`UPDATE admins SET ${fields.join(", ")} WHERE id = ?`).run(...values);
     return { success: true };
   });
-  electron.ipcMain.handle("delete-admin", (_, id) => {
+  ipcMain.handle("delete-admin", (_, id) => {
     requirePermission("settings.users");
     const admin = db.prepare("SELECT role FROM admins WHERE id = ?").get(id);
-    if (admin?.role === "super_admin") {
+    if ((admin == null ? void 0 : admin.role) === "super_admin") {
       const superCount = db.prepare("SELECT COUNT(*) as count FROM admins WHERE role = 'super_admin'").get();
       if (superCount.count <= 1) {
         return { success: false, error: "Cannot delete the last super admin" };
@@ -3962,7 +4265,7 @@ function registerIPCHandlers() {
     db.prepare("DELETE FROM admins WHERE id = ?").run(id);
     return { success: true };
   });
-  electron.ipcMain.handle("insert-bulk-adjustments", (_, adjustments) => {
+  ipcMain.handle("insert-bulk-adjustments", (_, adjustments) => {
     const bizId = getActiveBusinessId();
     const transaction = db.transaction(() => {
       let count = 0;
@@ -4009,21 +4312,21 @@ function registerIPCHandlers() {
     });
     return transaction();
   });
-  electron.ipcMain.handle("get-warehouses", () => {
+  ipcMain.handle("get-warehouses", () => {
     const bizId = getActiveBusinessId();
     return db.prepare("SELECT * FROM warehouses WHERE businessId = ? ORDER BY name").all(bizId);
   });
-  electron.ipcMain.handle("get-warehouse", (_, id) => {
+  ipcMain.handle("get-warehouse", (_, id) => {
     return db.prepare("SELECT * FROM warehouses WHERE id = ?").get(id);
   });
-  electron.ipcMain.handle("insert-warehouse", (_, wh) => {
+  ipcMain.handle("insert-warehouse", (_, wh) => {
     const bizId = getActiveBusinessId();
     return db.prepare("INSERT INTO warehouses (businessId, name, location, managerName, managerPhone, email) VALUES (?, ?, ?, ?, ?, ?)").run(bizId, wh.name, wh.location, wh.managerName, wh.managerPhone, wh.email).lastInsertRowid;
   });
-  electron.ipcMain.handle("update-warehouse", (_, id, wh) => {
+  ipcMain.handle("update-warehouse", (_, id, wh) => {
     return db.prepare("UPDATE warehouses SET name = ?, location = ?, managerName = ?, managerPhone = ?, email = ?, isActive = ? WHERE id = ?").run(wh.name, wh.location, wh.managerName, wh.managerPhone, wh.email, wh.isActive ?? 1, id);
   });
-  electron.ipcMain.handle("delete-warehouse", (_, id) => {
+  ipcMain.handle("delete-warehouse", (_, id) => {
     const tx = db.transaction(() => {
       db.prepare("DELETE FROM stock_movements WHERE warehouseId = ?").run(id);
       db.prepare("DELETE FROM warehouse_inventory WHERE warehouseId = ?").run(id);
@@ -4031,7 +4334,7 @@ function registerIPCHandlers() {
     });
     return tx();
   });
-  electron.ipcMain.handle("get-warehouse-inventory", (_, warehouseId) => {
+  ipcMain.handle("get-warehouse-inventory", (_, warehouseId) => {
     return db.prepare(`
       SELECT wi.*, items.name as itemName, items.companyName, items.baseUnit,
         items.baseSellingPrice, items.packSellingPrice, items.categoryId,
@@ -4043,7 +4346,7 @@ function registerIPCHandlers() {
       ORDER BY items.name
     `).all(warehouseId);
   });
-  electron.ipcMain.handle("get-all-warehouse-inventory", (_, options = {}) => {
+  ipcMain.handle("get-all-warehouse-inventory", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     let query = `
       SELECT wi.*, w.name as warehouseName, items.name as itemName, items.companyName,
@@ -4068,10 +4371,10 @@ function registerIPCHandlers() {
     params.push(DEFAULT_LIST_LIMIT);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("update-warehouse-inventory", (_, warehouseId, itemId, quantity) => {
+  ipcMain.handle("update-warehouse-inventory", (_, warehouseId, itemId, quantity) => {
     validateNonNegative(quantity, "Warehouse inventory quantity");
     const existing = db.prepare("SELECT id, quantity FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(warehouseId, itemId);
-    const oldQty = existing?.quantity || 0;
+    const oldQty = (existing == null ? void 0 : existing.quantity) || 0;
     const delta = quantity - oldQty;
     if (existing) {
       db.prepare("UPDATE warehouse_inventory SET quantity = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(quantity, existing.id);
@@ -4083,7 +4386,7 @@ function registerIPCHandlers() {
     db.prepare("SELECT name FROM items WHERE id = ?").get(itemId);
     return { success: true };
   });
-  electron.ipcMain.handle("transfer-stock", (_, transfer) => {
+  ipcMain.handle("transfer-stock", (_, transfer) => {
     if (transfer.fromWarehouseId === transfer.toWarehouseId) throw new Error("Source and destination warehouses must be different");
     const qty = validatePositive(transfer.quantity, "Transfer quantity");
     transfer.quantity = qty;
@@ -4109,7 +4412,7 @@ function registerIPCHandlers() {
     });
     return tx();
   });
-  electron.ipcMain.handle("get-stock-transfers", (_, options = {}) => {
+  ipcMain.handle("get-stock-transfers", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     let query = `
       SELECT st.*, 
@@ -4132,7 +4435,7 @@ function registerIPCHandlers() {
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("get-stock-movements", (_, options = {}) => {
+  ipcMain.handle("get-stock-movements", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     let query = `
       SELECT sm.*, w.name as warehouseName, items.name as itemName, items.companyName
@@ -4160,12 +4463,12 @@ function registerIPCHandlers() {
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("cleanup-stock-movements", () => {
+  ipcMain.handle("cleanup-stock-movements", () => {
     const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1e3).toISOString();
     const result = db.prepare("DELETE FROM stock_movements WHERE createdAt < ?").run(ninetyDaysAgo);
     return { success: true, deleted: result.changes };
   });
-  electron.ipcMain.handle("get-warehouse-report", (_, warehouseId) => {
+  ipcMain.handle("get-warehouse-report", (_, warehouseId) => {
     const inventory = db.prepare(`
       SELECT wi.*, items.name as itemName, items.companyName, items.baseUnit,
         items.baseSellingPrice, items.packSellingPrice, categories.name as categoryName
@@ -4187,35 +4490,35 @@ function registerIPCHandlers() {
     `).all(warehouseId);
     return { inventory, totalItems, totalValue, lowStock, recentMovements };
   });
-  electron.ipcMain.handle("get-employee-roles", () => {
+  ipcMain.handle("get-employee-roles", () => {
     return db.prepare("SELECT * FROM employee_roles ORDER BY name").all();
   });
-  electron.ipcMain.handle("get-employee-role", (_, id) => {
+  ipcMain.handle("get-employee-role", (_, id) => {
     return db.prepare("SELECT * FROM employee_roles WHERE id = ?").get(id);
   });
-  electron.ipcMain.handle("insert-employee-role", (_, data) => {
+  ipcMain.handle("insert-employee-role", (_, data) => {
     const permissions = JSON.stringify(data.permissions || []);
     const result = db.prepare("INSERT INTO employee_roles (name, description, permissions, isSystem) VALUES (?, ?, ?, ?)").run(data.name, data.description || "", permissions, 0);
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("update-employee-role", (_, id, data) => {
+  ipcMain.handle("update-employee-role", (_, id, data) => {
     const permissions = JSON.stringify(data.permissions || []);
     const result = db.prepare("UPDATE employee_roles SET name = ?, description = ?, permissions = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(data.name, data.description || "", permissions, id);
     return result;
   });
-  electron.ipcMain.handle("duplicate-employee-role", (_, id) => {
+  ipcMain.handle("duplicate-employee-role", (_, id) => {
     const original = db.prepare("SELECT * FROM employee_roles WHERE id = ?").get(id);
     if (!original) throw new Error("Role not found");
     const result = db.prepare("INSERT INTO employee_roles (name, description, permissions, isSystem) VALUES (?, ?, ?, 0)").run(`${original.name} (Copy)`, original.description, original.permissions);
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("delete-employee-role", (_, id) => {
+  ipcMain.handle("delete-employee-role", (_, id) => {
     const role = db.prepare("SELECT name, isSystem FROM employee_roles WHERE id = ?").get(id);
-    if (role?.isSystem) throw new Error("Cannot delete system role");
+    if (role == null ? void 0 : role.isSystem) throw new Error("Cannot delete system role");
     db.prepare("UPDATE employees SET roleId = NULL WHERE roleId = ?").run(id);
     db.prepare("DELETE FROM employee_roles WHERE id = ?").run(id);
   });
-  electron.ipcMain.handle("get-employees", (_, options) => {
+  ipcMain.handle("get-employees", (_, options) => {
     let query = `
       SELECT e.*, r.name as roleName, r.permissions as rolePermissions,
         CASE WHEN a.id IS NOT NULL THEN 1 ELSE 0 END as hasAccount,
@@ -4228,42 +4531,42 @@ function registerIPCHandlers() {
     `;
     const conditions = [];
     const params = [];
-    if (options?.search) {
+    if (options == null ? void 0 : options.search) {
       conditions.push("(e.firstName LIKE ? OR e.lastName LIKE ? OR e.phone LIKE ? OR e.email LIKE ? OR e.employeeCode LIKE ?)");
       const s = `%${options.search}%`;
       params.push(s, s, s, s, s);
     }
-    if (options?.roleId) {
+    if (options == null ? void 0 : options.roleId) {
       conditions.push("e.roleId = ?");
       params.push(options.roleId);
     }
-    if (options?.department) {
+    if (options == null ? void 0 : options.department) {
       conditions.push("e.department = ?");
       params.push(options.department);
     }
-    if (options?.employmentStatus) {
+    if (options == null ? void 0 : options.employmentStatus) {
       conditions.push("e.employmentStatus = ?");
       params.push(options.employmentStatus);
     }
-    if (options?.warehouseId) {
+    if (options == null ? void 0 : options.warehouseId) {
       conditions.push("e.warehouseId = ?");
       params.push(options.warehouseId);
     }
-    if (options?.hasAccount !== void 0) {
+    if ((options == null ? void 0 : options.hasAccount) !== void 0) {
       conditions.push(options.hasAccount ? "a.id IS NOT NULL" : "a.id IS NULL");
     }
-    if (options?.isActive !== void 0) {
+    if ((options == null ? void 0 : options.isActive) !== void 0) {
       conditions.push("e.isActive = ?");
       params.push(options.isActive ? 1 : 0);
     }
     if (conditions.length) query += " WHERE " + conditions.join(" AND ");
     query += " ORDER BY e.firstName, e.lastName";
-    const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
+    const listLimit = (options == null ? void 0 : options.limit) ?? DEFAULT_LIST_LIMIT;
     query += " LIMIT ?";
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("get-employee", (_, id) => {
+  ipcMain.handle("get-employee", (_, id) => {
     return db.prepare(`
       SELECT e.*, r.name as roleName, r.permissions as rolePermissions,
         r.description as roleDescription, w.name as warehouseName
@@ -4273,7 +4576,7 @@ function registerIPCHandlers() {
       WHERE e.id = ?
     `).get(id);
   });
-  electron.ipcMain.handle("insert-employee", (_, data) => {
+  ipcMain.handle("insert-employee", (_, data) => {
     const result = db.prepare(`
       INSERT INTO employees (employeeCode, firstName, lastName, phone, email, address, emergencyContact,
         gender, dateOfBirth, roleId, department, warehouseId, isActive, employmentStatus, avatar, hireDate, notes)
@@ -4299,7 +4602,7 @@ function registerIPCHandlers() {
     );
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("update-employee", (_, id, data) => {
+  ipcMain.handle("update-employee", (_, id, data) => {
     const result = db.prepare(`
       UPDATE employees SET
         employeeCode = ?, firstName = ?, lastName = ?, phone = ?, email = ?,
@@ -4330,19 +4633,19 @@ function registerIPCHandlers() {
     );
     return result;
   });
-  electron.ipcMain.handle("delete-employee", (_, id) => {
+  ipcMain.handle("delete-employee", (_, id) => {
     db.prepare("SELECT firstName, lastName FROM employees WHERE id = ?").get(id);
     db.prepare("DELETE FROM employees WHERE id = ?").run(id);
   });
-  electron.ipcMain.handle("archive-employee", (_, id) => {
+  ipcMain.handle("archive-employee", (_, id) => {
     const result = db.prepare("UPDATE employees SET employmentStatus = 'inactive', isActive = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
     return result;
   });
-  electron.ipcMain.handle("reactivate-employee", (_, id) => {
+  ipcMain.handle("reactivate-employee", (_, id) => {
     const result = db.prepare("UPDATE employees SET employmentStatus = 'active', isActive = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
     return result;
   });
-  electron.ipcMain.handle("get-employee-accounts", () => {
+  ipcMain.handle("get-employee-accounts", () => {
     return db.prepare(`
       SELECT ea.*, e.firstName, e.lastName, e.employeeCode, r.name as roleName
       FROM employee_accounts ea
@@ -4351,14 +4654,14 @@ function registerIPCHandlers() {
       ORDER BY e.firstName, e.lastName
     `).all();
   });
-  electron.ipcMain.handle("insert-employee-account", (_, data) => {
+  ipcMain.handle("insert-employee-account", (_, data) => {
     if (!data.username || !data.username.trim()) throw new Error("Username is required");
     if (!data.pin || data.pin.length < 4) throw new Error("PIN must be at least 4 characters");
     const hash = hashPin(data.pin);
     const result = db.prepare("INSERT INTO employee_accounts (employeeId, username, pin, forcePasswordChange) VALUES (?, ?, ?, ?)").run(data.employeeId, data.username, hash, data.forcePasswordChange ? 1 : 0);
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("update-employee-account", (_, id, data) => {
+  ipcMain.handle("update-employee-account", (_, id, data) => {
     if (data.pin) {
       const hash = hashPin(data.pin);
       db.prepare("UPDATE employee_accounts SET username = ?, pin = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(data.username, hash, data.isActive !== void 0 ? data.isActive ? 1 : 0 : 1, data.forcePasswordChange ? 1 : 0, id);
@@ -4366,18 +4669,18 @@ function registerIPCHandlers() {
       db.prepare("UPDATE employee_accounts SET username = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(data.username, data.isActive !== void 0 ? data.isActive ? 1 : 0 : 1, data.forcePasswordChange ? 1 : 0, id);
     }
   });
-  electron.ipcMain.handle("delete-employee-account", (_, id) => {
+  ipcMain.handle("delete-employee-account", (_, id) => {
     db.prepare("SELECT username FROM employee_accounts WHERE id = ?").get(id);
     db.prepare("DELETE FROM employee_accounts WHERE id = ?").run(id);
   });
-  electron.ipcMain.handle("lock-employee-account", (_, id) => {
+  ipcMain.handle("lock-employee-account", (_, id) => {
     const lockUntil = new Date(Date.now() + 30 * 60 * 1e3).toISOString();
     db.prepare("UPDATE employee_accounts SET isActive = 0, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(lockUntil, id);
   });
-  electron.ipcMain.handle("unlock-employee-account", (_, id) => {
+  ipcMain.handle("unlock-employee-account", (_, id) => {
     db.prepare("UPDATE employee_accounts SET isActive = 1, lockedUntil = NULL, failedLoginAttempts = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
   });
-  electron.ipcMain.handle("reset-employee-password", (_, id, newPin) => {
+  ipcMain.handle("reset-employee-password", (_, id, newPin) => {
     requirePermission("settings.users");
     const acct = db.prepare("SELECT ea.id, ea.employeeId, e.roleId, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ?").get(id);
     if (!acct) return { success: false, error: "Account not found" };
@@ -4388,7 +4691,7 @@ function registerIPCHandlers() {
     insertAuditLog("pin_reset", "employee_account", id, "pin", "REDACTED", "REDACTED", `PIN reset for account #${id} by ${currentUserName || "unknown"}`);
     return { success: true };
   });
-  electron.ipcMain.handle("generate-recovery-key", (_, entityType, entityId) => {
+  ipcMain.handle("generate-recovery-key", (_, entityType, entityId) => {
     const recoveryKey = crypto.randomBytes(32).toString("hex");
     const hint = recoveryKey.slice(0, 8) + "..." + recoveryKey.slice(-4);
     const hash = hashPin(recoveryKey);
@@ -4404,7 +4707,7 @@ function registerIPCHandlers() {
     insertAuditLog("generate_recovery_key", entityType === "employee" ? "employee_account" : "admin", entityId, null, null, null, `Recovery key generated for ${entityType} #${entityId} by ${currentUserName || "unknown"}`);
     return { recoveryKey, hint };
   });
-  electron.ipcMain.handle("verify-recovery-key", (_, username, recoveryKey) => {
+  ipcMain.handle("verify-recovery-key", (_, username, recoveryKey) => {
     let empId = null;
     let admId = null;
     const empAccount = db.prepare("SELECT ea.id as accountId, ea.employeeId FROM employee_accounts ea WHERE ea.username = ?").get(username);
@@ -4429,7 +4732,7 @@ function registerIPCHandlers() {
     if (!verifyPin(recoveryKey, record.recoveryKey)) return { valid: false, error: "Invalid recovery key" };
     return { valid: true, accountId: empId || admId, isEmployee: !!empId };
   });
-  electron.ipcMain.handle("reset-pin-with-recovery", (_, username, recoveryKey, newPin) => {
+  ipcMain.handle("reset-pin-with-recovery", (_, username, recoveryKey, newPin) => {
     let empId = null;
     let admId = null;
     const empAccount = db.prepare("SELECT ea.id as accountId, ea.employeeId FROM employee_accounts ea WHERE ea.username = ?").get(username);
@@ -4468,7 +4771,7 @@ function registerIPCHandlers() {
     insertAuditLog("pin_recovery_reset", "account", targetId ?? null, "pin", "REDACTED", "REDACTED", `PIN reset via recovery key for ${username}`);
     return { success: true };
   });
-  electron.ipcMain.handle("lock-user-account", (_, id) => {
+  ipcMain.handle("lock-user-account", (_, id) => {
     requirePermission("settings.users");
     const lockUntil = new Date(Date.now() + 365 * 24 * 60 * 60 * 1e3).toISOString();
     const acct = db.prepare("SELECT ea.*, e.firstName, e.lastName, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ?").get(id);
@@ -4479,7 +4782,7 @@ function registerIPCHandlers() {
     insertAuditLog("lock_account", "employee_account", id, "isActive", "1", "0", `Account #${id} locked by ${currentUserName || "unknown"}`);
     return { success: true };
   });
-  electron.ipcMain.handle("unlock-user-account", (_, id) => {
+  ipcMain.handle("unlock-user-account", (_, id) => {
     requirePermission("settings.users");
     const acct = db.prepare("SELECT id FROM employee_accounts WHERE id = ?").get(id);
     if (!acct) return { success: false, error: "Account not found" };
@@ -4488,7 +4791,7 @@ function registerIPCHandlers() {
     insertAuditLog("unlock_account", "employee_account", id, "isActive", "0", "1", `Account #${id} unlocked by ${currentUserName || "unknown"}`);
     return { success: true };
   });
-  electron.ipcMain.handle("force-pin-change", (_, id) => {
+  ipcMain.handle("force-pin-change", (_, id) => {
     requirePermission("settings.users");
     const acct = db.prepare("SELECT ea.id, e.roleId, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ?").get(id);
     if (!acct) return { success: false, error: "Account not found" };
@@ -4498,7 +4801,7 @@ function registerIPCHandlers() {
     insertAuditLog("force_pin_change", "employee_account", id, "forcePasswordChange", "0", "1", `Force PIN change set for account #${id} by ${currentUserName || "unknown"}`);
     return { success: true };
   });
-  electron.ipcMain.handle("get-pin-history", (_, entityType, entityId) => {
+  ipcMain.handle("get-pin-history", (_, entityType, entityId) => {
     let query = "SELECT * FROM pin_history";
     const params = [];
     if (entityType && entityId) {
@@ -4508,7 +4811,7 @@ function registerIPCHandlers() {
     query += " ORDER BY createdAt DESC LIMIT 100";
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("login-employee", (_, username, pin) => {
+  ipcMain.handle("login-employee", (_, username, pin) => {
     const account = db.prepare(`
       SELECT ea.*, e.firstName, e.lastName, e.id as employeeId, e.roleId,
         r.name as roleName, r.permissions as rolePermissions
@@ -4558,7 +4861,7 @@ function registerIPCHandlers() {
       forcePasswordChange: account.forcePasswordChange
     };
   });
-  electron.ipcMain.handle("get-login-history", (_, options) => {
+  ipcMain.handle("get-login-history", (_, options) => {
     let query = `
       SELECT lh.*, e.firstName, e.lastName, ea.username
       FROM login_history lh
@@ -4567,30 +4870,30 @@ function registerIPCHandlers() {
     `;
     const conditions = [];
     const params = [];
-    if (options?.employeeId) {
+    if (options == null ? void 0 : options.employeeId) {
       conditions.push("lh.employeeId = ?");
       params.push(options.employeeId);
     }
-    if (options?.accountId) {
+    if (options == null ? void 0 : options.accountId) {
       conditions.push("lh.accountId = ?");
       params.push(options.accountId);
     }
-    if (options?.fromDate) {
+    if (options == null ? void 0 : options.fromDate) {
       conditions.push("lh.createdAt >= ?");
       params.push(options.fromDate);
     }
-    if (options?.toDate) {
+    if (options == null ? void 0 : options.toDate) {
       conditions.push("lh.createdAt <= ?");
       params.push(options.toDate);
     }
     if (conditions.length) query += " WHERE " + conditions.join(" AND ");
     query += " ORDER BY lh.createdAt DESC";
-    const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
+    const listLimit = (options == null ? void 0 : options.limit) ?? DEFAULT_LIST_LIMIT;
     query += " LIMIT ?";
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("clock-in", (_, employeeId, notes) => {
+  ipcMain.handle("clock-in", (_, employeeId, notes) => {
     const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const existing = db.prepare("SELECT id FROM attendance WHERE employeeId = ? AND date = ?").get(employeeId, today);
@@ -4598,7 +4901,7 @@ function registerIPCHandlers() {
     const result = db.prepare("INSERT INTO attendance (employeeId, date, clockIn, status, notes) VALUES (?, ?, ?, ?, ?)").run(employeeId, today, now, "present", notes || null);
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("clock-out", (_, employeeId, notes) => {
+  ipcMain.handle("clock-out", (_, employeeId, notes) => {
     const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const existing = db.prepare("SELECT id, clockIn FROM attendance WHERE employeeId = ? AND date = ?").get(employeeId, today);
@@ -4610,7 +4913,7 @@ function registerIPCHandlers() {
     const status = hoursWorked >= 8 ? "present" : hoursWorked >= 4 ? "partial" : "short";
     db.prepare("UPDATE attendance SET clockOut = ?, status = ?, notes = ? WHERE id = ?").run(now, status, notes || null, existing.id);
   });
-  electron.ipcMain.handle("get-attendance", (_, options) => {
+  ipcMain.handle("get-attendance", (_, options) => {
     let query = `
       SELECT a.*, e.firstName, e.lastName, e.employeeCode, r.name as roleName
       FROM attendance a
@@ -4619,30 +4922,30 @@ function registerIPCHandlers() {
     `;
     const conditions = [];
     const params = [];
-    if (options?.employeeId) {
+    if (options == null ? void 0 : options.employeeId) {
       conditions.push("a.employeeId = ?");
       params.push(options.employeeId);
     }
-    if (options?.fromDate) {
+    if (options == null ? void 0 : options.fromDate) {
       conditions.push("a.date >= ?");
       params.push(options.fromDate);
     }
-    if (options?.toDate) {
+    if (options == null ? void 0 : options.toDate) {
       conditions.push("a.date <= ?");
       params.push(options.toDate);
     }
-    if (options?.status) {
+    if (options == null ? void 0 : options.status) {
       conditions.push("a.status = ?");
       params.push(options.status);
     }
     if (conditions.length) query += " WHERE " + conditions.join(" AND ");
     query += " ORDER BY a.date DESC, a.clockIn DESC";
-    const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
+    const listLimit = (options == null ? void 0 : options.limit) ?? DEFAULT_LIST_LIMIT;
     query += " LIMIT ?";
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("get-today-attendance", () => {
+  ipcMain.handle("get-today-attendance", () => {
     const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
     return db.prepare(`
       SELECT a.*, e.firstName, e.lastName, e.employeeCode, r.name as roleName
@@ -4653,7 +4956,7 @@ function registerIPCHandlers() {
       ORDER BY a.clockIn DESC
     `).all(today);
   });
-  electron.ipcMain.handle("get-employee-performance", (_, options) => {
+  ipcMain.handle("get-employee-performance", (_, options) => {
     let query = `
       SELECT ep.*, e.firstName, e.lastName, e.employeeCode, r.name as roleName
       FROM employee_performance ep
@@ -4662,22 +4965,22 @@ function registerIPCHandlers() {
     `;
     const conditions = [];
     const params = [];
-    if (options?.employeeId) {
+    if (options == null ? void 0 : options.employeeId) {
       conditions.push("ep.employeeId = ?");
       params.push(options.employeeId);
     }
-    if (options?.period) {
+    if (options == null ? void 0 : options.period) {
       conditions.push("ep.period = ?");
       params.push(options.period);
     }
     if (conditions.length) query += " WHERE " + conditions.join(" AND ");
     query += " ORDER BY ep.period DESC, ep.salesAmount DESC";
-    const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
+    const listLimit = (options == null ? void 0 : options.limit) ?? DEFAULT_LIST_LIMIT;
     query += " LIMIT ?";
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("update-employee-performance", (_, data) => {
+  ipcMain.handle("update-employee-performance", (_, data) => {
     const existing = db.prepare("SELECT id FROM employee_performance WHERE employeeId = ? AND period = ?").get(data.employeeId, data.period);
     if (existing) {
       db.prepare(`UPDATE employee_performance SET salesAmount = ?, ordersProcessed = ?, attendanceScore = ?, tasksCompleted = ?, rating = ?, notes = ? WHERE id = ?`).run(data.salesAmount || 0, data.ordersProcessed || 0, data.attendanceScore || 0, data.tasksCompleted || 0, data.rating || null, data.notes || null, existing.id);
@@ -4685,7 +4988,7 @@ function registerIPCHandlers() {
       db.prepare(`INSERT INTO employee_performance (employeeId, period, salesAmount, ordersProcessed, attendanceScore, tasksCompleted, rating, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(data.employeeId, data.period, data.salesAmount || 0, data.ordersProcessed || 0, data.attendanceScore || 0, data.tasksCompleted || 0, data.rating || null, data.notes || null);
     }
   });
-  electron.ipcMain.handle("get-employee-stats", () => {
+  ipcMain.handle("get-employee-stats", () => {
     const total = db.prepare("SELECT COUNT(*) as count FROM employees").get();
     const active = db.prepare("SELECT COUNT(*) as count FROM employees WHERE isActive = 1").get();
     const online = db.prepare("SELECT COUNT(*) as count FROM employee_accounts WHERE isActive = 1 AND lastLogin IS NOT NULL AND lastLogin >= datetime('now', '-24 hours')").get();
@@ -4698,39 +5001,39 @@ function registerIPCHandlers() {
     const departments = db.prepare("SELECT department, COUNT(*) as count FROM employees WHERE department IS NOT NULL AND department != '' GROUP BY department ORDER BY count DESC").all();
     return { total: total.count, active: active.count, online: online.count, pendingApprovals: pendingApprovals.count, clockedIn, departments };
   });
-  electron.ipcMain.handle("get-shipments", (_, options) => {
+  ipcMain.handle("get-shipments", (_, options) => {
     let query = `SELECT * FROM shipments WHERE businessId = ?`;
     const params = [getActiveBusinessId()];
-    if (options?.status) {
+    if (options == null ? void 0 : options.status) {
       query += " AND status = ?";
       params.push(options.status);
     }
-    if (options?.search) {
+    if (options == null ? void 0 : options.search) {
       query += " AND (destination LIKE ? OR driverName LIKE ? OR notes LIKE ?)";
       const s = `%${options.search}%`;
       params.push(s, s, s);
     }
-    if (options?.fromDate) {
+    if (options == null ? void 0 : options.fromDate) {
       query += " AND createdAt >= ?";
       params.push(options.fromDate);
     }
-    if (options?.toDate) {
+    if (options == null ? void 0 : options.toDate) {
       query += " AND createdAt <= ?";
       params.push(options.toDate);
     }
     query += " ORDER BY createdAt DESC";
-    const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
+    const listLimit = (options == null ? void 0 : options.limit) ?? DEFAULT_LIST_LIMIT;
     query += " LIMIT ?";
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("get-shipment", (_, id) => {
+  ipcMain.handle("get-shipment", (_, id) => {
     const shipment = db.prepare("SELECT * FROM shipments WHERE id = ?").get(id);
     const items = db.prepare("SELECT * FROM shipment_items WHERE shipmentId = ?").all(id);
     const history = db.prepare("SELECT * FROM shipment_history WHERE shipmentId = ? ORDER BY createdAt DESC").all(id);
     return { ...shipment, items, history };
   });
-  electron.ipcMain.handle("insert-shipment", (_, data) => {
+  ipcMain.handle("insert-shipment", (_, data) => {
     const bizId = getActiveBusinessId();
     const result = db.prepare(`
       INSERT INTO shipments (businessId, origin, destination, driverName, driverPhone, vehicleInfo, status, notes, scheduledDate)
@@ -4750,7 +5053,7 @@ function registerIPCHandlers() {
     db.prepare("INSERT INTO shipment_history (shipmentId, status, changedBy, notes) VALUES (?, ?, ?, ?)").run(shipmentId, "pending", data.createdBy || null, "Shipment created");
     return shipmentId;
   });
-  electron.ipcMain.handle("update-shipment", (_, id, data) => {
+  ipcMain.handle("update-shipment", (_, id, data) => {
     return db.prepare(`
       UPDATE shipments SET origin = ?, destination = ?, driverName = ?, driverPhone = ?,
         vehicleInfo = ?, notes = ?, scheduledDate = ?, updatedAt = CURRENT_TIMESTAMP
@@ -4766,7 +5069,7 @@ function registerIPCHandlers() {
       id
     );
   });
-  electron.ipcMain.handle("update-shipment-status", (_, id, status, changedBy, notes) => {
+  ipcMain.handle("update-shipment-status", (_, id, status, changedBy, notes) => {
     const validStatuses = ["pending", "in_transit", "delivered", "cancelled"];
     if (!validStatuses.includes(status)) throw new Error("Invalid status");
     const updates = ["status = ?", "updatedAt = CURRENT_TIMESTAMP"];
@@ -4779,13 +5082,13 @@ function registerIPCHandlers() {
     db.prepare("INSERT INTO shipment_history (shipmentId, status, changedBy, notes) VALUES (?, ?, ?, ?)").run(id, status, changedBy || null, notes || null);
     return { success: true };
   });
-  electron.ipcMain.handle("delete-shipment", (_, id) => {
+  ipcMain.handle("delete-shipment", (_, id) => {
     return db.prepare("DELETE FROM shipments WHERE id = ?").run(id);
   });
-  electron.ipcMain.handle("get-shipment-history", (_, shipmentId) => {
+  ipcMain.handle("get-shipment-history", (_, shipmentId) => {
     return db.prepare("SELECT * FROM shipment_history WHERE shipmentId = ? ORDER BY createdAt DESC").all(shipmentId);
   });
-  electron.ipcMain.handle("get-suppliers", (_, options = {}) => {
+  ipcMain.handle("get-suppliers", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     const limit = options.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options.offset ?? 0;
@@ -4816,7 +5119,7 @@ function registerIPCHandlers() {
     const total = db.prepare(`SELECT COUNT(*) AS c FROM suppliers s WHERE ${where}`).get(...params).c;
     return { rows, total };
   });
-  electron.ipcMain.handle("get-supplier", (_, id) => {
+  ipcMain.handle("get-supplier", (_, id) => {
     getActiveBusinessId();
     const supplier = db.prepare("SELECT * FROM suppliers WHERE id = ?").get(id);
     if (!supplier) return null;
@@ -4835,7 +5138,7 @@ function registerIPCHandlers() {
     `).get(id, id);
     return { ...supplier, ...stats };
   });
-  electron.ipcMain.handle("insert-supplier", (_, data) => {
+  ipcMain.handle("insert-supplier", (_, data) => {
     if (!data.supplierName || String(data.supplierName).trim() === "") {
       throw new Error("Supplier name is required");
     }
@@ -4882,7 +5185,7 @@ function registerIPCHandlers() {
     );
     return { id: res.lastInsertRowid };
   });
-  electron.ipcMain.handle("update-supplier", (_, id, data) => {
+  ipcMain.handle("update-supplier", (_, id, data) => {
     if (!data.supplierName || String(data.supplierName).trim() === "") {
       throw new Error("Supplier name is required");
     }
@@ -4928,24 +5231,24 @@ function registerIPCHandlers() {
     );
     return { success: true };
   });
-  electron.ipcMain.handle("archive-supplier", (_, id) => {
+  ipcMain.handle("archive-supplier", (_, id) => {
     db.prepare("UPDATE suppliers SET isActive = 0, status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run("inactive", id);
     db.prepare("SELECT supplierName FROM suppliers WHERE id = ?").get(id);
     return { success: true };
   });
-  electron.ipcMain.handle("restore-supplier", (_, id) => {
+  ipcMain.handle("restore-supplier", (_, id) => {
     db.prepare("UPDATE suppliers SET isActive = 1, status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run("active", id);
     db.prepare("SELECT supplierName FROM suppliers WHERE id = ?").get(id);
     return { success: true };
   });
-  electron.ipcMain.handle("delete-supplier", (_, id) => {
+  ipcMain.handle("delete-supplier", (_, id) => {
     const purchases = db.prepare("SELECT COUNT(*) AS c FROM supplier_purchases WHERE supplierId = ?").get(id);
     if (purchases.c > 0) throw new Error("Cannot delete supplier with existing purchases. Archive instead.");
     db.prepare("SELECT supplierName FROM suppliers WHERE id = ?").get(id);
     db.prepare("DELETE FROM suppliers WHERE id = ?").run(id);
     return { success: true };
   });
-  electron.ipcMain.handle("get-supplier-purchases", (_, options = {}) => {
+  ipcMain.handle("get-supplier-purchases", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     const limit = options.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options.offset ?? 0;
@@ -4974,7 +5277,7 @@ function registerIPCHandlers() {
     const total = db.prepare(`SELECT COUNT(*) AS c FROM supplier_purchases sp WHERE ${where}`).get(...params).c;
     return { rows, total };
   });
-  electron.ipcMain.handle("get-supplier-purchase", (_, id) => {
+  ipcMain.handle("get-supplier-purchase", (_, id) => {
     const purchase = db.prepare(`
       SELECT sp.*, s.supplierName, s.companyName
       FROM supplier_purchases sp
@@ -4992,7 +5295,7 @@ function registerIPCHandlers() {
     } catch (_) {
     }
   }
-  electron.ipcMain.handle("insert-supplier-purchase", (_, data) => {
+  ipcMain.handle("insert-supplier-purchase", (_, data) => {
     if (!data.supplierId) throw new Error("Supplier is required");
     if (!data.purchaseDate) throw new Error("Purchase date is required");
     if (!Array.isArray(data.items) || data.items.length === 0) {
@@ -5058,7 +5361,7 @@ function registerIPCHandlers() {
     }
     return { id };
   });
-  electron.ipcMain.handle("update-supplier-purchase-status", (_, id, status, notes) => {
+  ipcMain.handle("update-supplier-purchase-status", (_, id, status, notes) => {
     const validStatuses = ["draft", "pending", "approved", "ordered", "received", "cancelled"];
     if (!validStatuses.includes(status)) throw new Error("Invalid status");
     const prev = db.prepare("SELECT status, supplierId FROM supplier_purchases WHERE id = ?").get(id);
@@ -5096,7 +5399,7 @@ function registerIPCHandlers() {
     }
     return { success: true };
   });
-  electron.ipcMain.handle("delete-supplier-purchase", (_, id) => {
+  ipcMain.handle("delete-supplier-purchase", (_, id) => {
     const row = db.prepare("SELECT purchaseNumber, supplierId FROM supplier_purchases WHERE id = ?").get(id);
     if (!row) throw new Error("Purchase not found");
     const payCheck = db.prepare("SELECT paidAmount FROM supplier_purchases WHERE id = ?").get(id);
@@ -5119,10 +5422,10 @@ function registerIPCHandlers() {
       db.prepare("DELETE FROM supplier_purchases WHERE id = ?").run(id);
     });
     transaction();
-    logSupplierActivity(row.supplierId, "purchase_deleted", "supplier_purchase", id, `Purchase ${row?.purchaseNumber || id} deleted`);
+    logSupplierActivity(row.supplierId, "purchase_deleted", "supplier_purchase", id, `Purchase ${(row == null ? void 0 : row.purchaseNumber) || id} deleted`);
     return { success: true };
   });
-  electron.ipcMain.handle("get-supplier-payments", (_, options = {}) => {
+  ipcMain.handle("get-supplier-payments", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     const limit = options.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options.offset ?? 0;
@@ -5145,7 +5448,7 @@ function registerIPCHandlers() {
     const total = db.prepare(`SELECT COUNT(*) AS c FROM supplier_payments pay JOIN suppliers s ON s.id = pay.supplierId WHERE ${where}`).get(...params).c;
     return { rows, total };
   });
-  electron.ipcMain.handle("insert-supplier-payment", (_, data) => {
+  ipcMain.handle("insert-supplier-payment", (_, data) => {
     if (!data.supplierId) throw new Error("Supplier is required");
     if (!data.paymentDate) throw new Error("Payment date is required");
     const amount = validatePositive(data.amount, "Amount");
@@ -5197,7 +5500,7 @@ function registerIPCHandlers() {
     logSupplierActivity(data.supplierId, "payment_recorded", "supplier_payment", Number(id), `Payment of ${amount} recorded via ${data.paymentMethod}`);
     return { id };
   });
-  electron.ipcMain.handle("update-supplier-payment", (_, id, data) => {
+  ipcMain.handle("update-supplier-payment", (_, id, data) => {
     const oldPayment = db.prepare("SELECT * FROM supplier_payments WHERE id = ?").get(id);
     if (!oldPayment) throw new Error("Payment not found");
     const amount = validatePositive(data.amount, "Amount");
@@ -5234,7 +5537,7 @@ function registerIPCHandlers() {
     updateTxn();
     return { success: true };
   });
-  electron.ipcMain.handle("delete-supplier-payment", (_, id) => {
+  ipcMain.handle("delete-supplier-payment", (_, id) => {
     const payment = db.prepare("SELECT * FROM supplier_payments WHERE id = ?").get(id);
     if (!payment) throw new Error("Payment not found");
     const reverse = db.transaction(() => {
@@ -5247,7 +5550,7 @@ function registerIPCHandlers() {
     reverse();
     return { success: true };
   });
-  electron.ipcMain.handle("get-supplier-products", (_, supplierId) => {
+  ipcMain.handle("get-supplier-products", (_, supplierId) => {
     return db.prepare(`
       SELECT
         COALESCE(spi.itemId, i.id) AS productId,
@@ -5266,7 +5569,7 @@ function registerIPCHandlers() {
       ORDER BY lastPurchaseDate DESC, i.name ASC
     `).all(supplierId, supplierId);
   });
-  electron.ipcMain.handle("get-supplier-balance", (_, supplierId) => {
+  ipcMain.handle("get-supplier-balance", (_, supplierId) => {
     const totals = db.prepare(`
       SELECT
         COALESCE(SUM(totalAmount), 0) AS totalDue,
@@ -5278,18 +5581,18 @@ function registerIPCHandlers() {
     `).get(supplierId);
     return totals;
   });
-  electron.ipcMain.handle("toggle-supplier-favorite", (_, id) => {
+  ipcMain.handle("toggle-supplier-favorite", (_, id) => {
     const current = db.prepare("SELECT isFavorite FROM suppliers WHERE id = ?").get(id);
-    const newVal = current?.isFavorite ? 0 : 1;
+    const newVal = (current == null ? void 0 : current.isFavorite) ? 0 : 1;
     db.prepare("UPDATE suppliers SET isFavorite = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(newVal, id);
     return { success: true, isFavorite: !!newVal };
   });
-  electron.ipcMain.handle("get-supplier-activity-log", (_, supplierId, limit = 20) => {
+  ipcMain.handle("get-supplier-activity-log", (_, supplierId, limit = 20) => {
     return db.prepare(`
       SELECT * FROM supplier_activity_log WHERE supplierId = ? ORDER BY createdAt DESC LIMIT ?
     `).all(supplierId, limit);
   });
-  electron.ipcMain.handle("get-supplier-analytics", (_) => {
+  ipcMain.handle("get-supplier-analytics", (_) => {
     const bizId = getActiveBusinessId();
     const topSuppliers = db.prepare(`
       SELECT s.id, s.supplierName, COALESCE(SUM(sp.totalAmount), 0) AS totalValue,
@@ -5327,9 +5630,9 @@ function registerIPCHandlers() {
         COALESCE((SELECT COUNT(*) FROM supplier_purchases sp JOIN suppliers s ON s.id = sp.supplierId WHERE s.businessId = ? AND sp.purchaseDate >= DATE('now', '-30 days')), 0) AS purchasesThisMonth
       FROM suppliers WHERE businessId = ?
     `).get(bizId, bizId);
-    return { topSuppliers, monthlyTrends, outstandingBySupplier, avgPurchase: avgPurchase?.avgValue || 0, summary };
+    return { topSuppliers, monthlyTrends, outstandingBySupplier, avgPurchase: (avgPurchase == null ? void 0 : avgPurchase.avgValue) || 0, summary };
   });
-  electron.ipcMain.handle("get-supplier-aging-report", () => {
+  ipcMain.handle("get-supplier-aging-report", () => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT
@@ -5347,7 +5650,7 @@ function registerIPCHandlers() {
       ORDER BY total_outstanding DESC
     `).all(bizId);
   });
-  electron.ipcMain.handle("get-supplier-dashboard-stats", () => {
+  ipcMain.handle("get-supplier-dashboard-stats", () => {
     const bizId = getActiveBusinessId();
     const stats = db.prepare(`
       SELECT
@@ -5370,7 +5673,7 @@ function registerIPCHandlers() {
     `).all(bizId);
     return { ...stats, topSupplier: top || null, recent };
   });
-  electron.ipcMain.handle("get-supplier-monthly-report", () => {
+  ipcMain.handle("get-supplier-monthly-report", () => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT
@@ -5386,7 +5689,7 @@ function registerIPCHandlers() {
       LIMIT 12
     `).all(bizId);
   });
-  electron.ipcMain.handle("get-top-suppliers", (_, limit = 10) => {
+  ipcMain.handle("get-top-suppliers", (_, limit = 10) => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT s.id, s.supplierName, s.companyName, s.phone,
@@ -5404,7 +5707,7 @@ function registerIPCHandlers() {
       LIMIT ?
     `).all(bizId, limit);
   });
-  electron.ipcMain.handle("generate-test-suppliers", (_, count) => {
+  ipcMain.handle("generate-test-suppliers", (_, count) => {
     if (![100, 1e3, 1e4].includes(count)) throw new Error("Count must be 100, 1000, or 10000");
     const bizId = getActiveBusinessId();
     const cities = ["Addis Ababa", "Dire Dawa", "Hawassa", "Bahir Dar", "Mekelle", "Adama", "Gondar", "Jimma"];
@@ -5481,7 +5784,7 @@ function registerIPCHandlers() {
     gen();
     return { success: true, count };
   });
-  electron.ipcMain.handle("clear-test-suppliers", () => {
+  ipcMain.handle("clear-test-suppliers", () => {
     const bizId = getActiveBusinessId();
     const result = db.prepare(`DELETE FROM suppliers WHERE businessId = ? AND supplierCode LIKE 'TSUP-%'`).run(bizId);
     return { deleted: result.changes };
@@ -5505,7 +5808,7 @@ function registerIPCHandlers() {
   };
   const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
   const pick = (arr) => arr[randomInt(0, arr.length - 1)];
-  electron.ipcMain.handle("generate-test-data", async (event, count) => {
+  ipcMain.handle("generate-test-data", async (event, count) => {
     if (![10, 100, 1e3, 1e4].includes(count)) throw new Error("Count must be 10, 100, or 10000");
     const startTime = Date.now();
     const bizId = getActiveBusinessId();
@@ -5688,7 +5991,7 @@ function registerIPCHandlers() {
     const duration = Date.now() - startTime;
     return { success: true, totalCreated: globalProgress, duration, phases };
   });
-  electron.ipcMain.handle("clear-test-data", () => {
+  ipcMain.handle("clear-test-data", () => {
     const ts = Date.now();
     const tables = ["notifications", "stock_movements", "employees", "expenses", "sales", "suppliers", "items", "categories"];
     const deletions = {};
@@ -5715,7 +6018,7 @@ function registerIPCHandlers() {
     const totalDeleted = Object.values(deletions).reduce((s, v) => s + v, 0);
     return { deleted: totalDeleted, duration: Date.now() - ts, details: deletions };
   });
-  electron.ipcMain.handle("measure-performance", () => {
+  ipcMain.handle("measure-performance", () => {
     const results = {};
     let t;
     t = Date.now();
@@ -5758,14 +6061,14 @@ function registerIPCHandlers() {
     results.dashboardAggQuery = Date.now() - t;
     return results;
   });
-  electron.ipcMain.handle("get-draft-sales", () => {
+  ipcMain.handle("get-draft-sales", () => {
     const bizId = getActiveBusinessId();
     return db.prepare("SELECT * FROM draft_sales WHERE businessId = ? ORDER BY createdAt DESC").all(bizId);
   });
-  electron.ipcMain.handle("get-draft-sale", (_, id) => {
+  ipcMain.handle("get-draft-sale", (_, id) => {
     return db.prepare("SELECT * FROM draft_sales WHERE id = ?").get(id);
   });
-  electron.ipcMain.handle("save-draft-sale", (_, data) => {
+  ipcMain.handle("save-draft-sale", (_, data) => {
     const bizId = getActiveBusinessId();
     if (data.id) {
       db.prepare("UPDATE draft_sales SET items = ?, customerName = ?, customerPhone = ?, discount = ?, vat = ?, notes = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(JSON.stringify(data.items), data.customerName || null, data.customerPhone || null, data.discount || 0, data.vat || 0, data.notes || null, data.id, bizId);
@@ -5774,64 +6077,64 @@ function registerIPCHandlers() {
     const r = db.prepare("INSERT INTO draft_sales (businessId, items, customerName, customerPhone, discount, vat, notes) VALUES (?, ?, ?, ?, ?, ?, ?)").run(bizId, JSON.stringify(data.items), data.customerName || null, data.customerPhone || null, data.discount || 0, data.vat || 0, data.notes || null);
     return { success: true, id: r.lastInsertRowid };
   });
-  electron.ipcMain.handle("delete-draft-sale", (_, id) => {
+  ipcMain.handle("delete-draft-sale", (_, id) => {
     const bizId = getActiveBusinessId();
     return db.prepare("DELETE FROM draft_sales WHERE id = ? AND businessId = ?").run(id, bizId);
   });
-  electron.ipcMain.handle("get-contacts", (_, options) => {
+  ipcMain.handle("get-contacts", (_, options) => {
     const bizId = getActiveBusinessId();
     let q = "SELECT * FROM contacts WHERE businessId = ?";
     const params = [bizId];
-    if (options?.category) {
+    if (options == null ? void 0 : options.category) {
       q += " AND category = ?";
       params.push(options.category);
     }
     q += " ORDER BY name ASC";
     return db.prepare(q).all(...params);
   });
-  electron.ipcMain.handle("insert-contact", (_, data) => {
+  ipcMain.handle("insert-contact", (_, data) => {
     const bizId = getActiveBusinessId();
     const r = db.prepare("INSERT INTO contacts (businessId, name, phone, category, subCategory, notes) VALUES (?, ?, ?, ?, ?, ?)").run(bizId, data.name, data.phone, data.category || "other", data.subCategory || null, data.notes || null);
     return { success: true, id: r.lastInsertRowid };
   });
-  electron.ipcMain.handle("update-contact", (_, id, data) => {
+  ipcMain.handle("update-contact", (_, id, data) => {
     const bizId = getActiveBusinessId();
     db.prepare("UPDATE contacts SET name = ?, phone = ?, category = ?, subCategory = ?, notes = ? WHERE id = ? AND businessId = ?").run(data.name, data.phone, data.category || "other", data.subCategory || null, data.notes || null, id, bizId);
     return { success: true };
   });
-  electron.ipcMain.handle("delete-contact", (_, id) => {
+  ipcMain.handle("delete-contact", (_, id) => {
     const bizId = getActiveBusinessId();
     db.prepare("DELETE FROM contacts WHERE id = ? AND businessId = ?").run(id, bizId);
     return { success: true };
   });
-  electron.ipcMain.handle("get-budgets", (_, options) => {
+  ipcMain.handle("get-budgets", (_, options) => {
     const bizId = getActiveBusinessId();
     let q = "SELECT * FROM budgets WHERE businessId = ?";
     const params = [bizId];
-    if (options?.period) {
+    if (options == null ? void 0 : options.period) {
       q += " AND period = ?";
       params.push(options.period);
     }
-    if (options?.month) {
+    if (options == null ? void 0 : options.month) {
       q += " AND month = ?";
       params.push(options.month);
     }
-    if (options?.year) {
+    if (options == null ? void 0 : options.year) {
       q += " AND year = ?";
       params.push(options.year);
     }
-    if (options?.budgetType) {
+    if (options == null ? void 0 : options.budgetType) {
       q += " AND budgetType = ?";
       params.push(options.budgetType);
     }
-    if (options?.category) {
+    if (options == null ? void 0 : options.category) {
       q += " AND category = ?";
       params.push(options.category);
     }
     q += " ORDER BY category ASC";
     const budgets = db.prepare(q).all(...params);
-    const targetMonth = options?.month || String((/* @__PURE__ */ new Date()).getMonth() + 1).padStart(2, "0");
-    const targetYear = options?.year || String((/* @__PURE__ */ new Date()).getFullYear());
+    const targetMonth = (options == null ? void 0 : options.month) || String((/* @__PURE__ */ new Date()).getMonth() + 1).padStart(2, "0");
+    const targetYear = (options == null ? void 0 : options.year) || String((/* @__PURE__ */ new Date()).getFullYear());
     const startDate = `${targetYear}-${targetMonth}-01`;
     const endDate = new Date(parseInt(targetYear), parseInt(targetMonth), 0).toISOString().split("T")[0];
     const expenses = db.prepare(
@@ -5848,7 +6151,7 @@ function registerIPCHandlers() {
       usagePercent: b.amount > 0 ? Math.round((spentMap[b.category] || 0) / b.amount * 100) : 0
     }));
   });
-  electron.ipcMain.handle("set-budget", (_, data) => {
+  ipcMain.handle("set-budget", (_, data) => {
     const bizId = getActiveBusinessId();
     const existing = db.prepare(
       "SELECT id FROM budgets WHERE businessId = ? AND category = ? AND period = ? AND budgetType = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)"
@@ -5862,28 +6165,28 @@ function registerIPCHandlers() {
     ).run(bizId, data.category, data.amount, data.period || "monthly", data.month || null, data.year || null, data.budgetType || "business", data.referenceName || null, data.isRecurring ? 1 : 0, data.notes || null);
     return { success: true, id: r.lastInsertRowid };
   });
-  electron.ipcMain.handle("delete-budget", (_, id) => {
+  ipcMain.handle("delete-budget", (_, id) => {
     const bizId = getActiveBusinessId();
     return db.prepare("DELETE FROM budgets WHERE id = ? AND businessId = ?").run(id, bizId);
   });
-  electron.ipcMain.handle("get-budget-adjustments", (_, budgetId) => {
+  ipcMain.handle("get-budget-adjustments", (_, budgetId) => {
     return db.prepare("SELECT * FROM budget_adjustments WHERE budgetId = ? ORDER BY createdAt DESC").all(budgetId);
   });
-  electron.ipcMain.handle("create-budget-adjustment", (_, data) => {
+  ipcMain.handle("create-budget-adjustment", (_, data) => {
     const bizId = getActiveBusinessId();
     const r = db.prepare(
       "INSERT INTO budget_adjustments (budgetId, businessId, previousAmount, newAmount, reason, status, requestedBy) VALUES (?, ?, ?, ?, ?, ?, ?)"
     ).run(data.budgetId, bizId, data.previousAmount, data.newAmount, data.reason, data.status || "pending", data.requestedBy || null);
     return { success: true, id: r.lastInsertRowid };
   });
-  electron.ipcMain.handle("approve-budget-adjustment", (_, id, approvedBy) => {
+  ipcMain.handle("approve-budget-adjustment", (_, id, approvedBy) => {
     const adj = db.prepare("SELECT * FROM budget_adjustments WHERE id = ?").get(id);
     if (!adj) return { success: false, error: "Adjustment not found" };
     db.prepare("UPDATE budget_adjustments SET status = 'approved', approvedBy = ?, approvedAt = CURRENT_TIMESTAMP WHERE id = ?").run(approvedBy, id);
     db.prepare("UPDATE budgets SET amount = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(adj.newAmount, adj.budgetId);
     return { success: true };
   });
-  electron.ipcMain.handle("duplicate-budget", (_, fromData, toMonth, toYear) => {
+  ipcMain.handle("duplicate-budget", (_, fromData, toMonth, toYear) => {
     const bizId = getActiveBusinessId();
     const sourceBudgets = db.prepare(
       "SELECT * FROM budgets WHERE businessId = ? AND month = ? AND year = ?"
@@ -5902,40 +6205,40 @@ function registerIPCHandlers() {
     }
     return { success: true, count };
   });
-  electron.ipcMain.handle("get-budget-alerts", (_, options) => {
+  ipcMain.handle("get-budget-alerts", (_, options) => {
     const bizId = getActiveBusinessId();
     let q = "SELECT * FROM budget_alerts WHERE businessId = ?";
     const params = [bizId];
-    if (options?.acknowledged !== void 0) {
+    if ((options == null ? void 0 : options.acknowledged) !== void 0) {
       q += " AND acknowledged = ?";
       params.push(options.acknowledged ? 1 : 0);
     }
-    if (options?.alertType) {
+    if (options == null ? void 0 : options.alertType) {
       q += " AND alertType = ?";
       params.push(options.alertType);
     }
     q += " ORDER BY createdAt DESC";
-    if (options?.limit) {
+    if (options == null ? void 0 : options.limit) {
       q += " LIMIT ?";
       params.push(options.limit);
     }
     return db.prepare(q).all(...params);
   });
-  electron.ipcMain.handle("acknowledge-budget-alert", (_, id) => {
+  ipcMain.handle("acknowledge-budget-alert", (_, id) => {
     db.prepare("UPDATE budget_alerts SET acknowledged = 1 WHERE id = ?").run(id);
     return { success: true };
   });
-  electron.ipcMain.handle("get-budget-report", (_, options) => {
+  ipcMain.handle("get-budget-report", (_, options) => {
     const bizId = getActiveBusinessId();
-    const month = options?.month || String((/* @__PURE__ */ new Date()).getMonth() + 1).padStart(2, "0");
-    const year = options?.year || String((/* @__PURE__ */ new Date()).getFullYear());
+    const month = (options == null ? void 0 : options.month) || String((/* @__PURE__ */ new Date()).getMonth() + 1).padStart(2, "0");
+    const year = (options == null ? void 0 : options.year) || String((/* @__PURE__ */ new Date()).getFullYear());
     const startDate = `${year}-${month}-01`;
     const endDate = new Date(parseInt(year), parseInt(month), 0).toISOString().split("T")[0];
     const budgets = db.prepare("SELECT * FROM budgets WHERE businessId = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)").all(bizId, month, year);
     const expenses = db.prepare("SELECT category, SUM(amount) as spent FROM expenses WHERE businessId = ? AND date >= ? AND date <= ? AND is_deleted = 0 GROUP BY category").all(bizId, startDate, endDate);
     const totalExpenses = db.prepare("SELECT SUM(amount) as total FROM expenses WHERE businessId = ? AND date >= ? AND date <= ? AND is_deleted = 0").get(bizId, startDate, endDate);
     const totalPlanned = budgets.reduce((s, b) => s + b.amount, 0);
-    const totalSpent = totalExpenses?.total || 0;
+    const totalSpent = (totalExpenses == null ? void 0 : totalExpenses.total) || 0;
     const spentMap = {};
     for (const e of expenses) {
       spentMap[e.category] = e.spent;
@@ -5959,9 +6262,9 @@ function registerIPCHandlers() {
       health: totalPlanned > 0 ? totalSpent > totalPlanned ? "critical" : totalSpent > totalPlanned * 0.8 ? "warning" : "healthy" : "healthy"
     };
   });
-  electron.ipcMain.handle("get-budget-forecast", (_, options) => {
+  ipcMain.handle("get-budget-forecast", (_, options) => {
     const bizId = getActiveBusinessId();
-    const months = options?.months || 3;
+    const months = (options == null ? void 0 : options.months) || 3;
     const now = /* @__PURE__ */ new Date();
     const forecasts = [];
     const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, 1).toISOString().split("T")[0];
@@ -5979,13 +6282,13 @@ function registerIPCHandlers() {
         month: m,
         year: y,
         label: `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][parseInt(m) - 1]} ${y}`,
-        planned: budgets?.total || 0,
+        planned: (budgets == null ? void 0 : budgets.total) || 0,
         estimated: Math.round(estimatedSpend)
       });
     }
     return forecasts;
   });
-  electron.ipcMain.handle("get-supplier-price-checks", (_, supplierId) => {
+  ipcMain.handle("get-supplier-price-checks", (_, supplierId) => {
     const bizId = getActiveBusinessId();
     let q = `SELECT spc.*, s.name as supplierName, i.name as itemName 
       FROM supplier_price_checks spc 
@@ -6000,7 +6303,7 @@ function registerIPCHandlers() {
     q += " ORDER BY spc.nextCheck ASC";
     return db.prepare(q).all(...params);
   });
-  electron.ipcMain.handle("save-supplier-price-check", (_, data) => {
+  ipcMain.handle("save-supplier-price-check", (_, data) => {
     const bizId = getActiveBusinessId();
     const nextCheck = data.nextCheck || new Date(Date.now() + 7 * 864e5).toISOString();
     if (data.id) {
@@ -6010,15 +6313,15 @@ function registerIPCHandlers() {
     const r = db.prepare("INSERT INTO supplier_price_checks (businessId, supplierId, itemId, frequency, lastChecked, nextCheck, notes, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(bizId, data.supplierId, data.itemId || null, data.frequency || "weekly", data.lastChecked || null, nextCheck, data.notes || null, data.active ?? 1);
     return { success: true, id: r.lastInsertRowid };
   });
-  electron.ipcMain.handle("delete-supplier-price-check", (_, id) => {
+  ipcMain.handle("delete-supplier-price-check", (_, id) => {
     const bizId = getActiveBusinessId();
     return db.prepare("DELETE FROM supplier_price_checks WHERE id = ? AND businessId = ?").run(id, bizId);
   });
-  electron.ipcMain.handle("get-quiet-hours", () => {
+  ipcMain.handle("get-quiet-hours", () => {
     const bizId = getActiveBusinessId();
     return db.prepare("SELECT * FROM notification_quiet_hours WHERE businessId = ?").all(bizId);
   });
-  electron.ipcMain.handle("set-quiet-hours", (_, data) => {
+  ipcMain.handle("set-quiet-hours", (_, data) => {
     const bizId = getActiveBusinessId();
     const existing = db.prepare("SELECT id FROM notification_quiet_hours WHERE businessId = ?").get(bizId);
     if (existing) {
@@ -6028,13 +6331,13 @@ function registerIPCHandlers() {
     const r = db.prepare("INSERT INTO notification_quiet_hours (businessId, startTime, endTime, active) VALUES (?, ?, ?, ?)").run(bizId, data.startTime, data.endTime, data.active ?? 1);
     return { success: true, id: r.lastInsertRowid };
   });
-  electron.ipcMain.handle("delete-quiet-hours", () => {
+  ipcMain.handle("delete-quiet-hours", () => {
     const bizId = getActiveBusinessId();
     return db.prepare("DELETE FROM notification_quiet_hours WHERE businessId = ?").run(bizId);
   });
-  electron.ipcMain.handle("get-database-size", () => {
+  ipcMain.handle("get-database-size", () => {
     try {
-      const size = fs.statSync(db.name).size;
+      const size = statSync(db.name).size;
       return size;
     } catch {
       return 0;
@@ -6044,7 +6347,7 @@ function registerIPCHandlers() {
     const str = String(s ?? "");
     return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
-  electron.ipcMain.handle("print-receipt", async (_e, sale) => {
+  ipcMain.handle("print-receipt", async (_e, sale) => {
     try {
       const receiptHtml = `
 <!DOCTYPE html>
@@ -6091,7 +6394,7 @@ function registerIPCHandlers() {
   <div class="footer">Thank you for your business!</div>
 </body>
 </html>`;
-      const printWindow = new electron.BrowserWindow({ show: false, width: 400, height: 600, webPreferences: { nodeIntegration: false, contextIsolation: true } });
+      const printWindow = new BrowserWindow({ show: false, width: 400, height: 600, webPreferences: { nodeIntegration: false, contextIsolation: true } });
       await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(receiptHtml)}`);
       printWindow.webContents.on("did-finish-load", () => {
         printWindow.webContents.print({}, () => printWindow.close());
@@ -6101,63 +6404,63 @@ function registerIPCHandlers() {
       return { success: false, error: e.message };
     }
   });
-  const isDevBackup = !electron.app.isPackaged;
-  const dbDir2 = isDevBackup ? path.join(process.cwd(), "db") : path.join(electron.app.getPath("userData"), "db");
-  const backupDir = path.join(dbDir2, "backups");
-  if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
-  electron.ipcMain.handle("create-backup", async () => {
+  const isDevBackup = !app.isPackaged;
+  const dbDir2 = isDevBackup ? path__default.join(process.cwd(), "db") : path__default.join(app.getPath("userData"), "db");
+  const backupDir = path__default.join(dbDir2, "backups");
+  if (!existsSync(backupDir)) mkdirSync(backupDir, { recursive: true });
+  ipcMain.handle("create-backup", async () => {
     requirePermission("settings.backup");
     try {
       const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
       const backupName = `shega-backup-${timestamp}.db`;
-      const backupPath = path.join(backupDir, backupName);
-      fs.copyFileSync(db.name, backupPath);
-      const size = fs.statSync(backupPath).size;
+      const backupPath = path__default.join(backupDir, backupName);
+      copyFileSync(db.name, backupPath);
+      const size = statSync(backupPath).size;
       return { success: true, name: backupName, size, path: backupPath };
     } catch (e) {
       return { success: false, error: e.message };
     }
   });
-  electron.ipcMain.handle("list-backups", async () => {
+  ipcMain.handle("list-backups", async () => {
     try {
-      if (!fs.existsSync(backupDir)) return [];
-      const files = fs.readdirSync(backupDir).filter((f) => f.endsWith(".db")).sort().reverse();
+      if (!existsSync(backupDir)) return [];
+      const files = readdirSync(backupDir).filter((f) => f.endsWith(".db")).sort().reverse();
       return files.map((name) => {
-        const fullPath = path.join(backupDir, name);
-        const stats = fs.statSync(fullPath);
+        const fullPath = path__default.join(backupDir, name);
+        const stats = statSync(fullPath);
         return { name, size: stats.size, createdAt: stats.birthtime.toISOString(), path: fullPath };
       });
     } catch {
       return [];
     }
   });
-  electron.ipcMain.handle("restore-backup", async (_e, backupName) => {
+  ipcMain.handle("restore-backup", async (_e, backupName) => {
     requirePermission("settings.backup");
     try {
-      const safeName = path.basename(backupName);
-      const backupPath = path.join(backupDir, safeName);
-      if (!fs.existsSync(backupPath)) return { success: false, error: "Backup file not found" };
-      fs.copyFileSync(backupPath, db.name);
+      const safeName = path__default.basename(backupName);
+      const backupPath = path__default.join(backupDir, safeName);
+      if (!existsSync(backupPath)) return { success: false, error: "Backup file not found" };
+      copyFileSync(backupPath, db.name);
       return { success: true };
     } catch (e) {
       return { success: false, error: e.message };
     }
   });
-  electron.ipcMain.handle("delete-backup", async (_e, backupName) => {
+  ipcMain.handle("delete-backup", async (_e, backupName) => {
     requirePermission("settings.backup");
     try {
-      const safeName = path.basename(backupName);
-      const backupPath = path.join(backupDir, safeName);
-      if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+      const safeName = path__default.basename(backupName);
+      const backupPath = path__default.join(backupDir, safeName);
+      if (existsSync(backupPath)) unlinkSync(backupPath);
       return { success: true };
     } catch (e) {
       return { success: false, error: e.message };
     }
   });
-  electron.ipcMain.handle("open-external", (_event, url) => {
-    electron.shell.openExternal(url);
+  ipcMain.handle("open-external", (_event, url) => {
+    shell.openExternal(url);
   });
-  electron.ipcMain.handle("get-supplier-report-summary", () => {
+  ipcMain.handle("get-supplier-report-summary", () => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT
@@ -6178,7 +6481,7 @@ function registerIPCHandlers() {
       ORDER BY s.supplierName
     `).all(bizId);
   });
-  electron.ipcMain.handle("get-supplier-transaction-report", (_, options = {}) => {
+  ipcMain.handle("get-supplier-transaction-report", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     const limit = options.limit ?? 100;
     const offset = options.offset ?? 0;
@@ -6220,7 +6523,7 @@ function registerIPCHandlers() {
     `).all(bizId, limit);
     return { rows, total, payments };
   });
-  electron.ipcMain.handle("get-inventory-by-supplier-report", () => {
+  ipcMain.handle("get-inventory-by-supplier-report", () => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT
@@ -6236,7 +6539,7 @@ function registerIPCHandlers() {
       ORDER BY inventoryValue DESC
     `).all(bizId);
   });
-  electron.ipcMain.handle("get-supplier-unpaid-orders", () => {
+  ipcMain.handle("get-supplier-unpaid-orders", () => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT sp.id, sp.purchaseNumber, sp.purchaseDate, sp.totalAmount, sp.paidAmount,
@@ -6251,7 +6554,7 @@ function registerIPCHandlers() {
       LIMIT 50
     `).all(bizId);
   });
-  electron.ipcMain.handle("get-supplier-payment-due-alerts", () => {
+  ipcMain.handle("get-supplier-payment-due-alerts", () => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT sp.id, sp.purchaseNumber, sp.purchaseDate, sp.totalAmount, sp.paidAmount,
@@ -6269,7 +6572,7 @@ function registerIPCHandlers() {
       LIMIT 20
     `).all(bizId);
   });
-  electron.ipcMain.handle("get-supplier-low-stock", () => {
+  ipcMain.handle("get-supplier-low-stock", () => {
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT i.id, i.name, i.totalBaseQuantity, i.baseUnit,
@@ -6286,7 +6589,7 @@ function registerIPCHandlers() {
       LIMIT 20
     `).all(bizId);
   });
-  electron.ipcMain.handle("void-sale", (_, data) => {
+  ipcMain.handle("void-sale", (_, data) => {
     requirePermission("sales.void");
     const sale = db.prepare("SELECT * FROM sales WHERE id = ?").get(data.saleId);
     if (!sale) throw new Error("Sale not found");
@@ -6321,7 +6624,7 @@ function registerIPCHandlers() {
     insertAuditLog("void_sale", "sale", data.saleId, "status", "Active", "Voided", `Sale #${data.saleId} voided by ${currentUserName || "unknown"}. Reason: ${data.reason}`);
     return db.prepare("SELECT * FROM sales WHERE id = ?").get(data.saleId);
   });
-  electron.ipcMain.handle("reverse-debt-payment", (_, data) => {
+  ipcMain.handle("reverse-debt-payment", (_, data) => {
     requirePermission("payments.reverse");
     const payment = db.prepare("SELECT * FROM debt_payments WHERE id = ?").get(data.paymentId);
     if (!payment) throw new Error("Payment not found");
@@ -6334,7 +6637,7 @@ function registerIPCHandlers() {
     insertAuditLog("reverse_debt_payment", "debt_payment", data.paymentId, "reversalId", null, String(data.paymentId), `Debt payment #${data.paymentId} reversed by ${currentUserName || "unknown"}. Reason: ${data.reason}`);
     return { success: true };
   });
-  electron.ipcMain.handle("reverse-supplier-payment", (_, data) => {
+  ipcMain.handle("reverse-supplier-payment", (_, data) => {
     requirePermission("payments.reverse");
     const payment = db.prepare("SELECT * FROM supplier_payments WHERE id = ?").get(data.paymentId);
     if (!payment) throw new Error("Payment not found");
@@ -6349,7 +6652,7 @@ function registerIPCHandlers() {
     insertAuditLog("reverse_supplier_payment", "supplier_payment", data.paymentId, "reversalId", null, String(data.paymentId), `Supplier payment #${data.paymentId} reversed by ${currentUserName || "unknown"}. Reason: ${data.reason}`);
     return { success: true };
   });
-  electron.ipcMain.handle("reverse-adjustment", (_, data) => {
+  ipcMain.handle("reverse-adjustment", (_, data) => {
     requirePermission("adjustments.reverse");
     const adjustment = db.prepare("SELECT * FROM adjustments WHERE id = ?").get(data.adjustmentId);
     if (!adjustment) throw new Error("Adjustment not found");
@@ -6398,93 +6701,93 @@ function registerIPCHandlers() {
     insertAuditLog("reverse_adjustment", "adjustment", data.adjustmentId, "reversalId", null, String(data.adjustmentId), `Adjustment #${data.adjustmentId} reversed by ${currentUserName || "unknown"}. Reason: ${data.reason}`);
     return { success: true };
   });
-  electron.ipcMain.handle("get-audit-logs", (_, options) => {
+  ipcMain.handle("get-audit-logs", (_, options) => {
     requirePermission("audit.view");
     let query = "SELECT * FROM audit_logs WHERE businessId = ?";
     const params = [getActiveBusinessId()];
-    if (options?.entityType) {
+    if (options == null ? void 0 : options.entityType) {
       query += " AND entityType = ?";
       params.push(options.entityType);
     }
-    if (options?.entityId) {
+    if (options == null ? void 0 : options.entityId) {
       query += " AND entityId = ?";
       params.push(options.entityId);
     }
-    if (options?.action) {
+    if (options == null ? void 0 : options.action) {
       query += " AND action = ?";
       params.push(options.action);
     }
-    if (options?.fromDate) {
+    if (options == null ? void 0 : options.fromDate) {
       query += " AND createdAt >= ?";
       params.push(options.fromDate + " 00:00:00");
     }
-    if (options?.toDate) {
+    if (options == null ? void 0 : options.toDate) {
       query += " AND createdAt <= ?";
       params.push(options.toDate + " 23:59:59");
     }
     query += " ORDER BY createdAt DESC";
-    const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
+    const listLimit = (options == null ? void 0 : options.limit) ?? DEFAULT_LIST_LIMIT;
     query += " LIMIT ?";
     params.push(listLimit);
-    if (options?.offset) {
+    if (options == null ? void 0 : options.offset) {
       query += " OFFSET ?";
       params.push(options.offset);
     }
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("archive-item", (_, data) => {
+  ipcMain.handle("archive-item", (_, data) => {
     requirePermission("inventory.delete");
     db.prepare("SELECT name FROM items WHERE id = ?").get(data.id);
     db.prepare("UPDATE items SET is_deleted = 1, deleted_by = ?, deleted_at = CURRENT_TIMESTAMP WHERE id = ?").run(currentUserName || "unknown", data.id);
     return { success: true };
   });
-  electron.ipcMain.handle("restore-item", (_, data) => {
+  ipcMain.handle("restore-item", (_, data) => {
     requirePermission("records.restore");
     const item = db.prepare("SELECT name FROM items WHERE id = ?").get(data.id);
     db.prepare("UPDATE items SET is_deleted = 0, deleted_by = NULL, deleted_at = NULL WHERE id = ?").run(data.id);
-    insertAuditLog("restore_item", "item", data.id, "is_deleted", "1", "0", `Item #${data.id} "${item?.name || "unknown"}" restored by ${currentUserName || "unknown"}`);
+    insertAuditLog("restore_item", "item", data.id, "is_deleted", "1", "0", `Item #${data.id} "${(item == null ? void 0 : item.name) || "unknown"}" restored by ${currentUserName || "unknown"}`);
     return { success: true };
   });
-  electron.ipcMain.handle("archive-customer", (_, data) => {
+  ipcMain.handle("archive-customer", (_, data) => {
     requirePermission("customers.delete");
     const bizId = getActiveBusinessId();
     db.prepare("UPDATE customers SET is_deleted = 1, deleted_by = ?, deleted_at = CURRENT_TIMESTAMP, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(currentUserName || "unknown", data.id, bizId);
     return { success: true };
   });
-  electron.ipcMain.handle("restore-customer", (_, data) => {
+  ipcMain.handle("restore-customer", (_, data) => {
     requirePermission("records.restore");
     const bizId = getActiveBusinessId();
     db.prepare("UPDATE customers SET is_deleted = 0, deleted_by = NULL, deleted_at = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(data.id, bizId);
     insertAuditLog("restore_customer", "customer", data.id, "is_deleted", "1", "0", `Customer #${data.id} restored by ${currentUserName || "unknown"}`);
     return { success: true };
   });
-  electron.ipcMain.handle("get-deleted-items", () => {
+  ipcMain.handle("get-deleted-items", () => {
     requirePermission("inventory.view");
     const bizId = getActiveBusinessId();
     return db.prepare("SELECT * FROM items WHERE businessId = ? AND is_deleted = 1").all(bizId);
   });
-  electron.ipcMain.handle("get-deleted-customers", () => {
+  ipcMain.handle("get-deleted-customers", () => {
     requirePermission("customers.view");
     const bizId = getActiveBusinessId();
     return db.prepare("SELECT * FROM customers WHERE businessId = ? AND is_deleted = 1").all(bizId);
   });
-  electron.ipcMain.handle("get-voided-sales", (_, options) => {
+  ipcMain.handle("get-voided-sales", (_, options) => {
     requirePermission("audit.view");
     const bizId = getActiveBusinessId();
     let query = `SELECT s.*, i.name as itemName FROM sales s LEFT JOIN items i ON s.itemId = i.id WHERE s.businessId = ? AND s.status = 'Voided'`;
     const params = [bizId];
-    if (options?.fromDate) {
+    if (options == null ? void 0 : options.fromDate) {
       query += " AND s.voidedAt >= ?";
       params.push(options.fromDate + " 00:00:00");
     }
-    if (options?.toDate) {
+    if (options == null ? void 0 : options.toDate) {
       query += " AND s.voidedAt <= ?";
       params.push(options.toDate + " 23:59:59");
     }
     query += " ORDER BY s.voidedAt DESC";
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("reverse-audit-log-entry", (_, data) => {
+  ipcMain.handle("reverse-audit-log-entry", (_, data) => {
     requirePermission("audit.view");
     const entry = db.prepare("SELECT * FROM audit_logs WHERE id = ? AND businessId = ?").get(data.logId, getActiveBusinessId());
     if (!entry) throw new Error("Audit log entry not found");
@@ -6524,7 +6827,7 @@ function registerIPCHandlers() {
     }
     throw new Error("This action type cannot be automatically reversed from audit logs. Please use the relevant page to undo this change.");
   });
-  electron.ipcMain.handle("get-reversal-stats", () => {
+  ipcMain.handle("get-reversal-stats", () => {
     const bizId = getActiveBusinessId();
     const voidedSales = db.prepare("SELECT COUNT(*) as count FROM sales WHERE businessId = ? AND status = 'Voided'").get(bizId).count;
     const reversedPayments = db.prepare("SELECT COUNT(*) as count FROM debt_payments dp JOIN sales s ON dp.saleId = s.id WHERE s.businessId = ? AND dp.reversalId IS NOT NULL").get(bizId).count;
@@ -6532,7 +6835,7 @@ function registerIPCHandlers() {
     const reversedAdjustments = db.prepare("SELECT COUNT(*) as count FROM adjustments WHERE businessId = ? AND reversalId IS NOT NULL").get(bizId).count;
     return { voidedSales, reversedPayments, reversedSupplierPayments, reversedAdjustments };
   });
-  electron.ipcMain.handle("get-orders", (_, options = {}) => {
+  ipcMain.handle("get-orders", (_, options = {}) => {
     requirePermission("orders.view");
     const bizId = getActiveBusinessId();
     let query = "SELECT * FROM orders WHERE businessId = ? AND is_deleted = 0";
@@ -6566,7 +6869,7 @@ function registerIPCHandlers() {
     params.push(listLimit);
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("get-order", (_, id) => {
+  ipcMain.handle("get-order", (_, id) => {
     requirePermission("orders.view");
     const bizId = getActiveBusinessId();
     const order = db.prepare("SELECT * FROM orders WHERE id = ? AND businessId = ? AND is_deleted = 0").get(id, bizId);
@@ -6575,7 +6878,7 @@ function registerIPCHandlers() {
     const history = db.prepare("SELECT * FROM order_history WHERE orderId = ? ORDER BY createdAt ASC").all(id);
     return { ...order, items, history };
   });
-  electron.ipcMain.handle("insert-order", (_, data) => {
+  ipcMain.handle("insert-order", (_, data) => {
     requirePermission("orders.create");
     const bizId = getActiveBusinessId();
     if (!data.items || data.items.length === 0) throw new Error("Order must have at least one item");
@@ -6605,7 +6908,7 @@ function registerIPCHandlers() {
     const orderId = transaction();
     return orderId;
   });
-  electron.ipcMain.handle("convert-order-to-sale", (_, data) => {
+  ipcMain.handle("convert-order-to-sale", (_, data) => {
     requirePermission("orders.convert");
     const bizId = getActiveBusinessId();
     const order = db.prepare("SELECT * FROM orders WHERE id = ? AND businessId = ? AND is_deleted = 0").get(data.orderId, bizId);
@@ -6656,19 +6959,21 @@ function registerIPCHandlers() {
     insertAuditLog("convert_order_to_sale", "order", data.orderId, "status", "Order", "Converted", `Order #${data.orderId} converted to sale by ${currentUserName || "unknown"}`);
     return result;
   });
-  electron.ipcMain.handle("convert-order-to-debt", (_, data) => {
+  ipcMain.handle("convert-order-to-debt", (_, data) => {
+    var _a;
     requirePermission("orders.convert");
     const bizId = getActiveBusinessId();
     const order = db.prepare("SELECT * FROM orders WHERE id = ? AND businessId = ? AND is_deleted = 0").get(data.orderId, bizId);
     if (!order) throw new Error("Order not found");
     if (order.status !== "Order") throw new Error('Only orders with status "Order" can be converted');
     const items = db.prepare("SELECT * FROM order_items WHERE orderId = ?").all(data.orderId);
-    const cName = order.customerName?.trim();
+    const cName = (_a = order.customerName) == null ? void 0 : _a.trim();
     if (!cName) throw new Error("Customer name is required for debt conversion");
     const transaction = db.transaction(() => {
+      var _a2;
       const exists = db.prepare("SELECT id FROM customers WHERE customerName = ? AND businessId = ?").get(cName, bizId);
       if (!exists) {
-        db.prepare("INSERT INTO customers (businessId, customerName, phone, groupName) VALUES (?, ?, ?, ?)").run(bizId, cName, order.customerPhone?.trim() || "", "general");
+        db.prepare("INSERT INTO customers (businessId, customerName, phone, groupName) VALUES (?, ?, ?, ?)").run(bizId, cName, ((_a2 = order.customerPhone) == null ? void 0 : _a2.trim()) || "", "general");
       }
       const saleIds = [];
       for (const item of items) {
@@ -6713,10 +7018,10 @@ function registerIPCHandlers() {
     insertAuditLog("convert_order_to_debt", "order", data.orderId, "status", "Order", "Converted", `Order #${data.orderId} converted to debt by ${currentUserName || "unknown"}`);
     return result;
   });
-  electron.ipcMain.handle("import-data", (_, module, rows) => {
+  ipcMain.handle("import-data", (_, module, rows) => {
     return importData(module, rows);
   });
-  electron.ipcMain.handle("cancel-order", (_, data) => {
+  ipcMain.handle("cancel-order", (_, data) => {
     requirePermission("orders.cancel");
     const bizId = getActiveBusinessId();
     const order = db.prepare("SELECT * FROM orders WHERE id = ? AND businessId = ? AND is_deleted = 0").get(data.orderId, bizId);
@@ -6728,14 +7033,15 @@ function registerIPCHandlers() {
     return { success: true };
   });
   console.log("[Handlers] Registered global-search");
-  electron.ipcMain.handle("global-search", (_, query) => {
+  ipcMain.handle("global-search", (_, query) => {
+    var _a, _b;
     const bizId = getActiveBusinessId();
     if (!query || query.trim().length < 1) return [];
     const q = `%${query.trim()}%`;
     const results = [];
     console.log("[Search] bizId:", bizId, "query:", query);
-    console.log("[Search] items count:", db.prepare("SELECT COUNT(*) as c FROM items WHERE businessId = ?").get(bizId)?.c);
-    console.log("[Search] sales count:", db.prepare("SELECT COUNT(*) as c FROM sales WHERE businessId = ?").get(bizId)?.c);
+    console.log("[Search] items count:", (_a = db.prepare("SELECT COUNT(*) as c FROM items WHERE businessId = ?").get(bizId)) == null ? void 0 : _a.c);
+    console.log("[Search] sales count:", (_b = db.prepare("SELECT COUNT(*) as c FROM sales WHERE businessId = ?").get(bizId)) == null ? void 0 : _b.c);
     try {
       const items = db.prepare(`
         SELECT items.id, items.name, items.companyName, items.categoryId, items.totalBaseQuantity, items.baseUnit, items.baseSellingPrice,
@@ -6951,7 +7257,7 @@ function registerIPCHandlers() {
     }
     return results.slice(0, 40);
   });
-  electron.ipcMain.handle("get-business-health-score", () => {
+  ipcMain.handle("get-business-health-score", () => {
     const bizId = getActiveBusinessId();
     const now = /* @__PURE__ */ new Date();
     const today = now.toISOString().split("T")[0];
@@ -7144,10 +7450,11 @@ function registerIPCHandlers() {
     return { score: finalScore, rating, factors, recommendations };
   });
   console.log("[Handlers] Registered get-business-insights");
-  electron.ipcMain.handle("get-business-insights", () => {
+  ipcMain.handle("get-business-insights", () => {
+    var _a;
     const bizId = getActiveBusinessId();
     console.log("[Insights] Called with bizId:", bizId);
-    console.log("[Insights] items:", db.prepare("SELECT COUNT(*) as c FROM items WHERE businessId = ?").get(bizId)?.c);
+    console.log("[Insights] items:", (_a = db.prepare("SELECT COUNT(*) as c FROM items WHERE businessId = ?").get(bizId)) == null ? void 0 : _a.c);
     const now = /* @__PURE__ */ new Date();
     const today = now.toISOString().split("T")[0];
     const sevenDaysAgo = new Date(now.getTime() - 7 * 864e5).toISOString().split("T")[0];
@@ -7499,10 +7806,10 @@ function registerIPCHandlers() {
       return (order[a.severity] ?? 4) - (order[b.severity] ?? 4);
     });
   });
-  electron.ipcMain.handle("get-subscription-plans", () => {
+  ipcMain.handle("get-subscription-plans", () => {
     return db.prepare("SELECT * FROM subscription_plans WHERE isActive = 1 ORDER BY price ASC").all();
   });
-  electron.ipcMain.handle("get-current-subscription", () => {
+  ipcMain.handle("get-current-subscription", () => {
     const bizId = getActiveBusinessId();
     const sub = db.prepare("SELECT * FROM subscriptions WHERE businessId = ?").get(bizId);
     if (!sub) return null;
@@ -7528,7 +7835,7 @@ function registerIPCHandlers() {
     const plan = sub.planId ? db.prepare("SELECT * FROM subscription_plans WHERE id = ?").get(sub.planId) : null;
     return { ...sub, plan };
   });
-  electron.ipcMain.handle("start-trial", () => {
+  ipcMain.handle("start-trial", () => {
     const bizId = getActiveBusinessId();
     const now = /* @__PURE__ */ new Date();
     const trialEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1e3);
@@ -7542,10 +7849,10 @@ function registerIPCHandlers() {
     } else {
       db.prepare("INSERT INTO subscriptions (businessId, tier, status, isTrial, trialStartedAt, trialEndsAt, startedAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(bizId, "trial", "active", 1, now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString());
     }
-    db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)").run(existing?.id || db.prepare("SELECT id FROM subscriptions WHERE businessId = ?").get(bizId).id, bizId, "trial_started", existing?.tier || "none", "trial", "7-day premium trial started", currentUserName || "system");
+    db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)").run((existing == null ? void 0 : existing.id) || db.prepare("SELECT id FROM subscriptions WHERE businessId = ?").get(bizId).id, bizId, "trial_started", (existing == null ? void 0 : existing.tier) || "none", "trial", "7-day premium trial started", currentUserName || "system");
     return { success: true };
   });
-  electron.ipcMain.handle("submit-payment", (_, data) => {
+  ipcMain.handle("submit-payment", (_, data) => {
     const bizId = getActiveBusinessId();
     const result = db.prepare(`
       INSERT INTO payment_transactions (businessId, transactionId, businessName, phoneNumber, selectedPlan, amount, paymentDate, notes)
@@ -7554,29 +7861,29 @@ function registerIPCHandlers() {
     db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, details, changedBy) VALUES (?, ?, ?, ?, ?)").run(null, bizId, "payment_submitted", `Payment submitted for plan "${data.selectedPlan}" (Transaction: ${data.transactionId})`, currentUserName || "system");
     return { success: true, id: result.lastInsertRowid };
   });
-  electron.ipcMain.handle("get-payment-transactions", (_, options) => {
+  ipcMain.handle("get-payment-transactions", (_, options) => {
     const bizId = getActiveBusinessId();
     let query = "SELECT * FROM payment_transactions WHERE businessId = ?";
     const params = [bizId];
-    if (options?.status) {
+    if (options == null ? void 0 : options.status) {
       query += " AND status = ?";
       params.push(options.status);
     }
     query += " ORDER BY createdAt DESC";
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("get-all-payment-transactions", (_, options) => {
+  ipcMain.handle("get-all-payment-transactions", (_, options) => {
     requirePermission("settings");
     let query = "SELECT pt.*, b.businessName as bizName FROM payment_transactions pt LEFT JOIN businesses b ON pt.businessId = b.id";
     const params = [];
-    if (options?.status) {
+    if (options == null ? void 0 : options.status) {
       query += " WHERE pt.status = ?";
       params.push(options.status);
     }
     query += " ORDER BY pt.createdAt DESC";
     return db.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("approve-payment", (_, data) => {
+  ipcMain.handle("approve-payment", (_, data) => {
     requirePermission("settings");
     getActiveBusinessId();
     const tx = db.prepare("SELECT * FROM payment_transactions WHERE id = ?").get(data.transactionId);
@@ -7586,7 +7893,7 @@ function registerIPCHandlers() {
     const now = /* @__PURE__ */ new Date();
     const expiresAt = new Date(now.getTime() + plan.durationMonths * 30 * 24 * 60 * 60 * 1e3);
     const existingSub = db.prepare("SELECT id, tier FROM subscriptions WHERE businessId = ?").get(tx.businessId);
-    const oldTier = existingSub?.tier || "basic";
+    const oldTier = (existingSub == null ? void 0 : existingSub.tier) || "basic";
     if (existingSub) {
       db.prepare(`
         UPDATE subscriptions SET planId = ?, tier = ?, status = 'active', isTrial = 0, startedAt = ?, expiresAt = ?, updatedAt = ?
@@ -7599,11 +7906,11 @@ function registerIPCHandlers() {
       `).run(tx.businessId, plan.id, plan.tier, now.toISOString(), expiresAt.toISOString());
       data.subscriptionId = r.lastInsertRowid;
     }
-    db.prepare("UPDATE payment_transactions SET status = ?, verifiedBy = ?, verifiedAt = ?, subscriptionId = ? WHERE id = ?").run("approved", currentAdminId, now.toISOString(), existingSub?.id || data.subscriptionId, data.transactionId);
-    db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)").run(existingSub?.id || data.subscriptionId, tx.businessId, "payment_approved", oldTier, plan.tier, `Payment #${tx.id} approved. Plan: ${tx.selectedPlan}`, currentUserName || "system");
+    db.prepare("UPDATE payment_transactions SET status = ?, verifiedBy = ?, verifiedAt = ?, subscriptionId = ? WHERE id = ?").run("approved", currentAdminId, now.toISOString(), (existingSub == null ? void 0 : existingSub.id) || data.subscriptionId, data.transactionId);
+    db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)").run((existingSub == null ? void 0 : existingSub.id) || data.subscriptionId, tx.businessId, "payment_approved", oldTier, plan.tier, `Payment #${tx.id} approved. Plan: ${tx.selectedPlan}`, currentUserName || "system");
     return { success: true };
   });
-  electron.ipcMain.handle("reject-payment", (_, data) => {
+  ipcMain.handle("reject-payment", (_, data) => {
     requirePermission("settings");
     const tx = db.prepare("SELECT * FROM payment_transactions WHERE id = ?").get(data.transactionId);
     if (!tx) return { success: false, error: "Transaction not found" };
@@ -7611,11 +7918,11 @@ function registerIPCHandlers() {
     db.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, details, changedBy) VALUES (?, ?, ?, ?, ?)").run(null, tx.businessId, "payment_rejected", `Payment #${tx.id} rejected. Reason: ${data.reason}`, currentUserName || "system");
     return { success: true };
   });
-  electron.ipcMain.handle("get-subscription-history", () => {
+  ipcMain.handle("get-subscription-history", () => {
     const bizId = getActiveBusinessId();
     return db.prepare("SELECT * FROM subscription_history WHERE businessId = ? ORDER BY createdAt DESC").all(bizId);
   });
-  electron.ipcMain.handle("get-renewal-info", () => {
+  ipcMain.handle("get-renewal-info", () => {
     const bizId = getActiveBusinessId();
     const sub = db.prepare("SELECT * FROM subscriptions WHERE businessId = ?").get(bizId);
     if (!sub || !sub.expiresAt) return null;
@@ -7632,7 +7939,7 @@ function registerIPCHandlers() {
       isTrial: !!sub.isTrial
     };
   });
-  electron.ipcMain.handle("check-premium-feature", (_, feature) => {
+  ipcMain.handle("check-premium-feature", (_, feature) => {
     const bizId = getActiveBusinessId();
     const sub = db.prepare("SELECT tier, isTrial, status, expiresAt FROM subscriptions WHERE businessId = ?").get(bizId);
     if (!sub) return { allowed: false, reason: "no_subscription" };
@@ -7644,7 +7951,7 @@ function registerIPCHandlers() {
     }
     return { allowed: true };
   });
-  electron.ipcMain.handle("get-subscription-stats", () => {
+  ipcMain.handle("get-subscription-stats", () => {
     const allSubs = db.prepare(`
       SELECT s.tier, s.status, s.isTrial, s.expiresAt, s.businessId, b.businessName as bizName
       FROM subscriptions s LEFT JOIN businesses b ON s.businessId = b.id
@@ -7659,7 +7966,7 @@ function registerIPCHandlers() {
       pendingPayments: db.prepare("SELECT COUNT(*) as c FROM payment_transactions WHERE status = 'pending'").get().c
     };
   });
-  electron.ipcMain.handle("check-trial-availability", () => {
+  ipcMain.handle("check-trial-availability", () => {
     const bizId = getActiveBusinessId();
     const sub = db.prepare("SELECT isTrial, tier, status FROM subscriptions WHERE businessId = ?").get(bizId);
     if (!sub) return { available: true };
@@ -7668,8 +7975,56 @@ function registerIPCHandlers() {
     if (sub.status === "active" && sub.tier !== "basic") return { available: false, reason: "already_subscribed" };
     return { available: true };
   });
-  electron.ipcMain.handle("debug:ping", () => {
+  ipcMain.handle("debug:ping", () => {
     return { ok: true, timestamp: (/* @__PURE__ */ new Date()).toISOString(), handlersRegistered: true };
+  });
+  ipcMain.handle("update:check", async () => {
+    try {
+      return await appUpdater.checkForUpdates();
+    } catch (err) {
+      return { status: "error", error: err.message };
+    }
+  });
+  ipcMain.handle("update:download", async () => {
+    try {
+      await appUpdater.downloadUpdate();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+  ipcMain.handle("update:install", () => {
+    appUpdater.installUpdate();
+    return { success: true };
+  });
+  ipcMain.handle("update:skip-version", (_, version) => {
+    appUpdater.skipVersion(version);
+    return { success: true };
+  });
+  ipcMain.handle("update:remind-later", (_, hours) => {
+    appUpdater.remindLater(hours ?? 24);
+    return { success: true };
+  });
+  ipcMain.handle("update:get-status", () => {
+    return {
+      status: appUpdater.getStatus(),
+      info: appUpdater.getUpdateInfo(),
+      progress: appUpdater.getProgress(),
+      error: appUpdater.getError(),
+      appVersion: appUpdater.getAppVersion(),
+      autoCheckEnabled: appUpdater.isAutoCheckEnabled()
+    };
+  });
+  ipcMain.handle("update:set-auto-check", (_, enabled) => {
+    appUpdater.setAutoCheckEnabled(enabled);
+    return { success: true };
+  });
+  ipcMain.handle("update:get-app-version", () => {
+    return appUpdater.getAppVersion();
+  });
+  ipcMain.handle("update:clear-reminder", () => {
+    appUpdater.clearReminder();
+    return { success: true };
   });
   console.log("[Handlers] All IPC handlers registered successfully");
 }
@@ -7680,14 +8035,14 @@ process.on("unhandledRejection", (reason) => {
   console.error("[FATAL] Unhandled rejection:", reason);
 });
 function createWindow() {
-  const mainWindow = new electron.BrowserWindow({
+  const mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     show: false,
     autoHideMenuBar: true,
-    icon: path.join(__dirname, "../../src/assets/images/logo.ico"),
+    icon: join(__dirname, "../../src/assets/images/logo.ico"),
     webPreferences: {
-      preload: path.join(__dirname, "../preload/index.js"),
+      preload: join(__dirname, "../preload/index.js"),
       sandbox: false
     }
   });
@@ -7697,22 +8052,27 @@ function createWindow() {
   if (process.env["ELECTRON_RENDERER_URL"]) {
     mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);
   } else {
-    mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
+    mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
   }
   mainWindow.webContents.on("console-message", (event, level, message, line, sourceId) => {
     console.log(`[Renderer Console]: ${message} (Line ${line} in ${sourceId})`);
   });
 }
-electron.app.whenReady().then(() => {
+app.whenReady().then(() => {
   initDB();
   registerIPCHandlers();
   createWindow();
-  electron.app.on("activate", () => {
-    if (electron.BrowserWindow.getAllWindows().length === 0) createWindow();
+  const wins = BrowserWindow.getAllWindows();
+  if (wins.length > 0) {
+    appUpdater.init(wins[0]);
+    appUpdater.checkOnLaunch();
+  }
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
-electron.app.on("window-all-closed", () => {
+app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
-    electron.app.quit();
+    app.quit();
   }
 });

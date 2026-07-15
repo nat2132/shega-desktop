@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron';
 import { join } from 'path';
 import { initDB } from './database';
 import { registerIPCHandlers } from './ipc-handlers';
+import { appUpdater } from './updater';
 
 // Global error handlers
 process.on('uncaughtException', (error) => {
@@ -43,6 +44,12 @@ app.whenReady().then(() => {
   initDB();
   registerIPCHandlers();
   createWindow();
+
+  const wins = BrowserWindow.getAllWindows();
+  if (wins.length > 0) {
+    appUpdater.init(wins[0]);
+    appUpdater.checkOnLaunch();
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

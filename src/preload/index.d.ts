@@ -327,6 +327,54 @@ export interface ElectronAPI {
   convertOrderToSale: (data: { orderId: number; paymentMethod?: string; discount?: number; vat?: number }) => Promise<{ success: boolean; saleIds: number[] }>;
   convertOrderToDebt: (data: { orderId: number; dueDate?: string; paymentMethod?: string; discount?: number; vat?: number }) => Promise<{ success: boolean; saleIds: number[] }>;
   cancelOrder: (data: { orderId: number; reason?: string }) => Promise<{ success: boolean }>;
+
+  // ── Update System ──
+  checkForUpdates: () => Promise<UpdateCheckResult>;
+  downloadUpdate: () => Promise<{ success: boolean; error?: string }>;
+  installUpdate: () => Promise<{ success: boolean }>;
+  skipVersion: (version: string) => Promise<{ success: boolean }>;
+  remindLater: (hours?: number) => Promise<{ success: boolean }>;
+  getUpdateStatus: () => Promise<UpdateStatusResult>;
+  setAutoCheckEnabled: (enabled: boolean) => Promise<{ success: boolean }>;
+  getAppVersion: () => Promise<string>;
+  clearReminder: () => Promise<{ success: boolean }>;
+
+  onUpdateStatus: (callback: (data: { status: UpdateStatus; info?: UpdateInfoData }) => void) => void;
+  onUpdateProgress: (callback: (data: UpdateProgressData) => void) => void;
+  onUpdateError: (callback: (data: { message: string }) => void) => void;
+  removeUpdateListeners: () => void;
+}
+
+export type UpdateStatus = 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
+
+export interface UpdateProgressData {
+  bytesPerSecond: number;
+  percent: number;
+  total: number;
+  transferred: number;
+  eta: number;
+}
+
+export interface UpdateInfoData {
+  version: string;
+  releaseDate: string;
+  releaseNotes: string;
+  files: { url: string; size: number }[];
+}
+
+export interface UpdateCheckResult {
+  status: UpdateStatus;
+  info?: UpdateInfoData;
+  error?: string;
+}
+
+export interface UpdateStatusResult {
+  status: UpdateStatus;
+  info: UpdateInfoData | null;
+  progress: UpdateProgressData | null;
+  error: string | null;
+  appVersion: string;
+  autoCheckEnabled: boolean;
 }
 
 export interface GlobalSearchResult {

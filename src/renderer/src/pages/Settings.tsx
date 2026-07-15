@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Palette, Globe, Building2,
   CheckCircle, UploadCloud,
   ShieldCheck, Database, Sun, Moon, Trash2, Upload, UserCog, Bell, HardDrive, RotateCcw, FileText,
   Sparkles, Leaf, Flame, Gem, Coffee, Clock, Headphones, Camera,
-  Phone, Users, HeartPulse,
+  Phone, Users, HeartPulse, Info, RefreshCw, Download,
   Package, ShoppingCart, Receipt, TrendingDown,
   CreditCard, Warehouse, Truck, BarChart3, SlidersHorizontal
 } from 'lucide-react';
@@ -22,6 +22,7 @@ import { toast } from 'sonner';
 import NotificationSettings from '../components/NotificationSettings';
 import DataTransferModal from '../components/DataTransferModal';
 import { BusinessHealthScore } from '../components/BusinessHealthScore';
+import { UpdateDialog } from '../components/UpdateDialog';
 
 const profileImages = (import.meta as any).glob('../assets/profile/*.png', { eager: true, import: 'default' });
 const AVATAR_OPTIONS = Object.values(profileImages) as string[];
@@ -44,7 +45,10 @@ const Settings: React.FC = () => {
   } = useSettings();
   const { isSuperAdmin, currentAdmin, refreshAdmin } = useAuth();
   
-  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'notifications' | 'security' | 'data' | 'support' | 'health'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'notifications' | 'security' | 'data' | 'support' | 'health' | 'about'>('profile');
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
+  const [updateDialogAction, setUpdateDialogAction] = useState<'check' | 'auto'>('auto');
+  const [appVersion, setAppVersion] = useState('');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showDataTransfer, setShowDataTransfer] = useState(false);
   const [avatar, setAvatar] = useState<string | null>(null);
@@ -66,6 +70,7 @@ const Settings: React.FC = () => {
   });
 
   React.useEffect(() => {
+    window.api.getAppVersion?.().then(setAppVersion).catch(() => {});
     // (Notification preferences are now loaded by the NotificationSettings component)
   }, []);
 
@@ -192,6 +197,7 @@ const Settings: React.FC = () => {
     { id: 'data' as const, label: t('settings.core_database'), icon: Database },
     { id: 'support' as const, label: t('settings.support'), icon: Headphones },
     { id: 'health' as const, label: 'Health Score', icon: HeartPulse },
+    { id: 'about' as const, label: 'About', icon: Info },
   ];
 
   return (
@@ -564,12 +570,87 @@ const Settings: React.FC = () => {
                 <BusinessHealthScore />
                )}
 
+               {activeTab === 'about' && (
+                 <div className="space-y-8">
+                   <div className="space-y-1">
+                     <h3 className="text-xl font-black tracking-tight">About Shega</h3>
+                     <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">Application information & updates</p>
+                   </div>
+
+                   <div className="rounded-2xl border bg-muted/20 p-6 flex flex-col items-center text-center gap-4">
+                     <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center">
+                       <Building2 size={28} className="text-primary" />
+                     </div>
+                     <div>
+                       <p className="text-lg font-black tracking-tight">Shega</p>
+                       <p className="text-xs text-muted-foreground">Offline Inventory & Sales Management</p>
+                     </div>
+                     <Badge variant="outline" className="text-xs font-mono px-3 py-1">
+                       v{appVersion || '1.0.0'}
+                     </Badge>
+                     <p className="text-[9px] text-muted-foreground font-bold uppercase tracking-wider">
+                       App ID: com.shega.inventory
+                     </p>
+                   </div>
+
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                     <Button
+                       onClick={() => {
+                         setUpdateDialogAction('check');
+                         setShowUpdateDialog(true);
+                       }}
+                       className="h-14 rounded-2xl font-black uppercase text-[10px] tracking-widest"
+                     >
+                       <RefreshCw size={14} />
+                       Check for Updates
+                     </Button>
+
+                     <Button
+                       variant="outline"
+                       onClick={() => window.api?.openExternal?.('https://github.com/nat2132/shega-desktop/releases')}
+                       className="h-14 rounded-2xl font-black uppercase text-[10px] tracking-widest"
+                     >
+                       <Download size={14} />
+                       View Releases
+                     </Button>
+                   </div>
+
+                   <div className="rounded-2xl border bg-muted/10 p-4 space-y-2">
+                     <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Technical Details</p>
+                     <div className="grid grid-cols-2 gap-2 text-xs">
+                       <div>
+                         <span className="text-muted-foreground">Version: </span>
+                         <span className="font-mono">{appVersion || '1.0.0'}</span>
+                       </div>
+                       <div>
+                         <span className="text-muted-foreground">Platform: </span>
+                         <span className="font-mono">Windows (NSIS)</span>
+                       </div>
+                       <div>
+                         <span className="text-muted-foreground">Electron: </span>
+                         <span className="font-mono">41.x</span>
+                       </div>
+                       <div>
+                         <span className="text-muted-foreground">Channel: </span>
+                         <span className="font-mono">Stable</span>
+                       </div>
+                     </div>
+                   </div>
+
+                   <UpdateDialog
+                     open={showUpdateDialog}
+                     onOpenChange={setShowUpdateDialog}
+                     initialAction={updateDialogAction}
+                   />
+                 </div>
+               )}
+
                {activeTab === 'support' && (
-                <div className="space-y-8">
-                  <div className="space-y-1">
-                    <h3 className="text-xl font-black tracking-tight">{t('settings.support')}</h3>
-                    <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.support_desc')}</p>
-                  </div>
+                 <div className="space-y-8">
+                   <div className="space-y-1">
+                     <h3 className="text-xl font-black tracking-tight">{t('settings.support')}</h3>
+                     <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.support_desc')}</p>
+                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="p-8 rounded-2xl border bg-muted/20 hover:bg-primary/5 hover:border-primary/30 transition-all group">
                       <Phone size={28} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />

@@ -351,4 +351,30 @@ contextBridge.exposeInMainWorld('api', {
 
   // Debug
   debugPing: () => ipcRenderer.invoke('debug:ping'),
+
+  // ── Update System ──
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  skipVersion: (version: string) => ipcRenderer.invoke('update:skip-version', version),
+  remindLater: (hours?: number) => ipcRenderer.invoke('update:remind-later', hours),
+  getUpdateStatus: () => ipcRenderer.invoke('update:get-status'),
+  setAutoCheckEnabled: (enabled: boolean) => ipcRenderer.invoke('update:set-auto-check', enabled),
+  getAppVersion: () => ipcRenderer.invoke('update:get-app-version'),
+  clearReminder: () => ipcRenderer.invoke('update:clear-reminder'),
+
+  onUpdateStatus: (callback: (data: any) => void) => {
+    ipcRenderer.on('update:status', (_event, data) => callback(data));
+  },
+  onUpdateProgress: (callback: (data: any) => void) => {
+    ipcRenderer.on('update:progress', (_event, data) => callback(data));
+  },
+  onUpdateError: (callback: (data: any) => void) => {
+    ipcRenderer.on('update:error', (_event, data) => callback(data));
+  },
+  removeUpdateListeners: () => {
+    ipcRenderer.removeAllListeners('update:status');
+    ipcRenderer.removeAllListeners('update:progress');
+    ipcRenderer.removeAllListeners('update:error');
+  },
 })
