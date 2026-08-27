@@ -1,25 +1,5 @@
 import * as React from "react"
 import {
-  closestCenter,
-  DndContext,
-  KeyboardSensor,
-  MouseSensor,
-  TouchSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-  type UniqueIdentifier,
-} from "@dnd-kit/core"
-import { restrictToVerticalAxis } from "@dnd-kit/modifiers"
-import {
-  arrayMove,
-  SortableContext,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable"
-import { CSS } from "@dnd-kit/utilities"
-// Icons handled by consolidated import below
-import {
   flexRender,
   getCoreRowModel,
   getFacetedRowModel,
@@ -29,25 +9,23 @@ import {
   useReactTable,
   type ColumnDef,
   type ColumnFiltersState,
-  type Row,
   type SortingState,
   type VisibilityState,
   getPaginationRowModel as getTanstackPaginationRowModel,
 } from "@tanstack/react-table"
 import { motion, AnimatePresence } from "framer-motion"
-import { 
-  IconChevronDown, 
-  IconChevronLeft, 
-  IconChevronRight, 
-  IconChevronsLeft, 
-  IconChevronsRight, 
- 
-  IconLayoutColumns, 
-  IconPlus,
-  IconSearch,
-  IconMaximize,
-  IconX
-} from "@tabler/icons-react"
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Columns2,
+  Maximize,
+  Plus,
+  Search,
+  X,
+} from "lucide-react"
 import { useSettings } from "../context/SettingsContext"
 import { Input } from "@renderer/components/ui/input"
 
@@ -79,31 +57,6 @@ import {
   TabsList,
   TabsTrigger,
 } from "@renderer/components/ui/tabs"
-
-function DraggableRow<TData>({ row }: { row: Row<TData> }) {
-  const { transform, transition, setNodeRef, isDragging } = useSortable({
-    id: (row.original as any).id,
-  })
-
-  return (
-    <TableRow
-      data-state={row.getIsSelected() && "selected"}
-      data-dragging={isDragging}
-      ref={setNodeRef}
-      className="relative z-0 data-[dragging=true]:z-10 data-[dragging=true]:opacity-80"
-      style={{
-        transform: CSS.Transform.toString(transform),
-        transition: transition,
-      }}
-    >
-      {row.getVisibleCells().map((cell) => (
-        <TableCell key={cell.id}>
-          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-        </TableCell>
-      ))}
-    </TableRow>
-  )
-}
 
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[]
@@ -140,18 +93,6 @@ export function DataTable<TData, TValue>({
     pageIndex: 0,
     pageSize: 10,
   })
-  const sortableId = React.useId()
-  const sensors = useSensors(
-    useSensor(MouseSensor, {}),
-    useSensor(TouchSensor, {}),
-    useSensor(KeyboardSensor, {})
-  )
-
-  const dataIds = React.useMemo<UniqueIdentifier[]>(
-    () => (data as any)?.map(({ id }: any) => id) || [],
-    [data]
-  )
-
   const table = useReactTable({
     data,
     columns,
@@ -179,17 +120,6 @@ export function DataTable<TData, TValue>({
     getFacetedUniqueValues: getFacetedUniqueValues(),
   })
 
-  function handleDragEnd(event: DragEndEvent) {
-    const { active, over } = event
-    if (active && over && active.id !== over.id) {
-      setData((data) => {
-        const oldIndex = dataIds.indexOf(active.id)
-        const newIndex = dataIds.indexOf(over.id)
-        return arrayMove(data, oldIndex, newIndex)
-      })
-    }
-  }
-
   const TableUI = (isFullScreen = false) => (
     <div className={`flex flex-col gap-6 ${isFullScreen ? 'h-full' : ''}`}>
       <div className={`flex items-center justify-between gap-4 ${isFullScreen ? 'px-2' : 'px-4 lg:px-6'}`}>
@@ -200,8 +130,9 @@ export function DataTable<TData, TValue>({
             </TabsList>
           )}
           <div className="relative flex-1 max-w-sm">
-            <IconSearch className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
             <Input
+              data-tutorial-section="table-search"
               placeholder={t('data_table.search_items', 'Search items...')}
               value={globalFilter ?? ""}
               onChange={(e) => setGlobalFilter(e.target.value)}
@@ -214,9 +145,9 @@ export function DataTable<TData, TValue>({
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="h-9 px-3">
-                <IconLayoutColumns className="size-4" />
+                <Columns2 className="size-4" />
                 <span className="hidden lg:inline ml-2">{t('data_table.columns', 'Columns')}</span>
-                <IconChevronDown className="size-3 ml-1 opacity-50" />
+                <ChevronDown className="size-3 ml-1 opacity-50" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
@@ -246,7 +177,7 @@ export function DataTable<TData, TValue>({
           
           {onAddClick && (
             <Button variant="outline" size="sm" onClick={onAddClick} className="h-9 px-3">
-              <IconPlus className="size-4" />
+              <Plus className="size-4" />
               <span className="hidden lg:inline ml-2">{addLabel}</span>
             </Button>
           )}
@@ -256,9 +187,9 @@ export function DataTable<TData, TValue>({
               variant="secondary" 
               size="sm" 
               onClick={() => setIsExpanded(true)}
-              className="h-9 px-4 font-black uppercase text-[10px] tracking-widest bg-primary text-primary-foreground hover:bg-primary/90 shadow-xl shadow-primary/20"
+              className="h-9 px-4 font-black uppercase text-xs tracking-widest bg-primary text-primary-foreground hover:bg-primary/90 shadow-xl shadow-primary/20"
             >
-              <IconMaximize className="size-4 mr-2" />
+              <Maximize className="size-4 mr-2" />
               {t('common.view_all', 'View All')}
             </Button>
           )}
@@ -267,20 +198,13 @@ export function DataTable<TData, TValue>({
 
       <div className={`flex flex-col gap-2 ${isFullScreen ? 'flex-1 overflow-hidden px-2' : 'gap-4 px-4 lg:px-6'}`}>
         <div className={`overflow-auto rounded-xl border bg-card/50 ${isFullScreen ? 'flex-1 shadow-2xl' : ''}`}>
-          <DndContext
-            collisionDetection={closestCenter}
-            modifiers={[restrictToVerticalAxis]}
-            onDragEnd={handleDragEnd}
-            sensors={sensors}
-            id={sortableId}
-          >
             <Table>
               <TableHeader className="sticky top-0 z-10 bg-muted/80 backdrop-blur-md">
                 {table.getHeaderGroups().map((headerGroup) => (
                   <TableRow key={headerGroup.id} className="hover:bg-transparent border-none">
                     {headerGroup.headers.map((header) => {
                       return (
-                        <TableHead key={header.id} colSpan={header.colSpan} className="text-[10px] font-black uppercase tracking-[0.2em] h-12 text-muted-foreground">
+                        <TableHead key={header.id} colSpan={header.colSpan} className="text-xs font-black uppercase tracking-[0.2em] h-12 text-muted-foreground">
                           {header.isPlaceholder
                             ? null
                             : flexRender(
@@ -295,14 +219,15 @@ export function DataTable<TData, TValue>({
               </TableHeader>
               <TableBody>
                 {table.getRowModel().rows?.length ? (
-                  <SortableContext
-                    items={dataIds}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    {table.getRowModel().rows.map((row) => (
-                      <DraggableRow key={row.id} row={row} />
-                    ))}
-                  </SortableContext>
+                  table.getRowModel().rows.map((row) => (
+                    <TableRow key={row.id}>
+                      {row.getVisibleCells().map((cell) => (
+                        <TableCell key={cell.id}>
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))
                 ) : (
                   <TableRow>
                     <TableCell
@@ -310,26 +235,25 @@ export function DataTable<TData, TValue>({
                       className="h-64 text-center"
                     >
                       <div className="flex flex-col items-center justify-center gap-2 opacity-40">
-                         <IconSearch className="size-8" />
-                         <span className="text-[10px] font-black uppercase tracking-widest">{t('data_table.no_results', 'No results found')}</span>
+                         <Search className="size-8" />
+                         <span className="text-xs font-black uppercase tracking-widest">{t('data_table.no_results', 'No results found')}</span>
                       </div>
                     </TableCell>
                   </TableRow>
                 )}
               </TableBody>
             </Table>
-          </DndContext>
         </div>
 
         <div className="flex items-center justify-between px-4 py-2 border-t bg-muted/20 rounded-b-xl">
-          <div className="hidden flex-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60 lg:flex">
+          <div className="hidden flex-1 text-xs font-bold uppercase tracking-widest text-muted-foreground/60 lg:flex">
             {t('data_table.records_selected', '{selected} of {total} records selected')
               .replace('{selected}', String(table.getFilteredSelectedRowModel().rows.length))
               .replace('{total}', String(table.getFilteredRowModel().rows.length))}
           </div>
           <div className="flex w-full items-center gap-8 lg:w-fit">
             <div className="hidden items-center gap-2 lg:flex">
-              <Label htmlFor="rows-per-page" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+              <Label htmlFor="rows-per-page" className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                 {t('data_table.density', 'Density')}
               </Label>
               <Select
@@ -338,21 +262,21 @@ export function DataTable<TData, TValue>({
                   table.setPageSize(Number(value))
                 }}
               >
-                <SelectTrigger size="sm" className="w-20 bg-transparent border-none text-[10px] font-black" id="rows-per-page">
+                <SelectTrigger size="sm" className="w-20 bg-transparent border-none text-xs font-black" id="rows-per-page">
                   <SelectValue
                     placeholder={table.getState().pagination.pageSize}
                   />
                 </SelectTrigger>
                 <SelectContent side="top">
                   {[10, 20, 30, 40, 50, 100].map((pageSize) => (
-                    <SelectItem key={pageSize} value={`${pageSize}`} className="text-[10px] font-bold">
+                    <SelectItem key={pageSize} value={`${pageSize}`} className="text-xs font-bold">
                       {t('data_table.items', '{count} Items').replace('{count}', String(pageSize))}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex w-fit items-center justify-center text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+            <div className="flex w-fit items-center justify-center text-xs font-black uppercase tracking-widest text-muted-foreground">
               {t('data_table.segment', 'Segment {current} of {total}')
                 .replace('{current}', String(table.getState().pagination.pageIndex + 1))
                 .replace('{total}', String(table.getPageCount()))}
@@ -364,7 +288,7 @@ export function DataTable<TData, TValue>({
                 onClick={() => table.setPageIndex(0)}
                 disabled={!table.getCanPreviousPage()}
               >
-                <IconChevronsLeft className="size-4" />
+                <ChevronsLeft className="size-4" />
               </Button>
               <Button
                 variant="ghost"
@@ -373,7 +297,7 @@ export function DataTable<TData, TValue>({
                 onClick={() => table.previousPage()}
                 disabled={!table.getCanPreviousPage()}
               >
-                <IconChevronLeft className="size-4" />
+                <ChevronLeft className="size-4" />
               </Button>
               <Button
                 variant="ghost"
@@ -382,7 +306,7 @@ export function DataTable<TData, TValue>({
                 onClick={() => table.nextPage()}
                 disabled={!table.getCanNextPage()}
               >
-                <IconChevronRight className="size-4" />
+                <ChevronRight className="size-4" />
               </Button>
               <Button
                 variant="ghost"
@@ -391,7 +315,7 @@ export function DataTable<TData, TValue>({
                 onClick={() => table.setPageIndex(table.getPageCount() - 1)}
                 disabled={!table.getCanNextPage()}
               >
-                <IconChevronsRight className="size-4" />
+                <ChevronsRight className="size-4" />
               </Button>
             </div>
           </div>
@@ -418,11 +342,11 @@ export function DataTable<TData, TValue>({
             <div className="flex items-center justify-between mb-4 px-4">
               <div className="flex items-center gap-4">
                 <div className="h-12 w-12 rounded-2xl bg-primary flex items-center justify-center text-primary-foreground shadow-2xl shadow-primary/30">
-                  <IconMaximize className="size-6" />
+                  <Maximize className="size-6" />
                 </div>
                 <div>
                    <h2 className="text-3xl font-black uppercase tracking-tighter">{title}</h2>
-                   <p className="text-[10px] font-black uppercase tracking-[0.4em] text-muted-foreground">{t('data_table.focus_mode', 'Focus Mode Terminal')}</p>
+                   <p className="text-xs font-black uppercase tracking-[0.4em] text-muted-foreground">{t('data_table.focus_mode', 'Focus Mode Terminal')}</p>
                 </div>
               </div>
               <Button 
@@ -431,7 +355,7 @@ export function DataTable<TData, TValue>({
                 onClick={() => setIsExpanded(false)}
                 className="h-12 w-12 rounded-2xl hover:bg-destructive/10 hover:text-destructive transition-colors group"
               >
-                <IconX className="size-6 group-hover:rotate-90 transition-transform" />
+                <X className="size-6 group-hover:rotate-90 transition-transform" />
               </Button>
             </div>
             

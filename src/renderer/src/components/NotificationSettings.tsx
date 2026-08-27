@@ -67,6 +67,12 @@ const NotificationSettings: React.FC = () => {
   const { t } = useSettings();
   const [prefs, setPrefs] = useState<NotificationPref[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [alertPrefs, setAlertPrefs] = useState<Record<string, boolean>>({
+    inventory_alerts: true,
+    debt_alerts: true,
+    expiry_alerts: true,
+    sales_alerts: true,
+  });
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [showAddReminder, setShowAddReminder] = useState(false);
@@ -81,12 +87,14 @@ const NotificationSettings: React.FC = () => {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [p, r] = await Promise.all([
+      const [p, r, a] = await Promise.all([
         window.api.getNotificationPreferences(),
         window.api.getReminders({ limit: 200 }),
+        window.api.getSetting('notification_preferences'),
       ]);
       setPrefs(p || []);
       setReminders(r || []);
+      if (a) setAlertPrefs({ ...alertPrefs, ...a });
     } catch (e: any) {
       toast.error(e.message || t('notifications.load_error', 'Failed to load preferences'));
     } finally {
@@ -104,6 +112,16 @@ const NotificationSettings: React.FC = () => {
   };
 
   useEffect(() => { loadData(); loadQuietHours(); }, []);
+
+  const updateAlertPref = async (key: string, value: boolean) => {
+    const updated = { ...alertPrefs, [key]: value };
+    setAlertPrefs(updated);
+    try {
+      await window.api.setSetting('notification_preferences', updated);
+    } catch (e: any) {
+      toast.error(e.message || t('notifications.update_error', 'Update failed'));
+    }
+  };
 
   const updatePref = async (key: string, patch: Partial<NotificationPref>) => {
     setSavingKey(key);
@@ -249,6 +267,31 @@ const NotificationSettings: React.FC = () => {
         </div>
       </div>
 
+      {/* Alert Group Toggles */}
+      <div className="bg-card border rounded-lg p-4 space-y-3">
+        <h3 className="font-semibold text-sm">{t('settings.alert_groups', 'Alert Categories')}</h3>
+        <p className="text-xs text-muted-foreground">{t('settings.notif_desc')}</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {[
+            { key: 'inventory_alerts', label: t('settings.inventory_alerts'), desc: t('settings.inventory_notif_desc') },
+            { key: 'debt_alerts', label: t('settings.debt_alerts'), desc: t('settings.debt_notif_desc') },
+            { key: 'expiry_alerts', label: t('settings.expiry_alerts'), desc: t('settings.expiry_notif_desc') },
+            { key: 'sales_alerts', label: t('settings.sales_alerts'), desc: t('settings.sales_notif_desc') },
+          ].map(item => (
+            <div key={item.key} className="flex items-start gap-3 p-2 rounded hover:bg-muted/20">
+              <Switch
+                checked={alertPrefs[item.key]}
+                onCheckedChange={(v: boolean) => updateAlertPref(item.key, v)}
+              />
+              <div className="flex-1 min-w-0">
+                <Label className="text-sm font-medium">{item.label}</Label>
+                <p className="text-xs text-muted-foreground">{item.desc}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Preferences by category */}
       <div className="space-y-4">
         {CATEGORIES.map(cat => {
@@ -262,7 +305,7 @@ const NotificationSettings: React.FC = () => {
                   <div key={p.key} className="flex items-center gap-3 p-2 rounded hover:bg-muted/20">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm">{t(CATEGORY_LABELS[p.key] || p.key)}</p>
-                      <p className="text-[10px] text-muted-foreground font-mono">{p.key}</p>
+                      <p className="text-xs text-muted-foreground font-mono">{p.key}</p>
                     </div>
                     <div className="flex items-center gap-2">
                       <ChannelToggle
@@ -364,7 +407,7 @@ const NotificationSettings: React.FC = () => {
                 <div className={`h-2 w-2 rounded-full ${r.status === 'completed' ? 'bg-green-500' : r.status === 'pending' ? 'bg-amber-500' : 'bg-muted'}`} />
                 <div className="flex-1 min-w-0">
                   <p className={`text-sm ${r.status === 'completed' ? 'line-through text-muted-foreground' : ''}`}>{r.title}</p>
-                  <p className="text-[10px] text-muted-foreground flex items-center gap-2">
+                  <p className="text-xs text-muted-foreground flex items-center gap-2">
                     <Calendar className="h-3 w-3" />{r.triggerDate.split('T')[0]}
                     {r.repeatInterval && <><Repeat className="h-3 w-3" />{r.repeatInterval}</>}
                     <span className="px-1 rounded bg-muted">{r.category}</span>

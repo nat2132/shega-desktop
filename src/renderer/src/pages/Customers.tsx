@@ -311,9 +311,9 @@ const Customers: React.FC = () => {
           <div className="flex flex-col">
             <span className="font-bold">{row.original.customerName}</span>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] text-muted-foreground">{row.original.phone || t('sales.walk_in')}</span>
+              <span className="text-xs text-muted-foreground">{row.original.phone || t('sales.walk_in')}</span>
               {row.original.groupName !== 'general' && (
-                <Badge variant="secondary" className="text-[9px] h-4 px-1">{translateGroupName(row.original.groupName)}</Badge>
+                <Badge variant="secondary" className="text-xs h-4 px-1">{translateGroupName(row.original.groupName)}</Badge>
               )}
             </div>
           </div>
@@ -373,19 +373,19 @@ const Customers: React.FC = () => {
             <SheetTrigger asChild>
               <Button variant="outline" size="sm" className={`h-8 px-3 transition-all ${filterGroup !== 'All' || filterCity !== 'All' || filterStatus !== 'All' ? 'border-primary text-primary bg-primary/5 shadow-sm' : 'border-border/60 hover:bg-muted/50'}`}>
                 <Filter className="mr-1.5 h-3.5 w-3.5" />
-                {t('common.filters', 'Filters')} {(filterGroup !== 'All' || filterCity !== 'All' || filterStatus !== 'All') && <Badge className="ml-1.5 h-4 px-1 text-[9px] rounded-full">{t('common.active', 'Active')}</Badge>}
+                {t('common.filters', 'Filters')} {(filterGroup !== 'All' || filterCity !== 'All' || filterStatus !== 'All') && <Badge className="ml-1.5 h-4 px-1 text-xs rounded-full">{t('common.active', 'Active')}</Badge>}
               </Button>
             </SheetTrigger>
             <SheetContent side="right" className="w-[400px] sm:w-[540px] border-l-border/40 p-0 flex flex-col">
               <SheetHeader className="border-b border-border/50 p-6">
                 <SheetTitle className="text-2xl font-black uppercase tracking-tight">{t('customers.filters_title', 'Customer Filters')}</SheetTitle>
-                <SheetDescription className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">{t('customers.filters_desc', 'Refine your customer view')}</SheetDescription>
+                <SheetDescription className="text-xs font-bold text-muted-foreground uppercase tracking-widest">{t('customers.filters_desc', 'Refine your customer view')}</SheetDescription>
               </SheetHeader>
 
               <div className="space-y-8 p-6 flex-1 overflow-y-auto">
                 {/* Group Filter */}
                 <div className="space-y-3">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">{t('customers.group', 'Group')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-primary">{t('customers.group', 'Group')}</h4>
                   <Select value={filterGroup} onValueChange={setFilterGroup}>
                     <SelectTrigger className="h-12 bg-muted/30 border-border/50 rounded-xl">
                       <SelectValue placeholder={t('customers.all_groups', 'All Groups')} />
@@ -398,7 +398,7 @@ const Customers: React.FC = () => {
 
                 {/* City Filter */}
                 <div className="space-y-3">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">{t('customers.city', 'City')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-primary">{t('customers.city', 'City')}</h4>
                   <Select value={filterCity} onValueChange={setFilterCity}>
                     <SelectTrigger className="h-12 bg-muted/30 border-border/50 rounded-xl">
                       <SelectValue placeholder={t('customers.all_cities', 'All Cities')} />
@@ -411,7 +411,7 @@ const Customers: React.FC = () => {
 
                 {/* Status Filter */}
                 <div className="space-y-3">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">{t('common.status', 'Status')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-primary">{t('common.status', 'Status')}</h4>
                   <Select value={filterStatus} onValueChange={setFilterStatus}>
                     <SelectTrigger className="h-12 bg-muted/30 border-border/50 rounded-xl">
                       <SelectValue placeholder={t('customers.all_statuses', 'All Statuses')} />
@@ -461,11 +461,11 @@ const Customers: React.FC = () => {
           <div className="space-y-6">
             <div className="grid grid-cols-2 gap-3">
               <div className="p-3 rounded-xl bg-muted/30">
-                <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('customers.master_balance')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('customers.master_balance')}</p>
                 <p className="text-lg font-black">{t('common.etb')} {(selectedCustomer.salesStats?.outstanding || 0).toLocaleString()}</p>
               </div>
               <div className="p-3 rounded-xl bg-primary/10">
-                <p className="text-[9px] font-black uppercase tracking-widest text-primary">{t('customers.lifetime_paid')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-primary">{t('customers.lifetime_paid')}</p>
                 <p className="text-lg font-black text-primary">{t('common.etb')} {(selectedCustomer.salesStats?.totalPaid || 0).toLocaleString()}</p>
               </div>
             </div>
@@ -489,7 +489,7 @@ const Customers: React.FC = () => {
               </div>
               <div className="flex items-center gap-1.5 text-xs bg-muted/20 p-2 rounded-lg">
                 <Tag size={12} className="text-muted-foreground shrink-0" />
-                <Badge variant="outline" className="text-[9px] h-4 px-1">{translateGroupName(selectedCustomer.groupName)}</Badge>
+                <Badge variant="outline" className="text-xs h-4 px-1">{translateGroupName(selectedCustomer.groupName)}</Badge>
               </div>
               <div className="flex items-center gap-1.5 text-xs bg-muted/20 p-2 rounded-lg">
                 <CreditCard size={12} className="text-muted-foreground shrink-0" />
@@ -498,23 +498,23 @@ const Customers: React.FC = () => {
             </div>
 
             <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => openEditCustomer(selectedCustomer)} className="h-8 text-[10px] font-bold uppercase tracking-widest">
+              <Button variant="outline" size="sm" onClick={() => openEditCustomer(selectedCustomer)} className="h-8 text-xs font-bold uppercase tracking-widest">
                 <Pencil size={12} className="mr-1" /> {t('customers.edit_profile', 'Edit Profile')}
               </Button>
             </div>
 
             <div>
-              <h4 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground border-b border-border/50 pb-1.5 flex items-center gap-2">
+              <h4 className="text-xs font-bold uppercase tracking-widest text-muted-foreground border-b border-border/50 pb-1.5 flex items-center gap-2">
                 <MessageSquare size={12} /> {t('customers.communication_history', 'Communication History')}
               </h4>
               <div className="space-y-1.5 max-h-32 overflow-y-auto my-2">
                 {customerNotes.length === 0 && (
-                  <p className="text-[10px] text-muted-foreground italic">{t('customers.no_notes', 'No notes recorded')}</p>
+                  <p className="text-xs text-muted-foreground italic">{t('customers.no_notes', 'No notes recorded')}</p>
                 )}
                 {customerNotes.map(note => (
                   <div key={note.id} className="p-2 rounded-lg bg-muted/20 text-xs">
                     <p className="leading-relaxed">{note.note}</p>
-                    <p className="text-[9px] text-muted-foreground mt-0.5">
+                    <p className="text-xs text-muted-foreground mt-0.5">
                       {note.createdBy} &middot; {formatDate(note.createdAt)}
                     </p>
                   </div>
@@ -535,12 +535,12 @@ const Customers: React.FC = () => {
             </div>
 
             <div>
-              <h4 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground border-b border-border/50 pb-1.5 flex items-center gap-2">
+              <h4 className="text-xs font-bold uppercase tracking-widest text-muted-foreground border-b border-border/50 pb-1.5 flex items-center gap-2">
                 <History size={12} /> {t('customers.debt_history')}
               </h4>
               <div className="border rounded-lg overflow-hidden mt-2">
                 <table className="w-full text-left">
-                  <thead className="bg-muted/60 text-[9px] font-black uppercase tracking-widest">
+                  <thead className="bg-muted/60 text-xs font-black uppercase tracking-widest">
                     <tr>
                       <th className="px-3 py-1.5">{t('inventory.product')}</th>
                       <th className="px-3 py-1.5">{t('customers.outstanding')}</th>
@@ -563,12 +563,12 @@ const Customers: React.FC = () => {
                             className="h-6 w-6">
                             <Printer size={10} />
                           </Button>
-                          <Button size="sm" onClick={() => openPayment(sale)} className="h-6 text-[9px] font-bold uppercase tracking-widest px-2">{t('customers.pay')}</Button>
+                          <Button size="sm" onClick={() => openPayment(sale)} className="h-6 text-xs font-bold uppercase tracking-widest px-2">{t('customers.pay')}</Button>
                         </td>
                       </tr>
                     ))}
                     {customerSales.filter(s => s.paymentStatus === 'Debt').length === 0 && (
-                      <tr><td colSpan={5} className="px-3 py-4 text-center text-muted-foreground text-[10px]">{t('customers.no_outstanding_debts', 'No outstanding debts')}</td></tr>
+                      <tr><td colSpan={5} className="px-3 py-4 text-center text-muted-foreground text-xs">{t('customers.no_outstanding_debts', 'No outstanding debts')}</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -583,14 +583,14 @@ const Customers: React.FC = () => {
         <form onSubmit={handleSaveCustomer} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 {t('customers.customer_name', 'Customer Name')} *
               </Label>
               <Input required value={editingCustomer.customerName}
                 onChange={e => setEditingCustomer({ ...editingCustomer, customerName: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 {t('customers.group', 'Group')}
               </Label>
               <Select value={editingCustomer.groupName}
@@ -606,50 +606,50 @@ const Customers: React.FC = () => {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('common.phone', 'Phone')}</Label>
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('common.phone', 'Phone')}</Label>
               <Input value={editingCustomer.phone}
                 onChange={e => setEditingCustomer({ ...editingCustomer, phone: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('customers.secondary_phone', 'Secondary Phone')}</Label>
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('customers.secondary_phone', 'Secondary Phone')}</Label>
               <Input value={editingCustomer.secondaryPhone}
                 onChange={e => setEditingCustomer({ ...editingCustomer, secondaryPhone: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('common.email', 'Email')}</Label>
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('common.email', 'Email')}</Label>
               <Input type="email" value={editingCustomer.email}
                 onChange={e => setEditingCustomer({ ...editingCustomer, email: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('customers.company', 'Company')}</Label>
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('customers.company', 'Company')}</Label>
               <Input value={editingCustomer.company}
                 onChange={e => setEditingCustomer({ ...editingCustomer, company: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('customers.tax_number', 'Tax Number')}</Label>
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('customers.tax_number', 'Tax Number')}</Label>
               <Input value={editingCustomer.taxNumber}
                 onChange={e => setEditingCustomer({ ...editingCustomer, taxNumber: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 {t('customers.credit_limit', 'Credit Limit')} ({t('common.etb')})
               </Label>
               <Input type="number" value={editingCustomer.creditLimit}
                 onChange={e => setEditingCustomer({ ...editingCustomer, creditLimit: parseFloat(e.target.value) || 0 })} />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('customers.city', 'City')}</Label>
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('customers.city', 'City')}</Label>
               <Input value={editingCustomer.city}
                 onChange={e => setEditingCustomer({ ...editingCustomer, city: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('customers.address', 'Address')}</Label>
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('customers.address', 'Address')}</Label>
               <Input value={editingCustomer.address}
                 onChange={e => setEditingCustomer({ ...editingCustomer, address: e.target.value })} />
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('customers.notes', 'Notes')}</Label>
+            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('customers.notes', 'Notes')}</Label>
             <Textarea value={editingCustomer.notes}
               onChange={e => setEditingCustomer({ ...editingCustomer, notes: e.target.value })} rows={2} />
           </div>
@@ -657,13 +657,13 @@ const Customers: React.FC = () => {
             {isEditing && (
               <Button type="button" variant="destructive" size="sm"
                 onClick={() => handleDeleteCustomer(editingCustomer)}
-                className="h-8 text-[10px] font-bold uppercase tracking-widest px-3">
+                className="h-8 text-xs font-bold uppercase tracking-widest px-3">
                 <Trash2 size={12} className="mr-1" /> {t('customers.deactivate', 'Deactivate')}
               </Button>
             )}
             <div className="flex gap-2 ml-auto">
-              <Button type="button" variant="outline" onClick={() => setShowFormModal(false)} className="h-8 text-[10px] font-bold uppercase tracking-widest px-3">{t('common.cancel', 'Cancel')}</Button>
-              <Button type="submit" className="h-8 text-[10px] font-bold uppercase tracking-widest px-3">{isEditing ? t('customers.update_customer', 'Update Customer') : t('customers.create_customer', 'Create Customer')}</Button>
+              <Button type="button" variant="outline" onClick={() => setShowFormModal(false)} className="h-8 text-xs font-bold uppercase tracking-widest px-3">{t('common.cancel', 'Cancel')}</Button>
+              <Button type="submit" className="h-8 text-xs font-bold uppercase tracking-widest px-3">{isEditing ? t('customers.update_customer', 'Update Customer') : t('customers.create_customer', 'Create Customer')}</Button>
             </div>
           </div>
         </form>
@@ -674,12 +674,12 @@ const Customers: React.FC = () => {
         {selectedSale && (
           <form onSubmit={handlePayment} className="space-y-6">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 {t('customers.payment_amount')}
               </label>
               <Input required type="number" max={selectedSale.totalPrice - selectedSale.paidAmount}
                 value={paymentAmount} onChange={e => setPaymentAmount(e.target.value)} />
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 {t('common.max')}: {t('common.etb')} {selectedSale.totalPrice - selectedSale.paidAmount}
               </p>
             </div>

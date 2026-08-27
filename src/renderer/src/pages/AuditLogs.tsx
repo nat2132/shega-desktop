@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Shield, Search, RefreshCw, Filter, Eye, Undo2, RotateCcw
+  Shield, Search, RefreshCw, Filter, Eye, Undo2, RotateCcw, ShieldCheck, ShieldAlert
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { Button } from '../components/ui/button';
@@ -42,8 +42,21 @@ const AuditLogs: React.FC = () => {
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [reversingId, setReversingId] = useState<number | null>(null);
+  const [chain, setChain] = useState<{ ok: boolean; count: number; brokenAt: number | null } | null>(null);
+  const [checkingChain, setCheckingChain] = useState(false);
 
   useEffect(() => { loadLogs(); }, []);
+
+  const checkChain = async () => {
+    setCheckingChain(true);
+    try {
+      const result = await window.api.verifyAuditChain();
+      setChain(result);
+    } catch (err) { console.error(err); }
+    finally { setCheckingChain(false); }
+  };
+
+  useEffect(() => { checkChain(); }, []);
 
   const loadLogs = async () => {
     try {
@@ -89,9 +102,33 @@ const AuditLogs: React.FC = () => {
           </div>
           <div>
             <p className="text-sm font-black uppercase tracking-tight">{t('audit_logs.title')}</p>
-            <p className="text-[9px] text-muted-foreground font-bold uppercase">{t('audit_logs.subtitle')}</p>
+            <p className="text-xs text-muted-foreground font-bold uppercase">{t('audit_logs.subtitle')}</p>
           </div>
         </div>
+      </div>
+
+      <div className="px-4 lg:px-6">
+        {chain && (
+          <div className={`rounded-2xl border p-4 flex items-center gap-3 ${chain.ok ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-red-500/40 bg-red-500/5'}`}>
+            {chain.ok ? (
+              <ShieldCheck size={18} className={chain.ok ? 'text-emerald-600' : 'text-red-600'} />
+            ) : (
+              <ShieldAlert size={18} className="text-red-600" />
+            )}
+            <div className="flex-1 min-w-0">
+              <p className={`text-xs font-black uppercase tracking-widest ${chain.ok ? 'text-emerald-700' : 'text-red-700'}`}>
+                {chain.ok ? t('audit_logs.chain_ok') : t('audit_logs.chain_broken')}
+              </p>
+              <p className="text-xs font-semibold text-muted-foreground">
+                {t('audit_logs.chain_count')} {chain.count}
+                {!chain.ok && chain.brokenAt && <> · {t('audit_logs.chain_broken_at')} #{chain.brokenAt}</>}
+              </p>
+            </div>
+            <Button size="sm" variant="outline" className="h-8 text-xs font-black uppercase tracking-widest" onClick={checkChain} disabled={checkingChain}>
+              <RefreshCw size={12} className={`mr-2 ${checkingChain ? 'animate-spin' : ''}`} /> {t('audit_logs.chain_check')}
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="px-4 lg:px-6 space-y-3">
@@ -106,7 +143,7 @@ const AuditLogs: React.FC = () => {
             />
           </div>
           <select value={actionFilter} onChange={e => setActionFilter(e.target.value)}
-            className="h-9 px-3 rounded-xl border bg-background text-[10px] font-bold">
+            className="h-9 px-3 rounded-xl border bg-background text-xs font-bold">
             <option value="">{t('audit_logs.all_actions')}</option>
             <option value="void_sale">{t('audit_logs.action_void_sale')}</option>
             <option value="reverse_payment">{t('audit_logs.action_reverse_payment')}</option>
@@ -118,7 +155,7 @@ const AuditLogs: React.FC = () => {
             <option value="insert">{t('audit_logs.action_insert')}</option>
           </select>
           <select value={entityFilter} onChange={e => setEntityFilter(e.target.value)}
-            className="h-9 px-3 rounded-xl border bg-background text-[10px] font-bold">
+            className="h-9 px-3 rounded-xl border bg-background text-xs font-bold">
             <option value="">{t('audit_logs.all_entities')}</option>
             <option value="sale">{t('audit_logs.entity_sale')}</option>
             <option value="item">{t('audit_logs.entity_item')}</option>
@@ -127,21 +164,21 @@ const AuditLogs: React.FC = () => {
             <option value="payment">{t('audit_logs.entity_payment')}</option>
             <option value="adjustment">{t('audit_logs.entity_adjustment')}</option>
           </select>
-          <Button size="sm" variant="outline" className="h-9 text-[10px] font-black uppercase tracking-widest" onClick={loadLogs}>
+          <Button size="sm" variant="outline" className="h-9 text-xs font-black uppercase tracking-widest" onClick={loadLogs}>
             <Filter size={14} className="mr-2" /> {t('audit_logs.filter')}
           </Button>
-          <Button size="sm" variant="outline" className="h-9 text-[10px] font-black uppercase tracking-widest" onClick={loadLogs}>
+          <Button size="sm" variant="outline" className="h-9 text-xs font-black uppercase tracking-widest" onClick={loadLogs}>
             <RefreshCw size={14} className="mr-2" /> {t('audit_logs.refresh')}
           </Button>
         </div>
         <div className="flex items-center gap-16 flex-wrap">
           <div className="flex items-center gap-3">
-            <label className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">{t('audit_logs.from')}</label>
-            <DatePicker value={fromDate} onChange={e => setFromDate(e)} className="h-9 text-[10px] rounded-xl w-36" />
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('audit_logs.from')}</label>
+            <DatePicker value={fromDate} onChange={e => setFromDate(e)} className="h-9 text-xs rounded-xl w-36" />
           </div>
           <div className="flex items-center gap-3">
-            <label className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">{t('audit_logs.to')}</label>
-            <DatePicker value={toDate} onChange={e => setToDate(e)} className="h-9 text-[10px] rounded-xl w-36" />
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('audit_logs.to')}</label>
+            <DatePicker value={toDate} onChange={e => setToDate(e)} className="h-9 text-xs rounded-xl w-36" />
           </div>
         </div>
       </div>
@@ -152,7 +189,7 @@ const AuditLogs: React.FC = () => {
             {logs.length === 0 && (
               <div className="p-16 text-center">
                 <Shield size={36} className="mx-auto mb-3 text-muted-foreground/30" />
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('audit_logs.no_logs')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('audit_logs.no_logs')}</p>
               </div>
             )}
             {logs.map((log, i) => (
@@ -163,15 +200,15 @@ const AuditLogs: React.FC = () => {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <Badge variant={actionVariants[log.action] || 'outline'} className="text-[8px] font-black uppercase">{log.action}</Badge>
-                      <Badge variant="outline" className="text-[8px] font-black uppercase">{log.entityType || '-'}</Badge>
+                      <Badge variant={actionVariants[log.action] || 'outline'} className="text-xs font-black uppercase">{log.action}</Badge>
+                      <Badge variant="outline" className="text-xs font-black uppercase">{log.entityType || '-'}</Badge>
                       {log.entityId && (
-                        <span className="text-[9px] font-bold text-muted-foreground">#{log.entityId}</span>
+                        <span className="text-xs font-bold text-muted-foreground">#{log.entityId}</span>
                       )}
                       {log.reversedAt && (
-                        <Badge variant="secondary" className="text-[8px] font-black uppercase">{t('audit_logs.reversed')}</Badge>
+                        <Badge variant="secondary" className="text-xs font-black uppercase">{t('audit_logs.reversed')}</Badge>
                       )}
-                      <span className="text-[9px] text-muted-foreground ml-auto">
+                      <span className="text-xs text-muted-foreground ml-auto">
                         {log.createdAt ? formatDateTime(log.createdAt) : ''}
                       </span>
                     </div>
@@ -188,7 +225,7 @@ const AuditLogs: React.FC = () => {
                       <p className="text-xs font-semibold mt-1.5 break-words">{log.description}</p>
                     )}
                     <div className="flex items-center gap-1.5 mt-1">
-                      <span className="text-[9px] text-muted-foreground font-medium">{t('audit_logs.by')} {log.changedBy || t('common.unknown')}</span>
+                      <span className="text-xs text-muted-foreground font-medium">{t('audit_logs.by')} {log.changedBy || t('common.unknown')}</span>
                     </div>
                   </div>
                   <div className="flex items-start gap-1 shrink-0">
@@ -198,7 +235,7 @@ const AuditLogs: React.FC = () => {
                         size="sm"
                         disabled={reversingId === log.id}
                         onClick={() => handleReverse(log)}
-                        className="h-7 text-[8px] font-black uppercase tracking-widest rounded-lg border-amber-500/30 text-amber-600 hover:bg-amber-500/10"
+                        className="h-7 text-xs font-black uppercase tracking-widest rounded-lg border-amber-500/30 text-amber-600 hover:bg-amber-500/10"
                       >
                         {reversingId === log.id ? (
                           <RotateCcw size={11} className="animate-spin" />

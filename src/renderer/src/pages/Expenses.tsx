@@ -56,20 +56,27 @@ const Expenses: React.FC = () => {
 
   const [formData, setFormData] = useState({
     name: '', amount: '', category: 'Other', date: new Date().toISOString().split('T')[0],
-    isRecurring: false, frequency: 'monthly', startDate: new Date().toISOString().split('T')[0], nextBillingDate: ''
+    isRecurring: false, frequency: 'monthly', startDate: new Date().toISOString().split('T')[0], nextBillingDate: '',
+    budgetId: ''
   });
 
   const [activeTab, setActiveTab] = useState('expenses');
   const [budgets, setBudgets] = useState<any[]>([]);
+  const [activeBudgetId, setActiveBudgetId] = useState<number | null>(null);
   const [budgetModal, setBudgetModal] = useState(false);
+  const [budgetPrompt, setBudgetPrompt] = useState(false);
   const [monthExpenses, setMonthExpenses] = useState<Expense[]>([]);
   const [budgetFormData, setBudgetFormData] = useState({
-    category: 'Other', amount: '', period: 'monthly'
+    category: 'Other', amount: '', period: 'monthly', customCategory: ''
   });
 
   useEffect(() => {
     loadData();
   }, [searchQuery]);
+
+  useEffect(() => {
+    loadBudgets();
+  }, []);
 
   useEffect(() => {
     if (activeTab === 'budget') loadBudgets();
@@ -91,7 +98,16 @@ const Expenses: React.FC = () => {
     ]);
     setBudgets(budgetData);
     setMonthExpenses(monthData);
+    setActiveBudgetId(prev =>
+      prev && budgetData.some((b: any) => b.id === prev) ? prev : (budgetData[0]?.id ?? null)
+    );
   };
+
+  const getBudgetById = (id: string | number | null | undefined) =>
+    budgets.find(b => String(b.id) === String(id));
+
+  const getBudgetForCategory = (category: string) =>
+    budgets.find(b => b.category === category);
 
   const getSpentForCategory = (category: string): number => {
     const now = new Date();
@@ -106,15 +122,18 @@ const Expenses: React.FC = () => {
   };
 
   const resetBudgetForm = () => {
-    setBudgetFormData({ category: 'Other', amount: '', period: 'monthly' });
+    setBudgetFormData({ category: 'Other', amount: '', period: 'monthly', customCategory: '' });
   };
 
   const handleSetBudget = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!budgetFormData.amount || parseFloat(budgetFormData.amount) <= 0) { toast.error(t('budgets.budget_amount_error') || 'Please enter a valid budget amount'); return; }
+    const isCustomCategory = budgetFormData.category === '__custom__';
+    const category = isCustomCategory ? budgetFormData.customCategory.trim() : budgetFormData.category;
+    if (isCustomCategory && !category) { toast.error(t('expense.custom_category_required') || 'Please enter a category name'); return; }
     try {
       const result = await window.api?.setBudget({
-        category: budgetFormData.category,
+        category,
         amount: parseFloat(budgetFormData.amount),
         period: budgetFormData.period
       });
@@ -184,6 +203,28 @@ const Expenses: React.FC = () => {
     ];
   }, [expenses]);
 
+  const insightData = useMemo(() => {
+    if (expenses.length === 0) return null;
+    const total = expenses.reduce((s, e) => s + e.amount, 0);
+    const byCat = new Map<string, { sum: number; count: number }>();
+    for (const e of expenses) {
+      const cur = byCat.get(e.category) || { sum: 0, count: 0 };
+      cur.sum += e.amount;
+      cur.count += 1;
+      byCat.set(e.category, cur);
+    }
+    const entries = [...byCat.entries()].sort((a, b) => b[1].sum - a[1].sum);
+    const [category, info] = entries[0];
+    const share = total > 0 ? (info.sum / total) * 100 : 0;
+    const budget = budgets.find(b => b.category === category);
+    const spent = budget ? (budget.spent ?? getSpentForCategory(category)) : info.sum;
+    const remaining = budget ? (budget.remaining ?? (budget.amount - spent)) : 0;
+    const status = budget
+      ? spent > budget.amount ? 'critical' : spent > budget.amount * 0.8 ? 'warning' : 'healthy'
+      : 'none';
+    return { category, sum: info.sum, count: info.count, share, budget, spent, remaining, status };
+  }, [expenses, budgets]);
+
   const chartData = useMemo(() => {
     if (!analytics?.expenseData) return [];
     return analytics.expenseData.map((d: any) => ({
@@ -218,6 +259,18 @@ const Expenses: React.FC = () => {
     { id: 'Other', label: t('expense.other') },
   ];
 
+  const categoryOptions = useMemo(() => {
+    const merged = [...EXPENSE_CATEGORIES];
+    budgets.forEach((b: any) => {
+      if (b?.category && !merged.some(c => c.id === b.category)) {
+        merged.push({ id: b.category, label: b.category });
+      }
+    });
+    return merged;
+  }, [budgets, EXPENSE_CATEGORIES]);
+
+  const selectedFormBudget = getBudgetById(formData.budgetId);
+
   const columns: ColumnDef<Expense>[] = [
     {
       accessorKey: "name",
@@ -229,7 +282,7 @@ const Expenses: React.FC = () => {
           </div>
           <div className="flex flex-col">
             <span className="font-bold">{row.original.name}</span>
-            <span className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest">
+            <span className="text-xs text-muted-foreground uppercase font-bold tracking-widest">
               {EXPENSE_CATEGORIES.find(c => c.id === row.original.category)?.label || row.original.category} • {formatDate(row.original.date)}
             </span>
           </div>
@@ -249,7 +302,7 @@ const Expenses: React.FC = () => {
       accessorKey: "isRecurring",
       header: t('common.status'),
       cell: ({ row }) => (
-        <Badge variant={row.original.isRecurring ? 'default' : 'outline'} className="uppercase text-[9px] font-bold">
+        <Badge variant={row.original.isRecurring ? 'default' : 'outline'} className="uppercase text-xs font-bold">
           {row.original.isRecurring ? t('expense.recurring') : t('expense.one_time')}
         </Badge>
       )
@@ -277,10 +330,10 @@ const Expenses: React.FC = () => {
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter className="gap-3">
-                <AlertDialogCancel className="rounded-xl border-border h-11 text-[10px] font-black uppercase tracking-widest">{t('common.abort')}</AlertDialogCancel>
+                <AlertDialogCancel className="rounded-xl border-border h-11 text-xs font-black uppercase tracking-widest">{t('common.abort')}</AlertDialogCancel>
                 <AlertDialogAction 
                   onClick={() => handleDelete(row.original.id)}
-                  className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-[10px] font-black uppercase tracking-widest"
+                  className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-xs font-black uppercase tracking-widest"
                 >
                   {t('common.confirm')}
                 </AlertDialogAction>
@@ -319,18 +372,54 @@ const Expenses: React.FC = () => {
   const resetForm = () => {
     setFormData({
       name: '', amount: '', category: 'Other', date: new Date().toISOString().split('T')[0],
-      isRecurring: false, frequency: 'monthly', startDate: new Date().toISOString().split('T')[0], nextBillingDate: ''
+      isRecurring: false, frequency: 'monthly', startDate: new Date().toISOString().split('T')[0], nextBillingDate: '',
+      budgetId: ''
     });
   };
 
   const openEdit = (expense: Expense) => {
+    const matched = getBudgetForCategory(expense.category);
     setEditingExpense(expense);
     setFormData({
       name: expense.name, amount: String(expense.amount), category: expense.category,
       date: expense.date, isRecurring: Boolean(expense.isRecurring),
-      frequency: expense.frequency || 'monthly', startDate: expense.startDate || expense.date, nextBillingDate: expense.nextBillingDate || ''
+      frequency: expense.frequency || 'monthly', startDate: expense.startDate || expense.date, nextBillingDate: expense.nextBillingDate || '',
+      budgetId: matched ? String(matched.id) : ''
     });
     setShowModal(true);
+  };
+
+  const openAddExpense = () => {
+    if (budgets.length === 0) {
+      setBudgetPrompt(true);
+      return;
+    }
+    resetForm();
+    setEditingExpense(null);
+    setShowModal(true);
+    const defId = activeBudgetId ?? budgets[0]?.id ?? null;
+    if (defId) {
+      const def = budgets.find(b => b.id === defId);
+      setFormData(f => ({
+        ...f,
+        budgetId: String(defId),
+        category: def ? def.category : f.category
+      }));
+    }
+  };
+
+  const onCategoryChange = (val: string) => {
+    const matched = getBudgetForCategory(val);
+    setFormData(f => ({ ...f, category: val, budgetId: matched ? String(matched.id) : f.budgetId }));
+  };
+
+  const onBudgetChange = (val: string) => {
+    if (!val) {
+      setFormData(f => ({ ...f, budgetId: '' }));
+      return;
+    }
+    const b = getBudgetById(val);
+    setFormData(f => ({ ...f, budgetId: val, category: b ? b.category : f.category }));
   };
 
   const exportExpensesCSV = () => {
@@ -352,17 +441,86 @@ const Expenses: React.FC = () => {
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <div className="px-4 lg:px-6">
             <TabsList className="grid w-full grid-cols-2 max-w-sm bg-muted/50 p-1 rounded-2xl h-12">
-              <TabsTrigger value="expenses" className="rounded-xl data-[state=active]:bg-background data-[state=active]:shadow-sm font-black text-[10px] uppercase tracking-widest">
+              <TabsTrigger value="expenses" className="rounded-xl data-[state=active]:bg-background data-[state=active]:shadow-sm font-black text-xs uppercase tracking-widest">
                 <List className="w-4 h-4 mr-2" /> {t('expense.header')}
               </TabsTrigger>
-              <TabsTrigger value="budget" className="rounded-xl data-[state=active]:bg-background data-[state=active]:shadow-sm font-black text-[10px] uppercase tracking-widest">
+              <TabsTrigger value="budget" className="rounded-xl data-[state=active]:bg-background data-[state=active]:shadow-sm font-black text-xs uppercase tracking-widest">
                 <PieChart className="w-4 h-4 mr-2" /> {t('budgets.tab_budgets')}
               </TabsTrigger>
             </TabsList>
           </div>
 
-          <TabsContent value="expenses" className="mt-6">
+          <TabsContent value="expenses" className="mt-6 space-y-6">
             <SectionCards cards={kpiCards} />
+
+            {(() => {
+              const activeBudget = getBudgetById(activeBudgetId);
+              if (!activeBudget) return null;
+              const spent = activeBudget.spent ?? getSpentForCategory(activeBudget.category);
+              const remaining = activeBudget.remaining ?? (activeBudget.amount - spent);
+              const percent = activeBudget.usagePercent ?? (activeBudget.amount > 0 ? Math.round((spent / activeBudget.amount) * 100) : 0);
+              const isOver = spent > activeBudget.amount;
+              return (
+                <div className="px-4 lg:px-6">
+                  <div className="p-6 rounded-3xl border border-border/50 bg-card shadow-xl space-y-5">
+                    <div className="flex items-center justify-between flex-wrap gap-4">
+                      <div className="flex items-center gap-3">
+                        <div className="h-12 w-12 rounded-2xl bg-primary/10 flex items-center justify-center">
+                          <PieChart className="h-6 w-6 text-primary" />
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground">{t('expense.budget_overview')}</p>
+                          <h3 className="text-xl font-black tracking-tight">{activeBudget.category}</h3>
+                        </div>
+                      </div>
+                      <Select value={String(activeBudget.id)} onValueChange={v => setActiveBudgetId(Number(v))}>
+                        <SelectTrigger className="w-64 h-10 bg-muted/20 border-none rounded-xl text-xs font-bold uppercase tracking-widest">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="rounded-xl">
+                          {budgets.map((b: any) => (
+                            <SelectItem key={b.id} value={String(b.id)}>
+                              {b.category} • {t('common.etb')} {b.amount.toLocaleString()}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid grid-cols-3 gap-4">
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.budget')}</p>
+                        <p className="text-lg font-black">{t('common.etb')} {activeBudget.amount.toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.spent')}</p>
+                        <p className={`text-lg font-black ${isOver ? 'text-destructive' : ''}`}>{t('common.etb')} {spent.toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.remaining')}</p>
+                        <p className={`text-lg font-black ${remaining < 0 ? 'text-destructive' : 'text-green-600'}`}>{t('common.etb')} {Math.max(0, remaining).toLocaleString()}</p>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <div className="w-full bg-muted rounded-full h-3 overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all duration-700 ease-out"
+                          style={{
+                            width: `${Math.min(percent, 100)}%`,
+                            background: isOver
+                              ? 'linear-gradient(90deg, #ef4444, #dc2626)'
+                              : 'linear-gradient(90deg, #22c55e, #3b82f6)'
+                          }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-xs font-bold text-muted-foreground">
+                        <span>{t('budgets.percent_used', { percent: Math.round(percent) })}</span>
+                        {isOver && <span className="text-destructive">{t('expense.budget_overage', { percent: Math.round(percent - 100) })}</span>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             <div className="px-4 lg:px-6 space-y-6">
               <div>
@@ -375,28 +533,61 @@ const Expenses: React.FC = () => {
                 />
               </div>
 
-              <div className="p-8 rounded-[32px] border border-border/50 bg-card shadow-xl flex items-center justify-between relative overflow-hidden group">
-                <div className="absolute right-0 top-1/2 -translate-y-1/2 p-8 opacity-5 group-hover:opacity-10 transition-opacity">
-                  <TrendingDown className="h-32 w-32" />
-                </div>
-                <div className="flex items-center gap-8 relative z-10">
-                  <div className="h-20 w-20 rounded-3xl bg-primary/10 flex items-center justify-center">
-                    <PieChart className="h-10 w-10 text-primary" />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground">{t('expense.category_insight')}</p>
-                    <h3 className="text-4xl font-black tracking-tighter uppercase">{t('expense.salaries')}</h3>
-                    <div className="flex items-center gap-2 mt-2">
-                      <Badge variant="outline" className="bg-orange-500/10 text-orange-600 border-orange-500/20 font-black uppercase text-[9px]">{t('expense.critical_sector')}</Badge>
-                      <span className="text-xs text-muted-foreground font-medium">{t('expense.consumption_desc')}</span>
+              {(() => {
+                const insight = insightData;
+                if (!insight) return null;
+                const categoryLabel = categoryOptions.find(c => c.id === insight.category)?.label || insight.category;
+                const statusStyles: Record<string, string> = {
+                  healthy: 'bg-green-500/10 text-green-600 border-green-500/20',
+                  warning: 'bg-orange-500/10 text-orange-600 border-orange-500/20',
+                  critical: 'bg-red-500/10 text-red-600 border-red-500/20',
+                  none: 'bg-muted text-muted-foreground border-border'
+                };
+                const isOver = insight.budget && insight.spent > insight.budget.amount;
+                return (
+                  <div className="p-8 rounded-[32px] border border-border/50 bg-card shadow-xl flex items-center justify-between relative overflow-hidden group">
+                    <div className="absolute right-0 top-1/2 -translate-y-1/2 p-8 opacity-5 group-hover:opacity-10 transition-opacity">
+                      <TrendingDown className="h-32 w-32" />
+                    </div>
+                    <div className="flex items-center gap-8 relative z-10">
+                      <div className="h-20 w-20 rounded-3xl bg-primary/10 flex items-center justify-center">
+                        <PieChart className="h-10 w-10 text-primary" />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground">{t('expense.category_insight')}</p>
+                        <h3 className="text-4xl font-black tracking-tighter uppercase">{categoryLabel}</h3>
+                        <div className="flex items-center gap-2 mt-2 flex-wrap">
+                          <Badge variant="outline" className={`${statusStyles[insight.status]} font-black uppercase text-xs`}>
+                            {insight.budget
+                              ? t(`budgets.status_${insight.status}`)
+                              : t('expense.no_budget_found')}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground font-medium">
+                            {t('expense.insight_share', { percent: Math.round(insight.share) })}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground font-medium">
+                          {insight.budget
+                            ? t('expense.insight_vs_budget', {
+                                spent: `${t('common.etb')} ${insight.spent.toLocaleString()}`,
+                                budget: `${t('common.etb')} ${insight.budget.amount.toLocaleString()}`
+                              })
+                            : t('expense.insight_transactions', { count: insight.count })}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right pr-12 hidden md:block">
+                      <p className="text-xs font-black uppercase tracking-widest text-muted-foreground opacity-40 mb-1">
+                        {isOver ? t('expense.budget_over') : t('expense.projected_savings')}
+                      </p>
+                      <p className={`text-2xl font-black ${isOver ? 'text-red-600' : 'text-green-600'}`}>
+                        {t('common.etb')} {Math.max(0, insight.remaining).toLocaleString()}
+                        {insight.budget && !isOver ? ` ${t('expense.savings_potential')}` : ''}
+                      </p>
                     </div>
                   </div>
-                </div>
-                <div className="text-right pr-12 hidden md:block">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground opacity-40 mb-1">{t('expense.projected_savings')}</p>
-                  <p className="text-2xl font-black text-green-600">{t('expense.projected_savings_value') || '-12%'} {t('expense.savings_potential')}</p>
-                </div>
-              </div>
+                );
+              })()}
             </div>
 
             <div className="px-4 lg:px-6">
@@ -414,39 +605,63 @@ const Expenses: React.FC = () => {
             <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={editingExpense ? t('expense.modify') : t('expense.new')} size="lg">
               <form onSubmit={handleSubmit} className="space-y-8 py-4">
                 <div className="space-y-6">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('expense.primary_narrative')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('expense.primary_narrative')}</h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('expense.desc_payee')}</label>
+                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('expense.desc_payee')}</label>
                       <Input required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="h-12 bg-card rounded-xl font-bold" placeholder={t('expense.placeholder_name') || 'e.g. Office Rent - May'} />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('common.amount')} ({t('common.etb')})</label>
+                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('common.amount')} ({t('common.etb')})</label>
                       <Input required type="number" value={formData.amount} onChange={e => setFormData({...formData, amount: e.target.value})} className="h-12 bg-card rounded-xl font-black text-lg" placeholder={t('expense.placeholder_amount') || '0.00'} />
                     </div>
                   </div>
                 </div>
 
                 <div className="space-y-6">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('expense.fiscal_logistics')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('expense.fiscal_logistics')}</h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('expense.classification')}</label>
-                        <Select value={formData.category} onValueChange={val => setFormData({...formData, category: val})}>
+                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('expense.classification')}</label>
+                        <Select value={formData.category} onValueChange={onCategoryChange}>
                           <SelectTrigger className="h-12 bg-muted/30 border-border/50 rounded-xl">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent className="rounded-xl">
-                            {EXPENSE_CATEGORIES.map(cat => (
+                            {categoryOptions.map(cat => (
                               <SelectItem key={cat.id} value={cat.id}>{cat.label}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('expense.trans_date')}</label>
+                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('expense.trans_date')}</label>
                       <DatePicker value={formData.date} onChange={e => setFormData({...formData, date: e})} className="h-12 bg-card rounded-xl" />
                     </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('expense.budget_select')}</label>
+                    <Select value={formData.budgetId} onValueChange={onBudgetChange}>
+                      <SelectTrigger className="h-12 bg-muted/30 border-border/50 rounded-xl">
+                        <SelectValue placeholder={t('expense.budget_select_placeholder')} />
+                      </SelectTrigger>
+                      <SelectContent className="rounded-xl">
+                        {budgets.map((b: any) => (
+                          <SelectItem key={b.id} value={String(b.id)}>
+                            {b.category} • {t('common.etb')} {b.amount.toLocaleString()}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {selectedFormBudget && (
+                      <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 pt-1">
+                        <Wallet className="h-3.5 w-3.5" />
+                        {t('expense.budget_remaining', {
+                          amount: `${t('common.etb')} ${Math.max(0, selectedFormBudget.remaining ?? (selectedFormBudget.amount - getSpentForCategory(selectedFormBudget.category))).toLocaleString()}`
+                        })}
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -457,14 +672,14 @@ const Expenses: React.FC = () => {
                         <Repeat className="h-5 w-5" />
                       </div>
                       <div className="space-y-0.5">
-                        <p className="text-[10px] font-black uppercase tracking-widest">{t('expense.recurring_comm')}</p>
+                        <p className="text-xs font-black uppercase tracking-widest">{t('expense.recurring_comm')}</p>
                         <p className="text-[11px] text-muted-foreground font-medium">{t('expense.auto_log')}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-4">
                       {formData.isRecurring && (
                         <Select value={formData.frequency} onValueChange={v => setFormData({...formData, frequency: v})}>
-                          <SelectTrigger className="w-32 h-10 bg-muted/20 border-none rounded-lg text-[10px] font-bold uppercase tracking-widest">
+                          <SelectTrigger className="w-32 h-10 bg-muted/20 border-none rounded-lg text-xs font-bold uppercase tracking-widest">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent className="rounded-lg">
@@ -480,11 +695,11 @@ const Expenses: React.FC = () => {
                   {formData.isRecurring && (
                     <div className="space-y-3 pt-2 border-t border-border/30">
                       <div className="space-y-1.5">
-                        <label className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">{t('common.start_date')}</label>
+                        <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('common.start_date')}</label>
                         <DatePicker value={formData.startDate} onChange={e => setFormData({...formData, startDate: e})} className="h-10 bg-card rounded-xl text-xs w-full" />
                       </div>
                       <div className="space-y-1.5">
-                        <label className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">{t('expense.next_billing') || 'Next Billing'}</label>
+                        <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('expense.next_billing') || 'Next Billing'}</label>
                         <DatePicker value={formData.nextBillingDate} onChange={e => setFormData({...formData, nextBillingDate: e})} className="h-10 bg-card rounded-xl text-xs w-full" />
                       </div>
                     </div>
@@ -507,7 +722,7 @@ const Expenses: React.FC = () => {
                   <p className="text-sm text-muted-foreground font-medium">{t('expense.budget_subtitle')}</p>
                 </div>
                 <Button onClick={() => { resetBudgetForm(); setBudgetModal(true); }}
-                  className="h-11 text-[10px] font-black uppercase tracking-widest rounded-2xl">
+                  className="h-11 text-xs font-black uppercase tracking-widest rounded-2xl">
                   <Plus className="w-4 h-4 mr-2" /> {t('budgets.set_budget')}
                 </Button>
               </div>
@@ -539,7 +754,7 @@ const Expenses: React.FC = () => {
                       >{Math.round(budgetPercent)}%</text>
                     </svg>
                     <div className="space-y-1">
-                      <p className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground">
+                      <p className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground">
                         {isOver ? t('expense.budget_over') : t('expense.budget_health')}
                       </p>
                       <p className="text-2xl font-black tracking-tight">
@@ -573,7 +788,7 @@ const Expenses: React.FC = () => {
                       <div key={budget.id} className="p-6 rounded-3xl border border-border/50 bg-card shadow-xl space-y-4 relative overflow-hidden group">
                         {isOver && (
                           <div className="absolute top-0 right-0">
-                            <Badge variant="destructive" className="rounded-bl-2xl rounded-tr-3xl text-[9px] font-black uppercase px-3 py-1.5">
+                            <Badge variant="destructive" className="rounded-bl-2xl rounded-tr-3xl text-xs font-black uppercase px-3 py-1.5">
                               {t('expense.budget_over')}
                             </Badge>
                           </div>
@@ -585,7 +800,7 @@ const Expenses: React.FC = () => {
                             </div>
                             <div>
                               <h3 className="font-bold text-base">{budget.category}</h3>
-                              <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest">{t('expense.budget_period', { period: budget.period })}</p>
+                              <p className="text-xs text-muted-foreground uppercase font-bold tracking-widest">{t('expense.budget_period', { period: budget.period })}</p>
                             </div>
                           </div>
                           <AlertDialog>
@@ -602,10 +817,10 @@ const Expenses: React.FC = () => {
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter className="gap-3">
-                                <AlertDialogCancel className="rounded-xl border-border h-11 text-[10px] font-black uppercase tracking-widest">{t('common.cancel')}</AlertDialogCancel>
+                                <AlertDialogCancel className="rounded-xl border-border h-11 text-xs font-black uppercase tracking-widest">{t('common.cancel')}</AlertDialogCancel>
                                 <AlertDialogAction 
                                   onClick={() => handleDeleteBudget(budget.id)}
-                                  className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-[10px] font-black uppercase tracking-widest"
+                                  className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-xs font-black uppercase tracking-widest"
                                 >
                                   {t('common.delete')}
                                 </AlertDialogAction>
@@ -616,15 +831,15 @@ const Expenses: React.FC = () => {
 
                         <div className="grid grid-cols-3 gap-4">
                           <div>
-                            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.budget')}</p>
+                            <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.budget')}</p>
                             <p className="text-lg font-black">{t('common.etb')} {budget.amount.toLocaleString()}</p>
                           </div>
                           <div>
-                            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.spent')}</p>
+                            <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.spent')}</p>
                             <p className={`text-lg font-black ${isOver ? 'text-destructive' : ''}`}>{t('common.etb')} {spent.toLocaleString()}</p>
                           </div>
                           <div>
-                            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.remaining')}</p>
+                            <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.remaining')}</p>
                             <p className={`text-lg font-black ${remaining < 0 ? 'text-destructive' : 'text-green-600'}`}>{t('common.etb')} {Math.max(0, remaining).toLocaleString()}</p>
                           </div>
                         </div>
@@ -641,7 +856,7 @@ const Expenses: React.FC = () => {
                               }}
                             />
                           </div>
-                          <div className="flex justify-between text-[10px] font-bold text-muted-foreground">
+                          <div className="flex justify-between text-xs font-bold text-muted-foreground">
                             <span>{t('budgets.percent_used', { percent: Math.round(percentage) })}</span>
                             {isOver && <span className="text-destructive">{t('expense.budget_overage', { percent: Math.round(percentage - 100) })}</span>}
                           </div>
@@ -656,10 +871,10 @@ const Expenses: React.FC = () => {
             <Modal isOpen={budgetModal} onClose={() => setBudgetModal(false)} title={t('budgets.set_budget')} size="lg">
               <form onSubmit={handleSetBudget} className="space-y-8 py-4">
                 <div className="space-y-6">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('expense.budget_details')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('expense.budget_details')}</h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.category')}</label>
+                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.category')}</label>
                       <Select value={budgetFormData.category} onValueChange={val => setBudgetFormData({...budgetFormData, category: val})}>
                         <SelectTrigger className="h-12 bg-muted/30 border-border/50 rounded-xl">
                           <SelectValue />
@@ -668,16 +883,28 @@ const Expenses: React.FC = () => {
                           {BUDGET_CATEGORIES.map(cat => (
                             <SelectItem key={cat.id} value={cat.id}>{cat.label}</SelectItem>
                           ))}
+                          <SelectItem value="__custom__">{t('expense.custom_category') || 'Custom…'}</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
+                    {budgetFormData.category === '__custom__' && (
+                      <div className="space-y-1.5 md:col-span-2">
+                        <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('expense.custom_category_label') || 'Custom Category'}</label>
+                        <Input
+                          value={budgetFormData.customCategory}
+                          onChange={e => setBudgetFormData({...budgetFormData, customCategory: e.target.value})}
+                          className="h-12 bg-card rounded-xl font-bold"
+                          placeholder={t('expense.custom_category_placeholder') || 'e.g. Equipment'}
+                        />
+                      </div>
+                    )}
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.amount')} ({t('common.etb')})</label>
+                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.amount')} ({t('common.etb')})</label>
                       <Input required type="number" value={budgetFormData.amount} onChange={e => setBudgetFormData({...budgetFormData, amount: e.target.value})} className="h-12 bg-card rounded-xl font-black text-lg" placeholder={t('expense.placeholder_amount') || '0.00'} />
                     </div>
                   </div>
                   <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.period')}</label>
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.period')}</label>
                     <Select value={budgetFormData.period} onValueChange={val => setBudgetFormData({...budgetFormData, period: val})}>
                       <SelectTrigger className="h-12 bg-muted/30 border-border/50 rounded-xl max-w-xs">
                         <SelectValue />
@@ -704,12 +931,37 @@ const Expenses: React.FC = () => {
       {activeTab === 'expenses' && (
         <Button 
           className="fixed bottom-8 right-8 h-20 w-20 rounded-full shadow-[0_20px_50px_rgba(0,0,0,0.3)] bg-primary text-primary-foreground hover:scale-110 active:scale-95 transition-all z-[9999] flex flex-col gap-1 items-center justify-center border-4 border-primary-foreground/20 group"
-          onClick={() => { resetForm(); setEditingExpense(null); setShowModal(true); }}
+          data-tutorial-section="add-expense-fab"
+          onClick={openAddExpense}
         >
           <Plus className="h-8 w-8 group-hover:rotate-90 transition-transform duration-300" strokeWidth={4} />
-          <span className="text-[8px] font-black uppercase tracking-tighter">{t('expense.post')}</span>
+          <span className="text-xs font-black uppercase tracking-tighter">{t('expense.post')}</span>
         </Button>
       )}
+
+      <AlertDialog open={budgetPrompt} onOpenChange={setBudgetPrompt}>
+        <AlertDialogContent className="rounded-[32px] bg-background border-border shadow-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-xl font-black uppercase tracking-tight">
+              {t('expense.budget_required_title') || 'Set Up a Budget First'}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-xs font-medium text-muted-foreground leading-relaxed">
+              {t('expense.budget_required_desc') || 'You must create at least one budget before recording expenses. Set a spending limit to unlock expense tracking.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-3">
+            <AlertDialogCancel className="rounded-xl border-border h-11 text-xs font-black uppercase tracking-widest">
+              {t('common.abort')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { setBudgetPrompt(false); setActiveTab('budget'); }}
+              className="rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 h-11 text-xs font-black uppercase tracking-widest"
+            >
+              {t('expense.go_to_budget') || 'Go to Budgets'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 };

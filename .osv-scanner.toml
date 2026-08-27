@@ -1,0 +1,29 @@
+# OSV-Scanner configuration for Shega Desktop
+# https://github.com/google/osv-scanner
+
+# Ignore specific vulnerabilities that are false positives or have mitigations
+[ignore]
+# Example: ignore a specific CVE that's been mitigated
+# "CVE-2023-XXXX" = ["path/to/package"]
+
+# Severity threshold - only report high/critical by default
+# low, moderate, high, critical
+minimum-severity = "moderate"
+
+# Output format
+output = "table"
+
+# Scan dev dependencies too (they can be attack vectors in CI)
+include-dev = true
+
+# Lockfile paths to scan
+lockfile = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"]
+
+# Call analysis - trace vulnerable functions through call graph
+call-analysis = false  # Enable if needed for deeper analysis
+
+# Recursive scanning of subdirectories
+recursive = true
+
+# Skip gitignored files
+respect-gitignore = true

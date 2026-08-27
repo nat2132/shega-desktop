@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import Database from 'better-sqlite3';
 import { app } from 'electron';
 import path from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, unlinkSync, copyFileSync } from 'fs';
 
 const isDev = !app.isPackaged;
 const dbDir = isDev 
@@ -14,20 +14,96 @@ if (!existsSync(dbDir)) {
 }
 
 const dbPath = path.join(dbDir, 'shega_desktop.db');
-const db: InstanceType<typeof Database> = new Database(dbPath);
+const demoDbPath = path.join(dbDir, 'shega_desktop_demo.db');
+let db: InstanceType<typeof Database> = new Database(dbPath);
+let demoDb: InstanceType<typeof Database> | null = null;
+let currentDb: InstanceType<typeof Database> = db;
+let isDemoMode = false;
 
+// Apply pragmas to main db
 db.pragma('journal_mode = WAL');
 db.pragma('busy_timeout = 5000');
 db.pragma('foreign_keys = ON');
+
+// Demo mode state management
+export function getDemoMode(): boolean {
+  return isDemoMode;
+}
+
+export function setDemoMode(enabled: boolean): void {
+  isDemoMode = enabled;
+  currentDb = enabled ? getDemoDb() : db;
+}
+
+export function getCurrentDb(): InstanceType<typeof Database> {
+  return currentDb;
+}
+
+function getDemoDb(): InstanceType<typeof Database> {
+  if (!demoDb) {
+    // Create demo DB if it doesn't exist (copy from main or fresh)
+    if (!existsSync(demoDbPath)) {
+      copyFileSync(dbPath, demoDbPath);
+    }
+    demoDb = new Database(demoDbPath);
+    demoDb.pragma('journal_mode = WAL');
+    demoDb.pragma('busy_timeout = 5000');
+    demoDb.pragma('foreign_keys = ON');
+  }
+  return demoDb;
+}
+
+export function resetDemoDb(): void {
+  if (demoDb) {
+    demoDb.close();
+    demoDb = null;
+  }
+  if (existsSync(demoDbPath)) {
+    unlinkSync(demoDbPath);
+  }
+  // Recreate from current main DB as fresh seed
+  copyFileSync(dbPath, demoDbPath);
+  demoDb = new Database(demoDbPath);
+  demoDb.pragma('journal_mode = WAL');
+  demoDb.pragma('busy_timeout = 5000');
+  demoDb.pragma('foreign_keys = ON');
+  if (isDemoMode) {
+    currentDb = demoDb;
+  }
+}
+
+export function getDb(): InstanceType<typeof Database> {
+  return currentDb;
+}
 
 // Run integrity check on startup, log result
 try {
   const integrity = db.pragma('integrity_check', { simple: true }) as string | string[];
   const result = Array.isArray(integrity) ? integrity[0] : integrity;
   if (result !== 'ok') {
-    console.error(`[DB] Integrity check failed: ${Array.isArray(integrity) ? integrity.join(', ') : integrity}`);
+    console.error(`[DB] Integrity check FAILED: ${result}`);
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({
+      ok: false,
+      message: Array.isArray(integrity) ? integrity.join(', ') : integrity,
+      timestamp: new Date().toISOString()
+    }));
+  } else {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({ ok: true, timestamp: new Date().toISOString() }));
   }
-} catch (_) { /* integrity_check may fail on empty DB */ }
+} catch (_) {
+  console.warn('[DB] Integrity check skipped (empty DB?)');
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({ ok: true, note: 'skipped - empty database', timestamp: new Date().toISOString() }));
+}
+
+// Proxy to dynamically route db calls to currentDb (main or demo)
+const dbProxy = new Proxy({} as InstanceType<typeof Database>, {
+  get(target, prop: string | symbol) {
+    return (currentDb as any)[prop];
+  },
+});
+
+// Export the proxy as default so all existing code works transparently
+export default dbProxy;
 
 const ALL_PERMISSIONS = [
   'dashboard', 'inventory.view', 'inventory.add', 'inventory.edit', 'inventory.delete',
@@ -64,6 +140,54 @@ function hashPin(pin: string): string {
   return `${salt}:${key}`;
 }
 
+// C9: Helper to cascade-delete all records for a business
+// This exists because SQLite doesn't support ALTER TABLE ADD CONSTRAINT
+// to add ON DELETE CASCADE to existing FKs
+export function cascadeDeleteBusiness(businessId: number): void {
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM returns WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM debt_payments WHERE saleId IN (SELECT id FROM sales WHERE businessId = ?)').run(businessId);
+    db.prepare('DELETE FROM sales WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM stock_movements WHERE itemId IN (SELECT id FROM items WHERE businessId = ?)').run(businessId);
+    db.prepare('DELETE FROM warehouse_inventory WHERE itemId IN (SELECT id FROM items WHERE businessId = ?)').run(businessId);
+    db.prepare('DELETE FROM stock_transfers WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM item_packs WHERE itemId IN (SELECT id FROM items WHERE businessId = ?)').run(businessId);
+    db.prepare('DELETE FROM items WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM categories WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM expenses WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM adjustments WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM notifications WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM notification_banners WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM notification_reminders WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM notification_quiet_hours WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM draft_sales WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM contacts WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM budgets WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM budget_adjustments WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM budget_alerts WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM supplier_price_checks WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM orders WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM shipment_items WHERE shipmentId IN (SELECT id FROM shipments WHERE businessId = ?)').run(businessId);
+    db.prepare('DELETE FROM shipment_history WHERE shipmentId IN (SELECT id FROM shipments WHERE businessId = ?)').run(businessId);
+    db.prepare('DELETE FROM shipments WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM supplier_purchase_items WHERE purchaseId IN (SELECT id FROM supplier_purchases WHERE businessId = ?)').run(businessId);
+    db.prepare('DELETE FROM supplier_payments WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM supplier_activity_log WHERE supplierId IN (SELECT id FROM suppliers WHERE businessId = ?)').run(businessId);
+    db.prepare('DELETE FROM supplier_purchases WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM customer_notes WHERE customerId IN (SELECT id FROM customers WHERE businessId = ?)').run(businessId);
+    db.prepare('DELETE FROM customers WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM suppliers WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM warehouses WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM admins WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM subscriptions WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM payment_transactions WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM subscription_history WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM audit_logs WHERE businessId = ?').run(businessId);
+    db.prepare('DELETE FROM businesses WHERE id = ?').run(businessId);
+  });
+  tx();
+}
+
 export function initDB() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS businesses (
@@ -98,6 +222,8 @@ export function initDB() {
       businessId INTEGER,
       name TEXT NOT NULL,
       categoryId INTEGER,
+      sku TEXT,
+      barcode TEXT,
       companyName TEXT,
       purchaseUnit TEXT, 
       baseUnit TEXT,
@@ -152,6 +278,7 @@ export function initDB() {
       totalPrice REAL NOT NULL,
       paymentMethod TEXT,
       paymentStatus TEXT,
+      status TEXT DEFAULT 'Active',
       customerName TEXT,
       customerPhone TEXT,
       packId INTEGER,
@@ -726,35 +853,428 @@ export function initDB() {
     );
   `);
 
-  // Migration: add new columns to notifications if missing
-  const notifCols = db.prepare("PRAGMA table_info(notifications)").all() as any[];
-  const notifColNames = notifCols.map((c: any) => c.name);
-  if (!notifColNames.includes('category')) db.exec("ALTER TABLE notifications ADD COLUMN category TEXT DEFAULT 'system'");
-  if (!notifColNames.includes('severity')) db.exec("ALTER TABLE notifications ADD COLUMN severity TEXT DEFAULT 'info'");
-  if (!notifColNames.includes('actionUrl')) db.exec("ALTER TABLE notifications ADD COLUMN actionUrl TEXT");
-  if (!notifColNames.includes('actionLabel')) db.exec("ALTER TABLE notifications ADD COLUMN actionLabel TEXT");
-  if (!notifColNames.includes('entityType')) db.exec("ALTER TABLE notifications ADD COLUMN entityType TEXT");
-  if (!notifColNames.includes('entityId')) db.exec("ALTER TABLE notifications ADD COLUMN entityId INTEGER");
-  if (!notifColNames.includes('isDismissed')) db.exec("ALTER TABLE notifications ADD COLUMN isDismissed INTEGER DEFAULT 0");
-  if (!notifColNames.includes('snoozedUntil')) db.exec("ALTER TABLE notifications ADD COLUMN snoozedUntil TEXT");
-  if (!notifColNames.includes('channels')) db.exec("ALTER TABLE notifications ADD COLUMN channels TEXT DEFAULT 'in_app'");
-  if (!notifColNames.includes('requiresAction')) db.exec("ALTER TABLE notifications ADD COLUMN requiresAction INTEGER DEFAULT 0");
-  if (!notifColNames.includes('expiresAt')) db.exec("ALTER TABLE notifications ADD COLUMN expiresAt TEXT");
+  // ========== SYNC INFRASTRUCTURE TABLES ==========
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sync_meta (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      device_id TEXT NOT NULL,
+      pairing_token TEXT,
+      schema_version INTEGER DEFAULT 17
+    );
 
-  // Migration: add new columns to budgets if missing
-  const budgetCols = db.prepare("PRAGMA table_info(budgets)").all() as any[];
-  const budgetColNames = budgetCols.map((c: any) => c.name);
-  if (!budgetColNames.includes('budgetType')) db.exec("ALTER TABLE budgets ADD COLUMN budgetType TEXT DEFAULT 'business'");
-  if (!budgetColNames.includes('referenceName')) db.exec("ALTER TABLE budgets ADD COLUMN referenceName TEXT");
-  if (!budgetColNames.includes('isRecurring')) db.exec("ALTER TABLE budgets ADD COLUMN isRecurring INTEGER DEFAULT 0");
-  if (!budgetColNames.includes('notes')) db.exec("ALTER TABLE budgets ADD COLUMN notes TEXT");
-  if (!budgetColNames.includes('updatedAt')) db.exec("ALTER TABLE budgets ADD COLUMN updatedAt TEXT DEFAULT CURRENT_TIMESTAMP");
+    CREATE TABLE IF NOT EXISTS sync_outbox (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity TEXT NOT NULL,
+      entity_uuid TEXT NOT NULL,
+      op TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      device_id TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_sync_outbox_entity ON sync_outbox(entity_uuid);
 
-  // Migration: add new columns to budget_alerts if missing
-  const alertCols = db.prepare("PRAGMA table_info(budget_alerts)").all() as any[];
-  const alertColNames = alertCols.map((c: any) => c.name);
-  if (!alertColNames.includes('month')) db.exec("ALTER TABLE budget_alerts ADD COLUMN month TEXT");
-  if (!alertColNames.includes('year')) db.exec("ALTER TABLE budget_alerts ADD COLUMN year TEXT");
+    CREATE TABLE IF NOT EXISTS sync_cursor (
+      device_id TEXT PRIMARY KEY,
+      last_seq INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS devices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT UNIQUE NOT NULL,
+      name TEXT,
+      pairing_token TEXT,
+      businessId INTEGER,
+      last_seen_at TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT,
+      entity TEXT,
+      entity_uuid TEXT,
+      op TEXT,
+      detail TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_refs (
+      device_id TEXT,
+      entity TEXT,
+      local_id INTEGER,
+      uuid TEXT,
+      PRIMARY KEY (device_id, entity, local_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_requests (
+      device_id TEXT PRIMARY KEY,
+      requested_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Existing DBs created before pairing tokens may lack the column.
+  {
+    const metaCols = db.prepare('PRAGMA table_info(sync_meta)').all() as any[];
+    if (!metaCols.some((c: any) => c.name === 'pairing_token')) {
+      db.exec('ALTER TABLE sync_meta ADD COLUMN pairing_token TEXT');
+    }
+  }
+
+  // ========== VERSIONED MIGRATION SYSTEM ==========
+  const currentVersion = db.pragma('user_version', { simple: true }) as number;
+  let version = typeof currentVersion === 'number' ? currentVersion : 0;
+
+  if (version < 1) {
+    const notifCols = db.prepare("PRAGMA table_info(notifications)").all() as any[];
+    const notifColNames = notifCols.map((c: any) => c.name);
+    if (!notifColNames.includes('category')) db.exec("ALTER TABLE notifications ADD COLUMN category TEXT DEFAULT 'system'");
+    if (!notifColNames.includes('severity')) db.exec("ALTER TABLE notifications ADD COLUMN severity TEXT DEFAULT 'info'");
+    if (!notifColNames.includes('actionUrl')) db.exec("ALTER TABLE notifications ADD COLUMN actionUrl TEXT");
+    if (!notifColNames.includes('actionLabel')) db.exec("ALTER TABLE notifications ADD COLUMN actionLabel TEXT");
+    if (!notifColNames.includes('entityType')) db.exec("ALTER TABLE notifications ADD COLUMN entityType TEXT");
+    if (!notifColNames.includes('entityId')) db.exec("ALTER TABLE notifications ADD COLUMN entityId INTEGER");
+    if (!notifColNames.includes('isDismissed')) db.exec("ALTER TABLE notifications ADD COLUMN isDismissed INTEGER DEFAULT 0");
+    if (!notifColNames.includes('snoozedUntil')) db.exec("ALTER TABLE notifications ADD COLUMN snoozedUntil TEXT");
+    if (!notifColNames.includes('channels')) db.exec("ALTER TABLE notifications ADD COLUMN channels TEXT DEFAULT 'in_app'");
+    if (!notifColNames.includes('requiresAction')) db.exec("ALTER TABLE notifications ADD COLUMN requiresAction INTEGER DEFAULT 0");
+    if (!notifColNames.includes('expiresAt')) db.exec("ALTER TABLE notifications ADD COLUMN expiresAt TEXT");
+    version = 1;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 2) {
+    const budgetCols = db.prepare("PRAGMA table_info(budgets)").all() as any[];
+    const budgetColNames = budgetCols.map((c: any) => c.name);
+    if (!budgetColNames.includes('budgetType')) db.exec("ALTER TABLE budgets ADD COLUMN budgetType TEXT DEFAULT 'business'");
+    if (!budgetColNames.includes('referenceName')) db.exec("ALTER TABLE budgets ADD COLUMN referenceName TEXT");
+    if (!budgetColNames.includes('isRecurring')) db.exec("ALTER TABLE budgets ADD COLUMN isRecurring INTEGER DEFAULT 0");
+    if (!budgetColNames.includes('notes')) db.exec("ALTER TABLE budgets ADD COLUMN notes TEXT");
+    if (!budgetColNames.includes('updatedAt')) db.exec("ALTER TABLE budgets ADD COLUMN updatedAt TEXT DEFAULT CURRENT_TIMESTAMP");
+    version = 2;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 3) {
+    const alertCols = db.prepare("PRAGMA table_info(budget_alerts)").all() as any[];
+    const alertColNames = alertCols.map((c: any) => c.name);
+    if (!alertColNames.includes('month')) db.exec("ALTER TABLE budget_alerts ADD COLUMN month TEXT");
+    if (!alertColNames.includes('year')) db.exec("ALTER TABLE budget_alerts ADD COLUMN year TEXT");
+    version = 3;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 4) {
+    const empColumns = db.prepare("PRAGMA table_info(employees)").all() as any[];
+    const empColNames = empColumns.map((c: any) => c.name);
+    if (!empColNames.includes('address')) db.exec("ALTER TABLE employees ADD COLUMN address TEXT");
+    if (!empColNames.includes('emergencyContact')) db.exec("ALTER TABLE employees ADD COLUMN emergencyContact TEXT");
+    if (!empColNames.includes('gender')) db.exec("ALTER TABLE employees ADD COLUMN gender TEXT");
+    if (!empColNames.includes('dateOfBirth')) db.exec("ALTER TABLE employees ADD COLUMN dateOfBirth TEXT");
+    if (!empColNames.includes('department')) db.exec("ALTER TABLE employees ADD COLUMN department TEXT");
+    if (!empColNames.includes('warehouseId')) db.exec("ALTER TABLE employees ADD COLUMN warehouseId INTEGER REFERENCES warehouses(id)");
+    if (!empColNames.includes('employmentStatus')) db.exec("ALTER TABLE employees ADD COLUMN employmentStatus TEXT DEFAULT 'active'");
+    if (!empColNames.includes('avatar')) db.exec("ALTER TABLE employees ADD COLUMN avatar TEXT");
+    if (!empColNames.includes('notes')) db.exec("ALTER TABLE employees ADD COLUMN notes TEXT");
+    version = 4;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 5) {
+    const acctColumns = db.prepare("PRAGMA table_info(employee_accounts)").all() as any[];
+    const acctColNames = acctColumns.map((c: any) => c.name);
+    if (!acctColNames.includes('forcePasswordChange')) db.exec("ALTER TABLE employee_accounts ADD COLUMN forcePasswordChange INTEGER DEFAULT 0");
+    if (!acctColNames.includes('failedLoginAttempts')) db.exec("ALTER TABLE employee_accounts ADD COLUMN failedLoginAttempts INTEGER DEFAULT 0");
+    if (!acctColNames.includes('lockedUntil')) db.exec("ALTER TABLE employee_accounts ADD COLUMN lockedUntil TEXT");
+    if (!acctColNames.includes('lastPasswordChange')) db.exec("ALTER TABLE employee_accounts ADD COLUMN lastPasswordChange TEXT");
+    version = 5;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 6) {
+    const salesColumns = db.prepare("PRAGMA table_info(sales)").all() as any[];
+    const salesColNames = salesColumns.map((c: any) => c.name);
+    if (!salesColNames.includes('createdBy')) db.exec("ALTER TABLE sales ADD COLUMN createdBy INTEGER");
+    if (!salesColNames.includes('costAtTimeOfSale')) db.exec("ALTER TABLE sales ADD COLUMN costAtTimeOfSale REAL");
+    if (!salesColNames.includes('status')) db.exec("ALTER TABLE sales ADD COLUMN status TEXT DEFAULT 'Active'");
+    if (!salesColNames.includes('voidReason')) db.exec("ALTER TABLE sales ADD COLUMN voidReason TEXT");
+    if (!salesColNames.includes('voidedBy')) db.exec("ALTER TABLE sales ADD COLUMN voidedBy TEXT");
+    if (!salesColNames.includes('voidedAt')) db.exec("ALTER TABLE sales ADD COLUMN voidedAt TEXT");
+    version = 6;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 7) {
+    const supColumns = db.prepare("PRAGMA table_info(suppliers)").all() as any[];
+    const supColNames = supColumns.map((c: any) => c.name);
+    if (!supColNames.includes('businessId')) db.exec("ALTER TABLE suppliers ADD COLUMN businessId INTEGER REFERENCES businesses(id)");
+    if (!supColNames.includes('isFavorite')) db.exec("ALTER TABLE suppliers ADD COLUMN isFavorite INTEGER DEFAULT 0");
+    if (!supColNames.includes('performanceScore')) db.exec("ALTER TABLE suppliers ADD COLUMN performanceScore REAL DEFAULT 0");
+    if (!supColNames.includes('lastActivityDate')) db.exec("ALTER TABLE suppliers ADD COLUMN lastActivityDate TEXT");
+    version = 7;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 8) {
+    const spColumns = db.prepare("PRAGMA table_info(supplier_purchases)").all() as any[];
+    const spColNames = spColumns.map((c: any) => c.name);
+    if (!spColNames.includes('businessId')) db.exec("ALTER TABLE supplier_purchases ADD COLUMN businessId INTEGER REFERENCES businesses(id)");
+    const spPayColumns = db.prepare("PRAGMA table_info(supplier_payments)").all() as any[];
+    const spPayColNames = spPayColumns.map((c: any) => c.name);
+    if (!spPayColNames.includes('businessId')) db.exec("ALTER TABLE supplier_payments ADD COLUMN businessId INTEGER REFERENCES businesses(id)");
+    version = 8;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 9) {
+    const itemCols = db.prepare("PRAGMA table_info(items)").all() as any[];
+    const itemColNames = itemCols.map((c: any) => c.name);
+    if (!itemColNames.includes('supplierId')) db.exec("ALTER TABLE items ADD COLUMN supplierId INTEGER REFERENCES suppliers(id)");
+    if (!itemColNames.includes('lastPurchaseDate')) db.exec("ALTER TABLE items ADD COLUMN lastPurchaseDate TEXT");
+    if (!itemColNames.includes('lastPurchasePrice')) db.exec("ALTER TABLE items ADD COLUMN lastPurchasePrice REAL DEFAULT 0");
+    if (!itemColNames.includes('deleted_by')) db.exec("ALTER TABLE items ADD COLUMN deleted_by TEXT");
+    if (!itemColNames.includes('deleted_at')) db.exec("ALTER TABLE items ADD COLUMN deleted_at TEXT");
+    version = 9;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 10) {
+    const adminCols = db.prepare("PRAGMA table_info(admins)").all() as any[];
+    const adminColNames = adminCols.map((c: any) => c.name);
+    if (!adminColNames.includes('failedLoginAttempts')) db.exec("ALTER TABLE admins ADD COLUMN failedLoginAttempts INTEGER DEFAULT 0");
+    if (!adminColNames.includes('lockedUntil')) db.exec("ALTER TABLE admins ADD COLUMN lockedUntil TEXT");
+    if (!adminColNames.includes('forcePasswordChange')) db.exec("ALTER TABLE admins ADD COLUMN forcePasswordChange INTEGER DEFAULT 0");
+    if (!adminColNames.includes('lastPasswordChange')) db.exec("ALTER TABLE admins ADD COLUMN lastPasswordChange TEXT");
+    if (!adminColNames.includes('lastLogin')) db.exec("ALTER TABLE admins ADD COLUMN lastLogin TEXT");
+    version = 10;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 11) {
+    const dpCols = db.prepare("PRAGMA table_info(debt_payments)").all() as any[];
+    const dpColNames = dpCols.map((c: any) => c.name);
+    if (!dpColNames.includes('reversalId')) db.exec("ALTER TABLE debt_payments ADD COLUMN reversalId INTEGER");
+    if (!dpColNames.includes('reversalReason')) db.exec("ALTER TABLE debt_payments ADD COLUMN reversalReason TEXT");
+    if (!dpColNames.includes('reversedBy')) db.exec("ALTER TABLE debt_payments ADD COLUMN reversedBy TEXT");
+    if (!dpColNames.includes('reversalDate')) db.exec("ALTER TABLE debt_payments ADD COLUMN reversalDate TEXT");
+    version = 11;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 12) {
+    const supPayCols = db.prepare("PRAGMA table_info(supplier_payments)").all() as any[];
+    const supPayColNames = supPayCols.map((c: any) => c.name);
+    if (!supPayColNames.includes('reversalId')) db.exec("ALTER TABLE supplier_payments ADD COLUMN reversalId INTEGER");
+    if (!supPayColNames.includes('reversalReason')) db.exec("ALTER TABLE supplier_payments ADD COLUMN reversalReason TEXT");
+    if (!supPayColNames.includes('reversedBy')) db.exec("ALTER TABLE supplier_payments ADD COLUMN reversedBy TEXT");
+    if (!supPayColNames.includes('reversalDate')) db.exec("ALTER TABLE supplier_payments ADD COLUMN reversalDate TEXT");
+    version = 12;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 13) {
+    const adjCols = db.prepare("PRAGMA table_info(adjustments)").all() as any[];
+    const adjColNames = adjCols.map((c: any) => c.name);
+    if (!adjColNames.includes('reversalId')) db.exec("ALTER TABLE adjustments ADD COLUMN reversalId INTEGER");
+    if (!adjColNames.includes('reversalReason')) db.exec("ALTER TABLE adjustments ADD COLUMN reversalReason TEXT");
+    if (!adjColNames.includes('reversedBy')) db.exec("ALTER TABLE adjustments ADD COLUMN reversedBy TEXT");
+    if (!adjColNames.includes('reversalDate')) db.exec("ALTER TABLE adjustments ADD COLUMN reversalDate TEXT");
+    version = 13;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 14) {
+    const custCols = db.prepare("PRAGMA table_info(customers)").all() as any[];
+    const custColNames = custCols.map((c: any) => c.name);
+    if (!custColNames.includes('is_deleted')) db.exec("ALTER TABLE customers ADD COLUMN is_deleted INTEGER DEFAULT 0");
+    if (!custColNames.includes('deleted_by')) db.exec("ALTER TABLE customers ADD COLUMN deleted_by TEXT");
+    if (!custColNames.includes('deleted_at')) db.exec("ALTER TABLE customers ADD COLUMN deleted_at TEXT");
+    version = 14;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 15) {
+    const roleCols = db.prepare("PRAGMA table_info(employee_roles)").all() as any[];
+    const roleColNames = roleCols.map((c: any) => c.name);
+    if (!roleColNames.includes('businessId')) db.exec("ALTER TABLE employee_roles ADD COLUMN businessId INTEGER REFERENCES businesses(id)");
+    version = 15;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 16) {
+    const itemCols = db.prepare("PRAGMA table_info(items)").all() as any[];
+    const itemColNames = itemCols.map((c: any) => c.name);
+    if (!itemColNames.includes('sku')) db.exec("ALTER TABLE items ADD COLUMN sku TEXT");
+    if (!itemColNames.includes('barcode')) db.exec("ALTER TABLE items ADD COLUMN barcode TEXT");
+    const saleCols = db.prepare("PRAGMA table_info(sales)").all() as any[];
+    const saleColNames = saleCols.map((c: any) => c.name);
+    if (!saleColNames.includes('fiscal_number')) db.exec("ALTER TABLE sales ADD COLUMN fiscal_number TEXT");
+    if (!saleColNames.includes('fiscal_signature')) db.exec("ALTER TABLE sales ADD COLUMN fiscal_signature TEXT");
+    version = 16;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 17) {
+    const syncTables = ['categories', 'items', 'item_packs', 'sales', 'debt_payments', 'returns', 'expenses', 'adjustments', 'customers'];
+    for (const tbl of syncTables) {
+      const cols = db.prepare(`PRAGMA table_info(${tbl})`).all() as any[];
+      const names = cols.map((c: any) => c.name);
+      if (!names.includes('uuid')) db.exec(`ALTER TABLE ${tbl} ADD COLUMN uuid TEXT`);
+      if (!names.includes('device_id')) db.exec(`ALTER TABLE ${tbl} ADD COLUMN device_id TEXT`);
+      if (!names.includes('row_version')) db.exec(`ALTER TABLE ${tbl} ADD COLUMN row_version INTEGER DEFAULT 1`);
+      if (!names.includes('updated_at')) db.exec(`ALTER TABLE ${tbl} ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP`);
+      if (!names.includes('is_deleted')) db.exec(`ALTER TABLE ${tbl} ADD COLUMN is_deleted INTEGER DEFAULT 0`);
+      if (!names.includes('deleted_at')) db.exec(`ALTER TABLE ${tbl} ADD COLUMN deleted_at TEXT`);
+      if (!names.includes('is_synced')) db.exec(`ALTER TABLE ${tbl} ADD COLUMN is_synced INTEGER DEFAULT 1`);
+    }
+    // Backfill UUIDs (v4-style, generated in SQL) for every existing row.
+    const backfill = `
+      UPDATE categories SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;
+      UPDATE items SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;
+      UPDATE item_packs SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;
+      UPDATE sales SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;
+      UPDATE debt_payments SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;
+      UPDATE returns SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;
+      UPDATE expenses SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;
+      UPDATE adjustments SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;
+      UPDATE customers SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;
+    `;
+    db.exec(backfill);
+    version = 17;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 4.3: tamper-evident audit — chained SHA-256 hashes on audit_logs.
+  if (version < 18) {
+    {
+      const cols = db.prepare('PRAGMA table_info(audit_logs)').all() as any[];
+      const names = cols.map((c: any) => c.name);
+      if (!names.includes('prev_hash')) db.exec('ALTER TABLE audit_logs ADD COLUMN prev_hash TEXT');
+      if (!names.includes('hash')) db.exec('ALTER TABLE audit_logs ADD COLUMN hash TEXT');
+    }
+    // Backfill a hash chain over any pre-existing rows (id order).
+    const rows = db.prepare('SELECT * FROM audit_logs ORDER BY id ASC').all() as any[];
+    const mk = (prev: string, r: any): string => {
+      const c = crypto.createHash('sha256');
+      c.update(`${prev}|${r.id}|${r.action}|${r.entityType}|${r.entityId ?? ''}|${r.fieldName ?? ''}|${r.oldValue ?? ''}|${r.newValue ?? ''}|${r.changedBy ?? ''}|${r.description ?? ''}|${r.createdAt ?? ''}`);
+      return c.digest('hex');
+    };
+    const update = db.prepare('UPDATE audit_logs SET prev_hash = ?, hash = ? WHERE id = ?');
+    let prev = 'GENESIS';
+    const tx = db.transaction(() => {
+      for (const r of rows) {
+        const h = mk(prev, r);
+        update.run(prev, h, r.id);
+        prev = h;
+      }
+    });
+    tx();
+    version = 18;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 4.8: reorder automation — per-item reorder point / reorder qty.
+  if (version < 19) {
+    const cols = db.prepare('PRAGMA table_info(items)').all() as any[];
+    const names = cols.map((c: any) => c.name);
+    if (!names.includes('reorderPoint')) db.exec('ALTER TABLE items ADD COLUMN reorderPoint REAL DEFAULT 10');
+    if (!names.includes('reorderQty')) db.exec('ALTER TABLE items ADD COLUMN reorderQty REAL DEFAULT 0');
+    if (!names.includes('autoReorder')) db.exec('ALTER TABLE items ADD COLUMN autoReorder INTEGER DEFAULT 0');
+    version = 19;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 4.12: gift cards / store credit.
+  if (version < 20) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS gift_cards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER,
+        code TEXT UNIQUE NOT NULL,
+        cardName TEXT,
+        initialBalance REAL DEFAULT 0,
+        balance REAL DEFAULT 0,
+        currency TEXT DEFAULT 'ETB',
+        status TEXT DEFAULT 'active',
+        issuedTo TEXT,
+        issuedBy TEXT,
+        expiryDate TEXT,
+        notes TEXT,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        uuid TEXT,
+        device_id TEXT,
+        row_version INTEGER DEFAULT 1,
+        is_deleted INTEGER DEFAULT 0,
+        deleted_at TEXT,
+        is_synced INTEGER DEFAULT 1,
+        FOREIGN KEY (businessId) REFERENCES businesses(id)
+      );
+      CREATE TABLE IF NOT EXISTS gift_card_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        giftCardId INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        refType TEXT,
+        refId INTEGER,
+        note TEXT,
+        createdBy TEXT,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (giftCardId) REFERENCES gift_cards(id)
+      );
+    `);
+    version = 20;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 5.6: high-cardinality indexes for hot query paths discovered in perf review.
+  if (version < 21) {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_items_sku ON items(sku);
+      CREATE INDEX IF NOT EXISTS idx_items_barcode ON items(barcode);
+      CREATE INDEX IF NOT EXISTS idx_sync_outbox_seq ON sync_outbox(seq);
+      CREATE INDEX IF NOT EXISTS idx_sync_outbox_device_seq ON sync_outbox(device_id, seq);
+      CREATE INDEX IF NOT EXISTS idx_sales_businessId_createdAt ON sales(businessId, createdAt);
+      CREATE INDEX IF NOT EXISTS idx_sales_customerName ON sales(customerName);
+      CREATE INDEX IF NOT EXISTS idx_customers_customerName ON customers(customerName);
+      CREATE INDEX IF NOT EXISTS idx_items_businessId_updated_at ON items(businessId, updated_at);
+    `);
+    version = 21;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // ========== CHANGE CAPTURE TRIGGERS (run after migrations so all sync columns exist) ==========
+  const syncTables: { table: string; id: string; columns: string[] }[] = [
+    { table: 'categories', id: 'id', columns: ['id', 'businessId', 'name', 'icon', 'isCustom', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'items', id: 'id', columns: ['id', 'businessId', 'name', 'categoryId', 'sku', 'barcode', 'companyName', 'purchaseUnit', 'baseUnit', 'unitsPerPack', 'totalPackQuantity', 'totalBaseQuantity', 'packPurchasePrice', 'basePurchasePrice', 'baseSellingPrice', 'packSellingPrice', 'allowSellByBaseUnit', 'allowSellByPackUnit', 'expiryDate', 'qualityGrade', 'notes', 'isCredit', 'supplierPhone', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'item_packs', id: 'id', columns: ['id', 'itemId', 'packNumber', 'initialQuantity', 'currentQuantity', 'unit', 'status', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'sales', id: 'id', columns: ['id', 'businessId', 'itemId', 'quantity', 'unit', 'unitType', 'discount', 'vat', 'totalPrice', 'paymentMethod', 'paymentStatus', 'status', 'customerName', 'customerPhone', 'packId', 'dueDate', 'paidAmount', 'createdBy', 'createdAt', 'fiscal_number', 'fiscal_signature', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'debt_payments', id: 'id', columns: ['id', 'saleId', 'customerName', 'customerPhone', 'amount', 'type', 'note', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'returns', id: 'id', columns: ['id', 'businessId', 'saleId', 'itemId', 'quantity', 'unit', 'unitType', 'refundAmount', 'reason', 'status', 'createdBy', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'expenses', id: 'id', columns: ['id', 'businessId', 'name', 'amount', 'category', 'date', 'isRecurring', 'frequency', 'nextBillingDate', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'adjustments', id: 'id', columns: ['id', 'businessId', 'itemId', 'type', 'oldValue', 'newValue', 'quantity', 'unitType', 'reason', 'date', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'customers', id: 'id', columns: ['id', 'businessId', 'customerName', 'phone', 'secondaryPhone', 'email', 'address', 'city', 'company', 'taxNumber', 'groupName', 'creditLimit', 'notes', 'isActive', 'createdAt', 'updatedAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] }
+  ];
+  const genUuid = "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))";
+  for (const t of syncTables) {
+    const newArgs = t.columns.map((c) => `'${c}', ${c}`).join(', ');
+    const oldArgs = t.columns.map((c) => `'${c}', OLD.${c}`).join(', ');
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ai AFTER INSERT ON ${t.table} BEGIN
+        UPDATE ${t.table} SET uuid = ${genUuid} WHERE ${t.id} = NEW.${t.id} AND uuid IS NULL;
+        INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+        SELECT '${t.table}', uuid, 'INSERT', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_${t.table}_au AFTER UPDATE ON ${t.table} WHEN OLD.uuid IS NOT NULL AND NEW.uuid IS NOT NULL BEGIN
+        INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+        SELECT '${t.table}', uuid, 'UPDATE', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ad AFTER DELETE ON ${t.table} BEGIN
+        INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+        VALUES ('${t.table}', OLD.uuid, 'DELETE', json_object(${oldArgs}), OLD.device_id);
+      END;
+    `);
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS orders (
@@ -987,31 +1507,32 @@ export function initDB() {
     CREATE INDEX IF NOT EXISTS idx_order_history_orderId ON order_history(orderId);
   `);
 
-  // Migration: Add columns to employees if missing
-  const empColumns = db.prepare("PRAGMA table_info(employees)").all() as any[];
-  const empColNames = empColumns.map((c: any) => c.name);
-  if (!empColNames.includes('address')) db.exec("ALTER TABLE employees ADD COLUMN address TEXT");
-  if (!empColNames.includes('emergencyContact')) db.exec("ALTER TABLE employees ADD COLUMN emergencyContact TEXT");
-  if (!empColNames.includes('gender')) db.exec("ALTER TABLE employees ADD COLUMN gender TEXT");
-  if (!empColNames.includes('dateOfBirth')) db.exec("ALTER TABLE employees ADD COLUMN dateOfBirth TEXT");
-  if (!empColNames.includes('department')) db.exec("ALTER TABLE employees ADD COLUMN department TEXT");
-  if (!empColNames.includes('warehouseId')) db.exec("ALTER TABLE employees ADD COLUMN warehouseId INTEGER REFERENCES warehouses(id)");
-  if (!empColNames.includes('employmentStatus')) db.exec("ALTER TABLE employees ADD COLUMN employmentStatus TEXT DEFAULT 'active'");
-  if (!empColNames.includes('avatar')) db.exec("ALTER TABLE employees ADD COLUMN avatar TEXT");
-  if (!empColNames.includes('notes')) db.exec("ALTER TABLE employees ADD COLUMN notes TEXT");
+  // ========== UPDATED_AT TRIGGERS ==========
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_items_updated AFTER UPDATE ON items
+    BEGIN UPDATE items SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 
-  // Migration: Add columns to employee_accounts if missing
-  const acctColumns = db.prepare("PRAGMA table_info(employee_accounts)").all() as any[];
-  const acctColNames = acctColumns.map((c: any) => c.name);
-  if (!acctColNames.includes('forcePasswordChange')) db.exec("ALTER TABLE employee_accounts ADD COLUMN forcePasswordChange INTEGER DEFAULT 0");
-  if (!acctColNames.includes('failedLoginAttempts')) db.exec("ALTER TABLE employee_accounts ADD COLUMN failedLoginAttempts INTEGER DEFAULT 0");
-  if (!acctColNames.includes('lockedUntil')) db.exec("ALTER TABLE employee_accounts ADD COLUMN lockedUntil TEXT");
-  if (!acctColNames.includes('lastPasswordChange')) db.exec("ALTER TABLE employee_accounts ADD COLUMN lastPasswordChange TEXT");
+    CREATE TRIGGER IF NOT EXISTS trg_sales_updated AFTER UPDATE ON sales
+    BEGIN UPDATE sales SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 
-  // Migration: Add createdBy to sales if missing
-  const salesColumns = db.prepare("PRAGMA table_info(sales)").all() as any[];
-  let salesColNames = salesColumns.map((c: any) => c.name);
-  if (!salesColNames.includes('createdBy')) db.exec("ALTER TABLE sales ADD COLUMN createdBy INTEGER");
+    CREATE TRIGGER IF NOT EXISTS trg_customers_updated AFTER UPDATE ON customers
+    BEGIN UPDATE customers SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_suppliers_updated AFTER UPDATE ON suppliers
+    BEGIN UPDATE suppliers SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_expenses_updated AFTER UPDATE ON expenses
+    BEGIN UPDATE expenses SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_adjustments_updated AFTER UPDATE ON adjustments
+    BEGIN UPDATE adjustments SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_employees_updated AFTER UPDATE ON employees
+    BEGIN UPDATE employees SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_employee_accounts_updated AFTER UPDATE ON employee_accounts
+    BEGIN UPDATE employee_accounts SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
+  `);
 
   // Seed: Ensure at least one business exists
   let businessId = 1;
@@ -1130,23 +1651,6 @@ export function initDB() {
     for (const p of defaultPrefs) insertPref.run(p.key, p.sound, p.desktop, p.email, p.inApp);
   }
 
-  // Migration: Add supplier columns if missing (favorites, performance)
-  const supColumns = db.prepare("PRAGMA table_info(suppliers)").all() as any[];
-  const supColNames = supColumns.map((c: any) => c.name);
-  if (!supColNames.includes('businessId')) db.exec("ALTER TABLE suppliers ADD COLUMN businessId INTEGER REFERENCES businesses(id)");
-  if (!supColNames.includes('isFavorite')) db.exec("ALTER TABLE suppliers ADD COLUMN isFavorite INTEGER DEFAULT 0");
-  if (!supColNames.includes('performanceScore')) db.exec("ALTER TABLE suppliers ADD COLUMN performanceScore REAL DEFAULT 0");
-  if (!supColNames.includes('lastActivityDate')) db.exec("ALTER TABLE suppliers ADD COLUMN lastActivityDate TEXT");
-
-  // Migration: Ensure supplier_purchases and supplier_payments have businessId
-  const spColumns = db.prepare("PRAGMA table_info(supplier_purchases)").all() as any[];
-  const spColNames = spColumns.map((c: any) => c.name);
-  if (!spColNames.includes('businessId')) db.exec("ALTER TABLE supplier_purchases ADD COLUMN businessId INTEGER REFERENCES businesses(id)");
-
-  const spPayColumns = db.prepare("PRAGMA table_info(supplier_payments)").all() as any[];
-  const spPayColNames = spPayColumns.map((c: any) => c.name);
-  if (!spPayColNames.includes('businessId')) db.exec("ALTER TABLE supplier_payments ADD COLUMN businessId INTEGER REFERENCES businesses(id)");
-
   // Migration: Create supplier_activity_log table
   db.exec(`
     CREATE TABLE IF NOT EXISTS supplier_activity_log (
@@ -1161,19 +1665,6 @@ export function initDB() {
       FOREIGN KEY (supplierId) REFERENCES suppliers(id) ON DELETE CASCADE
     )
   `);
-
-  // Migration: Add supplierId to items table for direct supplier-product link
-  const itemColumns = db.prepare("PRAGMA table_info(items)").all() as any[];
-  let itemColNames = itemColumns.map((c: any) => c.name);
-  if (!itemColNames.includes('supplierId')) {
-    db.exec("ALTER TABLE items ADD COLUMN supplierId INTEGER REFERENCES suppliers(id)");
-  }
-  if (!itemColNames.includes('lastPurchaseDate')) {
-    db.exec("ALTER TABLE items ADD COLUMN lastPurchaseDate TEXT");
-  }
-  if (!itemColNames.includes('lastPurchasePrice')) {
-    db.exec("ALTER TABLE items ADD COLUMN lastPurchasePrice REAL DEFAULT 0");
-  }
 
   // Index for faster supplier-item lookups
   db.exec(`
@@ -1218,51 +1709,6 @@ export function initDB() {
   }
 
   // ========== AUDIT/REVERSAL SYSTEM MIGRATIONS ==========
-
-  // Sales void fields
-  const salesCols = db.prepare("PRAGMA table_info(sales)").all() as any[];
-  salesColNames = salesCols.map((c: any) => c.name);
-  if (!salesColNames.includes('status')) db.exec("ALTER TABLE sales ADD COLUMN status TEXT DEFAULT 'Active'");
-  if (!salesColNames.includes('voidReason')) db.exec("ALTER TABLE sales ADD COLUMN voidReason TEXT");
-  if (!salesColNames.includes('voidedBy')) db.exec("ALTER TABLE sales ADD COLUMN voidedBy TEXT");
-  if (!salesColNames.includes('voidedAt')) db.exec("ALTER TABLE sales ADD COLUMN voidedAt TEXT");
-
-  // Debt payment reversal fields
-  const dpCols = db.prepare("PRAGMA table_info(debt_payments)").all() as any[];
-  const dpColNames = dpCols.map((c: any) => c.name);
-  if (!dpColNames.includes('reversalId')) db.exec("ALTER TABLE debt_payments ADD COLUMN reversalId INTEGER");
-  if (!dpColNames.includes('reversalReason')) db.exec("ALTER TABLE debt_payments ADD COLUMN reversalReason TEXT");
-  if (!dpColNames.includes('reversedBy')) db.exec("ALTER TABLE debt_payments ADD COLUMN reversedBy TEXT");
-  if (!dpColNames.includes('reversalDate')) db.exec("ALTER TABLE debt_payments ADD COLUMN reversalDate TEXT");
-
-  // Supplier payment reversal fields
-  const supPayCols = db.prepare("PRAGMA table_info(supplier_payments)").all() as any[];
-  const supPayColNames = supPayCols.map((c: any) => c.name);
-  if (!supPayColNames.includes('reversalId')) db.exec("ALTER TABLE supplier_payments ADD COLUMN reversalId INTEGER");
-  if (!supPayColNames.includes('reversalReason')) db.exec("ALTER TABLE supplier_payments ADD COLUMN reversalReason TEXT");
-  if (!supPayColNames.includes('reversedBy')) db.exec("ALTER TABLE supplier_payments ADD COLUMN reversedBy TEXT");
-  if (!supPayColNames.includes('reversalDate')) db.exec("ALTER TABLE supplier_payments ADD COLUMN reversalDate TEXT");
-
-  // Adjustment reversal fields
-  const adjCols = db.prepare("PRAGMA table_info(adjustments)").all() as any[];
-  const adjColNames = adjCols.map((c: any) => c.name);
-  if (!adjColNames.includes('reversalId')) db.exec("ALTER TABLE adjustments ADD COLUMN reversalId INTEGER");
-  if (!adjColNames.includes('reversalReason')) db.exec("ALTER TABLE adjustments ADD COLUMN reversalReason TEXT");
-  if (!adjColNames.includes('reversedBy')) db.exec("ALTER TABLE adjustments ADD COLUMN reversedBy TEXT");
-  if (!adjColNames.includes('reversalDate')) db.exec("ALTER TABLE adjustments ADD COLUMN reversalDate TEXT");
-
-  // Soft delete fields for items
-  const itemCols = db.prepare("PRAGMA table_info(items)").all() as any[];
-  itemColNames = itemCols.map((c: any) => c.name);
-  if (!itemColNames.includes('deleted_by')) db.exec("ALTER TABLE items ADD COLUMN deleted_by TEXT");
-  if (!itemColNames.includes('deleted_at')) db.exec("ALTER TABLE items ADD COLUMN deleted_at TEXT");
-
-  // Soft delete fields for customers
-  const custCols = db.prepare("PRAGMA table_info(customers)").all() as any[];
-  const custColNames = custCols.map((c: any) => c.name);
-  if (!custColNames.includes('is_deleted')) db.exec("ALTER TABLE customers ADD COLUMN is_deleted INTEGER DEFAULT 0");
-  if (!custColNames.includes('deleted_by')) db.exec("ALTER TABLE customers ADD COLUMN deleted_by TEXT");
-  if (!custColNames.includes('deleted_at')) db.exec("ALTER TABLE customers ADD COLUMN deleted_at TEXT");
 
   // Indexes
   db.exec(`
@@ -1319,4 +1765,28 @@ export function initDB() {
 }
 
 export { ALL_PERMISSIONS, DEFAULT_ROLES };
-export default db;
+
+export function validateDBFile(filePath: string): { ok: boolean; message?: string } {
+  try {
+    const chk = new Database(filePath, { readonly: true, fileMustExist: true });
+    const integrity = chk.pragma('integrity_check', { simple: true }) as string | string[];
+    const result = Array.isArray(integrity) ? integrity[0] : integrity;
+    chk.close();
+    return result === 'ok' ? { ok: true } : { ok: false, message: `integrity_check: ${result}` };
+  } catch (e: any) {
+    return { ok: false, message: e?.message || String(e) };
+  }
+}
+
+export function reopenDB(): void {
+  db.close();
+  const wal = `${dbPath}-wal`;
+  const shm = `${dbPath}-shm`;
+  try { if (existsSync(wal)) unlinkSync(wal); } catch {}
+  try { if (existsSync(shm)) unlinkSync(shm); } catch {}
+  db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('busy_timeout = 5000');
+  db.pragma('foreign_keys = ON');
+  (module as any).exports.default = db;
+}

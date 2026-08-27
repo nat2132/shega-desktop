@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   Plus, Wallet, RefreshCcw, Download,
   PieChart, Trash2, Copy, AlertTriangle,
-  Clock, BarChart3, FileText
+  Clock, BarChart3, FileText, Eye, TrendingUp
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { SectionCards } from '../components/section-cards';
@@ -75,6 +75,13 @@ const BudgetManagement: React.FC = () => {
   const [showAdjustModal, setShowAdjustModal] = useState<any>(null);
   const [showDuplicateModal, setShowDuplicateModal] = useState(false);
   const [editingBudget, setEditingBudget] = useState<any>(null);
+
+  // Detail view state
+  const [detailBudget, setDetailBudget] = useState<any>(null);
+  const [detailExpenses, setDetailExpenses] = useState<any[]>([]);
+  const [detailAdjustments, setDetailAdjustments] = useState<any[]>([]);
+  const [detailAlerts, setDetailAlerts] = useState<any[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -282,6 +289,50 @@ const BudgetManagement: React.FC = () => {
     setShowBudgetModal(true);
   };
 
+  const openBudgetDetails = async (budget: any) => {
+    setDetailBudget(budget);
+    setDetailLoading(true);
+    try {
+      const [exps, adjs, alerts] = await Promise.all([
+        window.api?.getExpenses({ category: budget.category, limit: 200 }) || Promise.resolve([]),
+        window.api?.getBudgetAdjustments(budget.id) || Promise.resolve([]),
+        window.api?.getBudgetAlerts({ acknowledged: false, limit: 50 }) || Promise.resolve([]),
+      ]);
+      setDetailExpenses(exps);
+      setDetailAdjustments(adjs);
+      setDetailAlerts((alerts || []).filter((a: any) => a.category === budget.category));
+    } catch (err) {
+      console.error('Failed to load budget details:', err);
+      setDetailExpenses([]);
+      setDetailAdjustments([]);
+      setDetailAlerts([]);
+    }
+    setDetailLoading(false);
+  };
+
+  const detailTrend = useMemo(() => {
+    if (!detailBudget) return [];
+    const map: Record<string, number> = {};
+    for (const e of detailExpenses) {
+      const d = new Date(e.date);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      map[key] = (map[key] || 0) + e.amount;
+    }
+    const now = new Date();
+    return Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const max = map[key] || 0;
+      return {
+        key,
+        label: `${t(monthKeys[d.getMonth()])}`,
+        total: max,
+        max,
+        height: Math.max(8, Math.min(100, (max / Math.max(...Object.values(map), 1)) * 100)),
+      };
+    });
+  }, [detailBudget, detailExpenses, t, monthKeys]);
+
   const healthScore = report
     ? Math.max(0, Math.min(100, Math.round(100 - (report.usagePercent || 0))))
     : 100;
@@ -411,9 +462,9 @@ const BudgetManagement: React.FC = () => {
                   <div key={alert.id} className="flex items-center justify-between p-3 rounded-xl bg-white/60 border border-yellow-200">
                     <div>
                       <p className="text-xs font-bold">{alert.category} - {alert.alertType}</p>
-                      <p className="text-[10px] text-muted-foreground">{alert.message}</p>
+                      <p className="text-xs text-muted-foreground">{alert.message}</p>
                     </div>
-                    <Button size="sm" variant="ghost" className="h-7 text-[10px] font-bold" onClick={async () => {
+                    <Button size="sm" variant="ghost" className="h-7 text-xs font-bold" onClick={async () => {
                       await window.api?.acknowledgeBudgetAlert(alert.id);
                       loadData();
                     }}>
@@ -438,10 +489,10 @@ const BudgetManagement: React.FC = () => {
                     <div className="flex justify-between items-center">
                       <span className="text-xs font-bold">{cat.category}</span>
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-bold text-muted-foreground">
+                        <span className="text-xs font-bold text-muted-foreground">
                           {t('common.etb')}{cat.actual.toLocaleString()} / {t('common.etb')}{cat.planned.toLocaleString()}
                         </span>
-                        <Badge className={`${st.bg} ${st.color} text-[8px] font-black border-0`}>{t(st.labelKey)}</Badge>
+                        <Badge className={`${st.bg} ${st.color} text-xs font-black border-0`}>{t(st.labelKey)}</Badge>
                       </div>
                     </div>
                     <div className="h-2 rounded-full bg-muted overflow-hidden">
@@ -450,7 +501,7 @@ const BudgetManagement: React.FC = () => {
                         style={{ width: `${Math.min(cat.usagePercent, 100)}%` }}
                       />
                     </div>
-                    <span className="text-[9px] text-muted-foreground font-medium">{t('budgets.percent_used', { percent: cat.usagePercent })}</span>
+                    <span className="text-xs text-muted-foreground font-medium">{t('budgets.percent_used', { percent: cat.usagePercent })}</span>
                   </div>
                 );
               })}
@@ -497,10 +548,10 @@ const BudgetManagement: React.FC = () => {
                         <div className="flex-1">
                           <div className="flex items-center gap-2">
                             <h3 className="font-bold text-sm">{budget.category}</h3>
-                            {budget.isRecurring ? <Badge variant="outline" className="text-[8px] font-black h-4 border-blue-200 text-blue-600 bg-blue-50">{t('budgets.recurring')}</Badge> : null}
-                            <Badge className={`${st.bg} ${st.color} text-[8px] font-black border-0`}>{t(st.labelKey)}</Badge>
+                            {budget.isRecurring ? <Badge variant="outline" className="text-xs font-black h-4 border-blue-200 text-blue-600 bg-blue-50">{t('budgets.recurring')}</Badge> : null}
+                            <Badge className={`${st.bg} ${st.color} text-xs font-black border-0`}>{t(st.labelKey)}</Badge>
                           </div>
-                          {budget.referenceName && <p className="text-[10px] text-muted-foreground mt-0.5">{budget.referenceName}</p>}
+                          {budget.referenceName && <p className="text-xs text-muted-foreground mt-0.5">{budget.referenceName}</p>}
                         </div>
                         <div className="flex items-center gap-6">
                           <div className="text-right">
@@ -522,9 +573,12 @@ const BudgetManagement: React.FC = () => {
                                 style={{ width: `${Math.min(budget.usagePercent, 100)}%` }}
                               />
                             </div>
-                            <span className="text-[9px] text-muted-foreground font-medium">{t('budgets.percent_used', { percent: budget.usagePercent })}</span>
+                            <span className="text-xs text-muted-foreground font-medium">{t('budgets.percent_used', { percent: budget.usagePercent })}</span>
                           </div>
                           <div className="flex gap-1">
+                            <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => openBudgetDetails(budget)} title={t('budgets.view_details')}>
+                              <Eye className="h-3.5 w-3.5" />
+                            </Button>
                             <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => openEditBudget(budget)}>
                               <FileText className="h-3.5 w-3.5" />
                             </Button>
@@ -567,25 +621,25 @@ const BudgetManagement: React.FC = () => {
               <div className="grid grid-cols-4 gap-4">
                 <Card>
                   <CardContent className="p-4 text-center">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.total_planned')}</p>
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.total_planned')}</p>
                     <p className="text-xl font-black mt-1">{t('common.etb')}{report.totalPlanned.toLocaleString()}</p>
                   </CardContent>
                 </Card>
                 <Card>
                   <CardContent className="p-4 text-center">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.total_spent')}</p>
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.total_spent')}</p>
                     <p className="text-xl font-black mt-1">{t('common.etb')}{report.totalSpent.toLocaleString()}</p>
                   </CardContent>
                 </Card>
                 <Card>
                   <CardContent className="p-4 text-center">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.remaining')}</p>
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.remaining')}</p>
                     <p className={`text-xl font-black mt-1 ${report.remaining < 0 ? 'text-red-600' : 'text-green-600'}`}>{t('common.etb')}{report.remaining.toLocaleString()}</p>
                   </CardContent>
                 </Card>
                 <Card>
                   <CardContent className="p-4 text-center">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.usage')}</p>
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.usage')}</p>
                     <p className="text-xl font-black mt-1">{report.usagePercent}%</p>
                   </CardContent>
                 </Card>
@@ -601,12 +655,12 @@ const BudgetManagement: React.FC = () => {
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="border-b border-border">
-                          <th className="text-left py-3 px-2 font-black uppercase tracking-widest text-[9px] text-muted-foreground">{t('budgets.col_category')}</th>
-                          <th className="text-right py-3 px-2 font-black uppercase tracking-widest text-[9px] text-muted-foreground">{t('budgets.col_planned')}</th>
-                          <th className="text-right py-3 px-2 font-black uppercase tracking-widest text-[9px] text-muted-foreground">{t('budgets.col_actual')}</th>
-                          <th className="text-right py-3 px-2 font-black uppercase tracking-widest text-[9px] text-muted-foreground">{t('budgets.col_remaining')}</th>
-                          <th className="text-right py-3 px-2 font-black uppercase tracking-widest text-[9px] text-muted-foreground">{t('budgets.col_used_percent')}</th>
-                          <th className="text-right py-3 px-2 font-black uppercase tracking-widest text-[9px] text-muted-foreground">{t('budgets.col_status')}</th>
+                          <th className="text-left py-3 px-2 font-black uppercase tracking-widest text-xs text-muted-foreground">{t('budgets.col_category')}</th>
+                          <th className="text-right py-3 px-2 font-black uppercase tracking-widest text-xs text-muted-foreground">{t('budgets.col_planned')}</th>
+                          <th className="text-right py-3 px-2 font-black uppercase tracking-widest text-xs text-muted-foreground">{t('budgets.col_actual')}</th>
+                          <th className="text-right py-3 px-2 font-black uppercase tracking-widest text-xs text-muted-foreground">{t('budgets.col_remaining')}</th>
+                          <th className="text-right py-3 px-2 font-black uppercase tracking-widest text-xs text-muted-foreground">{t('budgets.col_used_percent')}</th>
+                          <th className="text-right py-3 px-2 font-black uppercase tracking-widest text-xs text-muted-foreground">{t('budgets.col_status')}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -627,7 +681,7 @@ const BudgetManagement: React.FC = () => {
                                 </div>
                               </td>
                               <td className="py-3 px-2 text-right">
-                                <Badge className={`${st.bg} ${st.color} text-[8px] font-black border-0`}>{t(st.labelKey)}</Badge>
+                                <Badge className={`${st.bg} ${st.color} text-xs font-black border-0`}>{t(st.labelKey)}</Badge>
                               </td>
                             </tr>
                           );
@@ -663,16 +717,16 @@ const BudgetManagement: React.FC = () => {
                     <div key={adj.id} className="flex items-center justify-between p-4 rounded-xl border border-border bg-card/50">
                       <div>
                         <p className="text-xs font-bold">{adj.reason}</p>
-                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                        <p className="text-xs text-muted-foreground mt-0.5">
                           {t('common.etb')}{adj.previousAmount.toLocaleString()} → {t('common.etb')}{adj.newAmount.toLocaleString()}
                           {adj.approvedBy ? ` • ${t('budgets.approved_by', { name: adj.approvedBy })}` : ''}
                         </p>
                       </div>
                       <div className="flex items-center gap-3">
-                        <Badge className={`text-[8px] font-black border-0 ${adj.status === 'approved' ? 'bg-green-100 text-green-700' : adj.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                        <Badge className={`text-xs font-black border-0 ${adj.status === 'approved' ? 'bg-green-100 text-green-700' : adj.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
                           {adj.status === 'approved' ? t('budgets.status_approved') : adj.status === 'pending' ? t('budgets.status_pending') : t('budgets.status_rejected')}
                         </Badge>
-                        <span className="text-[9px] text-muted-foreground">{formatDate(adj.createdAt)}</span>
+                        <span className="text-xs text-muted-foreground">{formatDate(adj.createdAt)}</span>
                       </div>
                     </div>
                   ))}
@@ -699,7 +753,7 @@ const BudgetManagement: React.FC = () => {
                   {forecast.map((f: any) => (
                     <Card key={`${f.month}-${f.year}`} className="border-l-4 border-l-primary">
                       <CardContent className="p-4">
-                        <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{f.label}</p>
+                        <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{f.label}</p>
                         <div className="mt-3 space-y-2">
                           <div className="flex justify-between text-xs">
                             <span className="text-muted-foreground font-medium">{t('budgets.budgeted_label')}</span>
@@ -735,7 +789,7 @@ const BudgetManagement: React.FC = () => {
       >
         <div className="space-y-4 py-4">
           <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.budget_type')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.budget_type')}</label>
             <Select
               value={formData.budgetType}
               onValueChange={(v) => setFormData({ ...formData, budgetType: v })}
@@ -751,7 +805,7 @@ const BudgetManagement: React.FC = () => {
 
           {formData.budgetType !== 'business' && (
             <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                 {formData.budgetType === 'department' ? t('budgets.department_name') : formData.budgetType === 'project' ? t('budgets.project_name') : t('budgets.branch_name')}
               </label>
               <Input
@@ -764,7 +818,7 @@ const BudgetManagement: React.FC = () => {
           )}
 
           <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.category')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.category')}</label>
             <Select
               value={formData.category}
               onValueChange={(v) => setFormData({ ...formData, category: v })}
@@ -779,7 +833,7 @@ const BudgetManagement: React.FC = () => {
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.planned_amount')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.planned_amount')}</label>
             <Input
               type="number"
               value={formData.amount}
@@ -791,7 +845,7 @@ const BudgetManagement: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.period')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.period')}</label>
               <Select
                 value={formData.period}
                 onValueChange={(v) => setFormData({ ...formData, period: v })}
@@ -805,7 +859,7 @@ const BudgetManagement: React.FC = () => {
               </Select>
             </div>
             <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.period_month')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.period_month')}</label>
               <Select
                 value={isEthiopian ? gregToEth(formData.month, formData.year).month : formData.month}
                 onValueChange={(v) => {
@@ -841,13 +895,13 @@ const BudgetManagement: React.FC = () => {
               onChange={e => setFormData({ ...formData, isRecurring: e.target.checked })}
               className="rounded border-border"
             />
-            <label htmlFor="isRecurring" className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            <label htmlFor="isRecurring" className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
               {t('budgets.recurring_label')}
             </label>
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.notes_label')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.notes_label')}</label>
             <textarea
               value={formData.notes}
               onChange={e => setFormData({ ...formData, notes: e.target.value })}
@@ -876,11 +930,11 @@ const BudgetManagement: React.FC = () => {
       >
         <div className="space-y-4 py-4">
           <div className="p-3 rounded-xl bg-muted/30">
-            <p className="text-[10px] text-muted-foreground font-medium">{t('budgets.current_budget')}</p>
+            <p className="text-xs text-muted-foreground font-medium">{t('budgets.current_budget')}</p>
             <p className="font-black text-lg">{t('common.etb')}{(showAdjustModal?.amount || 0).toLocaleString()}</p>
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.new_amount')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.new_amount')}</label>
             <Input
               id="adjAmount"
               type="number"
@@ -889,7 +943,7 @@ const BudgetManagement: React.FC = () => {
             />
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.adjustment_reason')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.adjustment_reason')}</label>
             <textarea
               id="adjReason"
               placeholder={t('budgets.adjustment_reason_placeholder')}
@@ -920,7 +974,7 @@ const BudgetManagement: React.FC = () => {
           </p>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.target_month')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.target_month')}</label>
               <select
                 id="dupMonth"
                 defaultValue={selectedMonth}
@@ -934,7 +988,7 @@ const BudgetManagement: React.FC = () => {
               </select>
             </div>
             <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('budgets.target_year')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('budgets.target_year')}</label>
               <select
                 id="dupYear"
                 defaultValue={selectedYear}
@@ -956,6 +1010,171 @@ const BudgetManagement: React.FC = () => {
             </Button>
           </div>
         </div>
+      </Modal>
+
+      {/* ==================== BUDGET DETAILS MODAL ==================== */}
+      <Modal
+        isOpen={!!detailBudget}
+        onClose={() => setDetailBudget(null)}
+        title={t('budgets.details_title')}
+        size="lg"
+      >
+        {detailBudget && (
+          <div className="space-y-6 py-4">
+            {(() => {
+              const st = detailBudget.usagePercent > 100
+                ? statusConfig.critical
+                : detailBudget.usagePercent >= 80 ? statusConfig.warning : statusConfig.healthy;
+              const spent = detailBudget.spent || 0;
+              const remaining = detailBudget.remaining ?? (detailBudget.amount - spent);
+              const avgMonthly = detailTrend.length > 0
+                ? detailTrend.reduce((s: number, m: any) => s + m.total, 0) / detailTrend.length
+                : 0;
+              return (
+                <>
+                  <div className="p-5 rounded-2xl border border-border/50 bg-card space-y-4">
+                    <div className="flex items-center justify-between flex-wrap gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="h-11 w-11 rounded-2xl bg-primary/10 flex items-center justify-center">
+                          <Wallet className="h-5 w-5 text-primary" />
+                        </div>
+                        <div>
+                          <h3 className="text-lg font-black tracking-tight">{detailBudget.category}</h3>
+                          <p className="text-xs text-muted-foreground font-medium uppercase tracking-widest">
+                            {detailBudget.referenceName ? `${detailBudget.referenceName} • ` : ''}
+                            {t(BUDGET_TYPES.find((bt: any) => bt.id === detailBudget.budgetType)?.label || 'budgets.type_business')}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge className={`${st.bg} ${st.color} text-xs font-black border-0`}>{t(st.labelKey)}</Badge>
+                        {detailBudget.isRecurring ? <Badge variant="outline" className="text-xs font-black h-4 border-blue-200 text-blue-600 bg-blue-50">{t('budgets.recurring')}</Badge> : null}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.budget')}</p>
+                        <p className="text-lg font-black">{t('common.etb')}{detailBudget.amount.toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.spent')}</p>
+                        <p className={`text-lg font-black ${spent > detailBudget.amount ? 'text-red-600' : ''}`}>{t('common.etb')}{spent.toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.remaining')}</p>
+                        <p className={`text-lg font-black ${remaining < 0 ? 'text-red-600' : 'text-green-600'}`}>{t('common.etb')}{Math.max(0, remaining).toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('budgets.usage')}</p>
+                        <p className={`text-lg font-black ${detailBudget.usagePercent >= 100 ? 'text-red-600' : ''}`}>{detailBudget.usagePercent}%</p>
+                      </div>
+                    </div>
+
+                    <div className="h-3 w-full bg-muted rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${detailBudget.usagePercent >= 100 ? 'bg-red-500' : detailBudget.usagePercent >= 80 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                        style={{ width: `${Math.min(detailBudget.usagePercent, 100)}%` }}
+                      />
+                    </div>
+
+                    {detailBudget.notes && (
+                      <p className="text-xs text-muted-foreground font-medium italic">{detailBudget.notes}</p>
+                    )}
+                  </div>
+
+                  {/* Spending trend */}
+                  <div className="p-5 rounded-2xl border border-border/50 bg-card space-y-3">
+                    <div className="flex items-center gap-2">
+                      <TrendingUp className="h-4 w-4 text-primary" />
+                      <h4 className="text-xs font-black uppercase tracking-widest">{t('budgets.monthly_trend')}</h4>
+                    </div>
+                    <div className="flex items-end gap-3 h-32 pt-4">
+                      {detailTrend.map((m: any) => (
+                        <div key={m.key} className="flex-1 flex flex-col items-center gap-1.5">
+                          <span className="text-[10px] font-black text-muted-foreground">{t('common.etb')}{m.total > 999 ? `${(m.total / 1000).toFixed(1)}k` : Math.round(m.total)}</span>
+                          <div
+                            className="w-full rounded-t-md bg-gradient-to-t from-primary/30 to-primary"
+                            style={{ height: `${m.height}%` }}
+                            title={`${m.label}: ${t('common.etb')} ${m.total.toLocaleString()}`}
+                          />
+                          <span className="text-[10px] font-bold uppercase text-muted-foreground">{m.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex justify-between text-xs font-bold text-muted-foreground pt-1 border-t border-border/50">
+                      <span>{t('budgets.avg_monthly')}</span>
+                      <span>{t('common.etb')}{Math.round(avgMonthly).toLocaleString()}</span>
+                    </div>
+                  </div>
+
+                  {/* Recent expenses */}
+                  <div className="p-5 rounded-2xl border border-border/50 bg-card space-y-3">
+                    <h4 className="text-xs font-black uppercase tracking-widest">{t('budgets.recent_expenses')}</h4>
+                    {detailLoading ? (
+                      <div className="flex items-center justify-center py-8">
+                        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                      </div>
+                    ) : detailExpenses.length === 0 ? (
+                      <p className="text-sm text-muted-foreground font-medium text-center py-6">{t('budgets.no_expenses')}</p>
+                    ) : (
+                      <div className="space-y-2 max-h-56 overflow-y-auto">
+                        {detailExpenses.slice(0, 8).map((e: any) => (
+                          <div key={e.id} className="flex items-center justify-between p-3 rounded-xl bg-muted/30">
+                            <div>
+                              <p className="text-xs font-bold">{e.name}</p>
+                              <p className="text-[11px] text-muted-foreground font-medium">{formatDate(e.date)}</p>
+                            </div>
+                            <span className="text-sm font-black">{t('common.etb')}{Number(e.amount).toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Related adjustments */}
+                  <div className="p-5 rounded-2xl border border-border/50 bg-card space-y-3">
+                    <h4 className="text-xs font-black uppercase tracking-widest">{t('budgets.adjustment_history')}</h4>
+                    {detailAdjustments.length === 0 ? (
+                      <p className="text-sm text-muted-foreground font-medium text-center py-4">{t('budgets.no_adjustments')}</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {detailAdjustments.map((adj: any) => (
+                          <div key={adj.id} className="flex items-center justify-between p-3 rounded-xl bg-muted/30">
+                            <div>
+                              <p className="text-xs font-bold">{adj.reason}</p>
+                              <p className="text-[11px] text-muted-foreground font-medium">{formatDate(adj.createdAt)}</p>
+                            </div>
+                            <span className="text-sm font-black">{t('common.etb')}{adj.previousAmount.toLocaleString()} → {t('common.etb')}{adj.newAmount.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Related alerts */}
+                  <div className="p-5 rounded-2xl border border-border/50 bg-card space-y-3">
+                    <h4 className="text-xs font-black uppercase tracking-widest flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4 text-yellow-600" /> {t('budgets.related_alerts')}
+                    </h4>
+                    {detailAlerts.length === 0 ? (
+                      <p className="text-sm text-muted-foreground font-medium text-center py-4">{t('budgets.no_alerts')}</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {detailAlerts.slice(0, 5).map((alert: any) => (
+                          <div key={alert.id} className="p-3 rounded-xl bg-yellow-50 border border-yellow-200">
+                            <p className="text-xs font-bold">{alert.message}</p>
+                            <p className="text-[11px] text-muted-foreground font-medium">{formatDate(alert.createdAt)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
       </Modal>
     </div>
   );

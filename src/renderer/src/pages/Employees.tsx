@@ -212,7 +212,7 @@ const Employees: React.FC = () => {
               variant={activeTab === tab.id ? 'default' : 'ghost'}
               size="sm"
               onClick={() => setActiveTab(tab.id)}
-              className="h-8 px-4 text-[10px] font-black uppercase tracking-widest rounded-lg"
+              className="h-8 px-4 text-xs font-black uppercase tracking-widest rounded-lg"
             >
               <tab.icon size={14} className="mr-2" />
               {tab.label}
@@ -247,10 +247,10 @@ const Employees: React.FC = () => {
                   <option key={r.id} value={r.id}>{r.name}</option>
                 ))}
               </select>
-              <Button size="sm" variant="outline" className="h-9 text-[10px] font-black uppercase tracking-widest" onClick={loadEmployees}>
+              <Button size="sm" variant="outline" className="h-9 text-xs font-black uppercase tracking-widest" onClick={loadEmployees}>
                 <RefreshCw size={14} className="mr-2" /> {t('employees.refresh')}
               </Button>
-              <Button size="sm" className="h-9 px-5 text-[10px] font-black uppercase tracking-widest" onClick={openCreateEmployee}>
+              <Button size="sm" className="h-9 px-5 text-xs font-black uppercase tracking-widest" onClick={openCreateEmployee}>
                 <UserPlus size={14} className="mr-2" /> {t('employees.add')}
               </Button>
             </div>
@@ -258,7 +258,7 @@ const Employees: React.FC = () => {
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
                   <thead>
-                    <tr className="border-b border-border/50 text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <tr className="border-b border-border/50 text-xs font-black uppercase tracking-widest text-muted-foreground">
                       <th className="p-4">{t('employees.code')}</th>
                       <th className="p-4">{t('employees.name')}</th>
                       <th className="p-4">{t('employees.phone')}</th>
@@ -271,33 +271,33 @@ const Employees: React.FC = () => {
                   <tbody>
                     {employees.map(emp => (
                       <tr key={emp.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
-                        <td className="p-4 text-[10px] font-semibold">{emp.employeeCode || '-'}</td>
+                        <td className="p-4 text-xs font-semibold">{emp.employeeCode || '-'}</td>
                         <td className="p-4">
                           <p className="text-xs font-black uppercase tracking-tight">{emp.firstName} {emp.lastName}</p>
-                          {emp.email && <p className="text-[9px] text-muted-foreground">{emp.email}</p>}
+                          {emp.email && <p className="text-xs text-muted-foreground">{emp.email}</p>}
                         </td>
-                        <td className="p-4 text-[10px] font-semibold">{emp.phone || '-'}</td>
+                        <td className="p-4 text-xs font-semibold">{emp.phone || '-'}</td>
                         <td className="p-4">
-                          <Badge variant="secondary" className="text-[9px] font-black">{emp.roleName || '-'}</Badge>
+                          <Badge variant="secondary" className="text-xs font-black">{emp.roleName || '-'}</Badge>
                         </td>
                         <td className="p-4">
                           {emp.hasAccount ? (
-                            <Badge variant="default" className="text-[9px] font-black"><LogIn size={10} className="mr-1" /> {t('employees.has_account')}</Badge>
+                            <Badge variant="default" className="text-xs font-black"><LogIn size={10} className="mr-1" /> {t('employees.has_account')}</Badge>
                           ) : (
-                            <Badge variant="outline" className="text-[9px] font-black">{t('employees.no_account')}</Badge>
+                            <Badge variant="outline" className="text-xs font-black">{t('employees.no_account')}</Badge>
                           )}
                         </td>
                         <td className="p-4">
-                          <Badge variant={emp.isActive ? 'default' : 'secondary'} className="text-[9px] font-black uppercase">
+                          <Badge variant={emp.isActive ? 'default' : 'secondary'} className="text-xs font-black uppercase">
                             {emp.isActive ? t('employees.active') : t('employees.inactive')}
                           </Badge>
                         </td>
                         <td className="p-4">
                           <div className="flex gap-2">
-                            <Button variant="ghost" size="sm" className="h-7 text-[9px] font-black uppercase tracking-widest" onClick={() => openEditEmployee(emp)}>
+                            <Button variant="ghost" size="sm" className="h-7 text-xs font-black uppercase tracking-widest" onClick={() => openEditEmployee(emp)}>
                               <Edit2 size={11} className="mr-1" /> {t('employees.edit')}
                             </Button>
-                            <Button variant="ghost" size="sm" className="h-7 text-[9px] font-black uppercase tracking-widest text-destructive" onClick={() => { setDeleteTarget(emp); }}>
+                            <Button variant="ghost" size="sm" className="h-7 text-xs font-black uppercase tracking-widest text-destructive" onClick={() => { setDeleteTarget(emp); }}>
                               <Trash2 size={11} className="mr-1" /> {t('employees.delete')}
                             </Button>
                           </div>
@@ -305,7 +305,7 @@ const Employees: React.FC = () => {
                       </tr>
                     ))}
                     {employees.length === 0 && (
-                      <tr><td colSpan={7} className="p-12 text-center"><p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.no_employees')}</p></td></tr>
+                      <tr><td colSpan={7} className="p-12 text-center"><p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.no_employees')}</p></td></tr>
                     )}
                   </tbody>
                 </table>
@@ -318,8 +318,8 @@ const Employees: React.FC = () => {
         {activeTab === 'roles' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{roles.length} {t('employees.roles')}</p>
-              <Button size="sm" className="h-9 px-5 text-[10px] font-black uppercase tracking-widest" onClick={openCreateRole}>
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{roles.length} {t('employees.roles')}</p>
+              <Button size="sm" className="h-9 px-5 text-xs font-black uppercase tracking-widest" onClick={openCreateRole}>
                 <Plus size={14} className="mr-2" /> {t('employees.add')}
               </Button>
             </div>
@@ -335,7 +335,7 @@ const Employees: React.FC = () => {
                         </div>
                         <div>
                           <p className="text-xs font-black uppercase tracking-tight">{role.name}</p>
-                          {role.description && <p className="text-[9px] text-muted-foreground font-bold uppercase mt-0.5">{role.description}</p>}
+                          {role.description && <p className="text-xs text-muted-foreground font-bold uppercase mt-0.5">{role.description}</p>}
                         </div>
                       </div>
                       {role.isSystem ? (
@@ -350,11 +350,11 @@ const Employees: React.FC = () => {
                       </div>
                     )}
                     <div className="flex gap-2 mt-4 pt-3 border-t border-border/30">
-                      <Button variant="outline" size="sm" className="h-7 text-[9px] font-black uppercase tracking-widest" onClick={() => openEditRole(role)}>
+                      <Button variant="outline" size="sm" className="h-7 text-xs font-black uppercase tracking-widest" onClick={() => openEditRole(role)}>
                         <Edit2 size={11} className="mr-1" /> {t('employees.edit')}
                       </Button>
                       {!role.isSystem && (
-                        <Button variant="outline" size="sm" className="h-7 text-[9px] font-black uppercase tracking-widest text-destructive" onClick={() => handleDeleteRole(role.id)}>
+                        <Button variant="outline" size="sm" className="h-7 text-xs font-black uppercase tracking-widest text-destructive" onClick={() => handleDeleteRole(role.id)}>
                           <Trash2 size={11} className="mr-1" /> {t('employees.delete')}
                         </Button>
                       )}
@@ -365,7 +365,7 @@ const Employees: React.FC = () => {
               {roles.length === 0 && (
                 <div className="col-span-full p-12 text-center">
                   <ShieldCheck size={32} className="mx-auto mb-3 text-muted-foreground/30" />
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.no_roles')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.no_roles')}</p>
                 </div>
               )}
             </div>
@@ -376,8 +376,8 @@ const Employees: React.FC = () => {
         {activeTab === 'accounts' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{accounts.length} {t('employees.accounts')}</p>
-              <Button size="sm" className="h-9 px-5 text-[10px] font-black uppercase tracking-widest" onClick={openCreateAccount}>
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{accounts.length} {t('employees.accounts')}</p>
+              <Button size="sm" className="h-9 px-5 text-xs font-black uppercase tracking-widest" onClick={openCreateAccount}>
                 <KeyRound size={14} className="mr-2" /> {t('employees.add')}
               </Button>
             </div>
@@ -385,7 +385,7 @@ const Employees: React.FC = () => {
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
                   <thead>
-                    <tr className="border-b border-border/50 text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <tr className="border-b border-border/50 text-xs font-black uppercase tracking-widest text-muted-foreground">
                       <th className="p-4">{t('employees.employee')}</th>
                       <th className="p-4">{t('employees.username')}</th>
                       <th className="p-4">{t('employees.last_login')}</th>
@@ -398,21 +398,21 @@ const Employees: React.FC = () => {
                       <tr key={acct.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
                         <td className="p-4">
                           <p className="text-xs font-black uppercase tracking-tight">{acct.firstName} {acct.lastName}</p>
-                          <p className="text-[9px] text-muted-foreground">{acct.employeeCode || ''}</p>
+                          <p className="text-xs text-muted-foreground">{acct.employeeCode || ''}</p>
                         </td>
-                        <td className="p-4 text-[10px] font-semibold">{acct.username}</td>
-                        <td className="p-4 text-[10px] font-semibold">{acct.lastLogin ? formatDateTime(acct.lastLogin) : '-'}</td>
+                        <td className="p-4 text-xs font-semibold">{acct.username}</td>
+                        <td className="p-4 text-xs font-semibold">{acct.lastLogin ? formatDateTime(acct.lastLogin) : '-'}</td>
                         <td className="p-4">
-                          <Badge variant={acct.isActive ? 'default' : 'secondary'} className="text-[9px] font-black uppercase">
+                          <Badge variant={acct.isActive ? 'default' : 'secondary'} className="text-xs font-black uppercase">
                             {acct.isActive ? t('employees.active') : t('employees.inactive')}
                           </Badge>
                         </td>
                         <td className="p-4">
                           <div className="flex gap-2">
-                            <Button variant="ghost" size="sm" className="h-7 text-[9px] font-black uppercase tracking-widest" onClick={() => openEditAccount(acct)}>
+                            <Button variant="ghost" size="sm" className="h-7 text-xs font-black uppercase tracking-widest" onClick={() => openEditAccount(acct)}>
                               <Edit2 size={11} className="mr-1" /> {t('employees.edit')}
                             </Button>
-                            <Button variant="ghost" size="sm" className="h-7 text-[9px] font-black uppercase tracking-widest text-destructive" onClick={() => handleDeleteAccount(acct.id)}>
+                            <Button variant="ghost" size="sm" className="h-7 text-xs font-black uppercase tracking-widest text-destructive" onClick={() => handleDeleteAccount(acct.id)}>
                               <Trash2 size={11} className="mr-1" /> {t('employees.delete')}
                             </Button>
                           </div>
@@ -420,7 +420,7 @@ const Employees: React.FC = () => {
                       </tr>
                     ))}
                     {accounts.length === 0 && (
-                      <tr><td colSpan={5} className="p-12 text-center"><p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.no_accounts')}</p></td></tr>
+                      <tr><td colSpan={5} className="p-12 text-center"><p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.no_accounts')}</p></td></tr>
                     )}
                   </tbody>
                 </table>
@@ -436,21 +436,21 @@ const Employees: React.FC = () => {
         <div className="space-y-5">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.first_name')} *</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.first_name')} *</label>
               <Input value={empForm.firstName} onChange={e => setEmpForm({ ...empForm, firstName: e.target.value })} placeholder="e.g. John" />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.last_name')} *</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.last_name')} *</label>
               <Input value={empForm.lastName} onChange={e => setEmpForm({ ...empForm, lastName: e.target.value })} placeholder="e.g. Doe" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee_code')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee_code')}</label>
               <Input value={empForm.employeeCode} onChange={e => setEmpForm({ ...empForm, employeeCode: e.target.value })} placeholder="e.g. EMP-001" />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.role')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.role')}</label>
               <select
                 value={empForm.roleId}
                 onChange={e => setEmpForm({ ...empForm, roleId: Number(e.target.value) })}
@@ -465,23 +465,23 @@ const Employees: React.FC = () => {
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.phone')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.phone')}</label>
               <Input value={empForm.phone} onChange={e => setEmpForm({ ...empForm, phone: e.target.value })} placeholder="e.g. +251..." />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.email_label')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.email_label')}</label>
               <Input value={empForm.email} onChange={e => setEmpForm({ ...empForm, email: e.target.value })} placeholder="e.g. employee@shega.tech" type="email" />
             </div>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.hire_date')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.hire_date')}</label>
             <DatePicker value={empForm.hireDate} onChange={v => setEmpForm({ ...empForm, hireDate: v })} className="h-10" />
           </div>
           <div className="flex gap-4 pt-2">
-            <Button className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={handleSaveEmployee}>
+            <Button className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={handleSaveEmployee}>
               {editingEmployee ? t('employees.update') : t('employees.create')}
             </Button>
-            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={() => setShowEmployeeModal(false)}>
+            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={() => setShowEmployeeModal(false)}>
               {t('common.cancel')}
             </Button>
           </div>
@@ -492,11 +492,11 @@ const Employees: React.FC = () => {
       <Modal isOpen={showRoleModal} onClose={() => setShowRoleModal(false)} title={editingRole ? t('employees.edit_role') : t('employees.new_role')} size="md">
         <div className="space-y-5">
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.role_name')} *</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.role_name')} *</label>
             <Input value={roleForm.name} onChange={e => setRoleForm({ ...roleForm, name: e.target.value })} placeholder="e.g. Cashier" />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.description')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.description')}</label>
             <textarea
               value={roleForm.description}
               onChange={e => setRoleForm({ ...roleForm, description: e.target.value })}
@@ -505,7 +505,7 @@ const Employees: React.FC = () => {
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.permissions')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.permissions')}</label>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2 p-3 rounded-xl border">
               {allPermissionOptions.map(p => (
                 <label key={p} className="flex items-center gap-2 cursor-pointer">
@@ -522,16 +522,16 @@ const Employees: React.FC = () => {
                     }}
                     className="rounded border-muted-foreground/30"
                   />
-                  <span className="text-[10px] font-semibold uppercase">{p}</span>
+                  <span className="text-xs font-semibold uppercase">{p}</span>
                 </label>
               ))}
             </div>
           </div>
           <div className="flex gap-4 pt-2">
-            <Button className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={handleSaveRole}>
+            <Button className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={handleSaveRole}>
               {editingRole ? t('employees.update') : t('employees.create')}
             </Button>
-            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={() => setShowRoleModal(false)}>
+            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={() => setShowRoleModal(false)}>
               {t('common.cancel')}
             </Button>
           </div>
@@ -542,7 +542,7 @@ const Employees: React.FC = () => {
       <Modal isOpen={showAccountModal} onClose={() => setShowAccountModal(false)} title={editingAccount ? t('employees.edit_account') : t('employees.new_account')} size="sm">
         <div className="space-y-5">
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee')} *</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee')} *</label>
             <select
               value={accountForm.employeeId}
               onChange={e => setAccountForm({ ...accountForm, employeeId: Number(e.target.value) })}
@@ -556,18 +556,18 @@ const Employees: React.FC = () => {
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.username')} *</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.username')} *</label>
             <Input value={accountForm.username} onChange={e => setAccountForm({ ...accountForm, username: e.target.value })} placeholder="e.g. johndoe" />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.pin')} {editingAccount ? `(${t('employees.leave_blank')})` : '*'}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.pin')} {editingAccount ? `(${t('employees.leave_blank')})` : '*'}</label>
             <Input value={accountForm.pin} onChange={e => setAccountForm({ ...accountForm, pin: e.target.value })} type="password" maxLength={10} placeholder="****" />
           </div>
           <div className="flex gap-4 pt-2">
-            <Button className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={handleSaveAccount}>
+            <Button className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={handleSaveAccount}>
               {editingAccount ? t('employees.update') : t('employees.create')}
             </Button>
-            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={() => setShowAccountModal(false)}>
+            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={() => setShowAccountModal(false)}>
               {t('common.cancel')}
             </Button>
           </div>
@@ -579,14 +579,14 @@ const Employees: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => { setDeleteTarget(null); }}>
           <div className="p-6 rounded-2xl bg-card border shadow-xl max-w-sm w-full mx-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-sm font-black uppercase tracking-widest">{t('employees.delete_title')}</h3>
-            <p className="text-[10px] font-semibold text-muted-foreground mt-3">
+            <p className="text-xs font-semibold text-muted-foreground mt-3">
               {t('employees.delete_desc').replace('{name}', `${deleteTarget.firstName} ${deleteTarget.lastName}`)}
             </p>
             <div className="flex gap-3 mt-6">
-              <Button variant="destructive" className="flex-1 h-11 text-[10px] font-black uppercase tracking-widest" onClick={handleDeleteEmployee}>
+              <Button variant="destructive" className="flex-1 h-11 text-xs font-black uppercase tracking-widest" onClick={handleDeleteEmployee}>
                 {t('employees.delete')}
               </Button>
-              <Button variant="outline" className="flex-1 h-11 text-[10px] font-black uppercase tracking-widest" onClick={() => { setDeleteTarget(null); }}>
+              <Button variant="outline" className="flex-1 h-11 text-xs font-black uppercase tracking-widest" onClick={() => { setDeleteTarget(null); }}>
                 {t('common.cancel')}
               </Button>
             </div>

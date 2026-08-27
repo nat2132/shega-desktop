@@ -1,21 +1,62 @@
 import { ipcMain, BrowserWindow, shell } from 'electron';
-import db from './database';
+import db, { validateDBFile, reopenDB, getDemoMode, setDemoMode, resetDemoDb, getCurrentDb } from './database';
+import { insertAudit, verifyAuditChain } from './audit-chain';
 import crypto from 'crypto';
 import { statSync, copyFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import path from 'path';
 import { app } from 'electron';
 import { appUpdater } from './updater';
+import { saleSchema, saleUpdateSchema, saleBatchSchema, payDebtSchema, orderConversionSchema, validate } from './validation';
+import { getPrinterConfig, savePrinterConfig, getPrintStatus, printRaw, openDrawer, probePrinter } from './print-service';
+import { buildReceiptCommands, buildLabelCommands, buildTestPageCommands } from './receipt';
+import { parseWeightLine, ScaleConfig } from './scale-service';
+import { fiscalAdapter } from './fiscal';
+import { syncHub } from './index';
+import { verifyChecksums, getPairingToken, getLanAddress, requestDeviceResync } from './sync-hub';
+import { getCloudStatus, syncToCloud } from './sync-cloud';
 
 
 let activeBusinessId: number | null = null;
 let currentAdminId: number | null = null;
 let currentUserName: string | null = null;
+let currentUserRole: string | null = null;
 let currentUserPermissions: string[] = [];
 
+// Maps granular permission prefixes (and module names) to the module-level permission that grants them.
+const PERMISSION_MODULE: Record<string, string> = {
+  dashboard: 'dashboard',
+  inventory: 'inventory',
+  purchases: 'inventory',
+  sales: 'sales',
+  orders: 'sales',
+  payments: 'sales',
+  expenses: 'expenses',
+  budgets: 'expenses',
+  customers: 'customers',
+  contacts: 'customers',
+  analytics: 'analytics',
+  reports: 'analytics',
+  adjustments: 'adjustments',
+  settings: 'settings',
+  notifications: 'settings',
+  employees: 'employees',
+  shipments: 'shipments',
+  suppliers: 'suppliers',
+  warehouses: 'warehouses',
+  audit: 'audit',
+  records: 'audit',
+};
+
 function requirePermission(perm: string) {
-  if (!currentUserPermissions.includes(perm) && !currentUserPermissions.includes('*')) {
-    throw new Error(`Permission denied: ${perm}`);
-  }
+  if (currentUserRole === 'super_admin') return;
+  if (currentUserPermissions.includes(perm) || currentUserPermissions.includes('*')) return;
+  const prefix = perm.split('.')[0];
+  const modulePerm = PERMISSION_MODULE[prefix] || prefix;
+  const effective = new Set(
+    currentUserPermissions.map((p) => PERMISSION_MODULE[p.split('.')[0]] || p)
+  );
+  if (effective.has(modulePerm)) return;
+  throw new Error(`Permission denied: ${perm}`);
 }
 
 function hashPin(pin: string): string {
@@ -75,8 +116,19 @@ function validateNonNegative(v: any, label: string): number {
 
 function insertAuditLog(action: string, entityType: string, entityId: number | null, fieldName: string | null, oldValue: string | null, newValue: string | null, description: string | null) {
   try {
-    db.prepare('INSERT INTO audit_logs (businessId, action, entityType, entityId, fieldName, oldValue, newValue, changedBy, changedById, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(getActiveBusinessId(), action, entityType, entityId, fieldName, oldValue, newValue, currentUserName || 'unknown', null, description);
+    insertAudit(db, {
+      businessId: getActiveBusinessId(),
+      action,
+      entityType,
+      entityId,
+      fieldName,
+      oldValue,
+      newValue,
+      changedBy: currentUserName || 'unknown',
+      changedById: null,
+      description,
+      createdAt: new Date().toISOString()
+    });
   } catch (e) {
     console.error(`[AuditLog] Failed to log ${action}:`, e);
   }
@@ -94,6 +146,8 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-business', (_, id: number, biz: any) => {
+    requirePermission('settings');
+    if (!biz.businessName?.trim()) throw new Error('Business name is required');
     const stmt = db.prepare('UPDATE businesses SET businessName = ?, storeName = ?, logo = ?, address = ?, phone = ?, email = ?, currency = ? WHERE id = ?');
     return stmt.run(biz.businessName, biz.storeName, biz.logo, biz.address, biz.phone, biz.email, biz.currency, id);
   });
@@ -105,12 +159,14 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-category', (_, name: string, icon?: string) => {
+    requirePermission('settings.manage');
     const bizId = getActiveBusinessId();
     const result = db.prepare('INSERT INTO categories (businessId, name, icon, isCustom) VALUES (?, ?, ?, 1)').run(bizId, name, icon || 'tag');
     return result.lastInsertRowid;
   });
 
   ipcMain.handle('delete-category', (_, id: number) => {
+    requirePermission('settings.manage');
     const bizId = getActiveBusinessId();
     const cat = db.prepare('SELECT name FROM categories WHERE id = ?').get(id) as any;
     db.prepare('DELETE FROM categories WHERE id = ? AND businessId = ? AND isCustom = 1').run(id, bizId);
@@ -118,6 +174,7 @@ export function registerIPCHandlers() {
 
   // ========== ITEMS ==========
   ipcMain.handle('get-items', (_, options: any = {}) => {
+    requirePermission('inventory.view');
     const bizId = getActiveBusinessId();
     let query = 'SELECT items.*, categories.name as categoryName, suppliers.supplierName FROM items LEFT JOIN categories ON items.categoryId = categories.id LEFT JOIN suppliers ON items.supplierId = suppliers.id';
     const params: any[] = [];
@@ -125,7 +182,7 @@ export function registerIPCHandlers() {
     params.push(bizId);
 
     if (options.search) {
-      conditions.push('(items.name LIKE ? OR items.companyName LIKE ?)');
+      conditions.push('(LOWER(items.name) LIKE LOWER(?) OR LOWER(items.companyName) LIKE LOWER(?))');
       params.push(`%${options.search}%`, `%${options.search}%`);
     }
 
@@ -162,13 +219,15 @@ export function registerIPCHandlers() {
     query += ' ORDER BY items.createdAt DESC';
 
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
 
     return db.prepare(query).all(...params);
   });
 
   ipcMain.handle('get-item', (_, id: number) => {
+    requirePermission('inventory.view');
     const bizId = getActiveBusinessId();
     const item = db.prepare(`
       SELECT items.*, categories.name as categoryName, suppliers.supplierName
@@ -195,28 +254,45 @@ export function registerIPCHandlers() {
     return { ...item, ...totalPurchased, ...lastPO };
   });
 
+  ipcMain.handle('get-item-by-barcode', (_, code: string) => {
+    requirePermission('inventory.view');
+    const bizId = getActiveBusinessId();
+    if (!code || !code.trim()) return null;
+    return db.prepare(`
+      SELECT items.*, categories.name as categoryName
+      FROM items
+      LEFT JOIN categories ON items.categoryId = categories.id
+      WHERE items.businessId = ? AND items.is_deleted = 0
+        AND (items.barcode = ? COLLATE NOCASE OR items.sku = ? COLLATE NOCASE)
+      LIMIT 1
+    `).get(bizId, code, code) as any || null;
+  });
+
   ipcMain.handle('insert-item', (_, item: any) => {
+    requirePermission('inventory.add');
     if (!item.name || !item.name.trim()) throw new Error('Product name is required');
     const unitsPerPack = validatePositive(item.unitsPerPack ?? 1, 'Units per pack');
     const bizId = getActiveBusinessId();
+    const purchaseDate = new Date().toISOString().split('T')[0];
     const stmt = db.prepare(`
       INSERT INTO items (
-        businessId, name, categoryId, companyName, purchaseUnit, baseUnit, unitsPerPack,
+        businessId, name, categoryId, sku, barcode, companyName, purchaseUnit, baseUnit, unitsPerPack,
         totalPackQuantity, totalBaseQuantity, packPurchasePrice, basePurchasePrice,
         baseSellingPrice, packSellingPrice, allowSellByBaseUnit, allowSellByPackUnit,
-        expiryDate, qualityGrade, notes, isCredit, supplierPhone, supplierId
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        expiryDate, qualityGrade, notes, isCredit, supplierPhone, supplierId,
+        reorderPoint, reorderQty, autoReorder, createdAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const newBaseQty = item.totalBaseQuantity || 0;
     const newPackQty = item.totalPackQuantity || 0;
 
     const result = stmt.run(
-      bizId, item.name, item.categoryId || null, item.companyName, item.purchaseUnit, item.baseUnit, unitsPerPack,
+      bizId, item.name, item.categoryId || null, item.sku || null, item.barcode || null, item.companyName, item.purchaseUnit, item.baseUnit, unitsPerPack,
       newPackQty, newBaseQty, item.packPurchasePrice || 0, item.basePurchasePrice || 0,
       item.baseSellingPrice || 0, item.packSellingPrice || 0, item.allowSellByBaseUnit ? 1 : 0, item.allowSellByPackUnit ? 1 : 0,
       item.expiryDate || null, item.qualityGrade, item.notes, item.isCredit ? 1 : 0, item.supplierPhone,
-      item.supplierId || null
+      item.supplierId || null, item.reorderPoint ?? 10, item.reorderQty ?? 0, item.autoReorder ? 1 : 0, purchaseDate
     );
 
     const newId = result.lastInsertRowid as number;
@@ -235,7 +311,7 @@ export function registerIPCHandlers() {
             totalAmount, paidAmount, dueDate, status, notes, createdBy
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          bizId, item.supplierId, purchaseNumber, new Date().toISOString().split('T')[0],
+          bizId, item.supplierId, purchaseNumber, purchaseDate,
           totalAmount, paidAmount, item.expiryDate || null, status,
           `Auto-created from inventory item "${item.name}"`, currentUserName || 'system'
         );
@@ -255,84 +331,69 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-item', (_, id: number, item: any) => {
+    requirePermission('inventory.edit');
     if (!item.name || !item.name.trim()) throw new Error('Product name is required');
     const unitsPerPack = validatePositive(item.unitsPerPack ?? 1, 'Units per pack');
     const bizId = getActiveBusinessId();
-    const stmt = db.prepare(`
-      UPDATE items SET
-        name = ?, categoryId = ?, companyName = ?, purchaseUnit = ?, baseUnit = ?, unitsPerPack = ?,
-        totalPackQuantity = ?, totalBaseQuantity = ?, packPurchasePrice = ?, basePurchasePrice = ?,
-        baseSellingPrice = ?, packSellingPrice = ?, allowSellByBaseUnit = ?, allowSellByPackUnit = ?,
-        expiryDate = ?, qualityGrade = ?, notes = ?, isCredit = ?, supplierPhone = ?,
-        supplierId = ?
-      WHERE id = ? AND businessId = ?
-    `);
+    const result = db.transaction(() => {
+      const stmt = db.prepare(`
+        UPDATE items SET
+          name = ?, categoryId = ?, sku = ?, barcode = ?, companyName = ?, purchaseUnit = ?, baseUnit = ?, unitsPerPack = ?,
+          totalPackQuantity = ?, totalBaseQuantity = ?, packPurchasePrice = ?, basePurchasePrice = ?,
+          baseSellingPrice = ?, packSellingPrice = ?, allowSellByBaseUnit = ?, allowSellByPackUnit = ?,
+          expiryDate = ?, qualityGrade = ?, notes = ?, isCredit = ?, supplierPhone = ?,
+          supplierId = ?, reorderPoint = ?, reorderQty = ?, autoReorder = ?
+        WHERE id = ? AND businessId = ?
+      `);
 
-    const result = stmt.run(
-      item.name, item.categoryId || null, item.companyName, item.purchaseUnit, item.baseUnit, unitsPerPack,
-      item.totalPackQuantity || 0, item.totalBaseQuantity || 0, item.packPurchasePrice || 0, item.basePurchasePrice || 0,
-      item.baseSellingPrice || 0, item.packSellingPrice || 0, item.allowSellByBaseUnit ? 1 : 0, item.allowSellByPackUnit ? 1 : 0,
-      item.expiryDate || null, item.qualityGrade, item.notes, item.isCredit ? 1 : 0, item.supplierPhone,
-      item.supplierId || null,
-      id, bizId
-    );
+      const result = stmt.run(
+        item.name, item.categoryId || null, item.sku || null, item.barcode || null, item.companyName, item.purchaseUnit, item.baseUnit, unitsPerPack,
+        item.totalPackQuantity || 0, item.totalBaseQuantity || 0, item.packPurchasePrice || 0, item.basePurchasePrice || 0,
+        item.baseSellingPrice || 0, item.packSellingPrice || 0, item.allowSellByBaseUnit ? 1 : 0, item.allowSellByPackUnit ? 1 : 0,
+        item.expiryDate || null, item.qualityGrade, item.notes, item.isCredit ? 1 : 0, item.supplierPhone,
+        item.supplierId || null, item.reorderPoint ?? 10, item.reorderQty ?? 0, item.autoReorder ? 1 : 0,
+        id, bizId
+      );
 
-    // Auto-create supplier purchase when item has a supplier with quantity and no linked purchase exists
-    if (item.supplierId) {
-      const existingPurchase = db.prepare(`
-        SELECT 1 FROM supplier_purchase_items spi
-        JOIN supplier_purchases sp ON sp.id = spi.purchaseId
-        WHERE spi.itemId = ? AND sp.supplierId = ? AND sp.status != 'cancelled'
-        LIMIT 1
-      `).get(id, item.supplierId) as any;
-      if (!existingPurchase) {
-        const newBaseQty = item.totalBaseQuantity || 0;
-        if (newBaseQty > 0) {
-          try {
-            const purchaseNumber = `PO-${Date.now().toString().slice(-8)}`;
-            const unitPrice = item.basePurchasePrice || item.baseSellingPrice || 0;
-            const totalAmount = unitPrice * newBaseQty;
-            const paidAmount = item.isCredit ? 0 : totalAmount;
-            const status = item.isCredit ? 'pending' : 'received';
-            db.prepare(`
-              INSERT INTO supplier_purchases (
-                businessId, supplierId, purchaseNumber, purchaseDate,
-                totalAmount, paidAmount, dueDate, status, notes, createdBy
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(
-              bizId, item.supplierId, purchaseNumber, new Date().toISOString().split('T')[0],
-              totalAmount, paidAmount, item.expiryDate || null, status,
-              `Auto-created from inventory item "${item.name}"`, currentUserName || 'system'
-            );
-            const purchaseId = db.prepare('SELECT last_insert_rowid() AS id').get() as any;
-            db.prepare(`
-              INSERT INTO supplier_purchase_items (purchaseId, itemId, itemName, sku, quantity, unit, unitPrice, totalPrice)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(purchaseId.id, id, item.name, item.sku || null, newBaseQty, item.baseUnit || 'pcs', unitPrice, totalAmount);
-            logSupplierActivity(item.supplierId, 'purchase_created', 'supplier_purchase', purchaseId.id,
-              `Auto purchase ${purchaseNumber} for ${item.name}`);
-          } catch (e) {
-            console.error('Auto-create supplier purchase failed (update):', e);
-          }
-        }
-      }
-    }
+      return result;
+    })();
 
     return result;
   });
 
   ipcMain.handle('delete-item', (_, id: number) => {
+    requirePermission('inventory.delete');
     const item = db.prepare('SELECT name FROM items WHERE id = ?').get(id) as any;
     db.prepare('UPDATE items SET is_deleted = 1, deleted_by = ?, deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(currentUserName || 'unknown', id);
     return { success: true };
   });
 
   ipcMain.handle('get-low-stock-items', () => {
+    requirePermission('inventory.view');
     const bizId = getActiveBusinessId();
-    return db.prepare('SELECT items.*, suppliers.supplierName, suppliers.id as linkedSupplierId FROM items LEFT JOIN suppliers ON items.supplierId = suppliers.id WHERE items.totalBaseQuantity < 10 AND items.businessId = ? ORDER BY items.totalBaseQuantity ASC LIMIT ?').all(bizId, DEFAULT_LIST_LIMIT);
+    return db.prepare('SELECT items.*, suppliers.supplierName, suppliers.id as linkedSupplierId FROM items LEFT JOIN suppliers ON items.supplierId = suppliers.id WHERE items.totalBaseQuantity < COALESCE(items.reorderPoint, 10) AND items.businessId = ? ORDER BY items.totalBaseQuantity ASC LIMIT ?').all(bizId, DEFAULT_LIST_LIMIT);
+  });
+
+  // 4.8: automated reorder suggestions using per-item reorder point + reorder qty.
+  ipcMain.handle('get-reorder-suggestions', () => {
+    requirePermission('inventory.view');
+    const bizId = getActiveBusinessId();
+    return db.prepare(`
+      SELECT items.*, suppliers.supplierName, suppliers.id as linkedSupplierId,
+             COALESCE(items.reorderPoint, 10) as reorderPoint,
+             MAX(COALESCE(items.reorderQty, 0), COALESCE(items.reorderPoint, 10) - items.totalBaseQuantity) as suggestedQty
+      FROM items
+      LEFT JOIN suppliers ON items.supplierId = suppliers.id
+      WHERE items.businessId = ?
+        AND items.is_deleted = 0
+        AND items.totalBaseQuantity < COALESCE(items.reorderPoint, 10)
+      ORDER BY (items.totalBaseQuantity - COALESCE(items.reorderPoint, 10)) ASC
+      LIMIT ?
+    `).all(bizId, DEFAULT_LIST_LIMIT);
   });
 
   ipcMain.handle('get-expiring-items', () => {
+    requirePermission('inventory.view');
     const bizId = getActiveBusinessId();
     const thirtyDaysFromNow = new Date();
     thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
@@ -340,6 +401,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('get-items-by-supplier', (_, supplierId: number) => {
+    requirePermission('inventory.view');
     const bizId = getActiveBusinessId();
     return db.prepare(`
       SELECT items.*, categories.name as categoryName, suppliers.supplierName
@@ -352,11 +414,12 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('restock-item', (_, id: number, quantity: number) => {
+    requirePermission('inventory.adjust');
     const bizId = getActiveBusinessId();
     const item = db.prepare('SELECT name, unitsPerPack FROM items WHERE id = ? AND businessId = ?').get(id, bizId) as any;
     if (!item) throw new Error('Item not found');
     const qty = validatePositive(quantity, 'Restock quantity');
-    const packQty = qty / (item.unitsPerPack || 1);
+    const packQty = Math.round((qty / (item.unitsPerPack || 1)) * 1e6) / 1e6;
     const result = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity + ?, totalPackQuantity = totalPackQuantity + ? WHERE id = ?').run(qty, packQty, id);
     const defWhId = getDefaultWarehouseId();
     const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, id) as any;
@@ -371,6 +434,7 @@ export function registerIPCHandlers() {
 
   // ========== SALES ==========
   ipcMain.handle('get-sales', (_, options: any = {}) => {
+    requirePermission('sales.view');
     const bizId = getActiveBusinessId();
     let query = 'SELECT sales.*, items.name as itemName, items.basePurchasePrice, items.unitsPerPack, categories.name as categoryName FROM sales LEFT JOIN items ON sales.itemId = items.id LEFT JOIN categories ON items.categoryId = categories.id';
     const params: any[] = [];
@@ -378,7 +442,7 @@ export function registerIPCHandlers() {
     params.push(bizId);
 
     if (options.search) {
-      conditions.push('(items.name LIKE ? OR sales.customerName LIKE ?)');
+      conditions.push('(LOWER(items.name) LIKE LOWER(?) OR LOWER(sales.customerName) LIKE LOWER(?))');
       params.push(`%${options.search}%`, `%${options.search}%`);
     }
 
@@ -415,17 +479,21 @@ export function registerIPCHandlers() {
     query += ' ORDER BY sales.createdAt DESC';
 
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
 
     return db.prepare(query).all(...params);
   });
 
   ipcMain.handle('get-sale', (_, id: number) => {
+    requirePermission('sales.view');
     return db.prepare('SELECT sales.*, items.name as itemName FROM sales LEFT JOIN items ON sales.itemId = items.id WHERE sales.id = ?').get(id);
   });
 
   ipcMain.handle('insert-sales-batch', (_, sales: any[]) => {
+    requirePermission('sales.create');
+    sales = validate(saleBatchSchema, sales, 'sales batch');
     const bizId = getActiveBusinessId();
     const transaction = db.transaction(() => {
       const results: any[] = [];
@@ -465,30 +533,24 @@ export function registerIPCHandlers() {
           baseDeduction = sale.quantity * (item.unitsPerPack || 1);
           packDeduction = sale.quantity;
         } else {
-          packDeduction = sale.quantity / (item.unitsPerPack || 1);
+          packDeduction = Math.round((sale.quantity / (item.unitsPerPack || 1)) * 1e6) / 1e6;
         }
 
-        if (item.totalBaseQuantity < baseDeduction) {
-          throw new Error(`Insufficient stock: ${item.name} has ${item.totalBaseQuantity} ${item.baseUnit}, need ${baseDeduction}`);
-        }
+        db.prepare('UPDATE sales SET costAtTimeOfSale = ? WHERE id = ?').run((item.basePurchasePrice || 0) * baseDeduction, result.lastInsertRowid);
 
-        db.prepare(`
-          UPDATE items 
-          SET totalBaseQuantity = totalBaseQuantity - ?,
-              totalPackQuantity = totalPackQuantity - ?
-          WHERE id = ?
-        `).run(baseDeduction, packDeduction, sale.itemId);
+        const itemResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ?, totalPackQuantity = totalPackQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(baseDeduction, packDeduction, sale.itemId, baseDeduction);
+        if (itemResult.changes === 0) throw new Error(`Insufficient stock: ${item.name} has less than ${baseDeduction} units available`);
 
         // Sync default warehouse inventory
         const defWhId = getDefaultWarehouseId();
-        const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, sale.itemId) as any;
-        if (whRow) {
-          if (whRow.quantity < baseDeduction) {
-            throw new Error(`Insufficient stock at warehouse: ${item.name} has ${whRow.quantity}, need ${baseDeduction}`);
+        const whResult = db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE warehouseId = ? AND itemId = ? AND quantity >= ?').run(baseDeduction, defWhId, sale.itemId, baseDeduction);
+        if (whResult.changes === 0) {
+          const whExists = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, sale.itemId);
+          if (!whExists) {
+            db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, sale.itemId, -baseDeduction);
+          } else {
+            throw new Error(`Insufficient stock at warehouse: ${item.name} has less than ${baseDeduction} units available`);
           }
-          db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(baseDeduction, whRow.id);
-        } else {
-          db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, sale.itemId, -baseDeduction);
         }
         db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)')
           .run(defWhId, sale.itemId, 'sale_out', baseDeduction, 'sale', `Sale batch #${result.lastInsertRowid}`);
@@ -502,6 +564,8 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-sale', (_, sale: any) => {
+    requirePermission('sales.create');
+    sale = validate(saleSchema, sale, 'sale');
     const bizId = getActiveBusinessId();
     const item = db.prepare('SELECT * FROM items WHERE id = ?').get(sale.itemId) as any;
     if (!item) throw new Error(`Item ${sale.itemId} not found`);
@@ -512,14 +576,14 @@ export function registerIPCHandlers() {
       const stmt = db.prepare(`
         INSERT INTO sales (
           businessId, itemId, quantity, unit, unitType, discount, vat, totalPrice, 
-          paymentMethod, paymentStatus, customerName, customerPhone, packId, dueDate, paidAmount
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          paymentMethod, paymentStatus, customerName, customerPhone, packId, dueDate, paidAmount, createdBy
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const result = stmt.run(
         bizId, sale.itemId, sale.quantity, sale.unit, sale.unitType, sale.discount || 0, sale.vat || 0, sale.totalPrice,
         sale.paymentMethod, sale.paymentStatus, sale.customerName, sale.customerPhone, sale.packId || null, 
-        sale.dueDate || null, sale.paidAmount || 0
+        sale.dueDate || null, sale.paidAmount || 0, currentUserName || null
       );
 
       // Auto-create customer if debt sale with a new name
@@ -539,30 +603,34 @@ export function registerIPCHandlers() {
         baseDeduction = sale.quantity * (item.unitsPerPack || 1);
         packDeduction = sale.quantity;
       } else {
-        packDeduction = sale.quantity / (item.unitsPerPack || 1);
+        packDeduction = Math.round((sale.quantity / (item.unitsPerPack || 1)) * 1e6) / 1e6;
       }
 
-      if (item.totalBaseQuantity < baseDeduction) {
-        throw new Error(`Insufficient stock: ${item.name} has ${item.totalBaseQuantity} ${item.baseUnit}, need ${baseDeduction}`);
+      const costAtTimeOfSale = (item.basePurchasePrice || 0) * baseDeduction;
+
+      // Update the costAtTimeOfSale on the inserted record
+      db.prepare('UPDATE sales SET costAtTimeOfSale = ? WHERE id = ?').run(costAtTimeOfSale, result.lastInsertRowid);
+
+      // Fiscal/ETRS-ready hook (Phase 2: 2.8)
+      const fiscalMode = db.prepare("SELECT value FROM settings WHERE key = 'fiscal_mode'").get() as any;
+      if (fiscalMode && fiscalMode.value === 'true' && fiscalAdapter.isAvailable()) {
+        const sig = fiscalAdapter.signReceipt({ serial: result.lastInsertRowid, total: sale.totalPrice, date: new Date().toISOString() });
+        db.prepare('UPDATE sales SET fiscal_number = ?, fiscal_signature = ? WHERE id = ?').run(sig.fiscalNumber, sig.signature, result.lastInsertRowid);
       }
 
-      db.prepare(`
-          UPDATE items 
-          SET totalBaseQuantity = totalBaseQuantity - ?,
-              totalPackQuantity = totalPackQuantity - ?
-          WHERE id = ?
-        `).run(baseDeduction, packDeduction, sale.itemId);
+      const itemResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ?, totalPackQuantity = totalPackQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(baseDeduction, packDeduction, sale.itemId, baseDeduction);
+      if (itemResult.changes === 0) throw new Error(`Insufficient stock: ${item.name} has less than ${baseDeduction} units available`);
 
       // Sync default warehouse inventory
       const defWhId = getDefaultWarehouseId();
-      const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, sale.itemId) as any;
-      if (whRow) {
-        if (whRow.quantity < baseDeduction) {
-          throw new Error(`Insufficient stock at warehouse: ${item.name} has ${whRow.quantity}, need ${baseDeduction}`);
+      const whResult = db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE warehouseId = ? AND itemId = ? AND quantity >= ?').run(baseDeduction, defWhId, sale.itemId, baseDeduction);
+      if (whResult.changes === 0) {
+        const whExists = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, sale.itemId);
+        if (!whExists) {
+          db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, sale.itemId, -baseDeduction);
+        } else {
+          throw new Error(`Insufficient stock at warehouse: ${item.name} has less than ${baseDeduction} units available`);
         }
-        db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(baseDeduction, whRow.id);
-      } else {
-        db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, sale.itemId, -baseDeduction);
       }
       db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)')
         .run(defWhId, sale.itemId, 'sale_out', baseDeduction, 'sale', `Sale #${result.lastInsertRowid}`);
@@ -575,6 +643,8 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-sale', (_, id: number, sale: any) => {
+    requirePermission('sales.edit');
+    sale = validate(saleUpdateSchema, sale, 'sale update');
     const bizId = getActiveBusinessId();
     const original = db.prepare('SELECT * FROM sales WHERE id = ? AND businessId = ?').get(id, bizId) as any;
     if (!original) throw new Error('Sale not found');
@@ -594,21 +664,18 @@ export function registerIPCHandlers() {
           baseDiff = Math.abs(qtyDiff) * (item.unitsPerPack || 1);
           packDiff = Math.abs(qtyDiff);
         } else {
-          packDiff = Math.abs(qtyDiff) / (item.unitsPerPack || 1);
+          packDiff = Math.round((Math.abs(qtyDiff) / (item.unitsPerPack || 1)) * 1e6) / 1e6;
         }
 
         if (qtyDiff > 0) {
           // Increasing quantity — deduct additional stock
-          if (item.totalBaseQuantity < baseDiff) {
-            throw new Error(`Insufficient stock: ${item.name} has ${item.totalBaseQuantity}, need additional ${baseDiff}`);
-          }
-          db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ?, totalPackQuantity = totalPackQuantity - ? WHERE id = ?')
-            .run(baseDiff, packDiff, sale.itemId || original.itemId);
+          const itemResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ?, totalPackQuantity = totalPackQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(baseDiff, packDiff, sale.itemId || original.itemId, baseDiff);
+          if (itemResult.changes === 0) throw new Error(`Insufficient stock: ${item.name} has less than ${baseDiff} units available`);
           const defWhId = getDefaultWarehouseId();
-          const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, sale.itemId || original.itemId) as any;
-          if (whRow) {
-            if (whRow.quantity < baseDiff) throw new Error(`Insufficient stock at warehouse`);
-            db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(baseDiff, whRow.id);
+          const whExists = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, sale.itemId || original.itemId) as any;
+          if (whExists) {
+            const whResult = db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND quantity >= ?').run(baseDiff, whExists.id, baseDiff);
+            if (whResult.changes === 0) throw new Error(`Insufficient stock at warehouse: ${item.name} has less than ${baseDiff} units available`);
           }
         } else {
           // Decreasing quantity — restore stock
@@ -624,16 +691,21 @@ export function registerIPCHandlers() {
         }
       }
 
+      const newQty = sale.quantity || original.quantity;
+      const newUnitType = sale.unitType || original.unitType;
+      const baseDeduction = newUnitType === 'pack' ? newQty * (item.unitsPerPack || 1) : newQty;
+      const costAtTimeOfSale = (item.basePurchasePrice || 0) * baseDeduction;
+
       db.prepare(`
         UPDATE sales SET
           quantity = ?, unit = ?, unitType = ?, discount = ?, vat = ?, totalPrice = ?,
           paymentMethod = ?, paymentStatus = ?, customerName = ?, customerPhone = ?,
-          dueDate = ?, paidAmount = ?
+          dueDate = ?, paidAmount = ?, costAtTimeOfSale = ?
         WHERE id = ? AND businessId = ?
       `).run(
         sale.quantity, sale.unit, sale.unitType, sale.discount, sale.vat, sale.totalPrice,
         sale.paymentMethod, sale.paymentStatus, sale.customerName, sale.customerPhone,
-        sale.dueDate, sale.paidAmount, id, bizId
+        sale.dueDate, sale.paidAmount, costAtTimeOfSale, id, bizId
       );
     });
 
@@ -642,9 +714,9 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-sale', (_, id: number) => {
+    requirePermission('sales.cancel');
     const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(id) as any;
     if (!sale) return { success: false };
-
     const item = db.prepare('SELECT * FROM items WHERE id = ?').get(sale.itemId) as any;
 
     const transaction = db.transaction(() => {
@@ -657,7 +729,7 @@ export function registerIPCHandlers() {
           baseRestore = sale.quantity * (item.unitsPerPack || 1);
           packRestore = sale.quantity;
         } else {
-          packRestore = sale.quantity / (item.unitsPerPack || 1);
+          packRestore = Math.round((sale.quantity / (item.unitsPerPack || 1)) * 1e6) / 1e6;
         }
 
         db.prepare(`
@@ -690,6 +762,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('create-return', (_, data: any) => {
+    requirePermission('sales.returns');
     const bizId = getActiveBusinessId();
     const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(data.saleId) as any;
     if (!sale) return { success: false, error: 'Sale not found' };
@@ -709,22 +782,23 @@ export function registerIPCHandlers() {
         baseRestore = returnQty * (item.unitsPerPack || 1);
         packRestore = returnQty;
       } else {
-        packRestore = returnQty / (item.unitsPerPack || 1);
+        packRestore = Math.round((returnQty / (item.unitsPerPack || 1)) * 1e6) / 1e6;
       }
 
       db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity + ?, totalPackQuantity = totalPackQuantity + ? WHERE id = ?')
         .run(baseRestore, packRestore, sale.itemId);
 
-      const defWhId = getDefaultWarehouseId();
-      const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, sale.itemId) as any;
+      const originalMovement = db.prepare("SELECT warehouseId, quantity FROM stock_movements WHERE referenceType = 'sale' AND referenceId = ? AND type = 'sale_out' ORDER BY createdAt DESC LIMIT 1").get(data.saleId) as any;
+      const warehouseId = originalMovement?.warehouseId || getDefaultWarehouseId();
+      const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(warehouseId, sale.itemId) as any;
       if (whRow) {
         db.prepare('UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(baseRestore, whRow.id);
       } else {
-        db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, sale.itemId, baseRestore);
+        db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(warehouseId, sale.itemId, baseRestore);
       }
 
       db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(defWhId, sale.itemId, 'return_in', baseRestore, 'return', `Return for sale #${sale.id}`);
+        .run(warehouseId, sale.itemId, 'return_in', baseRestore, 'return', `Return for sale #${sale.id}`);
 
       // Insert return record
       const result = db.prepare(`
@@ -750,6 +824,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('get-returns', (_e, options?: any) => {
+    requirePermission('sales.view');
     const bizId = getActiveBusinessId();
     let query = `
       SELECT r.*, s.customerName, s.itemName, i.name as itemName2
@@ -763,27 +838,33 @@ export function registerIPCHandlers() {
     if (options?.startDate) { query += ` AND r.createdAt >= ?`; params.push(options.startDate); }
     if (options?.endDate) { query += ` AND r.createdAt <= ?`; params.push(options.endDate); }
 
-    query += ` ORDER BY r.createdAt DESC LIMIT ${DEFAULT_LIST_LIMIT}`;
+    const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
+    const offset = options?.offset ?? 0;
+    query += ' ORDER BY r.createdAt DESC LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
     return db.prepare(query).all(...params);
   });
 
   ipcMain.handle('get-debt-sales', () => {
+    requirePermission('sales.view');
     const bizId = getActiveBusinessId();
     return db.prepare('SELECT sales.*, items.name as itemName FROM sales LEFT JOIN items ON sales.itemId = items.id WHERE sales.paymentStatus = ? AND sales.businessId = ? ORDER BY sales.dueDate ASC LIMIT ?').all('Debt', bizId, DEFAULT_LIST_LIMIT);
   });
 
   ipcMain.handle('pay-debt', (_, saleId: number, amount: number, options?: { type?: string; note?: string }) => {
-    const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId) as any;
+    requirePermission('payments.pay');
+    const { saleId: vSaleId, amount: vAmount, type, note } = validate(payDebtSchema, { saleId, amount, ...options }, 'debt payment');
+    const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(vSaleId) as any;
     if (!sale) throw new Error('Sale not found');
     
-    const recordType = options?.type || 'payment';
-    const newPaid = (sale.paidAmount || 0) + amount;
+    const recordType = type || 'payment';
+    const newPaid = (sale.paidAmount || 0) + vAmount;
     const newStatus = newPaid >= sale.totalPrice ? 'Paid' : 'Debt';
     
-    const result = db.prepare('UPDATE sales SET paidAmount = ?, paymentStatus = ? WHERE id = ?').run(newPaid, newStatus, saleId);
+    const result = db.prepare('UPDATE sales SET paidAmount = ?, paymentStatus = ? WHERE id = ?').run(newPaid, newStatus, vSaleId);
     
     db.prepare('INSERT INTO debt_payments (saleId, customerName, customerPhone, amount, type, note) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(saleId, sale.customerName || null, sale.customerPhone || null, amount, recordType, options?.note || null);
+      .run(vSaleId, sale.customerName || null, sale.customerPhone || null, vAmount, recordType, note || null);
     
     const activityType = recordType === 'loss' ? 'Marked as loss' : 'Payment received';
     return result;
@@ -795,6 +876,7 @@ export function registerIPCHandlers() {
 
   // ========== EXPENSES ==========
   ipcMain.handle('get-expenses', (_, options: any = {}) => {
+    requirePermission('expenses.view');
     const bizId = getActiveBusinessId();
     let query = 'SELECT * FROM expenses';
     const params: any[] = [];
@@ -818,13 +900,15 @@ export function registerIPCHandlers() {
     query += ' ORDER BY date DESC';
 
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
 
     return db.prepare(query).all(...params);
   });
 
   ipcMain.handle('insert-expense', (_, expense: any) => {
+    requirePermission('expenses.add');
     const bizId = getActiveBusinessId();
     const result = db.prepare('INSERT INTO expenses (businessId, name, amount, category, date, isRecurring, frequency, nextBillingDate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
       bizId, expense.name, expense.amount, expense.category, expense.date, expense.isRecurring ? 1 : 0, expense.frequency, expense.nextBillingDate
@@ -872,6 +956,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-expense', (_, id: number, expense: any) => {
+    requirePermission('expenses.add');
     const result = db.prepare('UPDATE expenses SET name = ?, amount = ?, category = ?, date = ?, isRecurring = ?, frequency = ?, nextBillingDate = ? WHERE id = ?').run(
       expense.name, expense.amount, expense.category, expense.date, expense.isRecurring ? 1 : 0, expense.frequency, expense.nextBillingDate, id
     );
@@ -879,12 +964,14 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-expense', (_, id: number) => {
+    requirePermission('expenses.delete');
     const exp = db.prepare('SELECT name FROM expenses WHERE id = ?').get(id) as any;
     db.prepare('DELETE FROM expenses WHERE id = ?').run(id);
   });
 
   // ========== ADJUSTMENTS ==========
   ipcMain.handle('get-adjustments', (_, options: any = {}) => {
+    requirePermission('inventory.view');
     const bizId = getActiveBusinessId();
     let query = 'SELECT adjustments.*, items.name as itemName FROM adjustments LEFT JOIN items ON adjustments.itemId = items.id';
     const params: any[] = [];
@@ -903,21 +990,19 @@ export function registerIPCHandlers() {
     query += ' ORDER BY adjustments.createdAt DESC';
 
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
 
     return db.prepare(query).all(...params);
   });
 
   ipcMain.handle('insert-adjustment', (_, adjustment: any) => {
+    requirePermission('inventory.adjust');
     const validTypes = ['damage', 'loss', 'add_stock', 'price_increase', 'price_decrease'];
     if (!validTypes.includes(adjustment.type)) throw new Error(`Invalid adjustment type: ${adjustment.type}`);
     if (['damage', 'loss', 'add_stock'].includes(adjustment.type)) {
       validatePositive(adjustment.quantity, 'Adjustment quantity');
-      const item = db.prepare('SELECT totalBaseQuantity FROM items WHERE id = ?').get(adjustment.itemId) as any;
-      if (['damage', 'loss'].includes(adjustment.type) && item && item.totalBaseQuantity < adjustment.quantity) {
-        throw new Error(`Insufficient stock: item has ${item.totalBaseQuantity}, adjustment is ${adjustment.quantity}`);
-      }
     }
     const bizId = getActiveBusinessId();
     const transaction = db.transaction(() => {
@@ -928,11 +1013,13 @@ export function registerIPCHandlers() {
       // Apply stock changes for damage/loss/add_stock types
       let invDelta = 0;
       if (adjustment.type === 'damage' && adjustment.quantity) {
-        db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ?').run(adjustment.quantity, adjustment.itemId);
+        const adjResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(adjustment.quantity, adjustment.itemId, adjustment.quantity);
+        if (adjResult.changes === 0) throw new Error(`Insufficient stock for damage adjustment: item has less than ${adjustment.quantity} units`);
         invDelta = -adjustment.quantity;
       }
       if (adjustment.type === 'loss' && adjustment.quantity) {
-        db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ?').run(adjustment.quantity, adjustment.itemId);
+        const adjResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(adjustment.quantity, adjustment.itemId, adjustment.quantity);
+        if (adjResult.changes === 0) throw new Error(`Insufficient stock for loss adjustment: item has less than ${adjustment.quantity} units`);
         invDelta = -adjustment.quantity;
       }
       if (adjustment.type === 'add_stock' && adjustment.quantity) {
@@ -1120,7 +1207,7 @@ export function registerIPCHandlers() {
     if (options.category) { query += ' AND category = ?'; params.push(options.category); }
     if (options.severity) { query += ' AND severity = ?'; params.push(options.severity); }
     if (options.search) {
-      query += ' AND (title LIKE ? OR message LIKE ?)';
+      query += ' AND (LOWER(title) LIKE LOWER(?) OR LOWER(message) LIKE LOWER(?))';
       const s = `%${options.search}%`;
       params.push(s, s);
     }
@@ -1162,6 +1249,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-notification', (_, notification: any) => {
+    requirePermission('settings.manage');
     const bizId = getActiveBusinessId();
     return db.prepare(`
       INSERT INTO notifications (
@@ -1201,6 +1289,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('clear-notifications', (_, options: any = {}) => {
+    requirePermission('notifications.manage');
     const bizId = getActiveBusinessId();
     if (options.olderThanDays) {
       return db.prepare(`DELETE FROM notifications WHERE businessId = ? AND createdAt < datetime('now', '-' || ? || ' days')`).run(bizId, options.olderThanDays);
@@ -1250,6 +1339,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('create-banner', (_, data: any) => {
+    requirePermission('settings.manage');
     const bizId = getActiveBusinessId();
     return db.prepare(`
       INSERT INTO notification_banners (businessId, title, message, severity, dismissible, startsAt, endsAt, actionUrl, actionLabel)
@@ -1272,12 +1362,13 @@ export function registerIPCHandlers() {
     let q = 'SELECT * FROM notification_reminders WHERE businessId = ?';
     const params: any[] = [bizId];
     if (options.status) { q += ' AND status = ?'; params.push(options.status); }
-    q += ' ORDER BY triggerDate ASC LIMIT ?';
-    params.push(options.limit ?? DEFAULT_LIST_LIMIT);
+    q += ' ORDER BY triggerDate ASC LIMIT ? OFFSET ?';
+    params.push(options.limit ?? DEFAULT_LIST_LIMIT, options.offset ?? 0);
     return db.prepare(q).all(...params);
   });
 
   ipcMain.handle('create-reminder', (_, data: any) => {
+    requirePermission('settings.manage');
     const bizId = getActiveBusinessId();
     if (!data.title || !data.triggerDate) throw new Error('title, triggerDate are required');
     const category = data.category || 'general';
@@ -1314,6 +1405,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-reminder', (_, id: number) => {
+    requirePermission('settings.manage');
     return db.prepare('DELETE FROM notification_reminders WHERE id = ?').run(id);
   });
 
@@ -1534,6 +1626,92 @@ export function registerIPCHandlers() {
     return db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, JSON.stringify(value));
   });
 
+  // ========== DEMO MODE (6.6) ==========
+  ipcMain.handle('demo:get-mode', () => {
+    return { isDemoMode: getDemoMode() };
+  });
+
+  ipcMain.handle('demo:set-mode', (_, enabled: boolean) => {
+    setDemoMode(enabled);
+    return { success: true, isDemoMode: getDemoMode() };
+  });
+
+  ipcMain.handle('demo:reset', () => {
+    resetDemoDb();
+    return { success: true };
+  });
+
+  ipcMain.handle('demo:seed', () => {
+    const ddb = getCurrentDb();
+    const bizId = 1; // Demo business
+    
+    // Add demo categories
+    const categories = ['Beverages', 'Snacks', 'Dairy', 'Bakery', 'Produce', 'Household'];
+    for (const cat of categories) {
+      ddb.prepare('INSERT OR IGNORE INTO categories (businessId, name, isCustom) VALUES (?, ?, 1)').run(bizId, cat);
+    }
+    
+    // Add demo items
+    const items = [
+      { name: 'Coca Cola 500ml', category: 'Beverages', price: 45, cost: 30, qty: 100 },
+      { name: 'Pepsi 500ml', category: 'Beverages', price: 45, cost: 30, qty: 80 },
+      { name: 'Water 1L', category: 'Beverages', price: 15, cost: 8, qty: 200 },
+      { name: 'Potato Chips', category: 'Snacks', price: 35, cost: 22, qty: 150 },
+      { name: 'Chocolate Bar', category: 'Snacks', price: 25, cost: 15, qty: 200 },
+      { name: 'Milk 1L', category: 'Dairy', price: 55, cost: 40, qty: 50 },
+      { name: 'Yogurt', category: 'Dairy', price: 18, cost: 12, qty: 100 },
+      { name: 'Bread Loaf', category: 'Bakery', price: 30, cost: 18, qty: 80 },
+      { name: 'Apples 1kg', category: 'Produce', price: 80, cost: 50, qty: 60 },
+      { name: 'Bananas 1kg', category: 'Produce', price: 60, cost: 35, qty: 90 },
+      { name: 'Dish Soap', category: 'Household', price: 120, cost: 80, qty: 40 },
+      { name: 'Toilet Paper 4pk', category: 'Household', price: 95, cost: 65, qty: 30 },
+    ];
+    
+    for (const item of items) {
+      const catRow = ddb.prepare('SELECT id FROM categories WHERE businessId = ? AND name = ?').get(bizId, item.category) as any;
+      if (catRow) {
+        ddb.prepare(`
+          INSERT OR IGNORE INTO items (businessId, name, categoryId, baseSalePrice, basePurchasePrice, totalBaseQuantity, unitsPerPack, isCustom)
+          VALUES (?, ?, ?, ?, ?, ?, 1, 1)
+        `).run(bizId, item.name, catRow.id, item.price, item.cost, item.qty);
+      }
+    }
+    
+    // Add demo customers
+    const customers = [
+      { name: 'Walk-in Customer', phone: '', email: '' },
+      { name: 'Abebe Kebede', phone: '+251911223344', email: 'abebe@email.com' },
+      { name: 'Meron Tesfaye', phone: '+251922334455', email: 'meron@email.com' },
+      { name: 'Office Supply Co.', phone: '+251115556677', email: 'orders@office.com' },
+    ];
+    
+    for (const cust of customers) {
+      ddb.prepare(`
+        INSERT OR IGNORE INTO customers (businessId, name, phone, email, isCustom)
+        VALUES (?, ?, ?, ?, 1)
+      `).run(bizId, cust.name, cust.phone, cust.email);
+    }
+    
+    // Add demo sales
+    const today = new Date().toISOString().split('T')[0];
+    const itemsForSale = ddb.prepare('SELECT id, baseSalePrice FROM items WHERE businessId = ?').all(bizId) as any[];
+    const demoCustomers = ddb.prepare('SELECT id FROM customers WHERE businessId = ?').all(bizId) as any[];
+    
+    for (let i = 0; i < 10; i++) {
+      const item = itemsForSale[Math.floor(Math.random() * itemsForSale.length)];
+      const customer = demoCustomers[Math.floor(Math.random() * demoCustomers.length)];
+      const qty = Math.floor(Math.random() * 5) + 1;
+      const total = item.baseSalePrice * qty;
+      
+      ddb.prepare(`
+        INSERT INTO sales (businessId, customerId, customerName, totalPrice, paymentMethod, paymentStatus, status, createdAt)
+        VALUES (?, ?, ?, ?, 'Cash', 'Completed', 'Active', ?)
+      `).run(bizId, customer?.id || null, customer?.name || 'Walk-in Customer', total, today);
+    }
+    
+    return { success: true, message: 'Demo data seeded successfully' };
+  });
+
   // ========== ANALYTICS / DASHBOARD ==========
   ipcMain.handle('get-dashboard-stats', (_, dateRange?: { start: string; end: string }) => {
     const bizId = getActiveBusinessId();
@@ -1721,8 +1899,327 @@ export function registerIPCHandlers() {
     };
   });
 
-  ipcMain.handle('get-customers', () => {
+  // 4.5 VAT/TOT report for ERCA filing.
+  ipcMain.handle('get-vat-report', (_, dateRange?: { start: string; end: string }) => {
+    requirePermission('reports.view');
     const bizId = getActiveBusinessId();
+    let startDate: string;
+    let endDate: string;
+    const now = new Date();
+    if (dateRange?.start && dateRange?.end) {
+      startDate = dateRange.start;
+      endDate = dateRange.end;
+    } else {
+      const d = new Date(now.getFullYear(), now.getMonth(), 1);
+      startDate = d.toISOString().split('T')[0];
+      endDate = now.toISOString().split('T')[0];
+    }
+
+    const rows = db.prepare(`
+      SELECT id, quantity, unit, unitType, discount, vat, totalPrice, paymentMethod, paymentStatus, status, customerName, customerPhone, createdAt,
+             COALESCE(i.baseSellingPrice, 0) AS unitSellingPrice,
+             COALESCE(i.basePurchasePrice, 0) AS unitCost
+      FROM sales s LEFT JOIN items i ON s.itemId = i.id
+      WHERE s.businessId = ? AND DATE(s.createdAt) >= ? AND DATE(s.createdAt) <= ? AND (s.is_deleted = 0 OR s.is_deleted IS NULL)
+      ORDER BY s.createdAt ASC
+    `).all(bizId, startDate, endDate) as any[];
+
+    const rateTotals: Record<string, { count: number; taxable: number; vat: number; sales: number }> = {};
+    let totalTaxable = 0, totalVAT = 0, totalSales = 0, totalCount = 0, totalDiscount = 0;
+    for (const r of rows) {
+      // taxType is not stored on desktop sales rows; VAT is recorded per sale as the
+      // vat column. Infer the rate from the vat vs taxable amount when present.
+      const taxable = Math.max(0, (r.totalPrice || 0) - (r.discount || 0) - (r.vat || 0));
+      const vatAmt = r.vat || 0;
+      let rate = '0';
+      if (vatAmt > 0 && taxable > 0) {
+        const pct = Math.round((vatAmt / taxable) * 100);
+        rate = String(pct);
+      } else if (vatAmt > 0) {
+        rate = '15';
+      }
+      const bucket = rateTotals[rate] || { count: 0, taxable: 0, vat: 0, sales: 0 };
+      bucket.count += 1;
+      bucket.taxable += taxable;
+      bucket.vat += vatAmt;
+      bucket.sales += r.totalPrice || 0;
+      rateTotals[rate] = bucket;
+      totalTaxable += taxable;
+      totalVAT += vatAmt;
+      totalSales += r.totalPrice || 0;
+      totalCount += 1;
+      totalDiscount += r.discount || 0;
+    }
+
+    const buckets = Object.entries(rateTotals)
+      .map(([rate, v]) => ({ rate: rate === '0' ? '0%' : `${rate}%`, ...v }))
+      .sort((a: any, b: any) => (a.rate === '0%' ? 1 : b.rate === '0%' ? -1 : Number(b.rate) - Number(a.rate)));
+
+    return {
+      startDate, endDate,
+      buckets,
+      summary: { totalCount, totalTaxable, totalVAT, totalSales, totalDiscount },
+      transactions: rows
+    };
+  });
+
+  // 4.1 Advanced report drill-downs.
+  ipcMain.handle('get-report-drilldowns', (_, dateRange?: { start: string; end: string }) => {
+    requirePermission('reports.view');
+    const bizId = getActiveBusinessId();
+    let startDate: string;
+    let endDate: string;
+    const now = new Date();
+    if (dateRange?.start && dateRange?.end) {
+      startDate = dateRange.start;
+      endDate = dateRange.end;
+    } else {
+      const d = new Date(now.getFullYear(), now.getMonth(), 1);
+      startDate = d.toISOString().split('T')[0];
+      endDate = now.toISOString().split('T')[0];
+    }
+    const salesWhere = 's.businessId = ? AND DATE(s.createdAt) >= ? AND DATE(s.createdAt) <= ? AND (s.is_deleted = 0 OR s.is_deleted IS NULL)';
+    const salesParams = [bizId, startDate, endDate];
+
+    // Sales by cashier (createdBy -> employee name string).
+    const byCashier = db.prepare(`
+      SELECT COALESCE(s.createdBy, 'Unknown') AS cashier, COUNT(*) AS saleCount,
+             COALESCE(SUM(s.totalPrice), 0) AS revenue, COALESCE(SUM(s.vat), 0) AS vat,
+             COALESCE(SUM(s.totalPrice - COALESCE(s.costAtTimeOfSale, 0)), 0) AS profit
+      FROM sales s
+      WHERE ${salesWhere}
+      GROUP BY COALESCE(s.createdBy, 'Unknown')
+      ORDER BY revenue DESC
+    `).all(...salesParams);
+
+    // Sales by hour of day.
+    const byHour = db.prepare(`
+      SELECT CAST(strftime('%H', s.createdAt) AS INTEGER) AS hour, COUNT(*) AS saleCount,
+             COALESCE(SUM(s.totalPrice), 0) AS revenue
+      FROM sales s
+      WHERE ${salesWhere}
+      GROUP BY CAST(strftime('%H', s.createdAt) AS INTEGER)
+      ORDER BY hour ASC
+    `).all(...salesParams);
+
+    // Margin by item (uses per-sale costAtTimeOfSale for accurate COGS).
+    const marginByItem = db.prepare(`
+      SELECT i.id, i.name, COALESCE(c.name, 'Uncategorized') AS categoryName,
+             SUM(s.quantity) AS units,
+             COALESCE(SUM(s.totalPrice), 0) AS revenue,
+             COALESCE(SUM(s.costAtTimeOfSale), 0) AS cogs,
+             COALESCE(SUM(s.totalPrice - COALESCE(s.costAtTimeOfSale, 0)), 0) AS profit
+      FROM sales s
+      LEFT JOIN items i ON s.itemId = i.id
+      LEFT JOIN categories c ON i.categoryId = c.id
+      WHERE ${salesWhere}
+      GROUP BY i.id
+      ORDER BY profit DESC
+    `).all(...salesParams);
+
+    // Debt aging buckets (customer debt).
+    const today = new Date().toISOString().split('T')[0];
+    const debtAging = db.prepare(`
+      SELECT s.customerName, s.customerPhone,
+             COALESCE(SUM(s.totalPrice - COALESCE(s.paidAmount, 0)), 0) AS outstanding,
+             CAST(julianday(?) - julianday(COALESCE(s.dueDate, s.createdAt)) AS INTEGER) AS daysOverdue
+      FROM sales s
+      WHERE s.paymentStatus = 'Debt' AND s.businessId = ?
+        AND (s.is_deleted = 0 OR s.is_deleted IS NULL)
+      GROUP BY s.customerName, s.customerPhone
+      HAVING outstanding > 0
+      ORDER BY daysOverdue DESC
+    `).all(today, bizId);
+
+    // Slow/fast movers.
+    const movers = db.prepare(`
+      SELECT i.id, i.name,
+             COALESCE(SUM(s.quantity), 0) AS unitsSold,
+             COALESCE(SUM(s.totalPrice), 0) AS revenue,
+             COUNT(s.id) AS saleCount,
+             CAST(julianday(?) - julianday(MAX(s.createdAt)) AS INTEGER) AS daysSinceLastSale
+      FROM items i
+      LEFT JOIN sales s ON s.itemId = i.id AND s.businessId = ? AND DATE(s.createdAt) >= ? AND DATE(s.createdAt) <= ? AND (s.is_deleted = 0 OR s.is_deleted IS NULL)
+      WHERE i.businessId = ? AND i.is_deleted = 0
+      GROUP BY i.id
+      ORDER BY unitsSold DESC
+    `).all(today, bizId, startDate, endDate, bizId);
+
+    // Stock valuation by warehouse.
+    const valuationByWarehouse = db.prepare(`
+      SELECT w.name AS warehouse,
+             COALESCE(SUM(wi.quantity * i.basePurchasePrice), 0) AS value,
+             COALESCE(SUM(wi.quantity), 0) AS units,
+             COUNT(DISTINCT wi.itemId) AS productCount
+      FROM warehouses w
+      LEFT JOIN warehouse_inventory wi ON wi.warehouseId = w.id
+      LEFT JOIN items i ON wi.itemId = i.id AND i.businessId = ? AND i.is_deleted = 0
+      WHERE w.businessId = ?
+      GROUP BY w.id
+      ORDER BY value DESC
+    `).all(bizId, bizId);
+
+    return {
+      startDate, endDate,
+      byCashier, byHour, marginByItem,
+      debtAging: debtAging as any[],
+      movers: movers as any[],
+      valuationByWarehouse
+    };
+  });
+
+  // 4.13: GL journal export — generates double-entry journal lines from sales, expenses, and debt payments.
+  ipcMain.handle('get-gl-journal', (_, dateRange?: { start: string; end: string }) => {
+    requirePermission('reports.view');
+    const bizId = getActiveBusinessId();
+    const now = new Date();
+    const startDate = dateRange?.start || new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+    const endDate = dateRange?.end || now.toISOString().split('T')[0];
+    const range = { startDate, endDate };
+    const lines: any[] = [];
+
+    const sales = db.prepare(`
+      SELECT s.id, s.totalPrice, s.vat, s.discount, s.paymentMethod, s.paymentStatus, s.customerName, s.createdAt, i.name AS itemName
+      FROM sales s LEFT JOIN items i ON s.itemId = i.id
+      WHERE s.businessId = ? AND DATE(s.createdAt) >= ? AND DATE(s.createdAt) <= ? AND (s.is_deleted = 0 OR s.is_deleted IS NULL)
+      ORDER BY s.createdAt ASC
+    `).all(bizId, startDate, endDate);
+    for (const s of sales) {
+      const gross = s.totalPrice || 0;
+      const taxable = gross - (s.vat || 0);
+      const ref = `SALE-${s.id}`;
+      if (s.paymentStatus === 'Debt') {
+        lines.push({ date: s.createdAt, account: 'Accounts Receivable', debit: gross, credit: 0, ref, memo: `Credit sale to ${s.customerName || 'customer'} (${s.itemName || ''})` });
+      } else {
+        const cashAcc = (s.paymentMethod || 'Cash') === 'Cash' ? 'Cash' : 'Bank';
+        lines.push({ date: s.createdAt, account: cashAcc, debit: gross, credit: 0, ref, memo: `Sale of ${s.itemName || 'item'}` });
+      }
+      if ((s.vat || 0) > 0) {
+        lines.push({ date: s.createdAt, account: 'VAT Payable', debit: 0, credit: s.vat, ref, memo: `Output VAT on SALE-${s.id}` });
+      }
+      lines.push({ date: s.createdAt, account: 'Sales Revenue', debit: 0, credit: taxable, ref, memo: `Revenue SALE-${s.id}` });
+    }
+
+    const expenses = db.prepare(`
+      SELECT e.id, e.name, e.amount, e.category, e.date
+      FROM expenses e
+      WHERE e.businessId = ? AND DATE(e.date) >= ? AND DATE(e.date) <= ? AND (e.is_deleted = 0 OR e.is_deleted IS NULL)
+      ORDER BY e.date ASC
+    `).all(bizId, startDate, endDate);
+    for (const e of expenses) {
+      const ref = `EXP-${e.id}`;
+      lines.push({ date: e.date, account: `Expense: ${e.category || 'General'}`, debit: e.amount || 0, credit: 0, ref, memo: e.name });
+      lines.push({ date: e.date, account: 'Cash', debit: 0, credit: e.amount || 0, ref, memo: e.name });
+    }
+
+    const payments = db.prepare(`
+      SELECT dp.id, dp.saleId, dp.customerName, dp.amount, dp.createdAt
+      FROM debt_payments dp
+      WHERE DATE(dp.createdAt) >= ? AND DATE(dp.createdAt) <= ? AND (dp.is_deleted = 0 OR dp.is_deleted IS NULL)
+      ORDER BY dp.createdAt ASC
+    `).all(startDate, endDate);
+    for (const p of payments) {
+      const ref = `PMT-${p.id}`;
+      lines.push({ date: p.createdAt, account: 'Cash', debit: p.amount || 0, credit: 0, ref, memo: `Payment from ${p.customerName || 'customer'} on SALE-${p.saleId}` });
+      lines.push({ date: p.createdAt, account: 'Accounts Receivable', debit: 0, credit: p.amount || 0, ref, memo: `Receivable settled PMT-${p.id}` });
+    }
+
+    const sorted = lines.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    const totals = sorted.reduce((acc, l) => {
+      acc.debit += l.debit || 0;
+      acc.credit += l.credit || 0;
+      return acc;
+    }, { debit: 0, credit: 0 });
+
+    return { startDate, endDate, lines: sorted, totals };
+  });
+
+  // 4.12: Gift cards / store credit.
+  const giftCode = () => `GC-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+  ipcMain.handle('get-gift-cards', () => {
+    requirePermission('inventory.view');
+    const bizId = getActiveBusinessId();
+    return db.prepare('SELECT * FROM gift_cards WHERE businessId = ? AND (is_deleted = 0 OR is_deleted IS NULL) ORDER BY createdAt DESC LIMIT ?').all(bizId, DEFAULT_LIST_LIMIT);
+  });
+
+  ipcMain.handle('issue-gift-card', (_, data: any) => {
+    requirePermission('inventory.edit');
+    const bizId = getActiveBusinessId();
+    const balance = validatePositive(data.balance, 'Card balance');
+    const code = data.code?.trim() || giftCode();
+    const result = db.transaction(() => {
+      const r = db.prepare(`
+        INSERT INTO gift_cards (businessId, code, cardName, initialBalance, balance, issuedTo, issuedBy, expiryDate, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(bizId, code, data.cardName || null, balance, balance, data.issuedTo || null, currentUserName || null, data.expiryDate || null, data.notes || null);
+      const id = r.lastInsertRowid as number;
+      db.prepare('INSERT INTO gift_card_transactions (giftCardId, type, amount, note, createdBy) VALUES (?, ?, ?, ?, ?)')
+        .run(id, 'issue', balance, data.notes || 'Gift card issued', currentUserName || null);
+      insertAuditLog('issue_gift_card', 'gift_cards', id, 'balance', '0', String(balance), `Gift card ${code} issued`);
+      return { id, code };
+    })();
+    return result;
+  });
+
+  ipcMain.handle('redeem-gift-card', (_, data: any) => {
+    requirePermission('sales.create');
+    const bizId = getActiveBusinessId();
+    const code = (data.code || '').trim();
+    const amount = validatePositive(data.amount, 'Redeem amount');
+    const card = db.prepare('SELECT * FROM gift_cards WHERE code = ? AND businessId = ? AND (is_deleted = 0 OR is_deleted IS NULL)').get(code, bizId) as any;
+    if (!card) throw new Error('Gift card not found');
+    if (card.status !== 'active') throw new Error('Gift card is not active');
+    if (card.expiryDate && card.expiryDate < new Date().toISOString().split('T')[0]) throw new Error('Gift card has expired');
+    if ((card.balance || 0) < amount) throw new Error(`Insufficient gift card balance (${card.balance})`);
+    const result = db.transaction(() => {
+      db.prepare('UPDATE gift_cards SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, card.id);
+      db.prepare('INSERT INTO gift_card_transactions (giftCardId, type, amount, refType, refId, note, createdBy) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(card.id, 'redeem', amount, data.refType || null, data.refId || null, data.note || 'Gift card redeemed', currentUserName || null);
+      insertAuditLog('redeem_gift_card', 'gift_cards', card.id, 'balance', String(card.balance), String(card.balance - amount), `Gift card ${code} redeemed ${amount}`);
+      return { success: true, balance: card.balance - amount };
+    })();
+    return result;
+  });
+
+  ipcMain.handle('topup-gift-card', (_, data: any) => {
+    requirePermission('inventory.edit');
+    const bizId = getActiveBusinessId();
+    const card = db.prepare('SELECT * FROM gift_cards WHERE id = ? AND businessId = ? AND (is_deleted = 0 OR is_deleted IS NULL)').get(data.id, bizId) as any;
+    if (!card) throw new Error('Gift card not found');
+    const amount = validatePositive(data.amount, 'Top-up amount');
+    const result = db.transaction(() => {
+      db.prepare('UPDATE gift_cards SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, card.id);
+      db.prepare('INSERT INTO gift_card_transactions (giftCardId, type, amount, note, createdBy) VALUES (?, ?, ?, ?, ?)')
+        .run(card.id, 'topup', amount, data.note || 'Gift card top-up', currentUserName || null);
+      insertAuditLog('topup_gift_card', 'gift_cards', card.id, 'balance', String(card.balance), String(card.balance + amount), `Gift card top-up ${amount}`);
+      return { success: true, balance: card.balance + amount };
+    })();
+    return result;
+  });
+
+  ipcMain.handle('void-gift-card', (_, id: number) => {
+    requirePermission('inventory.delete');
+    const bizId = getActiveBusinessId();
+    const card = db.prepare('SELECT * FROM gift_cards WHERE id = ? AND businessId = ?').get(id, bizId) as any;
+    if (!card) throw new Error('Gift card not found');
+    db.prepare("UPDATE gift_cards SET status = 'void', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+    db.prepare('INSERT INTO gift_card_transactions (giftCardId, type, amount, note, createdBy) VALUES (?, ?, ?, ?, ?)')
+      .run(id, 'void', 0, 'Gift card voided', currentUserName || null);
+    insertAuditLog('void_gift_card', 'gift_cards', id, 'status', card.status, 'void', `Gift card ${card.code} voided`);
+    return { success: true };
+  });
+
+  ipcMain.handle('get-gift-card-transactions', (_, cardId: number) => {
+    requirePermission('inventory.view');
+    return db.prepare('SELECT * FROM gift_card_transactions WHERE giftCardId = ? ORDER BY createdAt DESC LIMIT ?').all(cardId, DEFAULT_LIST_LIMIT);
+  });
+
+  ipcMain.handle('get-customers', (_, options?: { limit?: number; offset?: number }) => {
+    requirePermission('customers.view');
+    const bizId = getActiveBusinessId();
+    const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
+    const offset = options?.offset ?? 0;
     const customers = db.prepare(`
       SELECT c.*,
         s.transactionCount,
@@ -1744,8 +2241,8 @@ export function registerIPCHandlers() {
       ) s ON TRIM(c.customerName) = s.tCustomerName
       WHERE c.businessId = ? AND c.isActive = 1
       ORDER BY c.customerName ASC
-      LIMIT ?
-    `).all(bizId, bizId, DEFAULT_LIST_LIMIT) as any[];
+      LIMIT ? OFFSET ?
+    `).all(bizId, bizId, listLimit, offset) as any[];
     return customers.map((c: any) => ({
       id: c.id,
       customerName: c.customerName,
@@ -1772,6 +2269,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('get-customer', (_, customerId: number) => {
+    requirePermission('customers.view');
     const bizId = getActiveBusinessId();
     const customerRaw = db.prepare(`
       SELECT c.*,
@@ -1817,44 +2315,57 @@ export function registerIPCHandlers() {
     };
   });
 
-  ipcMain.handle('get-customer-sales', (_, customerName: string) => {
+  ipcMain.handle('get-customer-sales', (_, customerName: string, options?: { limit?: number; offset?: number }) => {
+    requirePermission('customers.view');
     const bizId = getActiveBusinessId();
+    const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
+    const offset = options?.offset ?? 0;
     return db.prepare(`
       SELECT sales.*, items.name as itemName 
       FROM sales LEFT JOIN items ON sales.itemId = items.id 
       WHERE sales.customerName = ? AND sales.businessId = ?
       ORDER BY sales.createdAt DESC
-      LIMIT ?
-    `).all(customerName, bizId, DEFAULT_LIST_LIMIT);
+      LIMIT ? OFFSET ?
+    `).all(customerName, bizId, listLimit, offset);
   });
 
   ipcMain.handle('insert-customer', (_, customer: any) => {
+    requirePermission('customers.add');
     const bizId = getActiveBusinessId();
-    const existing = db.prepare("SELECT id FROM customers WHERE customerName = ? AND businessId = ?").get(customer.customerName, bizId);
+    const name = customer.customerName?.trim();
+    if (!name) throw new Error('Customer name is required');
+    if (name.length > 200) throw new Error('Customer name must be 200 characters or less');
+    if (customer.phone && String(customer.phone).length > 30) throw new Error('Phone must be 30 characters or less');
+    if (customer.email && String(customer.email).length > 100) throw new Error('Email must be 100 characters or less');
+    const existing = db.prepare("SELECT id FROM customers WHERE customerName = ? AND businessId = ?").get(name, bizId);
     if (existing) return { success: false, error: 'Customer name already exists' };
     const result = db.prepare(`
       INSERT INTO customers (businessId, customerName, phone, secondaryPhone, email, address, city, company, taxNumber, groupName, creditLimit, notes)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(bizId, customer.customerName, customer.phone || '', customer.secondaryPhone || '', customer.email || '', customer.address || '', customer.city || '', customer.company || '', customer.taxNumber || '', customer.groupName || 'general', customer.creditLimit || 0, customer.notes || '');
+    `).run(bizId, name, customer.phone || '', customer.secondaryPhone || '', customer.email || '', customer.address || '', customer.city || '', customer.company || '', customer.taxNumber || '', customer.groupName || 'general', customer.creditLimit || 0, customer.notes || '');
     return { success: true, id: result.lastInsertRowid };
   });
 
   ipcMain.handle('update-customer', (_, customer: any) => {
+    requirePermission('customers.add');
     const bizId = getActiveBusinessId();
-    const dup = db.prepare("SELECT id FROM customers WHERE customerName = ? AND businessId = ? AND id != ?").get(customer.customerName, bizId, customer.id);
+    const name = customer.customerName?.trim();
+    if (!name) throw new Error('Customer name is required');
+    if (name.length > 200) throw new Error('Customer name must be 200 characters or less');
+    if (customer.phone && String(customer.phone).length > 30) throw new Error('Phone must be 30 characters or less');
+    if (customer.email && String(customer.email).length > 100) throw new Error('Email must be 100 characters or less');
+    const dup = db.prepare("SELECT id FROM customers WHERE customerName = ? AND businessId = ? AND id != ?").get(name, bizId, customer.id);
     if (dup) return { success: false, error: 'Another customer with this name already exists' };
     db.prepare(`
       UPDATE customers SET customerName = ?, phone = ?, secondaryPhone = ?, email = ?, address = ?, city = ?, company = ?, taxNumber = ?, groupName = ?, creditLimit = ?, notes = ?, updatedAt = CURRENT_TIMESTAMP
       WHERE id = ? AND businessId = ?
-    `).run(customer.customerName, customer.phone || '', customer.secondaryPhone || '', customer.email || '', customer.address || '', customer.city || '', customer.company || '', customer.taxNumber || '', customer.groupName || 'general', customer.creditLimit || 0, customer.notes || '', customer.id, bizId);
+    `).run(name, customer.phone || '', customer.secondaryPhone || '', customer.email || '', customer.address || '', customer.city || '', customer.company || '', customer.taxNumber || '', customer.groupName || 'general', customer.creditLimit || 0, customer.notes || '', customer.id, bizId);
     return { success: true };
   });
 
   ipcMain.handle('delete-customer', (_, customerId: number) => {
-    const bizId = getActiveBusinessId();
-    const hasSales = db.prepare("SELECT COUNT(*) as count FROM sales WHERE customerName = (SELECT customerName FROM customers WHERE id = ?) AND businessId = ?").get(customerId, bizId) as any;
-    if (hasSales.count > 0) return { success: false, error: 'Cannot delete customer with sales history. Deactivate instead.' };
-    db.prepare("UPDATE customers SET is_deleted = 1, deleted_by = ?, deleted_at = CURRENT_TIMESTAMP, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(currentUserName || 'unknown', customerId, bizId);
+    requirePermission('customers.delete');
+    db.prepare('UPDATE customers SET isActive = 0 WHERE id = ?').run(customerId);
     return { success: true };
   });
 
@@ -1863,6 +2374,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('add-customer-note', (_, customerId: number, note: string, createdBy?: string) => {
+    requirePermission('customers.add');
     db.prepare("INSERT INTO customer_notes (customerId, note, createdBy) VALUES (?, ?, ?)").run(customerId, note, createdBy || '');
     return { success: true };
   });
@@ -1871,32 +2383,37 @@ export function registerIPCHandlers() {
   ipcMain.handle('export-data', () => {
     requirePermission('settings.manage');
     const bizId = getActiveBusinessId();
-    const tables = ['categories', 'items', 'item_packs', 'sales', 'expenses', 'adjustments', 'settings'];
+    const tables = ['categories', 'items', 'item_packs', 'sales', 'expenses', 'adjustments', 'settings', 'customers', 'suppliers', 'returns', 'debt_payments', 'warehouses', 'warehouse_inventory', 'budgets', 'budget_adjustments', 'gift_cards', 'gift_card_transactions', 'orders'];
     const data: Record<string, any> = {};
     for (const table of tables) {
       if (table === 'settings') {
         data[table] = db.prepare(`SELECT * FROM ${table}`).all();
       } else {
-        data[table] = db.prepare(`SELECT * FROM ${table} WHERE businessId = ?`).all(bizId);
+        const hasBiz = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).some((c: any) => c.name === 'businessId');
+        data[table] = hasBiz
+          ? db.prepare(`SELECT * FROM ${table} WHERE businessId = ?`).all(bizId)
+          : db.prepare(`SELECT * FROM ${table}`).all();
       }
     }
     return data;
   });
 
-  ipcMain.handle('reset-data', () => {
-    const hasBackupPerm = currentUserPermissions.includes('settings.backup');
-    const hasManagePerm = currentUserPermissions.includes('settings.manage');
-    const hasWildcard = currentUserPermissions.includes('*');
-    if (!hasBackupPerm && !hasManagePerm && !hasWildcard) {
-      throw new Error('Permission denied: settings.manage');
-    }
+  ipcMain.handle('reset-data', (_, mode: 'transactions' | 'all' | 'factory' = 'transactions') => {
+    requirePermission('settings.manage');
     const bizId = getActiveBusinessId();
-    const transaction = db.transaction(() => {
+    // Purge deletes parents (items, warehouses, suppliers) across many inter-related
+    // tables, so disable FK enforcement for the duration of the wipe to avoid
+    // SQLITE_CONSTRAINT_FOREIGNKEY failures. PRAGMA only takes effect outside a
+    // transaction, so toggle it around db.transaction().
+    db.pragma('foreign_keys = OFF');
+    try {
+      const transaction = db.transaction(() => {
+      // ===== TRANSACTIONAL DATA (all modes - children before parents) =====
+      db.prepare('DELETE FROM debt_payments WHERE saleId IN (SELECT id FROM sales WHERE businessId = ?)').run(bizId);
       db.prepare('DELETE FROM returns WHERE businessId = ?').run(bizId);
       db.prepare('DELETE FROM sales WHERE businessId = ?').run(bizId);
       db.prepare('DELETE FROM adjustments WHERE businessId = ?').run(bizId);
       db.prepare('DELETE FROM stock_movements WHERE itemId IN (SELECT id FROM items WHERE businessId = ?)').run(bizId);
-      db.prepare('DELETE FROM warehouse_inventory WHERE itemId IN (SELECT id FROM items WHERE businessId = ?)').run(bizId);
       db.prepare('DELETE FROM stock_transfers WHERE businessId = ?').run(bizId);
       db.prepare('DELETE FROM shipment_items WHERE shipmentId IN (SELECT id FROM shipments WHERE businessId = ?)').run(bizId);
       db.prepare('DELETE FROM shipment_history WHERE shipmentId IN (SELECT id FROM shipments WHERE businessId = ?)').run(bizId);
@@ -1908,16 +2425,60 @@ export function registerIPCHandlers() {
       db.prepare('DELETE FROM supplier_activity_log WHERE supplierId IN (SELECT id FROM suppliers WHERE businessId = ?)').run(bizId);
       db.prepare('DELETE FROM supplier_purchases WHERE businessId = ?').run(bizId);
       db.prepare('DELETE FROM customer_notes WHERE customerId IN (SELECT id FROM customers WHERE businessId = ?)').run(bizId);
-      db.prepare('DELETE FROM customers WHERE businessId = ?').run(bizId);
-      db.prepare('DELETE FROM suppliers WHERE businessId = ?').run(bizId);
-      db.prepare('DELETE FROM item_packs WHERE itemId IN (SELECT id FROM items WHERE businessId = ?)').run(bizId);
-      db.prepare('DELETE FROM items WHERE businessId = ?').run(bizId);
       db.prepare('DELETE FROM expenses WHERE businessId = ?').run(bizId);
-      db.prepare('DELETE FROM categories WHERE businessId = ? AND isCustom = 1').run(bizId);
       db.prepare('DELETE FROM notifications WHERE businessId = ?').run(bizId);
-    });
-    transaction();
-    return { success: true };
+
+      if (mode === 'transactions') {
+        db.prepare('DELETE FROM warehouse_inventory WHERE itemId IN (SELECT id FROM items WHERE businessId = ?)').run(bizId);
+      }
+
+      if (mode === 'all' || mode === 'factory') {
+        // ===== ORDERS, BUDGETS, CONTACTS, DRAFT SALES =====
+        db.prepare('DELETE FROM order_items WHERE orderId IN (SELECT id FROM orders WHERE businessId = ?)').run(bizId);
+        db.prepare('DELETE FROM order_history WHERE orderId IN (SELECT id FROM orders WHERE businessId = ?)').run(bizId);
+        db.prepare('DELETE FROM orders WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM draft_sales WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM contacts WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM budget_alerts WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM budget_adjustments WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM budgets WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM notification_quiet_hours WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM supplier_price_checks WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM audit_logs WHERE businessId = ?').run(bizId);
+        // ===== MASTER DATA =====
+        db.prepare('DELETE FROM warehouse_inventory WHERE warehouseId IN (SELECT id FROM warehouses WHERE businessId = ?)').run(bizId);
+        db.prepare('DELETE FROM item_packs WHERE itemId IN (SELECT id FROM items WHERE businessId = ?)').run(bizId);
+        db.prepare('DELETE FROM items WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM categories WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM warehouses WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM customers WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM suppliers WHERE businessId = ?').run(bizId);
+        // ===== EMPLOYEES (no businessId - delete all) =====
+        db.prepare('DELETE FROM employee_performance WHERE employeeId IN (SELECT id FROM employees)').run();
+        db.prepare('DELETE FROM attendance WHERE employeeId IN (SELECT id FROM employees)').run();
+        db.prepare('DELETE FROM pin_recovery_keys WHERE employeeId IN (SELECT id FROM employees)').run();
+        db.prepare('DELETE FROM login_history WHERE employeeId IN (SELECT id FROM employees)').run();
+        db.prepare('DELETE FROM employee_accounts').run();
+        db.prepare('DELETE FROM employees').run();
+      }
+
+      if (mode === 'factory') {
+        // ===== BUSINESS & ADMIN DATA =====
+        db.prepare('DELETE FROM pin_recovery_keys WHERE adminId IN (SELECT id FROM admins WHERE businessId = ?)').run(bizId);
+        db.prepare('DELETE FROM login_history WHERE accountId IN (SELECT id FROM employee_accounts)').run();
+        db.prepare('DELETE FROM payment_transactions WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM subscription_history WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM subscriptions WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM audit_logs WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM admins WHERE businessId = ?').run(bizId);
+        db.prepare('DELETE FROM businesses WHERE id = ?').run(bizId);
+      }
+      });
+      transaction();
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
+    return { success: true, mode, message: mode === 'factory' ? 'Factory reset complete. This will log you out.' : undefined };
   });
 
   // ========== ADMIN MANAGEMENT ==========
@@ -1927,10 +2488,24 @@ export function registerIPCHandlers() {
       'SELECT id, name, username, role, permissions, isActive, businessId, avatar, pin FROM admins WHERE username = ?'
     ).get(username) as any;
     if (admin) {
+      if (admin.lockedUntil && new Date(admin.lockedUntil) > new Date()) {
+        return { success: false, error: 'Account is locked. Try again later.' };
+      }
       if (!admin.isActive) return { success: false, error: 'Account deactivated' };
-      if (!verifyPin(pin, admin.pin)) return { success: false, error: 'Invalid credentials' };
+      if (!verifyPin(pin, admin.pin)) {
+        const attempts = (admin.failedLoginAttempts || 0) + 1;
+        if (attempts >= 5) {
+          const lockUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+          db.prepare('UPDATE admins SET failedLoginAttempts = ?, lockedUntil = ? WHERE id = ?').run(attempts, lockUntil, admin.id);
+          return { success: false, error: 'Account locked due to too many failed attempts.' };
+        }
+        db.prepare('UPDATE admins SET failedLoginAttempts = ? WHERE id = ?').run(attempts, admin.id);
+        return { success: false, error: 'Invalid credentials' };
+      }
+      db.prepare('UPDATE admins SET lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL WHERE id = ?').run(admin.id);
       currentAdminId = admin.id;
       currentUserName = admin.name;
+      currentUserRole = admin.role || 'admin';
       currentUserPermissions = admin.permissions ? JSON.parse(admin.permissions) : ['*'];
       return {
         success: true,
@@ -1965,7 +2540,7 @@ export function registerIPCHandlers() {
       const attempts = (account.failedLoginAttempts || 0) + 1;
       if (attempts >= 5) {
         const lockUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-        db.prepare('UPDATE employee_accounts SET failedLoginAttempts = ?, lockedUntil = ?, isActive = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(attempts, lockUntil, account.id);
+        db.prepare('UPDATE employee_accounts SET failedLoginAttempts = ?, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(attempts, lockUntil, account.id);
         db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'failed_login: locked after 5 attempts');
         return { success: false, error: 'Account locked due to too many failed attempts.' };
       }
@@ -1977,6 +2552,7 @@ export function registerIPCHandlers() {
     db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'login');
     currentAdminId = account.employeeId;
     currentUserName = `${account.firstName || ''} ${account.lastName || ''}`.trim() || account.username;
+    currentUserRole = account.roleName || 'employee';
     const rolePerms: string[] = account.rolePermissions ? JSON.parse(account.rolePermissions) : [];
     currentUserPermissions = rolePerms.length > 0 ? rolePerms : ['*'];
     return {
@@ -2032,13 +2608,42 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-admin', (_, id: number, admin: any) => {
-    if (id !== currentAdminId) {
+    const isSelf = id === currentAdminId;
+    // Sensitive fields always require settings.users permission
+    const sensitiveFields = ['username', 'pin', 'role', 'permissions', 'isActive', 'businessId'];
+    const updatingSensitive = sensitiveFields.some(f => admin[f] !== undefined);
+    // Updating another user, or any sensitive field, requires settings.users
+    if (!isSelf || updatingSensitive) {
       requirePermission('settings.users');
     }
+
+    // PIN change flow (self only)
+    if (admin.pin !== undefined && id === currentAdminId) {
+      const stored = db.prepare('SELECT pin FROM admins WHERE id = ?').get(id) as any;
+      if (!stored || !admin.currentPin || !verifyPin(admin.currentPin, stored.pin)) {
+        return { success: false, error: 'Current PIN is required to change your PIN' };
+      }
+      delete admin.currentPin;
+    }
+
     // Check for duplicate username (exclude current admin)
     if (admin.username) {
       const existing = db.prepare('SELECT id FROM admins WHERE username = ? AND id != ?').get(admin.username, id);
       if (existing) return { success: false, error: 'Username already exists' };
+    }
+
+    // If the target id is not an admin (employee account), update the employees table instead
+    const existingAdmin = db.prepare('SELECT id FROM admins WHERE id = ?').get(id) as any;
+    if (!existingAdmin) {
+      const empFields: string[] = [];
+      const empValues: any[] = [];
+      if (admin.avatar !== undefined) { empFields.push('avatar = ?'); empValues.push(admin.avatar); }
+      if (admin.name !== undefined) { empFields.push('firstName = ?'); empValues.push(admin.name); }
+      if (empFields.length > 0) {
+        empValues.push(id);
+        db.prepare(`UPDATE employees SET ${empFields.join(', ')}, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`).run(...empValues);
+      }
+      return { success: true };
     }
 
     const fields: string[] = [];
@@ -2075,6 +2680,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-bulk-adjustments', (_, adjustments: any[]) => {
+    requirePermission('inventory.adjust');
     const bizId = getActiveBusinessId();
     const transaction = db.transaction(() => {
       let count = 0;
@@ -2122,26 +2728,31 @@ export function registerIPCHandlers() {
 
   // ========== WAREHOUSES ==========
   ipcMain.handle('get-warehouses', () => {
+    requirePermission('warehouses.view');
     const bizId = getActiveBusinessId();
     return db.prepare('SELECT * FROM warehouses WHERE businessId = ? ORDER BY name').all(bizId);
   });
 
   ipcMain.handle('get-warehouse', (_, id: number) => {
+    requirePermission('warehouses.view');
     return db.prepare('SELECT * FROM warehouses WHERE id = ?').get(id);
   });
 
   ipcMain.handle('insert-warehouse', (_, wh: any) => {
+    requirePermission('warehouses.create');
     const bizId = getActiveBusinessId();
     return db.prepare('INSERT INTO warehouses (businessId, name, location, managerName, managerPhone, email) VALUES (?, ?, ?, ?, ?, ?)')
       .run(bizId, wh.name, wh.location, wh.managerName, wh.managerPhone, wh.email).lastInsertRowid;
   });
 
   ipcMain.handle('update-warehouse', (_, id: number, wh: any) => {
+    requirePermission('warehouses.create');
     return db.prepare('UPDATE warehouses SET name = ?, location = ?, managerName = ?, managerPhone = ?, email = ?, isActive = ? WHERE id = ?')
       .run(wh.name, wh.location, wh.managerName, wh.managerPhone, wh.email, wh.isActive ?? 1, id);
   });
 
   ipcMain.handle('delete-warehouse', (_, id: number) => {
+    requirePermission('warehouses.edit');
     const tx = db.transaction(() => {
       db.prepare('DELETE FROM stock_movements WHERE warehouseId = ?').run(id);
       db.prepare('DELETE FROM warehouse_inventory WHERE warehouseId = ?').run(id);
@@ -2152,6 +2763,7 @@ export function registerIPCHandlers() {
 
   // ========== WAREHOUSE INVENTORY ==========
   ipcMain.handle('get-warehouse-inventory', (_, warehouseId: number) => {
+    requirePermission('warehouses.view');
     return db.prepare(`
       SELECT wi.*, items.name as itemName, items.companyName, items.baseUnit,
         items.baseSellingPrice, items.packSellingPrice, items.categoryId,
@@ -2164,7 +2776,8 @@ export function registerIPCHandlers() {
     `).all(warehouseId);
   });
 
-  ipcMain.handle('get-all-warehouse-inventory', (_, options: { search?: string; category?: string } = {}) => {
+  ipcMain.handle('get-all-warehouse-inventory', (_, options: { search?: string; category?: string; limit?: number; offset?: number } = {}) => {
+    requirePermission('warehouses.view');
     const bizId = getActiveBusinessId();
     let query = `
       SELECT wi.*, w.name as warehouseName, items.name as itemName, items.companyName,
@@ -2178,19 +2791,20 @@ export function registerIPCHandlers() {
     `;
     const params: any[] = [bizId];
     if (options.search) {
-      query += ' AND (items.name LIKE ? OR items.companyName LIKE ?)';
+      query += ' AND (LOWER(items.name) LIKE LOWER(?) OR LOWER(items.companyName) LIKE LOWER(?))';
       params.push(`%${options.search}%`, `%${options.search}%`);
     }
     if (options.category && options.category !== 'All') {
       query += ' AND categories.name = ?';
       params.push(options.category);
     }
-    query += ' ORDER BY w.name, items.name LIMIT ?';
-    params.push(DEFAULT_LIST_LIMIT);
+    query += ' ORDER BY w.name, items.name LIMIT ? OFFSET ?';
+    params.push(options.limit ?? DEFAULT_LIST_LIMIT, options.offset ?? 0);
     return db.prepare(query).all(...params);
   });
 
   ipcMain.handle('update-warehouse-inventory', (_, warehouseId: number, itemId: number, quantity: number) => {
+    requirePermission('inventory.adjust');
     validateNonNegative(quantity, 'Warehouse inventory quantity');
     const existing = db.prepare('SELECT id, quantity FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(warehouseId, itemId) as any;
     const oldQty = existing?.quantity || 0;
@@ -2200,28 +2814,27 @@ export function registerIPCHandlers() {
     } else {
       db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(warehouseId, itemId, quantity);
     }
-    // Sync global totals
-    db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity + ? WHERE id = ?').run(delta, itemId);
+    // Sync global totals via atomic recalculation from warehouse_inventory
+    const totalRow = db.prepare('SELECT COALESCE(SUM(quantity), 0) as total FROM warehouse_inventory WHERE itemId = ?').get(itemId) as any;
+    db.prepare('UPDATE items SET totalBaseQuantity = ? WHERE id = ?').run(totalRow.total, itemId);
     // Log movement
+    const item = db.prepare('SELECT name FROM items WHERE id = ?').get(itemId) as any;
     db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)')
       .run(warehouseId, itemId, 'adjustment', quantity, 'manual', 'Manual inventory adjustment');
-    const item = db.prepare('SELECT name FROM items WHERE id = ?').get(itemId) as any;
     return { success: true };
   });
 
   // ========== STOCK TRANSFERS ==========
   ipcMain.handle('transfer-stock', (_, transfer: any) => {
+    requirePermission('warehouses.transfer');
     if (transfer.fromWarehouseId === transfer.toWarehouseId) throw new Error('Source and destination warehouses must be different');
     const qty = validatePositive(transfer.quantity, 'Transfer quantity');
     transfer.quantity = qty;
     const bizId = getActiveBusinessId();
     const tx = db.transaction(() => {
       // Deduct from source
-      const fromExisting = db.prepare('SELECT id, quantity FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(transfer.fromWarehouseId, transfer.itemId) as any;
-      if (!fromExisting || fromExisting.quantity < transfer.quantity) {
-        throw new Error('Insufficient stock at source warehouse');
-      }
-      db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(transfer.quantity, fromExisting.id);
+      const fromResult = db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE warehouseId = ? AND itemId = ? AND quantity >= ?').run(transfer.quantity, transfer.fromWarehouseId, transfer.itemId, transfer.quantity);
+      if (fromResult.changes === 0) throw new Error('Insufficient stock at source warehouse');
 
       // Add to destination
       const toExisting = db.prepare('SELECT id, quantity FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(transfer.toWarehouseId, transfer.itemId) as any;
@@ -2264,8 +2877,9 @@ export function registerIPCHandlers() {
     }
     query += ' ORDER BY st.createdAt DESC';
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
     return db.prepare(query).all(...params);
   });
 
@@ -2294,12 +2908,14 @@ export function registerIPCHandlers() {
     }
     query += ' ORDER BY sm.createdAt DESC';
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
     return db.prepare(query).all(...params);
   });
 
   ipcMain.handle('cleanup-stock-movements', () => {
+    requirePermission('settings.manage');
     const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     const result = db.prepare("DELETE FROM stock_movements WHERE createdAt < ?").run(ninetyDaysAgo);
     return { success: true, deleted: result.changes };
@@ -2341,6 +2957,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-employee-role', (_, data: any) => {
+    requirePermission('settings.roles');
     const permissions = JSON.stringify(data.permissions || []);
     const result = db.prepare('INSERT INTO employee_roles (name, description, permissions, isSystem) VALUES (?, ?, ?, ?)')
       .run(data.name, data.description || '', permissions, 0);
@@ -2348,6 +2965,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-employee-role', (_, id: number, data: any) => {
+    requirePermission('settings.roles');
     const permissions = JSON.stringify(data.permissions || []);
     const result = db.prepare('UPDATE employee_roles SET name = ?, description = ?, permissions = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?')
       .run(data.name, data.description || '', permissions, id);
@@ -2355,6 +2973,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('duplicate-employee-role', (_, id: number) => {
+    requirePermission('settings.roles');
     const original = db.prepare('SELECT * FROM employee_roles WHERE id = ?').get(id) as any;
     if (!original) throw new Error('Role not found');
     const result = db.prepare('INSERT INTO employee_roles (name, description, permissions, isSystem) VALUES (?, ?, ?, 0)')
@@ -2363,6 +2982,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-employee-role', (_, id: number) => {
+    requirePermission('settings.roles');
     const role = db.prepare('SELECT name, isSystem FROM employee_roles WHERE id = ?').get(id) as any;
     if (role?.isSystem) throw new Error('Cannot delete system role');
     db.prepare('UPDATE employees SET roleId = NULL WHERE roleId = ?').run(id);
@@ -2371,6 +2991,7 @@ export function registerIPCHandlers() {
 
   // ========== EMPLOYEES ==========
   ipcMain.handle('get-employees', (_, options?: any) => {
+    requirePermission('employees.view');
     let query = `
       SELECT e.*, r.name as roleName, r.permissions as rolePermissions,
         CASE WHEN a.id IS NOT NULL THEN 1 ELSE 0 END as hasAccount,
@@ -2384,7 +3005,7 @@ export function registerIPCHandlers() {
     const conditions: string[] = [];
     const params: any[] = [];
     if (options?.search) {
-      conditions.push('(e.firstName LIKE ? OR e.lastName LIKE ? OR e.phone LIKE ? OR e.email LIKE ? OR e.employeeCode LIKE ?)');
+      conditions.push('(LOWER(e.firstName) LIKE LOWER(?) OR LOWER(e.lastName) LIKE LOWER(?) OR LOWER(e.phone) LIKE LOWER(?) OR LOWER(e.email) LIKE LOWER(?) OR LOWER(e.employeeCode) LIKE LOWER(?))');
       const s = `%${options.search}%`;
       params.push(s, s, s, s, s);
     }
@@ -2414,12 +3035,14 @@ export function registerIPCHandlers() {
     if (conditions.length) query += ' WHERE ' + conditions.join(' AND ');
     query += ' ORDER BY e.firstName, e.lastName';
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options?.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
     return db.prepare(query).all(...params);
   });
 
   ipcMain.handle('get-employee', (_, id: number) => {
+    requirePermission('employees.view');
     return db.prepare(`
       SELECT e.*, r.name as roleName, r.permissions as rolePermissions,
         r.description as roleDescription, w.name as warehouseName
@@ -2431,6 +3054,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-employee', (_, data: any) => {
+    requirePermission('employees.add');
     const result = db.prepare(`
       INSERT INTO employees (employeeCode, firstName, lastName, phone, email, address, emergencyContact,
         gender, dateOfBirth, roleId, department, warehouseId, isActive, employmentStatus, avatar, hireDate, notes)
@@ -2448,6 +3072,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-employee', (_, id: number, data: any) => {
+    requirePermission('employees.add');
     const result = db.prepare(`
       UPDATE employees SET
         employeeCode = ?, firstName = ?, lastName = ?, phone = ?, email = ?,
@@ -2469,22 +3094,26 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-employee', (_, id: number) => {
+    requirePermission('employees.delete');
     const emp = db.prepare('SELECT firstName, lastName FROM employees WHERE id = ?').get(id) as any;
     db.prepare('DELETE FROM employees WHERE id = ?').run(id);
   });
 
   ipcMain.handle('archive-employee', (_, id: number) => {
+    requirePermission('employees.delete');
     const result = db.prepare("UPDATE employees SET employmentStatus = 'inactive', isActive = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
     return result;
   });
 
   ipcMain.handle('reactivate-employee', (_, id: number) => {
+    requirePermission('employees.delete');
     const result = db.prepare("UPDATE employees SET employmentStatus = 'active', isActive = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
     return result;
   });
 
   // ========== EMPLOYEE ACCOUNTS ==========
   ipcMain.handle('get-employee-accounts', () => {
+    requirePermission('settings.users');
     return db.prepare(`
       SELECT ea.*, e.firstName, e.lastName, e.employeeCode, r.name as roleName
       FROM employee_accounts ea
@@ -2495,6 +3124,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-employee-account', (_, data: any) => {
+    requirePermission('settings.users');
     if (!data.username || !data.username.trim()) throw new Error('Username is required');
     if (!data.pin || data.pin.length < 4) throw new Error('PIN must be at least 4 characters');
     const hash = hashPin(data.pin);
@@ -2504,6 +3134,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-employee-account', (_, id: number, data: any) => {
+    requirePermission('settings.users');
     if (data.pin) {
     const hash = hashPin(data.pin);
       db.prepare('UPDATE employee_accounts SET username = ?, pin = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?')
@@ -2515,16 +3146,19 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-employee-account', (_, id: number) => {
+    requirePermission('settings.users');
     const acct = db.prepare('SELECT username FROM employee_accounts WHERE id = ?').get(id) as any;
     db.prepare('DELETE FROM employee_accounts WHERE id = ?').run(id);
   });
 
   ipcMain.handle('lock-employee-account', (_, id: number) => {
+    requirePermission('settings.users');
     const lockUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     db.prepare('UPDATE employee_accounts SET isActive = 0, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(lockUntil, id);
   });
 
   ipcMain.handle('unlock-employee-account', (_, id: number) => {
+    requirePermission('settings.users');
     db.prepare('UPDATE employee_accounts SET isActive = 1, lockedUntil = NULL, failedLoginAttempts = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(id);
   });
 
@@ -2542,6 +3176,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('generate-recovery-key', (_, entityType: 'employee' | 'admin', entityId: number) => {
+    requirePermission('settings.users');
     const recoveryKey = crypto.randomBytes(32).toString('hex');
     const hint = recoveryKey.slice(0, 8) + '...' + recoveryKey.slice(-4);
     const hash = hashPin(recoveryKey);
@@ -2702,7 +3337,7 @@ export function registerIPCHandlers() {
       const attempts = (account.failedLoginAttempts || 0) + 1;
       if (attempts >= 5) {
         const lockUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-        db.prepare('UPDATE employee_accounts SET failedLoginAttempts = ?, lockedUntil = ?, isActive = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(attempts, lockUntil, account.id);
+        db.prepare('UPDATE employee_accounts SET failedLoginAttempts = ?, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(attempts, lockUntil, account.id);
         db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'failed_login: locked after 5 attempts');
         return { error: 'locked', lockedUntil: lockUntil };
       }
@@ -2713,6 +3348,7 @@ export function registerIPCHandlers() {
     db.prepare('UPDATE employee_accounts SET lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(account.id);
     db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'login');
     currentUserName = `${account.firstName} ${account.lastName}`;
+    currentUserRole = account.roleName || 'employee';
     const rolePerms: string[] = account.rolePermissions ? JSON.parse(account.rolePermissions) : [];
     currentUserPermissions = rolePerms.length > 0 ? rolePerms : ['*'];
     return {
@@ -2757,8 +3393,9 @@ export function registerIPCHandlers() {
     if (conditions.length) query += ' WHERE ' + conditions.join(' AND ');
     query += ' ORDER BY lh.createdAt DESC';
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options?.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
     return db.prepare(query).all(...params);
   });
 
@@ -2813,8 +3450,9 @@ export function registerIPCHandlers() {
     if (conditions.length) query += ' WHERE ' + conditions.join(' AND ');
     query += ' ORDER BY a.date DESC, a.clockIn DESC';
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options?.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
     return db.prepare(query).all(...params);
   });
 
@@ -2851,12 +3489,14 @@ export function registerIPCHandlers() {
     if (conditions.length) query += ' WHERE ' + conditions.join(' AND ');
     query += ' ORDER BY ep.period DESC, ep.salesAmount DESC';
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options?.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
     return db.prepare(query).all(...params);
   });
 
   ipcMain.handle('update-employee-performance', (_, data: any) => {
+    requirePermission('employees.edit');
     const existing = db.prepare('SELECT id FROM employee_performance WHERE employeeId = ? AND period = ?').get(data.employeeId, data.period) as any;
     if (existing) {
       db.prepare(`UPDATE employee_performance SET salesAmount = ?, ordersProcessed = ?, attendanceScore = ?, tasksCompleted = ?, rating = ?, notes = ? WHERE id = ?`)
@@ -2884,6 +3524,7 @@ export function registerIPCHandlers() {
 
   // ========== SHIPMENTS ==========
   ipcMain.handle('get-shipments', (_, options?: any) => {
+    requirePermission('shipments');
     let query = `SELECT * FROM shipments WHERE businessId = ?`;
     const params: any[] = [getActiveBusinessId()];
     if (options?.status) {
@@ -2891,7 +3532,7 @@ export function registerIPCHandlers() {
       params.push(options.status);
     }
     if (options?.search) {
-      query += ' AND (destination LIKE ? OR driverName LIKE ? OR notes LIKE ?)';
+      query += ' AND (LOWER(destination) LIKE LOWER(?) OR LOWER(driverName) LIKE LOWER(?) OR LOWER(notes) LIKE LOWER(?))';
       const s = `%${options.search}%`;
       params.push(s, s, s);
     }
@@ -2905,12 +3546,14 @@ export function registerIPCHandlers() {
     }
     query += ' ORDER BY createdAt DESC';
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options?.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
     return db.prepare(query).all(...params);
   });
 
   ipcMain.handle('get-shipment', (_, id: number) => {
+    requirePermission('shipments');
     const shipment = db.prepare('SELECT * FROM shipments WHERE id = ?').get(id);
     const items = db.prepare('SELECT * FROM shipment_items WHERE shipmentId = ?').all(id);
     const history = db.prepare('SELECT * FROM shipment_history WHERE shipmentId = ? ORDER BY createdAt DESC').all(id);
@@ -2918,6 +3561,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-shipment', (_, data: any) => {
+    requirePermission('shipments');
     const bizId = getActiveBusinessId();
     const result = db.prepare(`
       INSERT INTO shipments (businessId, origin, destination, driverName, driverPhone, vehicleInfo, status, notes, scheduledDate)
@@ -2931,6 +3575,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-shipment', (_, id: number, data: any) => {
+    requirePermission('shipments');
     return db.prepare(`
       UPDATE shipments SET origin = ?, destination = ?, driverName = ?, driverPhone = ?,
         vehicleInfo = ?, notes = ?, scheduledDate = ?, updatedAt = CURRENT_TIMESTAMP
@@ -2940,6 +3585,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-shipment-status', (_, id: number, status: string, changedBy?: string, notes?: string) => {
+    requirePermission('shipments');
     const validStatuses = ['pending', 'in_transit', 'delivered', 'cancelled'];
     if (!validStatuses.includes(status)) throw new Error('Invalid status');
     const updates: string[] = ['status = ?', 'updatedAt = CURRENT_TIMESTAMP'];
@@ -2955,15 +3601,18 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-shipment', (_, id: number) => {
+    requirePermission('shipments');
     return db.prepare('DELETE FROM shipments WHERE id = ?').run(id);
   });
 
   ipcMain.handle('get-shipment-history', (_, shipmentId: number) => {
+    requirePermission('shipments');
     return db.prepare('SELECT * FROM shipment_history WHERE shipmentId = ? ORDER BY createdAt DESC').all(shipmentId);
   });
 
   // ========== SUPPLIERS ==========
   ipcMain.handle('get-suppliers', (_, options: any = {}) => {
+    requirePermission('suppliers.view');
     const bizId = getActiveBusinessId();
     const limit = options.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options.offset ?? 0;
@@ -2973,7 +3622,7 @@ export function registerIPCHandlers() {
     let where = 's.businessId = ?';
     const params: any[] = [bizId];
     if (search) {
-      where += ' AND (s.supplierName LIKE ? OR s.companyName LIKE ? OR s.phone LIKE ? OR s.email LIKE ?)';
+      where += ' AND (LOWER(s.supplierName) LIKE LOWER(?) OR LOWER(s.companyName) LIKE LOWER(?) OR LOWER(s.phone) LIKE LOWER(?) OR LOWER(s.email) LIKE LOWER(?))';
       params.push(search, search, search, search);
     }
     if (status === 'active') where += ' AND s.isActive = 1';
@@ -2999,6 +3648,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('get-supplier', (_, id: number) => {
+    requirePermission('suppliers.view');
     const bizId = getActiveBusinessId();
     const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as any;
     if (!supplier) return null;
@@ -3019,15 +3669,18 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-supplier', (_, data: any) => {
-    if (!data.supplierName || String(data.supplierName).trim() === '') {
-      throw new Error('Supplier name is required');
-    }
+    requirePermission('suppliers.add');
+    const name = data.supplierName?.trim();
+    if (!name) throw new Error('Supplier name is required');
+    if (name.length > 200) throw new Error('Supplier name must be 200 characters or less');
     const phone = data.phone ? String(data.phone).trim() : '';
+    if (phone.length > 30) throw new Error('Phone must be 30 characters or less');
     if (phone && phone.length > 0 && (phone.length < 7 || phone.length > 20 || !/^[+\d\s\-\(\)]+$/.test(phone))) {
       throw new Error('Invalid phone number');
     }
     if (data.email && data.email.trim()) {
       const email = data.email.trim();
+      if (email.length > 100) throw new Error('Email must be 100 characters or less');
       if (email.length > 5 && !/^[^\s@]+@[^\s@]+/.test(email)) {
         throw new Error('Invalid email address');
       }
@@ -3058,15 +3711,18 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-supplier', (_, id: number, data: any) => {
-    if (!data.supplierName || String(data.supplierName).trim() === '') {
-      throw new Error('Supplier name is required');
-    }
+    requirePermission('suppliers.add');
+    const name = data.supplierName?.trim();
+    if (!name) throw new Error('Supplier name is required');
+    if (name.length > 200) throw new Error('Supplier name must be 200 characters or less');
     const phone = data.phone ? String(data.phone).trim() : '';
+    if (phone.length > 30) throw new Error('Phone must be 30 characters or less');
     if (phone && phone.length > 0 && (phone.length < 7 || phone.length > 20 || !/^[+\d\s\-\(\)]+$/.test(phone))) {
       throw new Error('Invalid phone number');
     }
     if (data.email && data.email.trim()) {
       const email = data.email.trim();
+      if (email.length > 100) throw new Error('Email must be 100 characters or less');
       if (email.length > 5 && !/^[^\s@]+@[^\s@]+/.test(email)) {
         throw new Error('Invalid email address');
       }
@@ -3163,7 +3819,7 @@ export function registerIPCHandlers() {
   }
 
   ipcMain.handle('insert-supplier-purchase', (_, data: any) => {
-    if (!data.supplierId) throw new Error('Supplier is required');
+    requirePermission('purchases.create');
     if (!data.purchaseDate) throw new Error('Purchase date is required');
     if (!Array.isArray(data.items) || data.items.length === 0) {
       throw new Error('At least one item is required');
@@ -3171,6 +3827,28 @@ export function registerIPCHandlers() {
     const totalAmount = validateNonNegative(data.totalAmount, 'Total amount');
     const purchaseNumber = data.purchaseNumber || `PO-${Date.now().toString().slice(-8)}`;
     const bizId = getActiveBusinessId();
+
+    // Resolve the supplier: by id when provided, otherwise by name (creating a
+    // new supplier on the fly when the name isn't one of the saved suppliers).
+    let supplierId = Number(data.supplierId) || 0;
+    const supplierName = data.supplierName ? String(data.supplierName).trim() : '';
+    if (supplierId) {
+      const s = db.prepare('SELECT id FROM suppliers WHERE id = ?').get(supplierId) as any;
+      if (!s) throw new Error('Supplier not found. Please pick a valid supplier.');
+    } else {
+      if (!supplierName) throw new Error('Supplier is required');
+      const existing = db.prepare('SELECT id FROM suppliers WHERE businessId = ? AND LOWER(supplierName) = LOWER(?)').get(bizId, supplierName) as any
+        || db.prepare('SELECT id FROM suppliers WHERE LOWER(supplierName) = LOWER(?)').get(supplierName) as any;
+      if (existing) {
+        supplierId = existing.id;
+      } else {
+        const code = `SUP-${Date.now().toString().slice(-7)}`;
+        const res = db.prepare('INSERT INTO suppliers (businessId, supplierCode, supplierName, status, isActive) VALUES (?, ?, ?, ?, 1)')
+          .run(bizId, code, supplierName, 'active');
+        supplierId = Number(res.lastInsertRowid);
+      }
+    }
+
     const defWhId = getDefaultWarehouseId();
     const insertPurchase = db.transaction(() => {
       const res = db.prepare(`
@@ -3179,7 +3857,7 @@ export function registerIPCHandlers() {
           totalAmount, paidAmount, dueDate, status, notes, createdBy
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        bizId, data.supplierId, purchaseNumber, data.purchaseDate,
+        bizId, supplierId, purchaseNumber, data.purchaseDate,
         totalAmount, validateNonNegative(data.paidAmount || 0, 'Paid amount'),
         data.dueDate || null, data.status || 'pending',
         data.notes || null, currentUserName || 'system'
@@ -3200,25 +3878,30 @@ export function registerIPCHandlers() {
           purchaseId, it.itemId || null, it.itemName,
           it.sku || null, qty, it.unit || 'pcs', price, qty * price
         );
-        // Auto-update inventory: add stock to items.totalBaseQuantity and default warehouse
+        // Auto-update inventory: only for items that actually exist (custom/free-text
+        // PO lines carry a null itemId and must not reference a fake id).
         if (it.itemId) {
-          updateItemStock.run(qty, data.purchaseDate, price, it.itemId);
-          upsertWh.run(defWhId, it.itemId, qty, qty);
-          insertSm.run(defWhId, it.itemId, 'purchase_in', qty, purchaseId, 'supplier_purchase', `Purchase ${purchaseNumber} - ${it.itemName}`);
+          const realItem = db.prepare('SELECT id FROM items WHERE id = ?').get(it.itemId) as any;
+          if (realItem) {
+            updateItemStock.run(qty, data.purchaseDate, price, it.itemId);
+            upsertWh.run(defWhId, it.itemId, qty, qty);
+            insertSm.run(defWhId, it.itemId, 'purchase_in', qty, purchaseId, 'supplier_purchase', `Purchase ${purchaseNumber} - ${it.itemName}`);
+          }
         }
       }
       return purchaseId;
     });
     const id = insertPurchase();
-    logSupplierActivity(data.supplierId, 'purchase_created', 'supplier_purchase', id, `Purchase ${purchaseNumber} created for $${totalAmount}`);
+    logSupplierActivity(supplierId, 'purchase_created', 'supplier_purchase', id, `Purchase ${purchaseNumber} created for $${totalAmount}`);
     try {
       db.prepare(`INSERT INTO notifications (businessId, type, category, title, message, severity) VALUES (?, ?, ?, ?, ?, ?)`)
-        .run(bizId, 'purchase_created', 'suppliers', 'New Purchase Created', `Purchase ${purchaseNumber} for supplier #${data.supplierId}`, 'info');
+        .run(bizId, 'purchase_created', 'suppliers', 'New Purchase Created', `Purchase ${purchaseNumber} for supplier #${supplierId}`, 'info');
     } catch (_) {}
     return { id };
   });
 
   ipcMain.handle('update-supplier-purchase-status', (_, id: number, status: string, notes?: string) => {
+    requirePermission('purchases.create');
     const validStatuses = ['draft', 'pending', 'approved', 'ordered', 'received', 'cancelled'];
     if (!validStatuses.includes(status)) throw new Error('Invalid status');
     const prev = db.prepare('SELECT status, supplierId FROM supplier_purchases WHERE id = ?').get(id) as any;
@@ -3259,6 +3942,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-supplier-purchase', (_, id: number) => {
+    requirePermission('purchases.create');
     const row = db.prepare('SELECT purchaseNumber, supplierId FROM supplier_purchases WHERE id = ?').get(id) as any;
     if (!row) throw new Error('Purchase not found');
     const payCheck = db.prepare('SELECT paidAmount FROM supplier_purchases WHERE id = ?').get(id) as any;
@@ -3310,6 +3994,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-supplier-payment', (_, data: any) => {
+    requirePermission('purchases.edit');
     if (!data.supplierId) throw new Error('Supplier is required');
     if (!data.paymentDate) throw new Error('Payment date is required');
     const amount = validatePositive(data.amount, 'Amount');
@@ -3359,6 +4044,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-supplier-payment', (_, id: number, data: any) => {
+    requirePermission('purchases.edit');
     const oldPayment = db.prepare('SELECT * FROM supplier_payments WHERE id = ?').get(id) as any;
     if (!oldPayment) throw new Error('Payment not found');
     const amount = validatePositive(data.amount, 'Amount');
@@ -3392,6 +4078,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-supplier-payment', (_, id: number) => {
+    requirePermission('purchases.edit');
     const payment = db.prepare('SELECT * FROM supplier_payments WHERE id = ?').get(id) as any;
     if (!payment) throw new Error('Payment not found');
     const reverse = db.transaction(() => {
@@ -3441,6 +4128,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('toggle-supplier-favorite', (_, id: number) => {
+    requirePermission('suppliers.edit');
     const current = db.prepare('SELECT isFavorite FROM suppliers WHERE id = ?').get(id) as any;
     const newVal = current?.isFavorite ? 0 : 1;
     db.prepare('UPDATE suppliers SET isFavorite = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(newVal, id);
@@ -3573,397 +4261,7 @@ export function registerIPCHandlers() {
     `).all(bizId, limit);
   });
 
-  // ========== TEST DATA GENERATION ==========
-  ipcMain.handle('generate-test-suppliers', (_, count: number) => {
-    if (![100, 1000, 10000].includes(count)) throw new Error('Count must be 100, 1000, or 10000');
-    const bizId = getActiveBusinessId();
-    const cities = ['Addis Ababa', 'Dire Dawa', 'Hawassa', 'Bahir Dar', 'Mekelle', 'Adama', 'Gondar', 'Jimma'];
-    const countries = ['Ethiopia', 'Kenya', 'UAE', 'China', 'Turkey', 'India'];
-    const methods = ['cash', 'bank_transfer', 'mobile_money', 'check'];
-    const statuses = ['active', 'inactive'];
-    const gen = db.transaction(() => {
-      const insert = db.prepare(`
-        INSERT INTO suppliers (
-          businessId, supplierCode, supplierName, companyName, contactPerson,
-          phone, email, city, country, taxNumber, paymentTerms, creditLimit, status, isActive
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-      `);
-      const insertPurchase = db.prepare(`
-        INSERT INTO supplier_purchases (
-          businessId, supplierId, purchaseNumber, purchaseDate,
-          totalAmount, paidAmount, dueDate, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      const insertPayment = db.prepare(`
-        INSERT INTO supplier_payments (
-          businessId, supplierId, purchaseId, paymentDate, amount, paymentMethod
-        ) VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      for (let i = 0; i < count; i++) {
-        const name = `Test Supplier ${i + 1}`;
-        const code = `TSUP-${String(i + 1).padStart(6, '0')}`;
-        const status = statuses[i % 8 === 0 ? 1 : 0];
-        const isActive = status === 'active' ? 1 : 0;
-        const supRes = insert.run(
-          bizId, code, name, `${name} Co.`, `Contact ${i + 1}`,
-          `+2519${String(10000000 + i).slice(-8)}`,
-          `supplier${i + 1}@test.com`,
-          cities[i % cities.length],
-          countries[i % countries.length],
-          `TAX-${1000 + i}`,
-          ['Net 30', 'Net 60', 'Cash on Delivery', 'Net 15'][i % 4],
-          (i % 10) * 10000,
-          status
-        );
-        const supplierId = Number(supRes.lastInsertRowid);
-        // Create 1-5 purchases per supplier
-        const purchases = (i % 5) + 1;
-        for (let p = 0; p < purchases; p++) {
-          const total = 1000 + ((i * 13 + p * 7) % 50000);
-          const paid = (i % 3 === 0) ? 0 : (p % 2 === 0 ? total : total * 0.7);
-          const date = new Date(Date.now() - (i + p) * 86400000 * 3).toISOString();
-          const dueDate = new Date(Date.now() + (30 - p * 7) * 86400000).toISOString();
-          const purRes = insertPurchase.run(
-            bizId, supplierId, `${code}-P${p + 1}`, date,
-            total, paid, dueDate,
-            paid >= total ? 'received' : 'pending'
-          );
-          // Add a payment for 30% of suppliers
-          if (i % 3 === 0 && p === 0) {
-            insertPayment.run(
-              bizId, supplierId, Number(purRes.lastInsertRowid),
-              date, paid, methods[i % methods.length]
-            );
-          }
-        }
-      }
-    });
-    gen();
-    return { success: true, count };
-  });
 
-  ipcMain.handle('clear-test-suppliers', () => {
-    const bizId = getActiveBusinessId();
-    const result = db.prepare(`DELETE FROM suppliers WHERE businessId = ? AND supplierCode LIKE 'TSUP-%'`).run(bizId);
-    return { deleted: result.changes };
-  });
-
-  // ========== COMPREHENSIVE TEST DATA GENERATOR ==========
-
-  const REAL_FIRST_NAMES = ['Abebe','Almaz','Biruk','Chaltu','Dawit','Eden','Frehiwot','Girma','Hana','Ibrahim','Jemila','Kebede','Lemlem','Mekdes','Nigist','Obsa','Paschal','Rahma','Sisay','Tigist','Umer','Winta','Yonas','Zerihun','Amina','Bontu','Daniel','Eyerusalem','Fikadu','Genet','Hussein','Ismail','Jalene','Keneni','Lensa','Mulu','Nardos','Oliyad','Priya','Selam','Teshome','Mahlet','Birhane','Tizita','Mahder','Biniyam','Amanuel','Meron','Simon','Yordanos','Haben','Samiya','Addis','Beki','Chernet','Desta','Elias','Feven','Gebre','Hiwot'];
-  const REAL_LAST_NAMES = ['Kebede','Tadesse','Wondimu','Alemu','Bekele','Mengistu','Tesfaye','Hailu','Desta','Fikru','Girma','Hunde','Jemal','Kassa','Lemma','Mamo','Nigussie','Obsi','Petros','Reda','Sisay','Tekle','Uggaz','Worku','Yeshitla','Zeleke','Assefa','Berhe','Cherkos','Demeke','Endale','Fanta','Gizaw','Haile','Ibrahim','Kinfu','Lema','Mekonnen','Negash','Oli','Asfaw','Belayneh','Dagne','Eshetu','Fisseha','Gebremedhin','Hagos','Jote','Kebede','Legesse','Mesfin','Nega','Shiferaw','Tamerat','Woldie'];
-  const PRODUCT_PREFIXES = ['Premium','Organic','Deluxe','Standard','Economy','Professional','Natural','Classic','Ultra','Fine'];
-  const PRODUCT_TYPES = ['Coffee Beans','Tea Leaves','Honey','Cooking Oil','Rice','Wheat Flour','Sugar','Spice Mix','Bar Soap','Detergent','Bread','Butter','Cheese','Fruit Juice','Mineral Water','Pasta','Cereal','Sauce','Seasoning','Milk','Yogurt','Biscuit','Chocolate','Salt','Pasta','Lentils','Spaghetti','Ketchup','Jam','Olive Oil'];
-  const PRODUCT_SIZES = ['1kg','500g','250g','2kg','5kg','1L','500ml','250ml','2L','100g','200g','50g','750ml','3kg','10kg','150g','300g','4L','20kg'];
-  const CATEGORY_NAMES = ['Electronics','Clothing & Apparel','Food & Beverages','Beverages','Household','Personal Care','Pharmaceuticals','Office Supplies','Building Materials','Agriculture','Cleaning Supplies','Sporting Goods','Books & Media','Automotive','Baby Products','Furniture','Stationery','Cosmetics','Pet Supplies','Gardening'];
-  const SUPPLIER_COMPANIES = ['Ethio Supply Co.','Global Trading PLC','Highland Distributors','Unity Imports','Sheba Trading','Habesha Wholesale','Addis Merchants','Nile River Trading','Axum Commercial','Lalibela Distributors','Rift Valley Enterprises','Zemen Trading','Abay Import Export','Terara Trading','Wabi Shebelle Co.'];
-  const EXPENSE_CATEGORIES = ['Rent','Utilities - Electric','Utilities - Water','Salaries & Wages','Transportation','Office Supplies','Marketing & Ads','Maintenance','Insurance','Taxes','Communication','Equipment Lease','Cleaning Services','Security Services','Employee Training','Software Licenses','Bank Charges','Professional Fees','Stationery','Refreshments'];
-  const CITIES = ['Addis Ababa','Dire Dawa','Hawassa','Bahir Dar','Mekelle','Adama','Gondar','Jimma','Dessie','Shashamane','Bishoftu','Arba Minch','Harar','Jijiga','Nekemte','Debre Markos','Adigrat','Wolaita Sodo','Assosa','Gambela'];
-  const PAYMENT_METHODS = ['cash','bank_transfer','mobile_money','check','card'];
-  const PAYMENT_STATUSES = ['paid','credit','partial'];
-  const ITEM_UNITS = ['pcs','kg','L','pack','box','bottle','bag','tin','carton','roll'];
-
-  const BATCH_SIZE = 250;
-
-  const randomDate = (daysBack = 365) => {
-    const now = Date.now();
-    const past = now - daysBack * 86400000;
-    return new Date(past + Math.random() * (now - past)).toISOString();
-  };
-
-  const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
-
-  const pick = <T>(arr: T[]): T => arr[randomInt(0, arr.length - 1)];
-
-  ipcMain.handle('generate-test-data', async (event, count: number) => {
-    if (![10, 100, 1000, 10000].includes(count)) throw new Error('Count must be 10, 100, or 10000');
-    const startTime = Date.now();
-    const bizId = getActiveBusinessId();
-    const batchId = crypto.randomUUID();
-    const phases: { name: string; count: number; time: number }[] = [];
-    let globalProgress = 0;
-
-    const scale = (factor: number) => Math.max(1, Math.round(count * factor));
-    const phasePlans = [
-      { name: 'categories', total: Math.min(15, count) },
-      { name: 'items', total: scale(0.35) },
-      { name: 'suppliers', total: scale(0.1) },
-      { name: 'sales', total: scale(0.25) },
-      { name: 'expenses', total: scale(0.12) },
-      { name: 'employees', total: scale(0.05) },
-      { name: 'stock_movements', total: scale(0.15) },
-      { name: 'notifications', total: scale(0.06) },
-    ];
-    const grandTotal = phasePlans.reduce((s, p) => s + p.total, 0);
-
-    // Ensure test_data_tags table exists
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS test_data_tags (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        batch_id TEXT NOT NULL,
-        table_name TEXT NOT NULL,
-        row_id INTEGER NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE INDEX IF NOT EXISTS idx_test_data_tags_batch ON test_data_tags(batch_id);
-    `);
-
-    const tagStmt = db.prepare('INSERT INTO test_data_tags (batch_id, table_name, row_id) VALUES (?, ?, ?)');
-
-    const sendProgress = (phase: string, current: number, total: number, message: string) => {
-      const soFar = globalProgress + Math.min(current, total);
-      const pct = grandTotal > 0 ? Math.min(100, Math.round((soFar / grandTotal) * 100)) : 0;
-      try { event.sender.send('test-data-progress', { phase, current, total, message, totalCreated: soFar, overallPercent: pct }); } catch (_) {}
-    };
-
-    const runBatch = async (total: number, phaseName: string, fn: (start: number, end: number) => void): Promise<number> => {
-      if (total === 0) return 0;
-      const ts = Date.now();
-      let inserted = 0;
-      for (let s = 0; s < total; s += BATCH_SIZE) {
-        const e = Math.min(s + BATCH_SIZE, total);
-        (db.transaction(() => fn(s, e)))();
-        inserted += (e - s);
-        globalProgress += (e - s);
-        sendProgress(phaseName, inserted, total, `Generating ${phaseName}...`);
-        await new Promise(resolve => setImmediate(resolve));
-      }
-      phases.push({ name: phaseName, count: inserted, time: Date.now() - ts });
-      return inserted;
-    };
-
-    // ── Phase 1: Categories ──
-    let catIds: number[] = [];
-    {
-      const catTotal = phasePlans[0].total;
-      const insert = db.prepare('INSERT INTO categories (businessId, name, icon, isCustom, uuid) VALUES (?, ?, ?, 1, ?)');
-      const tx = db.transaction(() => {
-        for (let i = 0; i < catTotal; i++) {
-          const name = CATEGORY_NAMES[i % CATEGORY_NAMES.length];
-          const r = insert.run(bizId, name, pick(['Box','Tag','ShoppingBag','Wrench','Heart','Star','Book','Monitor','Shirt','Home']), crypto.randomUUID());
-          catIds.push(Number(r.lastInsertRowid));
-          tagStmt.run(batchId, 'categories', Number(r.lastInsertRowid));
-        }
-      });
-      tx();
-      globalProgress += catTotal;
-      phases.push({ name: 'categories', count: catTotal, time: 0 });
-    }
-
-    // ── Phase 2: Items ──
-    const itemIds: number[] = [];
-    {
-      const total = phasePlans[1].total;
-      const insert = db.prepare(`INSERT INTO items (businessId, name, categoryId, companyName, purchaseUnit, baseUnit, unitsPerPack, totalPackQuantity, totalBaseQuantity, packPurchasePrice, basePurchasePrice, baseSellingPrice, packSellingPrice, expiryDate, notes, createdAt, uuid, updated_at, is_deleted, is_synced) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,0,1)`);
-      await runBatch(total, 'items', (s, e) => {
-        for (let i = s; i < e; i++) {
-          const catId = catIds[i % catIds.length];
-          const name = `${pick(PRODUCT_PREFIXES)} ${pick(PRODUCT_TYPES)} ${pick(PRODUCT_SIZES)}`;
-          const unit = pick(ITEM_UNITS);
-          const qty = count <= 100 ? randomInt(10, 500) : randomInt(0, 1000);
-          const bp = randomInt(10, 2000);
-          const sp = bp + randomInt(5, 500);
-          const packQty = randomInt(1, 20);
-          const expDays = i % 10 === 0 ? -randomInt(1, 60) : randomInt(30, 400);
-          const expDate = new Date(Date.now() + expDays * 86400000).toISOString();
-          const r = insert.run(bizId, name, catId, pick(SUPPLIER_COMPANIES), unit, unit, randomInt(1, 24), packQty, qty, bp * randomInt(1, 10), bp, sp, sp * randomInt(1, 10), expDate, `Generated test item ${i + 1}`, randomDate(), crypto.randomUUID());
-          const id = Number(r.lastInsertRowid);
-          itemIds.push(id);
-          tagStmt.run(batchId, 'items', id);
-        }
-      });
-    }
-
-    // ── Phase 3: Suppliers ──
-    const supplierIds: number[] = [];
-    {
-      const total = phasePlans[2].total;
-      const insert = db.prepare(`INSERT INTO suppliers (businessId, supplierCode, supplierName, companyName, contactPerson, phone, email, city, country, taxNumber, paymentTerms, creditLimit, status, isActive, createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)`);
-      runBatch(total, 'suppliers', (s, e) => {
-        for (let i = s; i < e; i++) {
-          const name = `Test Supplier ${i + 1}`;
-          const code = `TST-SUP-${String(i + 1).padStart(6, '0')}`;
-          const contact = `${pick(REAL_FIRST_NAMES)} ${pick(REAL_LAST_NAMES)}`;
-          const r = insert.run(bizId, code, name, `${name} ${pick(['Trading','PLC','Co.','Enterprise','Import'])}, ${pick(SUPPLIER_COMPANIES)}`, contact, `+2519${String(90000000 + i).slice(-8)}`, `supplier${i+1}@test.com`, pick(CITIES), pick(['Ethiopia','Kenya','UAE','China','India']), `TAX-${10000 + i}`, pick(['Net 30','Net 60','Cash on Delivery','Net 15']), (i % 10) * 5000, pick(['active','active','active','inactive']), randomDate());
-          supplierIds.push(Number(r.lastInsertRowid));
-          tagStmt.run(batchId, 'suppliers', Number(r.lastInsertRowid));
-        }
-      });
-    }
-
-    // ── Phase 4: Sales ──
-    const customerNames: string[] = [];
-    {
-      const total = phasePlans[3].total;
-      // Generate some customer names
-      for (let i = 0; i < Math.min(count, 200); i++) {
-        if (customerNames.length < Math.min(count, 200)) customerNames.push(`${pick(REAL_FIRST_NAMES)} ${pick(REAL_LAST_NAMES)}`);
-      }
-      const insert = db.prepare(`INSERT INTO sales (businessId, itemId, quantity, unit, unitType, totalPrice, paymentMethod, paymentStatus, customerName, customerPhone, dueDate, paidAmount, createdBy, createdAt, uuid, updated_at, is_deleted, is_synced) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,0,1)`);
-      await runBatch(total, 'sales', (s, e) => {
-        for (let i = s; i < e; i++) {
-          const itemId = pick(itemIds);
-          const qty = randomInt(1, 10);
-          const unitPrice = randomInt(15, 3000);
-          const totalPrice = qty * unitPrice;
-          const isCredit = i % 4 === 0;
-          const paidAmount = isCredit ? randomInt(0, Math.floor(totalPrice * 0.5)) : totalPrice;
-          const payStatus = isCredit ? 'credit' : 'paid';
-          const custName = pick(customerNames);
-          const r = insert.run(bizId, itemId, qty, pick(ITEM_UNITS), 'pcs', totalPrice, pick(PAYMENT_METHODS), payStatus, custName, `+2519${String(70000000 + i).slice(-8)}`, isCredit ? new Date(Date.now() + randomInt(15, 90) * 86400000).toISOString() : null, paidAmount, 'Test Data Generator', randomDate(365), crypto.randomUUID());
-          tagStmt.run(batchId, 'sales', Number(r.lastInsertRowid));
-        }
-      });
-    }
-
-    // ── Phase 5: Expenses ──
-    {
-      const total = phasePlans[4].total;
-      const insert = db.prepare(`INSERT INTO expenses (businessId, name, amount, category, date, createdAt, uuid, updated_at, is_deleted, is_synced) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,0,1)`);
-      await runBatch(total, 'expenses', (s, e) => {
-        for (let i = s; i < e; i++) {
-          const cat = pick(EXPENSE_CATEGORIES);
-          const amount = randomInt(50, 50000);
-          const d = randomDate(365);
-          insert.run(bizId, `${cat} - ${cat} Payment ${i + 1}`, amount, cat, d, d, crypto.randomUUID());
-        }
-      });
-    }
-
-    // ── Phase 6: Employees ──
-    const employeeIds: number[] = [];
-    {
-      const total = phasePlans[5].total;
-      const insert = db.prepare(`INSERT INTO employees (employeeCode, firstName, lastName, phone, email, department, isActive, hireDate, createdAt, updatedAt) VALUES (?,?,?,?,?,?,1,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`);
-      await runBatch(total, 'employees', (s, e) => {
-        for (let i = s; i < e; i++) {
-          const fn = pick(REAL_FIRST_NAMES);
-          const ln = pick(REAL_LAST_NAMES);
-          const dept = pick(['Sales','Inventory','Accounting','HR','Management','Logistics','Customer Service','IT']);
-          const code = `TST-EMP-${String(i + 1).padStart(5, '0')}`;
-          const r = insert.run(code, fn, ln, `+2519${String(80000000 + i).slice(-8)}`, `${fn.toLowerCase()}.${ln.toLowerCase()}@test.com`, dept, randomDate(730));
-          employeeIds.push(Number(r.lastInsertRowid));
-          tagStmt.run(batchId, 'employees', Number(r.lastInsertRowid));
-        }
-      });
-    }
-
-    // ── Phase 7: Stock Movements ──
-    {
-      const total = phasePlans[6].total;
-      const insert = db.prepare(`INSERT INTO stock_movements (itemId, type, quantity, referenceType, notes, createdAt) VALUES (?,?,?,?,?,?)`);
-      await runBatch(total, 'stock_movements', (s, e) => {
-        for (let i = s; i < e; i++) {
-          const itemId = pick(itemIds);
-          const qty = randomInt(1, 100);
-          const type = pick(['in','out','in','in','adjustment']);
-          const refType = type === 'in' ? 'purchase' : 'sale';
-          insert.run(itemId, type, qty, refType, `Test ${type} movement ${i + 1}`, randomDate(365));
-        }
-      });
-    }
-
-    // ── Phase 8: Notifications ──
-    {
-      const total = phasePlans[7].total;
-      const insert = db.prepare(`INSERT INTO notifications (businessId, title, message, type, isRead, category, severity, channels, createdAt) VALUES (?,?,?,?,?,?,?,?,?)`);
-      await runBatch(total, 'notifications', (s, e) => {
-        for (let i = s; i < e; i++) {
-          const cat = pick(['inventory','sales','system','employees','customers','suppliers']);
-          const sev = pick(['info','info','info','warning','error']);
-          insert.run(bizId, `Test Notification ${i + 1}`, `This is generated test notification #${i + 1} in category ${cat}`, cat, i % 3 === 0 ? 1 : 0, cat, sev, 'in_app', randomDate(365));
-        }
-      });
-    }
-
-
-    const duration = Date.now() - startTime;
-    return { success: true, totalCreated: globalProgress, duration, phases };
-  });
-
-  ipcMain.handle('clear-test-data', () => {
-    const ts = Date.now();
-    const tables = ['notifications','stock_movements','employees','expenses','sales','suppliers','items','categories'];
-    const deletions: Record<string, number> = {};
-    const tags = db.prepare('SELECT DISTINCT table_name, row_id FROM test_data_tags').all() as any[];
-    const grouped: Record<string, number[]> = {};
-    for (const t of tags) {
-      if (!grouped[t.table_name]) grouped[t.table_name] = [];
-      grouped[t.table_name].push(t.row_id);
-    }
-    const delTx = db.transaction(() => {
-      for (const table of tables) {
-        const ids = grouped[table];
-        if (!ids || ids.length === 0) continue;
-        // Delete in chunks to avoid SQL limit issues
-        for (let i = 0; i < ids.length; i += 500) {
-          const chunk = ids.slice(i, i + 500);
-          const placeholders = chunk.map(() => '?').join(',');
-          const r = db.prepare(`DELETE FROM ${table} WHERE id IN (${placeholders})`).run(...chunk);
-          deletions[table] = (deletions[table] || 0) + r.changes;
-        }
-      }
-      db.prepare('DELETE FROM test_data_tags').run();
-    });
-    delTx();
-    const totalDeleted = Object.values(deletions).reduce((s: number, v: number) => s + v, 0);
-    return { deleted: totalDeleted, duration: Date.now() - ts, details: deletions };
-  });
-
-  ipcMain.handle('measure-performance', () => {
-    const results: Record<string, number> = {};
-    let t: number;
-
-    t = Date.now();
-    db.prepare('SELECT COUNT(*) as c FROM items').get();
-    results.itemsCount = Date.now() - t;
-
-    t = Date.now();
-    db.prepare('SELECT COUNT(*) as c FROM sales').get();
-    results.salesCount = Date.now() - t;
-
-    t = Date.now();
-    const customers = db.prepare('SELECT DISTINCT customerName FROM sales LIMIT 100').all();
-    results.customersQuery = Date.now() - t;
-
-    t = Date.now();
-    db.prepare('SELECT COUNT(*) as c FROM suppliers').get();
-    results.suppliersCount = Date.now() - t;
-
-    t = Date.now();
-    db.prepare('SELECT COUNT(*) as c FROM categories').get();
-    results.categoriesCount = Date.now() - t;
-
-    t = Date.now();
-    db.prepare('SELECT COUNT(*) as c FROM expenses').get();
-    results.expensesCount = Date.now() - t;
-
-    t = Date.now();
-    db.prepare('SELECT COUNT(*) as c FROM employees').get();
-    results.employeesCount = Date.now() - t;
-
-    t = Date.now();
-    const items = db.prepare('SELECT * FROM items ORDER BY id DESC LIMIT 50').all();
-    results.itemsListQuery = Date.now() - t;
-
-    t = Date.now();
-    const sales = db.prepare(`
-      SELECT s.*, i.name as itemName 
-      FROM sales s LEFT JOIN items i ON s.itemId = i.id 
-      ORDER BY s.id DESC LIMIT 50
-    `).all();
-    results.salesListQuery = Date.now() - t;
-
-    t = Date.now();
-    const agg = db.prepare(`
-      SELECT COALESCE(SUM(totalPrice),0) as rev, COALESCE(SUM(paidAmount),0) as collected,
-        COUNT(*) as txns, COUNT(DISTINCT customerName) as customers
-      FROM sales WHERE createdAt >= date('now','-30 days')
-    `).get();
-    results.dashboardAggQuery = Date.now() - t;
-
-    return results;
-  });
 
   // --- Receipt Printing ---
 
@@ -3978,7 +4276,13 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('save-draft-sale', (_, data: any) => {
+    requirePermission('sales.create');
     const bizId = getActiveBusinessId();
+    try {
+      JSON.parse(JSON.stringify(data.items));
+    } catch {
+      throw new Error('Invalid items data: must be valid JSON');
+    }
     if (data.id) {
       db.prepare('UPDATE draft_sales SET items = ?, customerName = ?, customerPhone = ?, discount = ?, vat = ?, notes = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?')
         .run(JSON.stringify(data.items), data.customerName || null, data.customerPhone || null, data.discount || 0, data.vat || 0, data.notes || null, data.id, bizId);
@@ -3990,6 +4294,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-draft-sale', (_, id: number) => {
+    requirePermission('sales.create');
     const bizId = getActiveBusinessId();
     return db.prepare('DELETE FROM draft_sales WHERE id = ? AND businessId = ?').run(id, bizId);
   });
@@ -4005,6 +4310,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-contact', (_, data: any) => {
+    requirePermission('contacts.add');
     const bizId = getActiveBusinessId();
     const r = db.prepare('INSERT INTO contacts (businessId, name, phone, category, subCategory, notes) VALUES (?, ?, ?, ?, ?, ?)')
       .run(bizId, data.name, data.phone, data.category || 'other', data.subCategory || null, data.notes || null);
@@ -4012,6 +4318,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('update-contact', (_, id: number, data: any) => {
+    requirePermission('contacts.edit');
     const bizId = getActiveBusinessId();
     db.prepare('UPDATE contacts SET name = ?, phone = ?, category = ?, subCategory = ?, notes = ? WHERE id = ? AND businessId = ?')
       .run(data.name, data.phone, data.category || 'other', data.subCategory || null, data.notes || null, id, bizId);
@@ -4019,6 +4326,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-contact', (_, id: number) => {
+    requirePermission('contacts.delete');
     const bizId = getActiveBusinessId();
     db.prepare('DELETE FROM contacts WHERE id = ? AND businessId = ?').run(id, bizId);
     return { success: true };
@@ -4058,6 +4366,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('set-budget', (_, data: any) => {
+    requirePermission('budgets.manage');
     const bizId = getActiveBusinessId();
     const existing = db.prepare(
       'SELECT id FROM budgets WHERE businessId = ? AND category = ? AND period = ? AND budgetType = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)'
@@ -4074,6 +4383,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-budget', (_, id: number) => {
+    requirePermission('budgets.manage');
     const bizId = getActiveBusinessId();
     return db.prepare('DELETE FROM budgets WHERE id = ? AND businessId = ?').run(id, bizId);
   });
@@ -4083,6 +4393,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('create-budget-adjustment', (_, data: any) => {
+    requirePermission('budgets.manage');
     const bizId = getActiveBusinessId();
     const r = db.prepare(
       'INSERT INTO budget_adjustments (budgetId, businessId, previousAmount, newAmount, reason, status, requestedBy) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -4091,6 +4402,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('approve-budget-adjustment', (_, id: number, approvedBy: string) => {
+    requirePermission('budgets.manage');
     const adj = db.prepare('SELECT * FROM budget_adjustments WHERE id = ?').get(id) as any;
     if (!adj) return { success: false, error: 'Adjustment not found' };
     db.prepare("UPDATE budget_adjustments SET status = 'approved', approvedBy = ?, approvedAt = CURRENT_TIMESTAMP WHERE id = ?").run(approvedBy, id);
@@ -4099,6 +4411,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('duplicate-budget', (_, fromData: any, toMonth: string, toYear: string) => {
+    requirePermission('budgets.manage');
     const bizId = getActiveBusinessId();
     const sourceBudgets = db.prepare(
       'SELECT * FROM budgets WHERE businessId = ? AND month = ? AND year = ?'
@@ -4130,6 +4443,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('acknowledge-budget-alert', (_, id: number) => {
+    requirePermission('budgets.manage');
     db.prepare('UPDATE budget_alerts SET acknowledged = 1 WHERE id = ?').run(id);
     return { success: true };
   });
@@ -4219,6 +4533,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('save-supplier-price-check', (_, data: any) => {
+    requirePermission('purchases.create');
     const bizId = getActiveBusinessId();
     const nextCheck = data.nextCheck || new Date(Date.now() + 7 * 86400000).toISOString();
     if (data.id) {
@@ -4232,6 +4547,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-supplier-price-check', (_, id: number) => {
+    requirePermission('purchases.create');
     const bizId = getActiveBusinessId();
     return db.prepare('DELETE FROM supplier_price_checks WHERE id = ? AND businessId = ?').run(id, bizId);
   });
@@ -4243,6 +4559,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('set-quiet-hours', (_, data: any) => {
+    requirePermission('settings.manage');
     const bizId = getActiveBusinessId();
     const existing = db.prepare('SELECT id FROM notification_quiet_hours WHERE businessId = ?').get(bizId);
     if (existing) {
@@ -4256,16 +4573,11 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('delete-quiet-hours', () => {
+    requirePermission('settings.manage');
     const bizId = getActiveBusinessId();
     return db.prepare('DELETE FROM notification_quiet_hours WHERE businessId = ?').run(bizId);
   });
 
-  ipcMain.handle('get-database-size', () => {
-    try {
-      const size = statSync(db.name).size;
-      return size;
-    } catch { return 0; }
-  });
   function escapeHtml(s: any): string {
     const str = String(s ?? '');
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -4273,6 +4585,41 @@ export function registerIPCHandlers() {
 
   ipcMain.handle('print-receipt', async (_e, sale: any) => {
     try {
+      const cfg = getPrinterConfig();
+      if (cfg.transport === 'network') {
+        const bizId = getActiveBusinessId();
+        const biz = db.prepare('SELECT businessName, address FROM businesses WHERE id = ?').get(bizId) as any;
+        const tinRow = db.prepare("SELECT value FROM settings WHERE key = 'tin'").get() as any;
+        const unitPrice = sale.quantity ? sale.totalPrice / sale.quantity : sale.totalPrice;
+        const paid = sale.paidAmount || sale.totalPrice;
+        const change = sale.paymentMethod === 'Cash' && sale.paymentStatus !== 'Debt' && paid > sale.totalPrice ? paid - sale.totalPrice : 0;
+        const commands = buildReceiptCommands({
+          lines: [{ name: sale.itemName || 'Item', quantity: sale.quantity, unit: sale.unit || 'pcs', unitPrice, total: sale.totalPrice }],
+          subtotal: sale.totalPrice + (sale.discount || 0) - (sale.vat || 0),
+          discount: sale.discount || 0,
+          vat: sale.vat || 0,
+          taxType: sale.taxType || 'VAT',
+          total: sale.totalPrice,
+          paid,
+          change,
+          paymentMethod: sale.paymentMethod || 'Cash',
+          paymentStatus: sale.paymentStatus || 'Paid',
+          customerName: sale.customerName,
+          createdAt: sale.createdAt,
+          context: {
+            businessName: biz?.businessName || 'Shega',
+            address: biz?.address,
+            tin: tinRow ? tinRow.value : undefined,
+            cashier: currentUserName || undefined,
+            receiptSerial: sale.id,
+          },
+        });
+        await printRaw(commands);
+        if (cfg.autoOpenDrawer && sale.paymentMethod === 'Cash' && sale.paymentStatus !== 'Debt') {
+          await openDrawer();
+        }
+        return { success: true, transport: 'network' };
+      }
       const receiptHtml = `
 <!DOCTYPE html>
 <html>
@@ -4329,6 +4676,106 @@ export function registerIPCHandlers() {
     }
   });
 
+  // --- Peripherals (Phase 2) ---
+  ipcMain.handle('open-cash-drawer', async () => {
+    try {
+      await openDrawer();
+      insertAuditLog('cash_drawer', 'register', null, null, null, 'open', `Drawer opened by ${currentUserName || 'unknown'}`);
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('print-test-page', async () => {
+    try {
+      await printRaw(buildTestPageCommands());
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('print-label', async (_e, label: { name: string; sku?: string; barcode?: string; price: number; barcodeType?: 'ean13' | 'code128'; copies?: number }) => {
+    try {
+      await printRaw(buildLabelCommands(label, label?.copies || 1));
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('get-print-status', async () => {
+    const status = getPrintStatus();
+    if (status.enabled && status.transport === 'network') status.online = await probePrinter();
+    return status;
+  });
+
+  ipcMain.handle('set-printer-config', (_e, cfg: any) => {
+    return savePrinterConfig(cfg);
+  });
+
+  ipcMain.handle('parse-scale-reading', (_e, line: string, config?: ScaleConfig) => {
+    return parseWeightLine(line);
+  });
+
+  // --- Sync (Phase 3) ---
+  ipcMain.handle('sync:status', () => {
+    const now = Date.now();
+    const peers = (db.prepare('SELECT device_id, name, last_seen_at, created_at FROM devices ORDER BY created_at').all() as any[]).map((p) => {
+      const cursor = db.prepare('SELECT last_seq, updated_at FROM sync_cursor WHERE device_id = ?').get(p.device_id) as any;
+      return {
+        deviceId: p.device_id,
+        name: p.name,
+        lastSeenAt: p.last_seen_at,
+        cursorSeq: cursor?.last_seq ?? 0,
+        lastSyncAt: cursor?.updated_at ?? null,
+        stale: p.last_seen_at ? (now - new Date(p.last_seen_at).getTime()) > 24 * 3600 * 1000 : true
+      };
+    });
+    return {
+      running: syncHub.isRunning(),
+      hubId: syncHub.getDeviceId(),
+      pairingToken: getPairingToken(),
+      lanUrl: getLanAddress(5757),
+      port: 5757,
+      peers,
+      lastSeq: (db.prepare('SELECT COALESCE(MAX(seq),0) AS m FROM sync_outbox').get() as any).m,
+      pendingOutbox: (db.prepare('SELECT COUNT(*) AS c FROM sync_outbox').get() as any).c,
+      conflicts: (db.prepare("SELECT COUNT(*) AS c FROM sync_log WHERE detail = 'conflict_rejected' OR detail LIKE 'checksum_mismatch'").get() as any).c
+    };
+  });
+
+  ipcMain.handle('sync:verify', () => {
+    return verifyChecksums();
+  });
+
+  ipcMain.handle('sync:resync', (_e, deviceId: string) => {
+    if (!deviceId) return { ok: false, error: 'device_id required' };
+    requestDeviceResync(deviceId);
+    return { ok: true };
+  });
+
+  ipcMain.handle('sync:log', (_e, limit = 100) => {
+    const rows = db.prepare('SELECT device_id, entity, entity_uuid, op, detail, created_at FROM sync_log ORDER BY id DESC LIMIT ?').all(limit) as any[];
+    return rows;
+  });
+
+  // --- Cloud relay (3.6) — opt-in, no-op until backend configured ---
+  ipcMain.handle('cloud:status', () => getCloudStatus());
+  ipcMain.handle('cloud:sync', async () => {
+    return syncToCloud();
+  });
+  ipcMain.handle('cloud:save-config', (_e, url: string, key: string) => {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_url', ?)").run((url || '').trim());
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_device_key', ?)").run((key || '').trim());
+    return { ok: true, configured: !!((url || '').trim() && (key || '').trim()) };
+  });
+  ipcMain.handle('cloud:set-enabled', (_e, enabled: boolean) => {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_enabled', ?)").run(String(enabled));
+    return { ok: true, enabled };
+  });
+
   // --- Backup & Restore ---
   const isDevBackup = !app.isPackaged;
   const dbDir = isDevBackup
@@ -4341,9 +4788,12 @@ export function registerIPCHandlers() {
     requirePermission('settings.backup');
     try {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const backupName = `shega-backup-${timestamp}.db`;
+      const bizId = getActiveBusinessId();
+      const biz = db.prepare('SELECT businessName FROM businesses WHERE id = ?').get(bizId) as any;
+      const bizName = (biz?.businessName || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const backupName = `shega-backup-${bizName}-${timestamp}.db`;
       const backupPath = path.join(backupDir, backupName);
-      copyFileSync(db.name, backupPath);
+      db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
       const size = statSync(backupPath).size;
       return { success: true, name: backupName, size, path: backupPath };
     } catch (e: any) {
@@ -4369,9 +4819,21 @@ export function registerIPCHandlers() {
       const safeName = path.basename(backupName);
       const backupPath = path.join(backupDir, safeName);
       if (!existsSync(backupPath)) return { success: false, error: 'Backup file not found' };
-      // Close current DB connection and copy backup
+
+      const check = validateDBFile(backupPath);
+      if (!check.ok) return { success: false, error: `Backup failed integrity check: ${check.message}` };
+
+      // Flush WAL to main file, then close the live connection so the
+      // database file is not locked during the copy (avoids EBUSY on Windows).
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      reopenDB();
       copyFileSync(backupPath, db.name);
-      // The app should be restarted for the restored DB to take full effect
+      reopenDB();
+
+      const verify = validateDBFile(db.name);
+      if (!verify.ok) {
+        return { success: false, error: `Restored database failed integrity check: ${verify.message}` };
+      }
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -4540,7 +5002,7 @@ export function registerIPCHandlers() {
           baseRestore = sale.quantity * (item.unitsPerPack || 1);
           packRestore = sale.quantity;
         } else {
-          packRestore = sale.quantity / (item.unitsPerPack || 1);
+          packRestore = Math.round((sale.quantity / (item.unitsPerPack || 1)) * 1e6) / 1e6;
         }
 
         db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity + ?, totalPackQuantity = totalPackQuantity + ? WHERE id = ?')
@@ -4699,15 +5161,16 @@ export function registerIPCHandlers() {
     query += ' ORDER BY createdAt DESC';
 
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
-
-    if (options?.offset) {
-      query += ' OFFSET ?';
-      params.push(options.offset);
-    }
+    const offset = options?.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
 
     return db.prepare(query).all(...params);
+  });
+
+  ipcMain.handle('verify-audit-chain', () => {
+    requirePermission('audit.view');
+    return verifyAuditChain(db);
   });
 
   ipcMain.handle('archive-item', (_, data: { id: number }) => {
@@ -4836,7 +5299,7 @@ export function registerIPCHandlers() {
     const params: any[] = [bizId];
 
     if (options.search) {
-      query += ' AND (orderNumber LIKE ? OR customerName LIKE ? OR customerPhone LIKE ?)';
+      query += ' AND (LOWER(orderNumber) LIKE LOWER(?) OR LOWER(customerName) LIKE LOWER(?) OR LOWER(customerPhone) LIKE LOWER(?))';
       params.push(`%${options.search}%`, `%${options.search}%`, `%${options.search}%`);
     }
 
@@ -4864,8 +5327,9 @@ export function registerIPCHandlers() {
     query += ' ORDER BY createdAt DESC';
 
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
-    query += ' LIMIT ?';
-    params.push(listLimit);
+    const offset = options.offset ?? 0;
+    query += ' LIMIT ? OFFSET ?';
+    params.push(listLimit, offset);
 
     return db.prepare(query).all(...params);
   });
@@ -4880,12 +5344,12 @@ export function registerIPCHandlers() {
     return { ...order, items, history };
   });
 
-  ipcMain.handle('insert-order', (_, data: { customerName?: string; customerPhone?: string; notes?: string; items: { itemId: number; itemName: string; quantity: number; unit: string; unitType: string; unitPrice: number }[] }) => {
+  ipcMain.handle('insert-order', (_, data: { customerName?: string; customerPhone?: string; notes?: string; orderNumber?: string; items: { itemId: number; itemName: string; quantity: number; unit: string; unitType: string; unitPrice: number }[] }) => {
     requirePermission('orders.create');
     const bizId = getActiveBusinessId();
     if (!data.items || data.items.length === 0) throw new Error('Order must have at least one item');
 
-    const orderNumber = `ORD-${Date.now().toString().slice(-8)}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const orderNumber = data.orderNumber || `ORD-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
     let totalAmount = 0;
     for (const item of data.items) {
       validatePositive(item.quantity, 'Item quantity');
@@ -4920,6 +5384,7 @@ export function registerIPCHandlers() {
 
   ipcMain.handle('convert-order-to-sale', (_, data: { orderId: number; paymentMethod?: string; discount?: number; vat?: number }) => {
     requirePermission('orders.convert');
+    data = validate(orderConversionSchema, data, 'order conversion');
     const bizId = getActiveBusinessId();
     const order = db.prepare('SELECT * FROM orders WHERE id = ? AND businessId = ? AND is_deleted = 0').get(data.orderId, bizId) as any;
     if (!order) throw new Error('Order not found');
@@ -4941,12 +5406,11 @@ export function registerIPCHandlers() {
           baseDeduction = qty * (dbItem.unitsPerPack || 1);
           packDeduction = qty;
         } else {
-          packDeduction = qty / (dbItem.unitsPerPack || 1);
+          packDeduction = Math.round((qty / (dbItem.unitsPerPack || 1)) * 1e6) / 1e6;
         }
 
-        if (dbItem.totalBaseQuantity < baseDeduction) {
-          throw new Error(`Insufficient stock: ${dbItem.name} has ${dbItem.totalBaseQuantity} ${dbItem.baseUnit}, need ${baseDeduction}`);
-        }
+        const itemResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ?, totalPackQuantity = totalPackQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(baseDeduction, packDeduction, item.itemId, baseDeduction);
+        if (itemResult.changes === 0) throw new Error(`Insufficient stock: ${dbItem.name} has less than ${baseDeduction} units available`);
 
         const itemDiscount = data.discount ? (item.totalPrice / order.totalAmount) * data.discount : 0;
         const itemVat = data.vat ? (item.totalPrice / order.totalAmount) * data.vat : 0;
@@ -4959,15 +5423,15 @@ export function registerIPCHandlers() {
 
         saleIds.push(saleResult.lastInsertRowid as number);
 
-        db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ?, totalPackQuantity = totalPackQuantity - ? WHERE id = ?').run(baseDeduction, packDeduction, item.itemId);
-
         const defWhId = getDefaultWarehouseId();
-        const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, item.itemId) as any;
-        if (whRow) {
-          if (whRow.quantity < baseDeduction) throw new Error(`Insufficient stock at warehouse: ${dbItem.name}`);
-          db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(baseDeduction, whRow.id);
-        } else {
-          db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, item.itemId, -baseDeduction);
+        const whResult = db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE warehouseId = ? AND itemId = ? AND quantity >= ?').run(baseDeduction, defWhId, item.itemId, baseDeduction);
+        if (whResult.changes === 0) {
+          const whExists = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, item.itemId);
+          if (!whExists) {
+            db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, item.itemId, -baseDeduction);
+          } else {
+            throw new Error(`Insufficient stock at warehouse: ${dbItem.name} has less than ${baseDeduction} units available`);
+          }
         }
         db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)').run(defWhId, item.itemId, 'sale_out', baseDeduction, 'order_conversion', `Converted from order ${order.orderNumber}`);
       }
@@ -4985,6 +5449,7 @@ export function registerIPCHandlers() {
 
   ipcMain.handle('convert-order-to-debt', (_, data: { orderId: number; dueDate?: string; paymentMethod?: string; discount?: number; vat?: number }) => {
     requirePermission('orders.convert');
+    data = validate(orderConversionSchema, data, 'order conversion');
     const bizId = getActiveBusinessId();
     const order = db.prepare('SELECT * FROM orders WHERE id = ? AND businessId = ? AND is_deleted = 0').get(data.orderId, bizId) as any;
     if (!order) throw new Error('Order not found');
@@ -5014,12 +5479,11 @@ export function registerIPCHandlers() {
           baseDeduction = qty * (dbItem.unitsPerPack || 1);
           packDeduction = qty;
         } else {
-          packDeduction = qty / (dbItem.unitsPerPack || 1);
+          packDeduction = Math.round((qty / (dbItem.unitsPerPack || 1)) * 1e6) / 1e6;
         }
 
-        if (dbItem.totalBaseQuantity < baseDeduction) {
-          throw new Error(`Insufficient stock: ${dbItem.name} has ${dbItem.totalBaseQuantity} ${dbItem.baseUnit}, need ${baseDeduction}`);
-        }
+        const itemResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ?, totalPackQuantity = totalPackQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(baseDeduction, packDeduction, item.itemId, baseDeduction);
+        if (itemResult.changes === 0) throw new Error(`Insufficient stock: ${dbItem.name} has less than ${baseDeduction} units available`);
 
         const itemDiscount = data.discount ? (item.totalPrice / order.totalAmount) * data.discount : 0;
         const itemVat = data.vat ? (item.totalPrice / order.totalAmount) * data.vat : 0;
@@ -5032,15 +5496,15 @@ export function registerIPCHandlers() {
 
         saleIds.push(saleResult.lastInsertRowid as number);
 
-        db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ?, totalPackQuantity = totalPackQuantity - ? WHERE id = ?').run(baseDeduction, packDeduction, item.itemId);
-
         const defWhId = getDefaultWarehouseId();
-        const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, item.itemId) as any;
-        if (whRow) {
-          if (whRow.quantity < baseDeduction) throw new Error(`Insufficient stock at warehouse: ${dbItem.name}`);
-          db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(baseDeduction, whRow.id);
-        } else {
-          db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, item.itemId, -baseDeduction);
+        const whResult = db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE warehouseId = ? AND itemId = ? AND quantity >= ?').run(baseDeduction, defWhId, item.itemId, baseDeduction);
+        if (whResult.changes === 0) {
+          const whExists = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, item.itemId);
+          if (!whExists) {
+            db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, item.itemId, -baseDeduction);
+          } else {
+            throw new Error(`Insufficient stock at warehouse: ${dbItem.name} has less than ${baseDeduction} units available`);
+          }
         }
         db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)').run(defWhId, item.itemId, 'sale_out', baseDeduction, 'order_debt_conversion', `Converted from order ${order.orderNumber}`);
       }
@@ -5057,6 +5521,7 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('import-data', (_, module: string, rows: any[]) => {
+    requirePermission('settings.manage');
     return importData(module, rows);
   });
 
@@ -5095,7 +5560,7 @@ export function registerIPCHandlers() {
           categories.name as categoryName
         FROM items LEFT JOIN categories ON items.categoryId = categories.id
         WHERE items.businessId = ? AND items.is_deleted = 0
-          AND (items.name LIKE ? OR items.companyName LIKE ?)
+          AND (LOWER(items.name) LIKE LOWER(?) OR LOWER(items.companyName) LIKE LOWER(?))
         LIMIT 8
       `).all(bizId, q, q) as any[];
       items.forEach(i => results.push({
@@ -5110,7 +5575,7 @@ export function registerIPCHandlers() {
       const sales = db.prepare(`
         SELECT s.id, s.totalPrice, s.customerName, s.paymentStatus, s.createdAt, i.name as itemName
         FROM sales s LEFT JOIN items i ON s.itemId = i.id
-        WHERE s.businessId = ? AND (i.name LIKE ? OR s.customerName LIKE ? OR CAST(s.id AS TEXT) LIKE ?)
+        WHERE s.businessId = ? AND (LOWER(i.name) LIKE LOWER(?) OR LOWER(s.customerName) LIKE LOWER(?) OR CAST(s.id AS TEXT) LIKE ?)
         LIMIT 8
       `).all(bizId, q, q, q) as any[];
       sales.forEach(s => results.push({
@@ -5125,7 +5590,7 @@ export function registerIPCHandlers() {
       const customers = db.prepare(`
         SELECT id, customerName, phone, company, groupName
         FROM customers WHERE businessId = ? AND isActive = 1
-          AND (customerName LIKE ? OR phone LIKE ? OR company LIKE ?)
+          AND (LOWER(customerName) LIKE LOWER(?) OR LOWER(phone) LIKE LOWER(?) OR LOWER(company) LIKE LOWER(?))
         LIMIT 8
       `).all(bizId, q, q, q) as any[];
       customers.forEach(c => results.push({
@@ -5140,7 +5605,7 @@ export function registerIPCHandlers() {
       const suppliers = db.prepare(`
         SELECT id, supplierName, companyName, phone, contactPerson
         FROM suppliers WHERE businessId = ? AND isActive = 1
-          AND (supplierName LIKE ? OR companyName LIKE ? OR phone LIKE ? OR contactPerson LIKE ?)
+          AND (LOWER(supplierName) LIKE LOWER(?) OR LOWER(companyName) LIKE LOWER(?) OR LOWER(phone) LIKE LOWER(?) OR LOWER(contactPerson) LIKE LOWER(?))
         LIMIT 8
       `).all(bizId, q, q, q, q) as any[];
       suppliers.forEach(s => results.push({
@@ -5154,7 +5619,7 @@ export function registerIPCHandlers() {
     try {
       const expenses = db.prepare(`
         SELECT id, name, amount, category, date
-        FROM expenses WHERE businessId = ? AND (name LIKE ? OR category LIKE ?)
+        FROM expenses WHERE businessId = ? AND (LOWER(name) LIKE LOWER(?) OR LOWER(category) LIKE LOWER(?))
         LIMIT 8
       `).all(bizId, q, q) as any[];
       expenses.forEach(e => results.push({
@@ -5168,7 +5633,7 @@ export function registerIPCHandlers() {
     try {
       const budgets = db.prepare(`
         SELECT id, category, amount, budgetType, month, year, referenceName
-        FROM budgets WHERE businessId = ? AND (category LIKE ? OR referenceName LIKE ?)
+        FROM budgets WHERE businessId = ? AND (LOWER(category) LIKE LOWER(?) OR LOWER(referenceName) LIKE LOWER(?))
         LIMIT 8
       `).all(bizId, q, q) as any[];
       budgets.forEach(b => results.push({
@@ -5181,7 +5646,7 @@ export function registerIPCHandlers() {
     // Categories
     try {
       const cats = db.prepare(`
-        SELECT id, name FROM categories WHERE businessId = ? AND name LIKE ?
+        SELECT id, name FROM categories WHERE businessId = ? AND LOWER(name) LIKE LOWER(?)
         LIMIT 8
       `).all(bizId, q) as any[];
       cats.forEach(c => results.push({
@@ -5195,7 +5660,7 @@ export function registerIPCHandlers() {
     try {
       const whs = db.prepare(`
         SELECT id, name, location, managerName
-        FROM warehouses WHERE businessId = ? AND (name LIKE ? OR location LIKE ? OR managerName LIKE ?)
+        FROM warehouses WHERE businessId = ? AND (LOWER(name) LIKE LOWER(?) OR LOWER(location) LIKE LOWER(?) OR LOWER(managerName) LIKE LOWER(?))
         LIMIT 8
       `).all(bizId, q, q, q) as any[];
       whs.forEach(w => results.push({
@@ -5210,7 +5675,7 @@ export function registerIPCHandlers() {
       const purchases = db.prepare(`
         SELECT sp.id, sp.purchaseNumber, sp.totalAmount, sp.status, s.supplierName
         FROM supplier_purchases sp LEFT JOIN suppliers s ON sp.supplierId = s.id
-        WHERE sp.businessId = ? AND (sp.purchaseNumber LIKE ? OR s.supplierName LIKE ? OR CAST(sp.id AS TEXT) LIKE ?)
+        WHERE sp.businessId = ? AND (LOWER(sp.purchaseNumber) LIKE LOWER(?) OR LOWER(s.supplierName) LIKE LOWER(?) OR CAST(sp.id AS TEXT) LIKE ?)
         LIMIT 8
       `).all(bizId, q, q, q) as any[];
       purchases.forEach(p => results.push({
@@ -5225,7 +5690,7 @@ export function registerIPCHandlers() {
       const adjustments = db.prepare(`
         SELECT a.id, a.type, a.reason, a.quantity, i.name as itemName
         FROM adjustments a LEFT JOIN items i ON a.itemId = i.id
-        WHERE a.businessId = ? AND (i.name LIKE ? OR a.reason LIKE ? OR a.type LIKE ?)
+        WHERE a.businessId = ? AND (LOWER(i.name) LIKE LOWER(?) OR LOWER(a.reason) LIKE LOWER(?) OR LOWER(a.type) LIKE LOWER(?))
         LIMIT 8
       `).all(bizId, q, q, q) as any[];
       adjustments.forEach(a => results.push({
@@ -5240,7 +5705,7 @@ export function registerIPCHandlers() {
       const notifs = db.prepare(`
         SELECT id, title, message, type, severity
         FROM notifications WHERE businessId = ? AND isDismissed = 0
-          AND (title LIKE ? OR message LIKE ?)
+          AND (LOWER(title) LIKE LOWER(?) OR LOWER(message) LIKE LOWER(?))
         LIMIT 8
       `).all(bizId, q, q) as any[];
       notifs.forEach(n => results.push({
@@ -5255,7 +5720,7 @@ export function registerIPCHandlers() {
       const drafts = db.prepare(`
         SELECT id, customerName, discount, vat, notes
         FROM draft_sales WHERE businessId = ?
-          AND (customerName LIKE ? OR notes LIKE ?)
+          AND (LOWER(customerName) LIKE LOWER(?) OR LOWER(notes) LIKE LOWER(?))
         LIMIT 8
       `).all(bizId, q, q) as any[];
       drafts.forEach(d => results.push({
@@ -5874,7 +6339,7 @@ export function registerIPCHandlers() {
         .run(bizId, 'trial', 'active', 1, now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString());
     }
     db.prepare('INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(existing?.id || db.prepare('SELECT id FROM subscriptions WHERE businessId = ?').get(bizId).id, bizId, 'trial_started', existing?.tier || 'none', 'trial', '7-day premium trial started', currentUserName || 'system');
+      .run(existing?.id || (db.prepare('SELECT id FROM subscriptions WHERE businessId = ?').get(bizId) as any)?.id, bizId, 'trial_started', existing?.tier || 'none', 'trial', '7-day premium trial started', currentUserName || 'system');
     return { success: true };
   });
 
@@ -6036,9 +6501,7 @@ export function registerIPCHandlers() {
   });
 
   // Debug handler
-  ipcMain.handle('debug:ping', () => {
-    return { ok: true, timestamp: new Date().toISOString(), handlersRegistered: true };
-  });
+  ipcMain.handle('debug:ping', () => ({ pong: true }));
 
   // ──────────────────────────────────────────────
   // Update System IPC Handlers
@@ -6101,5 +6564,47 @@ export function registerIPCHandlers() {
     return { success: true };
   });
 
+  ipcMain.handle('check-stock-consistency', () => {
+    requirePermission('inventory.view');
+    const bizId = getActiveBusinessId() as number;
+    return checkStockConsistency(bizId);
+  });
+
+  ipcMain.handle('fix-stock-consistency', () => {
+    requirePermission('inventory.adjust');
+    const bizId = getActiveBusinessId() as number;
+    const result = checkStockConsistency(bizId);
+    const fixed: number[] = [];
+
+    const fixTx = db.transaction(() => {
+      for (const item of result.inconsistent) {
+        db.prepare('UPDATE items SET totalBaseQuantity = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE itemId = ?) WHERE id = ?')
+          .run(item.itemId, item.itemId);
+        fixed.push(item.itemId);
+      }
+    });
+    fixTx();
+
+    return { fixed: fixed.length, totalInconsistent: result.inconsistent.length };
+  });
+
   console.log('[Handlers] All IPC handlers registered successfully');
+}
+
+// ========== STOCK CONSISTENCY CHECK ==========
+
+function checkStockConsistency(bizId: number): { inconsistent: { itemId: number; itemName: string; expected: number; actual: number; diff: number }[]; checked: number } {
+  const items = db.prepare('SELECT id, name, totalBaseQuantity FROM items WHERE businessId = ? AND is_deleted = 0').all(bizId) as any[];
+  const inconsistent: any[] = [];
+
+  for (const item of items) {
+    const whSum = db.prepare('SELECT COALESCE(SUM(quantity), 0) as total FROM warehouse_inventory WHERE itemId = ?').get(item.id) as any;
+    const expected = item.totalBaseQuantity || 0;
+    const actual = whSum?.total || 0;
+    if (Math.abs(expected - actual) > 0.001) {
+      inconsistent.push({ itemId: item.id, itemName: item.name, expected, actual, diff: expected - actual });
+    }
+  }
+
+  return { inconsistent, checked: items.length };
 }

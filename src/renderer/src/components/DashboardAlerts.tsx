@@ -33,7 +33,7 @@ const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ maxItems = 6, showHea
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Bell className="h-4 w-4" />{t('notifications.alerts_title')}
-            <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground ml-2">
+            <span className="text-xs font-black uppercase tracking-widest text-muted-foreground ml-2">
               {dashboardAlerts.length} {t('notifications.alerts_active')}
             </span>
           </CardTitle>
@@ -52,7 +52,7 @@ const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ maxItems = 6, showHea
                 <div className="flex items-center gap-2 mb-1">
                   <p className="text-sm font-semibold">{a.title}</p>
                   {a.count > 0 && (
-                    <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-background/60">
+                    <span className="text-xs font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-background/60">
                       {a.count}
                     </span>
                   )}
@@ -63,7 +63,7 @@ const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ maxItems = 6, showHea
                     variant="outline"
                     size="sm"
                     onClick={() => navigate(a.actionUrl!)}
-                    className="h-6 mt-2 text-[10px]"
+                    className="h-6 mt-2 text-xs"
                   >
                     <ExternalLink className="h-3 w-3 mr-1" />{a.actionLabel}
                   </Button>

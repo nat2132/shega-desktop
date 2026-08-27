@@ -34,6 +34,7 @@ import {
 import { Badge } from "@renderer/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@renderer/components/ui/dialog"
 import { Button } from "@renderer/components/ui/button"
+import defaultAvatar from "../assets/company.png"
 
 // Import profile images
 const profileImages = (import.meta as any).glob('../assets/profile/*.png', { eager: true, import: 'default' });
@@ -62,17 +63,14 @@ export function NavUser({
     .toUpperCase()
     .slice(0, 2);
 
-  // Helper to resolve avatar path (either full path or filename)
+  const DEFAULT_AVATAR = defaultAvatar;
+
   const resolveAvatar = (avatarValue: string | null | undefined) => {
     const val = avatarValue || user.avatar;
-    if (!val) return "/avatars/admin.jpg";
-    
-    // If it's already a full path/URL from Vite or a base path, return it
+    if (!val) return DEFAULT_AVATAR;
     if (val.includes('/') || val.includes('data:')) return val;
-    
-    // If it's just a filename, find it in our options
     const found = AVATAR_OPTIONS.find(opt => opt.toLowerCase().includes(val.toLowerCase()));
-    return found || "/avatars/admin.jpg";
+    return found || DEFAULT_AVATAR;
   };
 
   const currentAvatar = useMemo(() => resolveAvatar(currentAdmin?.avatar), [currentAdmin?.avatar, user.avatar]);
@@ -102,20 +100,20 @@ export function NavUser({
                 size="lg"
                 className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group"
               >
-                <Avatar className="h-8 w-8 rounded-lg transition-all duration-500 border border-border/50 shadow-sm group-hover:scale-105">
-                  <AvatarImage src={currentAvatar} alt={user.name} />
-                  <AvatarFallback className="rounded-lg bg-primary text-primary-foreground font-semibold">{initials}</AvatarFallback>
-                </Avatar>
-                <div className="grid flex-1 text-left text-sm leading-tight">
+<Avatar className="h-8 w-8 rounded-full transition-all duration-500 border border-border/80 ring-1 ring-sidebar-foreground/10 shadow-sm group-hover:scale-105">
+                        <AvatarImage src={currentAvatar} alt={user.name} />
+                        <AvatarFallback className="rounded-full bg-primary text-primary-foreground font-semibold">{initials}</AvatarFallback>
+                      </Avatar>
+                <div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
                   <div className="flex items-center gap-1.5">
-                    <span className="truncate font-semibold text-[10px] uppercase tracking-widest">{user.name}</span>
+                    <span className="truncate font-semibold text-xs uppercase tracking-widest">{user.name}</span>
                     {isSuperAdmin && <Crown className="h-3 w-3 text-amber-500 shrink-0" />}
                   </div>
-                  <span className="truncate text-[8px] text-muted-foreground uppercase tracking-widest">
+                  <span className="truncate text-xs text-muted-foreground uppercase tracking-widest">
                     {user.email}
                   </span>
                 </div>
-                <MoreVertical className="ml-auto size-4 text-muted-foreground" />
+                <MoreVertical className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
               </SidebarMenuButton>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -126,16 +124,16 @@ export function NavUser({
             >
               <DropdownMenuLabel className="p-0 font-normal">
                 <div className="flex items-center gap-3 px-3 py-2.5 text-left text-sm">
-                  <Avatar className="h-9 w-9 rounded-lg grayscale">
-                    <AvatarImage src={currentAvatar} alt={user.name} />
-                    <AvatarFallback className="rounded-lg bg-primary text-primary-foreground font-black">{initials}</AvatarFallback>
-                  </Avatar>
+<Avatar className="h-9 w-9 rounded-full grayscale ring-1 ring-sidebar-border">
+                      <AvatarImage src={currentAvatar} alt={user.name} />
+                      <AvatarFallback className="rounded-full bg-primary text-primary-foreground font-black">{initials}</AvatarFallback>
+                    </Avatar>
                   <div className="grid flex-1 text-left text-sm leading-tight">
                     <div className="flex items-center gap-1.5">
-                      <span className="truncate font-semibold text-[10px] uppercase tracking-widest">{user.name}</span>
+                      <span className="truncate font-semibold text-xs uppercase tracking-widest">{user.name}</span>
                       {isSuperAdmin && <Crown className="h-3 w-3 text-amber-500" />}
                     </div>
-                    <span className="truncate text-[8px] text-muted-foreground uppercase tracking-widest">
+                    <span className="truncate text-xs text-muted-foreground uppercase tracking-widest">
                       @{currentAdmin?.username || t('common.unknown', 'Unknown')}
                     </span>
                   </div>
@@ -145,7 +143,7 @@ export function NavUser({
               <div className="px-3 py-2">
                 <Badge 
                   variant={isSuperAdmin ? "default" : "outline"} 
-                  className="text-[8px] font-black uppercase tracking-widest w-full justify-center py-1"
+                  className="text-xs font-black uppercase tracking-widest w-full justify-center py-1"
                 >
                   {isSuperAdmin ? '★ ' + t('common.super_admin', 'Super Admin') : currentAdmin?.isEmployee ? currentAdmin.role : t('common.admin', 'Admin')}
                 </Badge>
@@ -153,24 +151,24 @@ export function NavUser({
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
                 <DropdownMenuItem 
-                  className="text-[10px] font-medium uppercase tracking-widest cursor-pointer"
+                  className="text-xs font-medium uppercase tracking-widest cursor-pointer"
                   onClick={() => setIsAvatarOpen(true)}
                 >
                   <Camera className="size-4 mr-2" />
                   {t('nav_user.update_profile_image', 'Update Profile Image')}
                 </DropdownMenuItem>
-                <DropdownMenuItem className="text-[10px] font-medium uppercase tracking-widest" onClick={() => setShowSecurity(true)}>
+                <DropdownMenuItem className="text-xs font-medium uppercase tracking-widest" onClick={() => setShowSecurity(true)}>
                   <UserIcon className="size-4 mr-2" />
                   {t('nav_user.security_profile', 'Security Profile')}
                 </DropdownMenuItem>
-                <DropdownMenuItem className="text-[10px] font-medium uppercase tracking-widest" onClick={() => setShowPriority(true)}>
+                <DropdownMenuItem className="text-xs font-medium uppercase tracking-widest" onClick={() => setShowPriority(true)}>
                   <Bell className="size-4 mr-2" />
                   {t('nav_user.priority_alerts', 'Priority Alerts')}
                 </DropdownMenuItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
               <DropdownMenuItem 
-                className="text-[10px] font-medium uppercase tracking-widest text-destructive cursor-pointer"
+                className="text-xs font-medium uppercase tracking-widest text-destructive cursor-pointer"
                 onClick={logout}
               >
                 <LogOut className="size-4 mr-2" />
@@ -185,7 +183,7 @@ export function NavUser({
         <DialogContent className="sm:max-w-md bg-card border-border/50">
           <DialogHeader>
             <DialogTitle className="text-sm font-black uppercase tracking-widest">{t('nav_user.select_avatar', 'Select Profile Identity')}</DialogTitle>
-            <DialogDescription className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+            <DialogDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
               {t('nav_user.avatar_description', 'Choose an avatar that reflects your security clearance.')}
             </DialogDescription>
           </DialogHeader>
@@ -221,7 +219,7 @@ export function NavUser({
             <Button 
               variant="outline" 
               onClick={() => setIsAvatarOpen(false)}
-              className="text-[10px] font-black uppercase tracking-widest h-8"
+              className="text-xs font-black uppercase tracking-widest h-8"
             >
               {t('common.cancel', 'Cancel')}
             </Button>
@@ -266,21 +264,21 @@ export function NavUser({
             <div className="flex items-center justify-between p-3 rounded-xl border bg-muted/20">
               <div>
                 <p className="font-bold">{t('nav_user.low_stock_alerts', 'Low Stock Alerts')}</p>
-                <p className="text-[10px] text-muted-foreground">{t('nav_user.low_stock_desc', 'When items run below threshold')}</p>
+                <p className="text-xs text-muted-foreground">{t('nav_user.low_stock_desc', 'When items run below threshold')}</p>
               </div>
               <div className="w-9 h-5 rounded-full bg-primary" />
             </div>
             <div className="flex items-center justify-between p-3 rounded-xl border bg-muted/20">
               <div>
                 <p className="font-bold">{t('nav_user.overdue_payments', 'Overdue Payments')}</p>
-                <p className="text-[10px] text-muted-foreground">{t('nav_user.overdue_payments_desc', 'When debts pass due date')}</p>
+                <p className="text-xs text-muted-foreground">{t('nav_user.overdue_payments_desc', 'When debts pass due date')}</p>
               </div>
               <div className="w-9 h-5 rounded-full bg-primary" />
             </div>
             <div className="flex items-center justify-between p-3 rounded-xl border bg-muted/20">
               <div>
                 <p className="font-bold">{t('nav_user.expiry_reminders', 'Expiry Reminders')}</p>
-                <p className="text-[10px] text-muted-foreground">{t('nav_user.expiry_reminders_desc', 'Items approaching expiry')}</p>
+                <p className="text-xs text-muted-foreground">{t('nav_user.expiry_reminders_desc', 'Items approaching expiry')}</p>
               </div>
               <div className="w-9 h-5 rounded-full bg-muted" />
             </div>

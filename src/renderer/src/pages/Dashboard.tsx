@@ -16,7 +16,7 @@ import { useAuth } from '../context/AuthContext';
 import { SectionCards, SectionCardData } from '../components/section-cards';
 import DashboardAlerts from '../components/DashboardAlerts';
 import { BusinessAssistant } from '../components/BusinessAssistant';
-import TestDataGenerator from '../components/TestDataGenerator';
+
 import { CategorySalesChart } from '../components/category-sales-chart';
 import { DataTable } from '../components/data-table';
 import Modal from '../components/Modal';
@@ -367,7 +367,7 @@ const Dashboard: React.FC = () => {
                   { label: t('common.pending'), value: empStats.pendingApprovals || 0, color: 'text-destructive' },
                 ].map((item, idx) => (
                   <div key={idx} className="rounded-2xl border border-border/40 bg-card/50 p-4 space-y-1.5">
-                    <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">{item.label}</p>
+                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground/70">{item.label}</p>
                     <p className={`text-2xl font-semibold tracking-tight tabular-nums ${item.color}`}>{item.value}</p>
                   </div>
                 ))}
@@ -387,7 +387,7 @@ const Dashboard: React.FC = () => {
                   { label: t('dashboard.reversed_adjustments'), value: reversalStats.reversedAdjustments || 0, icon: RotateCcw },
                 ].map((item, idx) => (
                   <div key={idx} className="rounded-2xl border border-border/40 bg-card/50 p-3.5 space-y-1.5">
-                    <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70 flex items-center gap-1.5">
+                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground/70 flex items-center gap-1.5">
                       <item.icon className="h-3 w-3" /> {item.label}
                     </p>
                     <p className="text-xl font-semibold tracking-tight tabular-nums">{item.value}</p>
@@ -415,7 +415,7 @@ const Dashboard: React.FC = () => {
                   { label: t('suppliers.kpi_recent'), value: (supplierStats.recent || []).length },
                 ].map((item, idx) => (
                   <div key={idx} className="rounded-2xl border border-border/40 bg-card/50 p-3.5 space-y-1.5">
-                    <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">{item.label}</p>
+                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground/70">{item.label}</p>
                     <p className={`${item.small ? 'text-sm' : 'text-xl'} font-semibold tracking-tight tabular-nums ${item.color || ''} truncate`}>{item.value}</p>
                   </div>
                 ))}
@@ -434,10 +434,10 @@ const Dashboard: React.FC = () => {
                       <table className="w-full text-sm">
                         <thead className="bg-muted/20">
                           <tr>
-                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
-                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('reports.header_order_num')}</th>
-                            <th className="text-right p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.balance')}</th>
-                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.due')}</th>
+                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
+                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('reports.header_order_num')}</th>
+                            <th className="text-right p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.balance')}</th>
+                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.due')}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -469,10 +469,10 @@ const Dashboard: React.FC = () => {
                       <table className="w-full text-sm">
                         <thead className="bg-muted/20">
                           <tr>
-                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
-                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('reports.header_order_num')}</th>
-                            <th className="text-right p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.amount')}</th>
-                            <th className="text-right p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('dashboard.due_in')}</th>
+                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
+                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('reports.header_order_num')}</th>
+                            <th className="text-right p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.amount')}</th>
+                            <th className="text-right p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('dashboard.due_in')}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -484,7 +484,7 @@ const Dashboard: React.FC = () => {
                               <td className="p-2.5 text-right text-xs">
                                 {a.daysUntilDue !== null && a.daysUntilDue !== undefined ? (
                                   a.daysUntilDue <= 0 ? (
-                                    <Badge variant="destructive" className="text-[10px]">{t('common.overdue')}</Badge>
+                                    <Badge variant="destructive" className="text-xs">{t('common.overdue')}</Badge>
                                   ) : (
                                     <span className="text-amber-600 font-semibold tabular-nums">{a.daysUntilDue} {t('common.days')}</span>
                                   )
@@ -512,10 +512,10 @@ const Dashboard: React.FC = () => {
                       <table className="w-full text-sm">
                         <thead className="bg-muted/20">
                           <tr>
-                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('inventory.product')}</th>
-                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
-                            <th className="text-right p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.stock')}</th>
-                            <th className="text-left p-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.category')}</th>
+                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('inventory.product')}</th>
+                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
+                            <th className="text-right p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.stock')}</th>
+                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.category')}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -540,11 +540,6 @@ const Dashboard: React.FC = () => {
             <BusinessAssistant />
           </motion.div>
 
-          {(window.location.protocol === 'http:' || window.location.hostname === 'localhost') && (
-            <motion.div variants={itemVariants} className="px-4 lg:px-6">
-              <TestDataGenerator />
-            </motion.div>
-          )}
 
           <motion.div variants={itemVariants} className="px-4 lg:px-6">
             <Card data-tutorial-section="revenue-chart" className="@container/card">
@@ -576,14 +571,14 @@ const Dashboard: React.FC = () => {
                       tickLine={false}
                       axisLine={false}
                       tickMargin={8}
-                      className="text-[10px]"
+                      className="text-xs"
                     />
                     <YAxis
                       tickLine={false}
                       axisLine={false}
                       tickFormatter={(v) => (v ?? 0) >= 1000 ? `${((v ?? 0) / 1000).toFixed(0)}k` : `${v ?? 0}`}
                       width={40}
-                      className="text-[10px]"
+                      className="text-xs"
                     />
                     <ChartTooltip
                       cursor={{ fill: 'var(--muted)', opacity: 0.3 }}
@@ -644,15 +639,15 @@ const Dashboard: React.FC = () => {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="p-4 rounded-xl border border-border/30 bg-card/50">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.amount')}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.amount')}</p>
                     <p className="text-xl font-semibold tabular-nums text-primary">{t('common.etb')} {selectedActivity.amount.toLocaleString()}</p>
                   </div>
                   <div className="p-4 rounded-xl border border-border/30 bg-card/50">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.date')}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.date')}</p>
                     <p className="text-base font-semibold">{formatDate(new Date(selectedActivity.date), { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</p>
                   </div>
                   <div className="p-4 rounded-xl border border-border/30 bg-card/50 col-span-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.details')}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.details')}</p>
                     <p className="text-sm">{selectedActivity.extra || t('dashboard.system_entry')}</p>
                   </div>
                 </div>

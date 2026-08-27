@@ -34,6 +34,7 @@ import {
 } from "../components/ui/alert-dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger, SheetFooter, SheetClose, SheetDescription } from '../components/ui/sheet';
 import SaleSuccessModal from '../components/SaleSuccessModal';
+import { startBarcodeWedge, stopBarcodeWedge } from '../services/barcode';
 
 interface Sale {
   id: number;
@@ -76,6 +77,7 @@ const Sales: React.FC = () => {
   const { t, formatDate, formatDateTime, currentBusiness } = useSettings();
   const [sales, setSales] = useState<Sale[]>([]);
   const [items, setItems] = useState<Item[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [searchQuery] = useState('');
   const [categories, setCategories] = useState<any[]>([]);
@@ -103,27 +105,54 @@ const Sales: React.FC = () => {
   const [showDraftsModal, setShowDraftsModal] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [lastSale, setLastSale] = useState<any>(null);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
 
   useEffect(() => {
     loadData();
   }, [searchQuery, filterCategory, filterStartDate, filterEndDate]);
 
+  // Barcode wedge: a scanner types the code then Enter; resolve and add to cart.
+  useEffect(() => {
+    startBarcodeWedge();
+    const onScan = (e: Event) => {
+      const code = (e as CustomEvent<string>).detail;
+      if (!code) return;
+      window.api?.getItemByBarcode(code).then((item: any) => {
+        if (!item) {
+          toast.error(`Barcode ${code} not found`);
+          return;
+        }
+        addToCart(String(item.id));
+      });
+    };
+    window.addEventListener('shega:barcode-scan', onScan as EventListener);
+    return () => {
+      stopBarcodeWedge();
+      window.removeEventListener('shega:barcode-scan', onScan as EventListener);
+    };
+  }, [cart, items]);
+
   const loadData = async () => {
-    const [salesData, itemsData, catsData] = await Promise.all([
-      window.api?.getSales({ search: searchQuery, category: filterCategory, startDate: filterStartDate, endDate: filterEndDate }) || Promise.resolve([]),
-      window.api?.getItems({}) || Promise.resolve([]),
-      window.api?.getCategories() || Promise.resolve([])
-    ]);
-    setSales(salesData);
-    setItems(itemsData);
-    setCategories(Array.isArray(catsData) ? catsData : []);
+    setIsLoading(true);
+    try {
+      const [salesData, itemsData, catsData] = await Promise.all([
+        window.api?.getSales({ search: searchQuery, category: filterCategory, startDate: filterStartDate, endDate: filterEndDate }) || Promise.resolve([]),
+        window.api?.getItems({}) || Promise.resolve([]),
+        window.api?.getCategories() || Promise.resolve([])
+      ]);
+      setSales(salesData);
+      setItems(itemsData);
+      setCategories(Array.isArray(catsData) ? catsData : []);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const kpiCards: SectionCardData[] = useMemo(() => {
     const total = sales.reduce((sum, s) => sum + s.totalPrice, 0);
     const profit = sales.reduce((sum, s) => {
-      const cost = (s.basePurchasePrice || 0) * (s.unitType === 'pack' ? (s.quantity * (s.unitsPerPack || 1)) : s.quantity);
-      return sum + (s.totalPrice - cost);
+      const cost = s.costAtTimeOfSale || ((s.basePurchasePrice || 0) * (s.unitType === 'pack' ? (s.quantity * (s.unitsPerPack || 1)) : s.quantity));
+      return sum + ((s.totalPrice - (s.discount || 0) - (s.vat || 0)) - cost);
     }, 0);
 
     const outDebt = sales.filter(s => s.paymentStatus === 'Debt' || s.paymentStatus === t('sales.debt'));
@@ -131,8 +160,8 @@ const Sales: React.FC = () => {
 
     const revenueTrend = computeTrend(sales, 'createdAt', s => s.totalPrice);
     const profitTrend = computeTrend(sales, 'createdAt', s => {
-      const cost = (s.basePurchasePrice || 0) * (s.unitType === 'pack' ? (s.quantity * (s.unitsPerPack || 1)) : s.quantity);
-      return s.totalPrice - cost;
+      const cost = s.costAtTimeOfSale || ((s.basePurchasePrice || 0) * (s.unitType === 'pack' ? (s.quantity * (s.unitsPerPack || 1)) : s.quantity));
+      return (s.totalPrice - (s.discount || 0) - (s.vat || 0)) - cost;
     });
     const txTrend = computeTrend(sales, 'createdAt', () => 1);
     const outTrend = computeTrend(outDebt, 'createdAt', s => s.totalPrice - s.paidAmount);
@@ -180,7 +209,7 @@ const Sales: React.FC = () => {
           </div>
           <div className="flex flex-col">
             <span className="font-bold">{row.original.itemName}</span>
-            <span className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest">
+            <span className="text-xs text-muted-foreground uppercase font-bold tracking-widest">
               {formatDate(row.original.createdAt)} • {row.original.quantity} {row.original.unit}
             </span>
           </div>
@@ -213,11 +242,11 @@ const Sales: React.FC = () => {
       header: t('sales.payment_status'),
       cell: ({ row }) => (
         <div className="flex items-center gap-2">
-          <Badge variant={row.original.paymentStatus === 'Paid' || row.original.paymentStatus === t('sales.paid') ? 'default' : 'destructive'} className="uppercase text-[9px] font-bold">
+          <Badge variant={row.original.paymentStatus === 'Paid' || row.original.paymentStatus === t('sales.paid') ? 'default' : 'destructive'} className="uppercase text-xs font-bold">
             {row.original.paymentStatus === 'Paid' || row.original.paymentStatus === t('sales.paid') ? t('sales.paid') : t('sales.debt')}
           </Badge>
           {row.original.status === 'Voided' && (
-            <Badge variant="destructive" className="text-[8px] font-black uppercase">{t('sales.voided_badge', 'Voided')}</Badge>
+            <Badge variant="destructive" className="text-xs font-black uppercase">{t('sales.voided_badge', 'Voided')}</Badge>
           )}
         </div>
       )
@@ -254,10 +283,10 @@ const Sales: React.FC = () => {
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter className="gap-3">
-                <AlertDialogCancel className="rounded-xl border-border h-11 text-[10px] font-black uppercase tracking-widest">{t('common.abort')}</AlertDialogCancel>
+                <AlertDialogCancel className="rounded-xl border-border h-11 text-xs font-black uppercase tracking-widest">{t('common.abort')}</AlertDialogCancel>
                 <AlertDialogAction 
                   onClick={() => handleDelete(row.original.id)}
-                  className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-[10px] font-black uppercase tracking-widest"
+                  className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-xs font-black uppercase tracking-widest"
                 >
                   {t('common.confirm')}
                 </AlertDialogAction>
@@ -343,21 +372,31 @@ const Sales: React.FC = () => {
     e.preventDefault();
     if (cart.length === 0) return;
 
-    const salesToInsert = cart.map(c => ({
-      itemId: c.itemId,
-      quantity: c.quantity,
-      unit: c.unit,
-      unitType: c.unitType,
-      discount: c.discount + (parseFloat(globalDiscount) / cart.length),
-      vat: c.vat + (parseFloat(globalVAT) / cart.length),
-      totalPrice: (c.quantity * c.price) - c.discount + c.vat - (parseFloat(globalDiscount) / cart.length) + (parseFloat(globalVAT) / cart.length),
-      paymentMethod: paymentInfo.method,
-      paymentStatus: paymentInfo.isDebt ? 'Debt' : 'Paid',
-      customerName: customerInfo.name?.trim() || null,
-      customerPhone: customerInfo.phone?.trim() || null,
-      dueDate: paymentInfo.isDebt ? paymentInfo.dueDate : null,
-      paidAmount: paymentInfo.isDebt ? 0 : ((c.quantity * c.price) - c.discount + c.vat - (parseFloat(globalDiscount) / cart.length) + (parseFloat(globalVAT) / cart.length))
-    }));
+    const cartSubtotal = cart.reduce((sum, c) => sum + (c.quantity * c.price - c.discount + c.vat), 0);
+    const globalDiscVal = parseFloat(globalDiscount) || 0;
+    const globalVATVal = parseFloat(globalVAT) || 0;
+
+    const salesToInsert = cart.map(c => {
+      const itemSubtotal = c.quantity * c.price - c.discount + c.vat;
+      const ratio = cartSubtotal > 0 ? itemSubtotal / cartSubtotal : 0;
+      const propDiscount = ratio * globalDiscVal;
+      const propVAT = ratio * globalVATVal;
+      return {
+        itemId: c.itemId,
+        quantity: c.quantity,
+        unit: c.unit,
+        unitType: c.unitType,
+        discount: c.discount + propDiscount,
+        vat: c.vat + propVAT,
+        totalPrice: itemSubtotal - propDiscount + propVAT,
+        paymentMethod: paymentInfo.method,
+        paymentStatus: paymentInfo.isDebt ? 'Debt' : 'Paid',
+        customerName: customerInfo.name?.trim() || null,
+        customerPhone: customerInfo.phone?.trim() || null,
+        dueDate: paymentInfo.isDebt ? paymentInfo.dueDate : null,
+        paidAmount: paymentInfo.isDebt ? 0 : (itemSubtotal - propDiscount + propVAT)
+      };
+    });
 
     const insertedIds = await window.api?.insertSalesBatch(salesToInsert);
     playSound('nice');
@@ -421,6 +460,20 @@ const Sales: React.FC = () => {
     setEditingId(null);
     setCurrentStep(1);
     setItemSearchQuery('');
+  };
+
+  const handleModalClose = () => {
+    if (cart.length > 0) {
+      setShowDiscardConfirm(true);
+    } else {
+      setShowModal(false);
+    }
+  };
+
+  const confirmDiscard = () => {
+    setShowDiscardConfirm(false);
+    resetForm();
+    setShowModal(false);
   };
 
   const generateReceipt = (sale: Sale) => {
@@ -529,7 +582,19 @@ const Sales: React.FC = () => {
     const draft = await window.api?.getDraftSale(id);
     if (!draft) return;
     resetForm();
-    const parsedItems = typeof draft.items === 'string' ? JSON.parse(draft.items) : (draft.items || []);
+    let parsedItems: any[] = [];
+    try {
+      parsedItems = typeof draft.items === 'string' ? JSON.parse(draft.items) : (draft.items || []);
+    } catch {
+      console.error('Failed to parse draft items, draft may be corrupted');
+      toast.error('Failed to load draft sale');
+      return;
+    }
+    if (!Array.isArray(parsedItems)) {
+      console.error('Parsed draft items is not an array');
+      toast.error('Failed to load draft sale');
+      return;
+    }
     setCart(parsedItems);
     setCustomerInfo({ name: draft.customerName || '', phone: '' });
     setGlobalDiscount(String(draft.discount || '0'));
@@ -576,6 +641,14 @@ const Sales: React.FC = () => {
     toast.success(t('sales.export_success', 'Report exported successfully'));
   };
 
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 fade-in">
       <SectionCards cards={kpiCards} />
@@ -586,19 +659,19 @@ const Sales: React.FC = () => {
             <SheetTrigger asChild>
               <Button variant="outline" className={`h-8 px-3 transition-all ${filterCategory !== 'All' && filterCategory !== t('common.all') || filterStartDate || filterEndDate ? 'border-primary text-primary bg-primary/5 shadow-sm' : 'border-border/60 hover:bg-muted/50'}`}>
                 <Filter className="mr-1.5 h-3.5 w-3.5" /> 
-                {t('common.filters')} {(filterCategory !== 'All' || filterStartDate || filterEndDate) && <Badge className="ml-1.5 h-4 px-1 text-[9px] rounded-full">{t('inventory.active')}</Badge>}
+                {t('common.filters')} {(filterCategory !== 'All' || filterStartDate || filterEndDate) && <Badge className="ml-1.5 h-4 px-1 text-xs rounded-full">{t('inventory.active')}</Badge>}
               </Button>
             </SheetTrigger>
             <SheetContent side="right" className="w-[400px] sm:w-[540px] border-l-border/40 p-0 flex flex-col">
               <SheetHeader className="border-b border-border/50 p-6">
                 <SheetTitle className="text-2xl font-black uppercase tracking-tight">{t('common.filters')}</SheetTitle>
-                <SheetDescription className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">{t('sales.filter_desc')}</SheetDescription>
+                <SheetDescription className="text-xs font-bold text-muted-foreground uppercase tracking-widest">{t('sales.filter_desc')}</SheetDescription>
               </SheetHeader>
               
               <div className="space-y-8 p-6 flex-1 overflow-y-auto">
                 {/* Category Filter */}
                 <div className="space-y-3">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">{t('sales.classification')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-primary">{t('sales.classification')}</h4>
                   <Select value={filterCategory} onValueChange={setFilterCategory}>
                     <SelectTrigger className="h-12 bg-muted/30 border-border/50 rounded-xl">
                       <SelectValue placeholder={t('sales.all_categories')} />
@@ -613,19 +686,19 @@ const Sales: React.FC = () => {
                 {/* Date Filter */}
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">{t('sales.timeframe')}</h4>
+                    <h4 className="text-xs font-black uppercase tracking-[0.3em] text-primary">{t('sales.timeframe')}</h4>
                   </div>
                   <div className="space-y-3">
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('sales.start_date')}</label>
+                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('sales.start_date')}</label>
                       <DatePicker value={filterStartDate} onChange={setFilterStartDate} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs w-full" />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('sales.end_date')}</label>
+                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('sales.end_date')}</label>
                       <DatePicker value={filterEndDate} onChange={setFilterEndDate} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs w-full" />
                     </div>
                   </div>
-                  <p className="text-[9px] text-muted-foreground italic mt-1 leading-tight">{t('sales.date_desc')}</p>
+                  <p className="text-xs text-muted-foreground italic mt-1 leading-tight">{t('sales.date_desc')}</p>
                 </div>
               </div>
 
@@ -643,7 +716,7 @@ const Sales: React.FC = () => {
                     {t('common.reset')}
                   </Button>
                   <SheetClose asChild>
-                    <Button className="flex-1 py-3 font-black uppercase tracking-widest rounded-xl shadow-xl">
+                    <Button className="flex-1 py-3 tracking-widest rounded-xl shadow-xl">
                       {t('common.apply')}
                     </Button>
                   </SheetClose>
@@ -652,10 +725,10 @@ const Sales: React.FC = () => {
             </SheetContent>
           </Sheet>
 
-          <Button variant="outline" onClick={loadDrafts} className="h-8 text-[10px] font-bold uppercase tracking-widest px-3">
+          <Button variant="outline" onClick={loadDrafts} className="h-8 text-xs font-bold tracking-widest px-3">
             <FileText className="mr-1.5 h-3.5 w-3.5" /> {t('sales.drafts')}
           </Button>
-          <Button onClick={() => { resetForm(); setShowModal(true); }} className="h-8 text-[10px] font-bold uppercase tracking-widest px-3">
+          <Button onClick={() => { resetForm(); setShowModal(true); }} className="h-8 text-xs font-bold tracking-widest px-3">
             <Plus className="mr-1.5 h-3.5 w-3.5" /> {t('sales.new_btn')}
           </Button>
         </div>
@@ -666,16 +739,16 @@ const Sales: React.FC = () => {
           title={t('sales.header')}
         />
         <div className="flex gap-2 justify-end">
-          <Button variant="outline" size="sm" onClick={() => exportSalesCSV()} className="h-7 text-[10px] font-bold uppercase tracking-widest px-2.5">
+          <Button variant="outline" size="sm" onClick={() => exportSalesCSV()} className="h-7 text-xs font-bold tracking-widest px-2.5">
             <FileText size={11} className="mr-1" /> {t('reports.csv')}
           </Button>
-          <Button variant="outline" size="sm" onClick={() => exportSalesPDF()} className="h-7 text-[10px] font-bold uppercase tracking-widest px-2.5">
+          <Button variant="outline" size="sm" onClick={() => exportSalesPDF()} className="h-7 text-xs font-bold tracking-widest px-2.5">
             <FileText size={11} className="mr-1" /> {t('reports.pdf')}
           </Button>
         </div>
       </div>
 
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={editingId ? t('sales.modify_transaction') : t('sales.new_session')} size="xl">
+      <Modal isOpen={showModal} onClose={handleModalClose} title={editingId ? t('sales.modify_transaction') : t('sales.new_session')} size="xl">
         <div className="flex flex-col min-h-[60vh]">
           {/* Progress Indicator */}
           <div className="flex items-center justify-center gap-4 py-6 px-12 shrink-0 border-b border-border/40 bg-muted/5">
@@ -688,7 +761,7 @@ const Sales: React.FC = () => {
                   }`}>
                     {currentStep > s ? <CheckCircle className="h-5 w-5" /> : s}
                   </div>
-                  <span className={`text-[10px] font-black uppercase tracking-widest ${currentStep === s ? 'text-primary' : 'text-muted-foreground'}`}>
+                  <span className={`text-xs font-black uppercase tracking-widest ${currentStep === s ? 'text-primary' : 'text-muted-foreground'}`}>
                     {s === 1 ? t('common.selection') : s === 2 ? t('common.review') : t('common.settlement')}
                   </span>
                 </div>
@@ -702,8 +775,8 @@ const Sales: React.FC = () => {
               <div className="flex-1 p-8 space-y-6 flex flex-col items-center">
                 <div className="w-full max-w-xl space-y-4">
                   <div className="flex items-center justify-between">
-                    <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground">{t('sales.discovery')}</h4>
-                    <Badge variant="outline" className="font-black text-[9px] h-5">{cart.length} {t('common.in_session')}</Badge>
+                    <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground">{t('sales.discovery')}</h4>
+                    <Badge variant="outline" className="font-black text-xs h-5">{cart.length} {t('common.in_session')}</Badge>
                   </div>
                   <div className="relative">
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
@@ -730,7 +803,7 @@ const Sales: React.FC = () => {
                         >
                           <span className={`font-bold text-sm ${isOutOfStock ? 'text-muted-foreground' : 'group-hover:text-primary'}`}>{item.name}</span>
                           {isOutOfStock ? (
-                            <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('sales.out_of_stock', 'Out of Stock')}</span>
+                            <span className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('sales.out_of_stock', 'Out of Stock')}</span>
                           ) : (
                             <Plus className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100" />
                           )}
@@ -746,7 +819,7 @@ const Sales: React.FC = () => {
                         <ShoppingCart className="h-8 w-8 text-primary/30" />
                       </div>
                       <div className="space-y-1">
-                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-primary">{t('sales.quick_selection')}</p>
+                        <p className="text-xs font-black uppercase tracking-[0.2em] text-primary">{t('sales.quick_selection')}</p>
                         <p className="text-[11px] text-muted-foreground/60 leading-relaxed font-medium">{t('sales.search_instantly')}</p>
                       </div>
                     </div>
@@ -763,7 +836,7 @@ const Sales: React.FC = () => {
                   </Button>
                   <Button 
                     variant="outline"
-                    className="py-3 text-[10px] font-black uppercase tracking-widest rounded-xl" 
+                    className="py-3 text-xs font-black uppercase tracking-widest rounded-xl" 
                     disabled={cart.length === 0}
                     onClick={handleSaveDraft}
                   >
@@ -776,7 +849,7 @@ const Sales: React.FC = () => {
             {currentStep === 2 && (
               <div className="flex-1 p-8 space-y-6 flex flex-col items-center overflow-hidden">
                 <div className="w-full max-w-4xl flex items-center justify-between shrink-0">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground">{t('sales.ledger')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground">{t('sales.ledger')}</h4>
                   <p className="text-xs font-black text-primary uppercase tracking-widest">{t('sales.subtotal')}: {t('common.etb')} {totals.subtotal.toLocaleString()}</p>
                 </div>
 
@@ -788,29 +861,29 @@ const Sales: React.FC = () => {
                       </div>
                       <div className="flex-1 min-w-[200px]">
                         <p className="font-bold text-[11px] leading-tight whitespace-nowrap overflow-visible">{item.name}</p>
-                        <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest mt-0.5">{t('common.etb')} {item.price} / {item.unit}</p>
+                        <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mt-0.5">{t('common.etb')} {item.price} / {item.unit}</p>
                       </div>
                       <div className="flex items-center gap-3 shrink-0">
                         <div className="flex items-center border border-border/40 rounded-lg bg-muted/20 overflow-hidden h-7">
-                          <button onClick={() => updateCartItem(item.itemId, { quantity: Math.max(1, item.quantity - 1) })} className="px-2 hover:bg-muted text-[10px] font-bold">-</button>
+                          <button onClick={() => updateCartItem(item.itemId, { quantity: Math.max(1, item.quantity - 1) })} className="px-2 hover:bg-muted text-xs font-bold">-</button>
                           <Input 
                             type="number" 
-                            className="w-10 h-full text-center text-[10px] font-black bg-transparent border-none focus-visible:ring-0 px-0" 
+                            className="w-10 h-full text-center text-xs font-black bg-transparent border-none focus-visible:ring-0 px-0" 
                             value={item.quantity} 
                             onChange={e => updateCartItem(item.itemId, { quantity: parseFloat(e.target.value) || 0 })}
                           />
-                          <button onClick={() => updateCartItem(item.itemId, { quantity: item.quantity + 1 })} className="px-2 hover:bg-muted text-[10px] font-bold">+</button>
+                          <button onClick={() => updateCartItem(item.itemId, { quantity: item.quantity + 1 })} className="px-2 hover:bg-muted text-xs font-bold">+</button>
                         </div>
                         <Select 
                           value={item.unitType} 
                           onValueChange={val => updateCartItem(item.itemId, { unitType: val })}
                         >
-                          <SelectTrigger className="h-7 w-20 text-[9px] font-black uppercase tracking-widest rounded-lg border-border/40 bg-card px-2">
+                          <SelectTrigger className="h-7 w-20 text-xs font-black uppercase tracking-widest rounded-lg border-border/40 bg-card px-2">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="base" className="text-[9px] uppercase font-bold">{t('sales.individual')}</SelectItem>
-                            <SelectItem value="pack" className="text-[9px] uppercase font-bold">{t('sales.pack')}</SelectItem>
+                            <SelectItem value="base" className="text-xs uppercase font-bold">{t('sales.individual')}</SelectItem>
+                            <SelectItem value="pack" className="text-xs uppercase font-bold">{t('sales.pack')}</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
@@ -825,13 +898,13 @@ const Sales: React.FC = () => {
                 </div>
 
                 <div className="w-full max-w-4xl pt-4 flex gap-3 shrink-0">
-                  <Button variant="outline" className="flex-1 h-10 text-[10px] font-black uppercase tracking-widest border-2 rounded-xl" onClick={() => setCurrentStep(1)}>
+                  <Button variant="outline" className="flex-1 h-10 text-xs tracking-widest border-2 rounded-xl" onClick={() => setCurrentStep(1)}>
                     {t('sales.add_more')}
                   </Button>
-                  <Button variant="secondary" className="h-10 text-[10px] font-black uppercase tracking-widest rounded-xl" onClick={handleSaveDraft}>
+                  <Button variant="secondary" className="h-10 text-xs tracking-widest rounded-xl" onClick={handleSaveDraft}>
                     {t('sales.save_draft')}
                   </Button>
-                  <Button className="flex-1 h-10 text-[10px] font-black uppercase tracking-widest shadow-lg rounded-xl" onClick={() => setCurrentStep(3)}>
+                  <Button className="flex-1 h-10 text-xs tracking-widest shadow-lg rounded-xl" onClick={() => setCurrentStep(3)}>
                     {t('sales.proceed_settlement')}
                   </Button>
                 </div>
@@ -844,21 +917,21 @@ const Sales: React.FC = () => {
                   {/* Phase 1: Context & Inputs in Rows */}
                   <div className="space-y-6">
                     <div className="space-y-3">
-                      <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('sales.financial_adjustments')}</h4>
+                      <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('sales.financial_adjustments')}</h4>
                       <div className="flex items-center gap-6 p-4 rounded-2xl bg-card border border-border shadow-sm">
                         <div className="flex-1 space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground opacity-60">{t('sales.discount_flat')}</label>
+                          <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground opacity-60">{t('sales.discount_flat')}</label>
                           <Input className="h-10 bg-muted/10 font-bold border-none" placeholder="0.00" type="number" value={globalDiscount} onChange={e => setGlobalDiscount(e.target.value)} />
                         </div>
                         <div className="flex-1 space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground opacity-60">{t('sales.vat_percent')}</label>
+                          <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground opacity-60">{t('sales.vat_percent')}</label>
                           <Input className="h-10 bg-muted/10 font-bold border-none" placeholder="15" type="number" value={globalVAT} onChange={e => setGlobalVAT(e.target.value)} />
                         </div>
                       </div>
                     </div>
 
                     <div className="space-y-3">
-                      <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('sales.customer_identity')}</h4>
+                      <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('sales.customer_identity')}</h4>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 rounded-2xl bg-card border border-border shadow-sm">
                         <div className="relative">
                           <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
@@ -869,18 +942,18 @@ const Sales: React.FC = () => {
                           <Input placeholder={t('sales.phone_number')} className="h-10 pl-10 text-xs font-bold bg-card rounded-xl" value={customerInfo.phone} onChange={e => setCustomerInfo({...customerInfo, phone: e.target.value})} />
                         </div>
                         <div className="flex bg-muted p-1 rounded-xl w-full md:col-span-2">
-                          <Button variant={!paymentInfo.isDebt ? "default" : "ghost"} size="sm" onClick={() => setPaymentInfo({...paymentInfo, isDebt: false})} className="flex-1 h-8 text-[9px] font-black uppercase tracking-widest rounded-lg">{t('sales.settled')}</Button>
+                          <Button variant={!paymentInfo.isDebt ? "default" : "ghost"} size="sm" onClick={() => setPaymentInfo({...paymentInfo, isDebt: false})} className="flex-1 h-8 text-xs tracking-widest rounded-lg">{t('sales.settled')}</Button>
                           <Button variant={paymentInfo.isDebt ? "destructive" : "ghost"} size="sm" onClick={() => {
                             const d = new Date();
                             d.setDate(d.getDate() + 5);
                             setPaymentInfo({...paymentInfo, isDebt: true, dueDate: paymentInfo.dueDate || d.toISOString().split('T')[0]});
-                          }} className="flex-1 h-8 text-[9px] font-black uppercase tracking-widest rounded-lg">{t('sales.debt')}</Button>
+                          }} className="flex-1 h-8 text-xs font-black uppercase tracking-widest rounded-lg">{t('sales.debt')}</Button>
                         </div>
                       </div>
                     </div>
 
                     <div className="space-y-3">
-                      <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('sales.payment_logistics')}</h4>
+                      <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('sales.payment_logistics')}</h4>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 rounded-2xl bg-card border border-border shadow-sm">
                         <Select value={paymentInfo.method} onValueChange={val => setPaymentInfo({...paymentInfo, method: val})}>
                           <SelectTrigger className="h-10 bg-card text-xs font-bold rounded-xl">
@@ -906,25 +979,25 @@ const Sales: React.FC = () => {
                   <div className="pt-4">
                     <div className="flex items-center justify-between gap-6 p-6 rounded-[28px] bg-primary text-primary-foreground shadow-xl border border-primary-foreground/10">
                       <div className="flex flex-col gap-0.5">
-                        <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-primary-foreground/60">{t('sales.subtotal')}</span>
+                        <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary-foreground/60">{t('sales.subtotal')}</span>
                         <p className="text-lg font-bold opacity-80">{t('common.etb')} {totals.subtotal.toLocaleString()}</p>
                       </div>
                       <div className="h-10 w-px bg-primary-foreground/20" />
                       <div className="flex flex-col items-end gap-0.5">
-                        <span className="text-[9px] font-black uppercase tracking-[0.2em] text-primary-foreground/60">{t('sales.total_settlement')}</span>
+                        <span className="text-xs font-black uppercase tracking-[0.2em] text-primary-foreground/60">{t('sales.total_settlement')}</span>
                         <p className="text-3xl font-black tracking-tight">{t('common.etb')} {totals.finalTotal.toLocaleString()}</p>
                       </div>
                     </div>
                   </div>
 
                   <div className="pt-2 flex flex-col gap-1.5">
-                    <Button onClick={handleSubmit} className="w-full h-10 text-xs font-black uppercase tracking-[0.2em] shadow-lg rounded-xl" disabled={cart.length === 0 || (paymentInfo.isDebt && (!customerInfo.name || !customerInfo.phone || !paymentInfo.dueDate))}>
+                    <Button onClick={handleSubmit} className="w-full h-10 text-xs tracking-[0.2em] shadow-lg rounded-xl" disabled={cart.length === 0 || (paymentInfo.isDebt && (!customerInfo.name || !customerInfo.phone || !paymentInfo.dueDate))}>
                       {t('sales.authorize')}
                     </Button>
-                    <Button variant="outline" onClick={handleSaveDraft} className="w-full h-9 text-[10px] font-black uppercase tracking-widest rounded-xl" disabled={cart.length === 0}>
+                    <Button variant="outline" onClick={handleSaveDraft} className="w-full h-9 text-xs tracking-widest rounded-xl" disabled={cart.length === 0}>
                       {t('sales.save_draft')}
                     </Button>
-                    <Button variant="ghost" onClick={() => setCurrentStep(2)} className="w-full text-[9px] font-bold uppercase tracking-widest opacity-40 hover:bg-transparent h-7">
+                    <Button variant="ghost" onClick={() => setCurrentStep(2)} className="w-full text-xs font-bold tracking-widest opacity-40 hover:bg-transparent h-7">
                       {t('sales.back_to_cart')}
                     </Button>
                   </div>
@@ -935,41 +1008,63 @@ const Sales: React.FC = () => {
         </div>
       </Modal>
 
+      <AlertDialog open={showDiscardConfirm} onOpenChange={setShowDiscardConfirm}>
+        <AlertDialogContent className="rounded-[32px] bg-background border-border shadow-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-xl font-black uppercase tracking-tight">{t('sales.discard_title', 'Discard Sale?')}</AlertDialogTitle>
+            <AlertDialogDescription className="text-xs font-medium text-muted-foreground leading-relaxed">
+              {t('sales.discard_desc', 'You have items in your cart. Are you sure you want to discard this sale?')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-3">
+            <AlertDialogCancel className="rounded-xl border-border h-11 text-xs font-black uppercase tracking-widest">
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDiscard}
+              className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-xs font-black uppercase tracking-widest"
+            >
+              {t('common.discard', 'Discard')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Receipt Modal */}
       <Modal isOpen={showReceiptModal} onClose={() => setShowReceiptModal(false)} title={t('sales.transaction_receipt')} size="md">
         {viewingSale && (
           <div className="space-y-6">
             <div className="text-center space-y-1 border-b border-dashed border-border pb-6">
               <h2 className="text-2xl font-black tracking-tight uppercase">{t('sales.receipt_header')}</h2>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('sales.receipt_id_label', 'ID: #REC-{id}', { id: viewingSale.id })}</p>
+              <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('sales.receipt_id_label', 'ID: #REC-{id}', { id: viewingSale.id })}</p>
               <p className="text-xs text-muted-foreground">{formatDateTime(viewingSale.createdAt)}</p>
             </div>
 
             <div className="space-y-4">
               <div className="flex justify-between items-end border-b border-border/50 pb-2">
                 <div className="space-y-1">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('sales.item_details')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('sales.item_details')}</p>
                   <p className="font-bold text-sm">{viewingSale.itemName}</p>
                 </div>
                 <p className="font-black text-lg">{t('common.etb')} {viewingSale.totalPrice.toLocaleString()}</p>
               </div>
               <div className="grid grid-cols-2 gap-4 text-xs font-medium">
                 <div className="p-3 rounded-xl bg-card border border-border/50">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">{t('sales.customer')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1">{t('sales.customer')}</p>
                   <p>{viewingSale.customerName || t('sales.walk_in')}</p>
                 </div>
                 <div className="p-3 rounded-xl bg-card border border-border/50 text-right">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">{t('sales.payment')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1">{t('sales.payment')}</p>
                   <p>{viewingSale.paymentMethod} • {viewingSale.paymentStatus}</p>
                 </div>
               </div>
             </div>
 
             <div className="flex gap-3 pt-4">
-              <Button onClick={() => generateReceipt(viewingSale)} className="flex-1 py-2.5 rounded-xl font-bold uppercase tracking-widest text-xs">
+              <Button onClick={() => generateReceipt(viewingSale)} className="flex-1 py-2.5 rounded-xl font-bold tracking-widest text-xs">
                 <Printer className="mr-1.5 h-3.5 w-3.5" /> {t('common.print')}
               </Button>
-              <Button variant="ghost" onClick={() => setShowReceiptModal(false)} className="py-2.5 font-bold uppercase tracking-widest text-xs">{t('common.done')}</Button>
+              <Button variant="ghost" onClick={() => setShowReceiptModal(false)} className="py-2.5 font-bold tracking-widest text-xs">{t('common.done')}</Button>
             </div>
           </div>
         )}
@@ -985,32 +1080,32 @@ const Sales: React.FC = () => {
               <p className="text-xs">{t('sales.original_qty_total', 'Original qty: {qty} · Total: {total}', { qty: returnSale.quantity, total: `${t('common.etb')} ${returnSale.totalPrice.toLocaleString()}` })}</p>
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 {t('sales.quantity_to_return', 'Quantity to Return')} *
               </label>
               <Input required type="number" min="1" max={returnSale.quantity}
                 value={returnQty} onChange={e => setReturnQty(e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 {t('sales.refund_amount')}
               </label>
               <Input type="number" min="0"
                 value={returnRefund} onChange={e => setReturnRefund(e.target.value)} />
-              <p className="text-[10px] text-muted-foreground">{t('sales.return_refund_hint', 'Set to 0 for no refund (exchange only)')}</p>
+              <p className="text-xs text-muted-foreground">{t('sales.return_refund_hint', 'Set to 0 for no refund (exchange only)')}</p>
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 {t('sales.return_reason_label', 'Reason')}
               </label>
               <Input value={returnReason} onChange={e => setReturnReason(e.target.value)}
                 placeholder={t('sales.return_reason_placeholder', 'Defective, wrong item, customer request...')} />
             </div>
             <div className="flex gap-2 pt-2">
-              <Button type="button" variant="outline" className="flex-1 h-9 text-[10px] font-bold uppercase tracking-widest" onClick={() => setShowReturnModal(false)}>
+              <Button type="button" variant="outline" className="flex-1 h-9 text-xs font-bold tracking-widest" onClick={() => setShowReturnModal(false)}>
                 {t('common.cancel')}
               </Button>
-              <Button type="submit" className="flex-1 h-9 text-[10px] font-bold uppercase tracking-widest" disabled={!returnQty || parseFloat(returnQty) < 1}>
+              <Button type="submit" className="flex-1 h-9 text-xs font-bold tracking-widest" disabled={!returnQty || parseFloat(returnQty) < 1}>
                 {t('sales.process_return', 'Process Return')}
               </Button>
             </div>
@@ -1038,13 +1133,13 @@ const Sales: React.FC = () => {
                 <div key={draft.id} className="flex items-center justify-between p-4 rounded-xl border border-border/60 bg-card/50 hover:bg-card transition-all">
                   <div className="flex-1 min-w-0">
                     <p className="font-bold text-sm">{draft.customerName || t('sales.walk_in')}</p>
-                    <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest mt-0.5">
+                    <p className="text-xs text-muted-foreground font-bold uppercase tracking-widest mt-0.5">
                       {items.length} {t('common.items')} &middot; {t('common.etb')} {total.toLocaleString()}
                     </p>
-                    <p className="text-[9px] text-muted-foreground mt-0.5">{formatDate(draft.createdAt)}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{formatDate(draft.createdAt)}</p>
                   </div>
                   <div className="flex gap-1.5 shrink-0">
-                    <Button size="sm" variant="outline" onClick={() => resumeDraft(draft.id)} className="h-7 text-[9px] font-bold uppercase tracking-widest px-2">
+                    <Button size="sm" variant="outline" onClick={() => resumeDraft(draft.id)} className="h-7 text-xs font-bold tracking-widest px-2">
                       {t('sales.resume')}
                     </Button>
                     <Button size="sm" variant="destructive" onClick={() => deleteDraft(draft.id)} className="h-7 w-7 p-0">

@@ -36,14 +36,14 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
             <Building2 className="h-8 w-8 text-white/40" />
           </div>
           <h2 className="text-2xl font-black text-white tracking-tighter uppercase">{t('setup.header')}</h2>
-          <p className="text-[10px] font-black uppercase tracking-[0.4em] text-white/30 mt-2">
+          <p className="text-xs font-black uppercase tracking-[0.4em] text-white/30 mt-2">
             {t('setup.create_first')}
           </p>
         </div>
 
         <form onSubmit={handleCreate} className="space-y-5">
           <div className="space-y-1.5 text-left">
-            <label className="text-[10px] font-black uppercase tracking-widest text-white/30 px-1">{t('setup.legal_name')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-white/30 px-1">{t('setup.legal_name')}</label>
             <input
               type="text" value={form.businessName}
               onChange={e => setForm({ ...form, businessName: e.target.value })}
@@ -52,7 +52,7 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
             />
           </div>
           <div className="space-y-1.5 text-left">
-            <label className="text-[10px] font-black uppercase tracking-widest text-white/30 px-1">{t('setup.branch_name')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-white/30 px-1">{t('setup.branch_name')}</label>
             <input
               type="text" value={form.storeName}
               onChange={e => setForm({ ...form, storeName: e.target.value })}
@@ -61,7 +61,7 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
             />
           </div>
           <div className="space-y-1.5 text-left">
-            <label className="text-[10px] font-black uppercase tracking-widest text-white/30 px-1">{t('setup.currency')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-white/30 px-1">{t('setup.currency')}</label>
             <input
               type="text" value={form.currency}
               onChange={e => setForm({ ...form, currency: e.target.value })}
@@ -75,7 +75,7 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
             {t('setup.create_continue')}
           </button>
           <button type="button" onClick={onComplete}
-            className="w-full text-[10px] font-black uppercase tracking-widest text-white/20 hover:text-white/40 transition-colors py-2"
+            className="w-full text-xs font-black uppercase tracking-widest text-white/20 hover:text-white/40 transition-colors py-2"
           >
             {t('setup.skip')}
           </button>

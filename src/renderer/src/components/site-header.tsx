@@ -32,7 +32,7 @@ export function SiteHeader() {
 
         <div className="flex flex-col">
           <h1 className="text-xs font-semibold tracking-tight text-foreground">{getPageTitle()}</h1>
-          <p className="text-[9px] font-medium text-muted-foreground/60">{t('header.terminal_active')}</p>
+          <p className="text-xs font-medium text-muted-foreground/60">{t('header.terminal_active')}</p>
         </div>
 
         <div className="mx-3 flex-1 max-w-sm">

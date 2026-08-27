@@ -287,7 +287,7 @@ const Analytics: React.FC = () => {
               {formattedRange && (
                 <>
                   <div className="w-1 h-1 rounded-full bg-muted-foreground/30" />
-                  <p className="text-[10px] font-bold text-primary uppercase tracking-wider">
+                  <p className="text-xs font-bold text-primary uppercase tracking-wider">
                     {formattedRange}
                   </p>
                 </>
@@ -306,7 +306,7 @@ const Analytics: React.FC = () => {
                     <button
                       key={p}
                       onClick={() => setPeriod(p)}
-                      className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${
                         period === p
                           ? "bg-primary text-primary-foreground shadow-sm"
                           : "text-muted-foreground hover:text-foreground"
@@ -323,27 +323,27 @@ const Analytics: React.FC = () => {
                   <div className="flex items-center gap-1.5 px-2">
                     <Label
                       htmlFor="start"
-                      className="text-[9px] font-bold uppercase text-muted-foreground"
+                      className="text-xs font-bold uppercase text-muted-foreground"
                     >
                       {t("analytics.start_date")}
                     </Label>
                     <DatePicker
                       value={dateRange.start}
                       onChange={(v) => setDateRange((prev) => ({ ...prev, start: v }))}
-                      className="h-7 w-32 bg-background border-none text-[10px] font-bold grow"
+                      className="h-7 w-32 bg-background border-none text-xs font-bold grow"
                     />
                   </div>
                   <div className="flex items-center gap-1.5 px-2">
                     <Label
                       htmlFor="end"
-                      className="text-[9px] font-bold uppercase text-muted-foreground"
+                      className="text-xs font-bold uppercase text-muted-foreground"
                     >
                       {t("analytics.end_date")}
                     </Label>
                     <DatePicker
                       value={dateRange.end}
                       onChange={(v) => setDateRange((prev) => ({ ...prev, end: v }))}
-                      className="h-7 w-32 bg-background border-none text-[10px] font-bold grow"
+                      className="h-7 w-32 bg-background border-none text-xs font-bold grow"
                     />
                   </div>
                   <button
@@ -359,7 +359,7 @@ const Analytics: React.FC = () => {
             <div className="flex flex-wrap items-center gap-3">
               {insights && (
                 <div
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 text-[10px] font-bold tracking-wider uppercase bg-muted text-foreground border border-border`}
+                  className={`px-3 py-2 rounded-xl flex items-center gap-2 text-xs font-bold tracking-wider uppercase bg-muted text-foreground border border-border`}
                 >
                   {insights.isGrowthPositive ? (
                     <TrendingUp size={14} />
@@ -375,7 +375,7 @@ const Analytics: React.FC = () => {
               )}
 
               {lowStockItems.length > 0 && (
-                <div className="px-3 py-2 rounded-xl flex items-center gap-2 text-[10px] font-bold tracking-wider uppercase bg-muted text-foreground border border-border">
+                <div className="px-3 py-2 rounded-xl flex items-center gap-2 text-xs font-bold tracking-wider uppercase bg-muted text-foreground border border-border">
                   <AlertTriangle size={14} />
                   {t("analytics.low_on")} {lowStockItems.length}{" "}
                   {t("analytics.products")}
@@ -395,12 +395,12 @@ const Analytics: React.FC = () => {
                 </div>
                 <Badge
                   variant="outline"
-                  className="text-[9px] font-bold uppercase tracking-widest"
+                  className="text-xs font-bold uppercase tracking-widest"
                 >
                   {t(`analytics.${period}`)}
                 </Badge>
               </div>
-              <p className="text-muted-foreground text-[10px] font-bold uppercase tracking-wider mb-1">
+              <p className="text-muted-foreground text-xs font-bold uppercase tracking-wider mb-1">
                 {t("common.sales")}
               </p>
               <h3 className="text-2xl font-bold tracking-tight text-foreground">
@@ -418,12 +418,12 @@ const Analytics: React.FC = () => {
                 </div>
                 <Badge
                   variant="outline"
-                  className="text-[9px] font-bold uppercase tracking-widest"
+                  className="text-xs font-bold uppercase tracking-widest"
                 >
                   {t(`analytics.${period}`)}
                 </Badge>
               </div>
-              <p className="text-muted-foreground text-[10px] font-bold uppercase tracking-wider mb-1">
+              <p className="text-muted-foreground text-xs font-bold uppercase tracking-wider mb-1">
                 {t("common.profit")}
               </p>
               <h3 className="text-2xl font-bold tracking-tight text-foreground">
@@ -441,12 +441,12 @@ const Analytics: React.FC = () => {
                 </div>
                 <Badge
                   variant="outline"
-                  className="text-[9px] font-bold uppercase tracking-widest"
+                  className="text-xs font-bold uppercase tracking-widest"
                 >
                   {t(`analytics.${period}`)}
                 </Badge>
               </div>
-              <p className="text-muted-foreground text-[10px] font-bold uppercase tracking-wider mb-1">
+              <p className="text-muted-foreground text-xs font-bold uppercase tracking-wider mb-1">
                 {t("analytics.expenses_today").replace(
                   "Today",
                   t(`analytics.${period}`),
@@ -467,12 +467,12 @@ const Analytics: React.FC = () => {
                 </div>
                 <Badge
                   variant="outline"
-                  className="text-[9px] font-bold uppercase tracking-widest"
+                  className="text-xs font-bold uppercase tracking-widest"
                 >
                   {t(`analytics.${period}`)}
                 </Badge>
               </div>
-              <p className="text-muted-foreground text-[10px] font-bold uppercase tracking-wider mb-1 relative z-10">
+              <p className="text-muted-foreground text-xs font-bold uppercase tracking-wider mb-1 relative z-10">
                 {t("analytics.net_today").replace(
                   "Today",
                   t(`analytics.${period}`),
@@ -501,7 +501,7 @@ const Analytics: React.FC = () => {
               {paymentMethodBreakdown.length === 0 ? (
                 <div className="flex flex-col items-center justify-center text-center text-muted-foreground py-6">
                   <PieChart size={24} className="mb-2 opacity-20" />
-                  <p className="text-[10px] font-bold uppercase tracking-wider">
+                  <p className="text-xs font-bold uppercase tracking-wider">
                     {t("analytics.no_sales_data")}
                   </p>
                 </div>
@@ -531,7 +531,7 @@ const Analytics: React.FC = () => {
                             {pm.method}
                           </span>
                           {isPredominant && (
-                            <span className="text-[9px] font-bold uppercase text-primary tracking-wider">
+                            <span className="text-xs font-bold uppercase text-primary tracking-wider">
                               {t('analytics.most_used')}
                             </span>
                           )}
@@ -542,7 +542,7 @@ const Analytics: React.FC = () => {
                           >
                             {t("common.etb")} {pm.amount.toLocaleString()}
                           </span>
-                          <span className="text-[10px] font-bold text-muted-foreground ml-2">
+                          <span className="text-xs font-bold text-muted-foreground ml-2">
                             ({pm.percentage.toFixed(1)}%)
                           </span>
                         </div>
@@ -570,11 +570,11 @@ const Analytics: React.FC = () => {
                   {t("analytics.sales_trend")}
                 </h3>
                 <div className="flex items-center gap-2 mt-1">
-                  <p className="text-muted-foreground text-[10px] uppercase font-bold tracking-wider">
+                  <p className="text-muted-foreground text-xs uppercase font-bold tracking-wider">
                     {t("analytics.performance_over_time")}
                   </p>
                   <div className="w-1 h-1 rounded-full bg-muted-foreground/30" />
-                  <p className="text-[9px] font-bold text-primary uppercase tracking-wider">
+                  <p className="text-xs font-bold text-primary uppercase tracking-wider">
                     {formattedRange}
                   </p>
                 </div>
@@ -582,13 +582,13 @@ const Analytics: React.FC = () => {
               <div className="flex gap-6">
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-foreground" />
-                  <span className="text-[10px] font-bold text-foreground uppercase tracking-wider">
+                  <span className="text-xs font-bold text-foreground uppercase tracking-wider">
                     {t("common.sales")}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-muted-foreground" />
-                  <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+                  <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
                     {t("common.profit")}
                   </span>
                 </div>
@@ -599,8 +599,8 @@ const Analytics: React.FC = () => {
               {chartData.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground">
                   <TrendingUp size={32} className="mb-2 opacity-20" />
-                  <p className="text-[10px] font-black uppercase tracking-widest">{t('analytics.no_sales_data')}</p>
-                  <p className="text-[9px] mt-1 opacity-60">{t('analytics.no_trend')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest">{t('analytics.no_sales_data')}</p>
+                  <p className="text-xs mt-1 opacity-60">{t('analytics.no_trend')}</p>
                 </div>
               ) : (
               <ResponsiveContainer width="100%" height="100%">
@@ -724,7 +724,7 @@ const Analytics: React.FC = () => {
                     <h3 className="text-lg font-bold tracking-tight text-foreground">
                       {t("analytics.debt_summary")}
                     </h3>
-                    <p className="text-muted-foreground text-[10px] uppercase font-bold tracking-wider mt-0.5">
+                    <p className="text-muted-foreground text-xs uppercase font-bold tracking-wider mt-0.5">
                       {t("analytics.critical_metrics")}
                     </p>
                   </div>
@@ -732,7 +732,7 @@ const Analytics: React.FC = () => {
 
                 <div className="space-y-6">
                   <div>
-                    <p className="text-muted-foreground text-[10px] font-bold uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <p className="text-muted-foreground text-xs font-bold uppercase tracking-wider mb-2 flex items-center gap-2">
                       <ArrowUpRight size={12} className="text-foreground" />
                       {t("analytics.customers_owe")}
                     </p>
@@ -745,7 +745,7 @@ const Analytics: React.FC = () => {
                   <div className="h-px w-full bg-border" />
 
                   <div>
-                    <p className="text-muted-foreground text-[10px] font-bold uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <p className="text-muted-foreground text-xs font-bold uppercase tracking-wider mb-2 flex items-center gap-2">
                       <TrendingDown
                         size={12}
                         className="text-muted-foreground"
@@ -760,7 +760,7 @@ const Analytics: React.FC = () => {
               </div>
 
               <div className="mt-6 p-4 bg-muted rounded-2xl border border-border">
-                <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-1">
+                <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">
                   {t("analytics.inventory_value")}
                 </p>
                 <p className="text-base font-bold text-foreground">
@@ -785,7 +785,7 @@ const Analytics: React.FC = () => {
                 {lowStockItems.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground py-10">
                     <Shield size={24} className="mb-2 opacity-20" />
-                    <p className="text-[10px] font-bold uppercase tracking-wider">
+                    <p className="text-xs font-bold uppercase tracking-wider">
                       {t("analytics.all_healthy")}
                     </p>
                   </div>
@@ -805,7 +805,7 @@ const Analytics: React.FC = () => {
                             <p className="text-xs font-bold truncate max-w-[150px] text-foreground">
                               {item.name}
                             </p>
-                            <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
+                            <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
                               {item.totalBaseQuantity}{" "}
                               {t("analytics.left_in_stock")}
                             </p>
@@ -813,7 +813,7 @@ const Analytics: React.FC = () => {
                         </div>
                         <Badge
                           variant="outline"
-                          className={`text-[9px] font-bold bg-muted text-foreground border-border`}
+                          className={`text-xs font-bold bg-muted text-foreground border-border`}
                         >
                           {isOut ? t("analytics.out") : t("analytics.low")}
                         </Badge>
@@ -837,7 +837,7 @@ const Analytics: React.FC = () => {
                 <h3 className="text-lg font-bold tracking-tight text-foreground">
                   {salesDistribution.title}
                 </h3>
-                <p className="text-muted-foreground text-[10px] uppercase font-bold tracking-wider mt-0.5">
+                <p className="text-muted-foreground text-xs uppercase font-bold tracking-wider mt-0.5">
                   {salesDistribution.subtitle}
                 </p>
               </div>
@@ -846,7 +846,7 @@ const Analytics: React.FC = () => {
               {salesDistribution.data.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground">
                   <BarChart3 size={32} className="mb-2 opacity-20" />
-                  <p className="text-[10px] font-black uppercase tracking-widest">{t('analytics.no_sales_data')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest">{t('analytics.no_sales_data')}</p>
                 </div>
               ) : (
               <ResponsiveContainer width="100%" height="100%">
@@ -910,7 +910,7 @@ const Analytics: React.FC = () => {
                     {t("analytics.top_products")}
                   </h3>
                 </div>
-                <Badge variant="secondary" className="text-[9px] font-bold">
+                <Badge variant="secondary" className="text-xs font-bold">
                   {formattedRange}
                 </Badge>
               </div>
@@ -919,21 +919,21 @@ const Analytics: React.FC = () => {
                 {(data?.topItems || []).length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground py-10">
                     <Boxes size={24} className="mb-2 opacity-20" />
-                    <p className="text-[10px] font-bold uppercase tracking-wider">
+                    <p className="text-xs font-bold uppercase tracking-wider">
                       {t("analytics.no_sales_data")}
                     </p>
                   </div>
                 ) : (
                   (data?.topItems || []).slice(0, 8).map((item, i) => (
                     <div key={i} className="flex items-center gap-4 group">
-                      <div className="w-8 h-8 rounded-xl bg-muted flex items-center justify-center text-[10px] font-bold text-muted-foreground group-hover:bg-primary group-hover:text-primary-foreground transition-colors border border-border">
+                      <div className="w-8 h-8 rounded-xl bg-muted flex items-center justify-center text-xs font-bold text-muted-foreground group-hover:bg-primary group-hover:text-primary-foreground transition-colors border border-border">
                         #{i + 1}
                       </div>
                       <div className="flex-1">
                         <p className="text-xs font-bold truncate text-foreground">
                           {item.name}
                         </p>
-                        <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
+                        <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
                           {item.totalQty} {t("analytics.units_sold")}
                         </p>
                       </div>
@@ -960,7 +960,7 @@ const Analytics: React.FC = () => {
                     {t("analytics.recent_activity")}
                   </h3>
                 </div>
-                <Badge variant="secondary" className="text-[9px] font-bold">
+                <Badge variant="secondary" className="text-xs font-bold">
                   {formattedRange}
                 </Badge>
               </div>
@@ -969,7 +969,7 @@ const Analytics: React.FC = () => {
                 {recentActivity.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground py-10">
                     <Activity size={24} className="mb-2 opacity-20" />
-                    <p className="text-[10px] font-bold uppercase tracking-wider">
+                    <p className="text-xs font-bold uppercase tracking-wider">
                       {t("analytics.no_activity")}
                     </p>
                   </div>
@@ -1007,12 +1007,12 @@ const Analytics: React.FC = () => {
                               {activity.amount.toLocaleString()}
                             </span>
                           </div>
-                          <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground line-clamp-1">
+                          <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground line-clamp-1">
                             {activity.description ||
                               activity.extra ||
                               t("analytics.system_update")}
                           </p>
-                          <p className="text-[8px] font-medium text-muted-foreground mt-0.5">
+                          <p className="text-xs font-medium text-muted-foreground mt-0.5">
                             {formatTime(activity.date)}{" "}
                             · {formatDate(activity.date)}
                           </p>

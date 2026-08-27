@@ -170,7 +170,7 @@ const ReminderHistory: React.FC = () => {
       snoozed: { label: t('reminders.status_snoozed'), variant: 'outline' },
     };
     const c = config[status];
-    return <Badge variant={c.variant} className="uppercase text-[9px] font-bold">{c.label}</Badge>;
+    return <Badge variant={c.variant} className="uppercase text-xs font-bold">{c.label}</Badge>;
   };
 
   return (
@@ -179,9 +179,9 @@ const ReminderHistory: React.FC = () => {
         <div className="px-4 lg:px-6 flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-black tracking-tighter uppercase">{t('reminders.title')}</h1>
-            <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest mt-1">{t('reminders.subtitle')}</p>
+            <p className="text-xs text-muted-foreground font-black uppercase tracking-widest mt-1">{t('reminders.subtitle')}</p>
           </div>
-          <Button onClick={openCreate} className="h-11 px-5 text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg">
+          <Button onClick={openCreate} className="h-11 px-5 text-xs font-black uppercase tracking-widest rounded-xl shadow-lg">
             <Plus className="h-4 w-4 mr-2" />
             {t('reminders.new_reminder')}
           </Button>
@@ -202,8 +202,8 @@ const ReminderHistory: React.FC = () => {
                     <BellOff className="h-8 w-8 text-muted-foreground" />
                   </div>
                   <p className="text-sm font-black uppercase tracking-widest text-muted-foreground">{t('reminders.no_reminders')}</p>
-                  <p className="text-[10px] text-muted-foreground font-bold mt-1">{t('reminders.create_first')}</p>
-                  <Button onClick={openCreate} variant="outline" size="sm" className="mt-4 h-9 text-[9px] font-black uppercase tracking-widest rounded-lg">
+                  <p className="text-xs text-muted-foreground font-bold mt-1">{t('reminders.create_first')}</p>
+                  <Button onClick={openCreate} variant="outline" size="sm" className="mt-4 h-9 text-xs font-black uppercase tracking-widest rounded-lg">
                     <Plus className="h-3 w-3 mr-1.5" />
                     {t('reminders.new_reminder')}
                   </Button>
@@ -221,10 +221,10 @@ const ReminderHistory: React.FC = () => {
                           <p className="text-xs text-muted-foreground font-medium truncate mt-0.5">{reminder.message}</p>
                         )}
                         <div className="flex flex-wrap items-center gap-2 mt-3">
-                          <Badge variant="outline" className="uppercase text-[9px] font-bold">{getTypeLabel(reminder.type)}</Badge>
+                          <Badge variant="outline" className="uppercase text-xs font-bold">{getTypeLabel(reminder.type)}</Badge>
                           {getStatusBadge(reminder.status)}
                         </div>
-                        <div className="flex flex-wrap items-center gap-4 mt-3 text-[10px] text-muted-foreground font-bold uppercase tracking-wider">
+                        <div className="flex flex-wrap items-center gap-4 mt-3 text-xs text-muted-foreground font-bold uppercase tracking-wider">
                           <div className="flex items-center gap-1">
                             <Calendar className="h-3 w-3" />
                             <span>{t('reminders.trigger_at')}: {formatDate(reminder.triggerAt)}</span>
@@ -245,9 +245,9 @@ const ReminderHistory: React.FC = () => {
                               <Clock className="h-4 w-4" />
                             </Button>
                             <div className="absolute right-0 top-full mt-1 hidden group-hover/snooze:flex flex-col bg-popover border rounded-xl shadow-xl p-1 z-10 min-w-[100px]">
-                              <Button variant="ghost" size="sm" className="h-7 justify-start text-[9px] font-black uppercase tracking-widest rounded-lg" onClick={() => handleSnooze(reminder.id, 1)}>{t('reminders.snooze_1h')}</Button>
-                              <Button variant="ghost" size="sm" className="h-7 justify-start text-[9px] font-black uppercase tracking-widest rounded-lg" onClick={() => handleSnooze(reminder.id, 24)}>{t('reminders.snooze_1d')}</Button>
-                              <Button variant="ghost" size="sm" className="h-7 justify-start text-[9px] font-black uppercase tracking-widest rounded-lg" onClick={() => handleSnooze(reminder.id, 168)}>{t('reminders.snooze_1w')}</Button>
+                              <Button variant="ghost" size="sm" className="h-7 justify-start text-xs font-black uppercase tracking-widest rounded-lg" onClick={() => handleSnooze(reminder.id, 1)}>{t('reminders.snooze_1h')}</Button>
+                              <Button variant="ghost" size="sm" className="h-7 justify-start text-xs font-black uppercase tracking-widest rounded-lg" onClick={() => handleSnooze(reminder.id, 24)}>{t('reminders.snooze_1d')}</Button>
+                              <Button variant="ghost" size="sm" className="h-7 justify-start text-xs font-black uppercase tracking-widest rounded-lg" onClick={() => handleSnooze(reminder.id, 168)}>{t('reminders.snooze_1w')}</Button>
                             </div>
                           </div>
                         )}
@@ -271,14 +271,14 @@ const ReminderHistory: React.FC = () => {
         <Modal isOpen={showModal} onClose={() => { setShowModal(false); resetForm(); }} title={editingReminder ? t('reminders.edit_reminder') : t('reminders.new_reminder')} size="lg">
           <form onSubmit={handleSubmit} className="space-y-8 py-4">
             <div className="space-y-6">
-              <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('reminders.reminder_title')}</h4>
+              <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('reminders.reminder_title')}</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('reminders.reminder_title')}</label>
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('reminders.reminder_title')}</label>
                   <Input required value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} className="h-12 bg-card rounded-xl font-bold" />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('reminders.reminder_type')}</label>
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('reminders.reminder_type')}</label>
                   <Select value={formData.type} onValueChange={val => setFormData({...formData, type: val as ReminderType})}>
                     <SelectTrigger className="h-12 bg-muted/30 border-border/50 rounded-xl">
                       <SelectValue />
@@ -294,19 +294,19 @@ const ReminderHistory: React.FC = () => {
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('reminders.reminder_message')}</label>
+              <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('reminders.reminder_message')}</label>
               <Textarea value={formData.message} onChange={e => setFormData({...formData, message: e.target.value})} className="min-h-[80px] bg-card rounded-xl" />
             </div>
 
             <div className="space-y-6">
-              <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('reminders.trigger_at')}</h4>
+              <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('reminders.trigger_at')}</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('reminders.trigger_at')}</label>
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('reminders.trigger_at')}</label>
                   <DatePicker value={formData.triggerDate} onChange={v => setFormData({...formData, triggerDate: v})} className="h-12 bg-card rounded-xl" />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('reminders.trigger_at')}</label>
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('reminders.trigger_at')}</label>
                   <Input required type="time" value={formData.triggerTime} onChange={e => setFormData({...formData, triggerTime: e.target.value})} className="h-12 bg-card rounded-xl" />
                 </div>
               </div>
@@ -329,8 +329,8 @@ const ReminderHistory: React.FC = () => {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="gap-3">
-            <AlertDialogCancel className="rounded-xl border-border h-11 text-[10px] font-black uppercase tracking-widest">{t('common.abort')}</AlertDialogCancel>
-            <AlertDialogAction onClick={() => deleteId && handleDelete(deleteId)} className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-[10px] font-black uppercase tracking-widest">
+            <AlertDialogCancel className="rounded-xl border-border h-11 text-xs font-black uppercase tracking-widest">{t('common.abort')}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => deleteId && handleDelete(deleteId)} className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-xs font-black uppercase tracking-widest">
               {t('reminders.delete_reminder')}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -342,7 +342,7 @@ const ReminderHistory: React.FC = () => {
         onClick={openCreate}
       >
         <Plus className="h-8 w-8 group-hover:rotate-90 transition-transform duration-300" strokeWidth={4} />
-        <span className="text-[8px] font-black uppercase tracking-tighter">{t('reminders.new_reminder')}</span>
+        <span className="text-xs font-black uppercase tracking-tighter">{t('reminders.new_reminder')}</span>
       </Button>
     </>
   );

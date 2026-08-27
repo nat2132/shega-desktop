@@ -176,11 +176,11 @@ const Summary: React.FC = () => {
                   <div className="p-2 bg-muted rounded-xl text-foreground">
                     <ShoppingCart size={20} />
                   </div>
-                  <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest">
+                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">
                     {t('summary.total_sales')}
                   </Badge>
                 </div>
-                <p className="text-muted-foreground text-[9px] font-black uppercase tracking-widest mb-1">
+                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">
                   {t('summary.total_sales')}
                 </p>
                 <h3 className="text-2xl font-black tracking-tight">
@@ -195,11 +195,11 @@ const Summary: React.FC = () => {
                   <div className="p-2 bg-muted rounded-xl text-foreground">
                     <Receipt size={20} />
                   </div>
-                  <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest">
+                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">
                     {t('summary.total_expenses')}
                   </Badge>
                 </div>
-                <p className="text-muted-foreground text-[9px] font-black uppercase tracking-widest mb-1">
+                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">
                   {t('summary.total_expenses')}
                 </p>
                 <h3 className="text-2xl font-black tracking-tight">
@@ -214,11 +214,11 @@ const Summary: React.FC = () => {
                   <div className="p-2 bg-muted rounded-xl text-foreground">
                     <PiggyBank size={20} />
                   </div>
-                  <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest">
+                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">
                     {t('summary.net_cashflow')}
                   </Badge>
                 </div>
-                <p className="text-muted-foreground text-[9px] font-black uppercase tracking-widest mb-1">
+                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">
                   {t('summary.net_cashflow')}
                 </p>
                 <h3 className={`text-2xl font-black tracking-tight ${netCashFlow >= 0 ? 'text-green-500' : 'text-red-500'}`}>
@@ -233,11 +233,11 @@ const Summary: React.FC = () => {
                   <div className="p-2 bg-muted rounded-xl text-foreground">
                     <CreditCard size={20} />
                   </div>
-                  <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest">
+                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">
                     {t('summary.active_debts')}
                   </Badge>
                 </div>
-                <p className="text-muted-foreground text-[9px] font-black uppercase tracking-widest mb-1">
+                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">
                   {t('summary.active_debts')}
                 </p>
                 <h3 className={`text-2xl font-black tracking-tight ${activeDebts > 0 ? 'text-amber-500' : 'text-green-500'}`}>
@@ -260,7 +260,7 @@ const Summary: React.FC = () => {
                     <div className="p-2 bg-muted rounded-xl text-foreground">
                       <BarChart3 size={18} />
                     </div>
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       {t('summary.revenue_score')}
                     </p>
                   </div>
@@ -273,7 +273,7 @@ const Summary: React.FC = () => {
                       style={{ width: `${revenueScore}%` }}
                     />
                   </div>
-                  <Badge variant="outline" className={`mt-3 text-[9px] font-black uppercase tracking-widest ${getScoreStatusBg(revenueScore)}`}>
+                  <Badge variant="outline" className={`mt-3 text-xs font-black uppercase tracking-widest ${getScoreStatusBg(revenueScore)}`}>
                     {revenueScore >= 60 ? t('summary.healthy') : revenueScore >= 40 ? t('summary.needs_attention') : t('summary.critical')}
                   </Badge>
                 </CardContent>
@@ -285,7 +285,7 @@ const Summary: React.FC = () => {
                     <div className="p-2 bg-muted rounded-xl text-foreground">
                       <TrendingDown size={18} />
                     </div>
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       {t('summary.expense_ratio')}
                     </p>
                   </div>
@@ -298,7 +298,7 @@ const Summary: React.FC = () => {
                       style={{ width: `${Math.min(expenseRatio, 100)}%` }}
                     />
                   </div>
-                  <Badge variant="outline" className={`mt-3 text-[9px] font-black uppercase tracking-widest ${getExpenseStatusBg(expenseRatio)}`}>
+                  <Badge variant="outline" className={`mt-3 text-xs font-black uppercase tracking-widest ${getExpenseStatusBg(expenseRatio)}`}>
                     {expenseRatio <= 40 ? t('summary.healthy') : expenseRatio <= 70 ? t('summary.needs_attention') : t('summary.critical')}
                   </Badge>
                 </CardContent>
@@ -310,7 +310,7 @@ const Summary: React.FC = () => {
                     <div className="p-2 bg-muted rounded-xl text-foreground">
                       <TrendingUp size={18} />
                     </div>
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       {t('summary.profit_margin')}
                     </p>
                   </div>
@@ -323,7 +323,7 @@ const Summary: React.FC = () => {
                       style={{ width: `${Math.max(Math.min(profitMargin, 100), 0)}%` }}
                     />
                   </div>
-                  <Badge variant="outline" className={`mt-3 text-[9px] font-black uppercase tracking-widest ${getProfitStatusBg(profitMargin)}`}>
+                  <Badge variant="outline" className={`mt-3 text-xs font-black uppercase tracking-widest ${getProfitStatusBg(profitMargin)}`}>
                     {profitMargin >= 25 ? t('summary.healthy') : profitMargin >= 10 ? t('summary.needs_attention') : t('summary.critical')}
                   </Badge>
                 </CardContent>
@@ -342,7 +342,7 @@ const Summary: React.FC = () => {
                     <CardTitle className="text-sm font-black uppercase tracking-widest">
                       {t('summary.performance_pulse')}
                     </CardTitle>
-                    <CardDescription className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
+                    <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
                       {t('summary.subtitle')}
                     </CardDescription>
                   </div>
@@ -394,14 +394,14 @@ const Summary: React.FC = () => {
                     <div className="p-2 bg-muted rounded-xl text-foreground">
                       <Zap size={18} />
                     </div>
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       {t('summary.total_sales')}
                     </p>
                   </div>
                   <p className="text-xl font-black tracking-tight truncate">
                     {topProduct || t('common.no_data')}
                   </p>
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mt-1">
+                  <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mt-1">
                     {t('summary.top_selling_product')}
                   </p>
                 </CardContent>
@@ -413,14 +413,14 @@ const Summary: React.FC = () => {
                     <div className="p-2 bg-muted rounded-xl text-foreground">
                       <Package size={18} />
                     </div>
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       {t('summary.inventory_health')}
                     </p>
                   </div>
                   <p className="text-xl font-black tracking-tight">
                     {lowStock}
                   </p>
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mt-1">
+                  <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mt-1">
                     {t('summary.low_stock_alerts')}
                   </p>
                 </CardContent>
@@ -432,14 +432,14 @@ const Summary: React.FC = () => {
                     <div className="p-2 bg-muted rounded-xl text-foreground">
                       <AlertTriangle size={18} />
                     </div>
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       {t('summary.active_debts')}
                     </p>
                   </div>
                   <p className={`text-xl font-black tracking-tight ${activeDebts > 0 ? 'text-amber-500' : 'text-green-500'}`}>
                     {t('common.etb')} {activeDebts.toLocaleString()}
                   </p>
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mt-1">
+                  <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mt-1">
                     {t('summary.debt_alert')}
                   </p>
                 </CardContent>
@@ -451,14 +451,14 @@ const Summary: React.FC = () => {
                     <div className="p-2 bg-muted rounded-xl text-foreground">
                       <Banknote size={18} />
                     </div>
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       {t('summary.net_cashflow')}
                     </p>
                   </div>
                   <p className={`text-xl font-black tracking-tight ${netCashFlow >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                     {t('common.etb')} {netCashFlow.toLocaleString()}
                   </p>
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mt-1">
+                  <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mt-1">
                     {netCashFlow >= 0 ? t('summary.positive_cash_flow') : t('summary.negative_cash_flow')}
                   </p>
                 </CardContent>
@@ -477,7 +477,7 @@ const Summary: React.FC = () => {
                     <CardTitle className="text-sm font-black uppercase tracking-widest">
                       {t('summary.inventory_health')}
                     </CardTitle>
-                    <CardDescription className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
+                    <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
                       {t('summary.subtitle')}
                     </CardDescription>
                   </div>
@@ -486,7 +486,7 @@ const Summary: React.FC = () => {
               <CardContent>
                 <div className="grid grid-cols-1 gap-4 @xl/main:grid-cols-3">
                   <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       {t('summary.inventory_value')}
                     </p>
                     <p className="text-2xl font-black">
@@ -494,7 +494,7 @@ const Summary: React.FC = () => {
                     </p>
                   </div>
                   <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       {t('summary.total_sales')}
                     </p>
                     <p className="text-2xl font-black">
@@ -502,7 +502,7 @@ const Summary: React.FC = () => {
                     </p>
                   </div>
                   <div className="rounded-xl border bg-card/40 p-4 space-y-1">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       {t('summary.active_debts')}
                     </p>
                     <p className="text-2xl font-black">

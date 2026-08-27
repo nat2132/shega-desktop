@@ -314,11 +314,11 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
 
         <Tabs value={step} onValueChange={(v) => setStep(v as 'export' | 'import')} className="w-full">
           <TabsList className="w-full grid grid-cols-2">
-            <TabsTrigger value="export" className="text-[10px] font-black uppercase tracking-widest">
+            <TabsTrigger value="export" className="text-xs font-black uppercase tracking-widest">
               <Download className="h-3.5 w-3.5" />
               {t('data_transfer.export')}
             </TabsTrigger>
-            <TabsTrigger value="import" className="text-[10px] font-black uppercase tracking-widest">
+            <TabsTrigger value="import" className="text-xs font-black uppercase tracking-widest">
               <Upload className="h-3.5 w-3.5" />
               {t('data_transfer.import')}
             </TabsTrigger>
@@ -328,7 +328,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
             <Card className="border-border/40 rounded-xl">
               <CardContent className="p-4 space-y-4">
                 <div className="space-y-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                     {t('data_transfer.format')}
                   </p>
                   <div className="flex gap-2">
@@ -336,7 +336,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                       variant={exportFormat === 'csv' ? 'default' : 'outline'}
                       size="sm"
                       onClick={() => setExportFormat('csv')}
-                      className="rounded-xl text-[10px] font-black uppercase tracking-widest flex-1"
+                      className="rounded-xl text-xs font-black uppercase tracking-widest flex-1"
                     >
                       <FileSpreadsheet className="h-3.5 w-3.5" />
                       CSV Data
@@ -345,7 +345,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                       variant={exportFormat === 'pdf' ? 'default' : 'outline'}
                       size="sm"
                       onClick={() => setExportFormat('pdf')}
-                      className="rounded-xl text-[10px] font-black uppercase tracking-widest flex-1"
+                      className="rounded-xl text-xs font-black uppercase tracking-widest flex-1"
                     >
                       <FileText className="h-3.5 w-3.5" />
                       PDF Report
@@ -354,7 +354,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                 </div>
 
                 <div className="space-y-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                     {t('data_transfer.data_type')}
                   </p>
                   <Select value={dataType} onValueChange={(v) => setDataType(v as DataType)}>
@@ -377,7 +377,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                       variant="outline"
                       size="sm"
                       onClick={() => handleDownloadTemplate(dataType)}
-                      className="rounded-xl text-[9px] font-black uppercase tracking-widest h-8"
+                      className="rounded-xl text-xs font-black uppercase tracking-widest h-8"
                     >
                       <FileDown className="h-3 w-3 mr-1.5" />
                       Download CSV Template
@@ -387,7 +387,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
 
                 {showDateRange && (
                   <div className="space-y-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                       {t('common.date_range')}
                     </p>
                     <div className="space-y-2">
@@ -412,7 +412,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
             <Button
               onClick={handleExport}
               disabled={exporting}
-              className="w-full rounded-xl text-[10px] font-black uppercase tracking-widest"
+              className="w-full rounded-xl text-xs font-black uppercase tracking-widest"
             >
               <Database className="h-3.5 w-3.5" />
               {exporting ? t('common.loading') : t('data_transfer.export_action')}
@@ -423,7 +423,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
             <Card className="border-border/40 rounded-xl">
               <CardContent className="p-4 space-y-4">
                 <div className="space-y-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                     {t('data_transfer.data_type')}
                   </p>
                   <div className="flex gap-2">
@@ -443,7 +443,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                       variant="outline"
                       size="sm"
                       onClick={() => handleDownloadTemplate(importDataType)}
-                      className="rounded-xl text-[9px] font-black uppercase tracking-widest h-10 shrink-0"
+                      className="rounded-xl text-xs font-black uppercase tracking-widest h-10 shrink-0"
                     >
                       <FileDown className="h-3 w-3 mr-1" />
                       Template
@@ -452,18 +452,18 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                 </div>
 
                 <div className="space-y-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                     {t('data_transfer.upload_file')}
                   </p>
                   <Input
                     type="file"
                     accept=".csv,.json"
                     onChange={handleFileChange}
-                    className="rounded-xl text-xs file:rounded-xl file:text-[10px] file:font-black file:uppercase file:tracking-widest"
+                    className="rounded-xl text-xs file:rounded-xl file:text-xs file:font-black file:uppercase file:tracking-widest"
                   />
                   <div className="flex items-center gap-2">
                     <AlertCircle className="h-3 w-3 text-amber-500" />
-                    <span className="text-[9px] text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       {t('data_transfer.file_hint')}
                     </span>
                   </div>
@@ -471,14 +471,14 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
 
                 {currentSchema && columnMap.length > 0 && (
                   <div className="space-y-1">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                       Column Mapping
                     </p>
                     <div className="grid grid-cols-2 gap-1">
                       {columnMap.filter(m => m.confidence !== 'none').map(m => {
                         const field = currentSchema.fields.find(f => f.key === m.fieldKey);
                         return (
-                          <div key={m.fieldKey} className="flex items-center gap-1.5 text-[9px]">
+                          <div key={m.fieldKey} className="flex items-center gap-1.5 text-xs">
                             <Check className={`h-2.5 w-2.5 ${m.confidence === 'exact' ? 'text-emerald-500' : 'text-amber-500'}`} />
                             <span className="font-medium text-foreground/80">{field?.label || m.fieldKey}</span>
                             <span className="text-muted-foreground">→</span>
@@ -489,7 +489,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                       {columnMap.filter(m => m.confidence === 'none').map(m => {
                         const field = currentSchema.fields.find(f => f.key === m.fieldKey);
                         return field?.required ? (
-                          <div key={m.fieldKey} className="flex items-center gap-1.5 text-[9px] text-destructive">
+                          <div key={m.fieldKey} className="flex items-center gap-1.5 text-xs text-destructive">
                             <AlertTriangle className="h-2.5 w-2.5" />
                             <span className="font-medium">{field.label}</span>
                             <span className="text-destructive/70">(missing - required)</span>
@@ -502,18 +502,18 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
 
                 {validationErrors.length > 0 && (
                   <div className="space-y-1 p-2 rounded-lg bg-red-500/5 border border-red-500/20">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-destructive flex items-center gap-1.5">
+                    <p className="text-xs font-bold uppercase tracking-widest text-destructive flex items-center gap-1.5">
                       <AlertTriangle className="h-3 w-3" />
                       {validationErrors.length} Validation {validationErrors.length === 1 ? 'Error' : 'Errors'}
                     </p>
                     <div className="max-h-24 overflow-y-auto space-y-0.5">
                       {validationErrors.slice(0, 10).map((e, i) => (
-                        <p key={i} className="text-[9px] text-destructive/80">
+                        <p key={i} className="text-xs text-destructive/80">
                           Row {e.row}: {e.message}
                         </p>
                       ))}
                       {validationErrors.length > 10 && (
-                        <p className="text-[9px] text-muted-foreground">...and {validationErrors.length - 10} more</p>
+                        <p className="text-xs text-muted-foreground">...and {validationErrors.length - 10} more</p>
                       )}
                     </div>
                   </div>
@@ -522,15 +522,15 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                 {preview && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                         {t('data_transfer.preview')}
                       </p>
-                      <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest">
+                      <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">
                         {preview.rows.length} {t('common.rows')}
                       </Badge>
                     </div>
                     <div className="overflow-x-auto rounded-lg border border-border/40">
-                      <table className="w-full text-[10px]">
+                      <table className="w-full text-xs">
                         <thead>
                           <tr className="border-b border-border/40 bg-muted/30">
                             {preview.headers.slice(0, 7).map((h, i) => (
@@ -562,14 +562,14 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                       ? 'bg-emerald-500/5 border-emerald-500/20'
                       : 'bg-red-500/5 border-red-500/20'
                   }`}>
-                    <p className="text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5">
+                    <p className="text-xs font-bold uppercase tracking-widest flex items-center gap-1.5">
                       {importResult.success ? (
                         <><Check className="h-3 w-3 text-emerald-500" /> Import Complete</>
                       ) : (
                         <><AlertTriangle className="h-3 w-3 text-destructive" /> Import Failed</>
                       )}
                     </p>
-                    <div className="flex gap-3 text-[9px] text-muted-foreground">
+                    <div className="flex gap-3 text-xs text-muted-foreground">
                       <span>Imported: <strong>{importResult.imported}</strong></span>
                       {importResult.skipped > 0 && <span>Skipped: <strong>{importResult.skipped}</strong></span>}
                       {importResult.errors.length > 0 && <span>Errors: <strong className="text-destructive">{importResult.errors.length}</strong></span>}
@@ -577,7 +577,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                     {importResult.errors.length > 0 && (
                       <div className="max-h-20 overflow-y-auto mt-1 space-y-0.5">
                         {importResult.errors.slice(0, 5).map((e, i) => (
-                          <p key={i} className="text-[9px] text-destructive/80">Row {e.row}: {e.message}</p>
+                          <p key={i} className="text-xs text-destructive/80">Row {e.row}: {e.message}</p>
                         ))}
                       </div>
                     )}
@@ -588,7 +588,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                   <Button
                     onClick={() => selectedFile && handleRestoreFromBackup(selectedFile.name)}
                     disabled={importing}
-                    className="w-full rounded-xl text-[10px] font-black uppercase tracking-widest"
+                    className="w-full rounded-xl text-xs font-black uppercase tracking-widest"
                   >
                     <Upload className="h-3.5 w-3.5" />
                     {importing ? t('common.loading') : t('data_transfer.restore_action')}
@@ -599,7 +599,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                   <Button
                     onClick={handleImportCSV}
                     disabled={importing || validationErrors.some(e => e.message.includes('missing'))}
-                    className="w-full rounded-xl text-[10px] font-black uppercase tracking-widest"
+                    className="w-full rounded-xl text-xs font-black uppercase tracking-widest"
                   >
                     <Upload className="h-3.5 w-3.5" />
                     {importing ? t('common.loading') : t('data_transfer.import_action')}
@@ -608,7 +608,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
 
                 {backups.length > 0 && (
                   <div className="space-y-2 pt-2 border-t border-border/40">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                       {t('data_transfer.available_backups')}
                     </p>
                     <div className="space-y-1 max-h-[160px] overflow-y-auto">
@@ -620,10 +620,10 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                         >
                           <div className="flex items-center gap-2 min-w-0">
                             <Database className="h-3 w-3 text-muted-foreground shrink-0" />
-                            <span className="text-[10px] font-medium truncate">{b.name}</span>
+                            <span className="text-xs font-medium truncate">{b.name}</span>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            <span className="text-[9px] text-muted-foreground">
+                            <span className="text-xs text-muted-foreground">
                               {formatDate(b.createdAt)}
                             </span>
                             <Check className="h-3 w-3 text-emerald-500" />

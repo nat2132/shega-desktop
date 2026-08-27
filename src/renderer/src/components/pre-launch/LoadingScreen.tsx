@@ -43,7 +43,7 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
       <div className={`w-full max-w-sm px-10 relative z-10 transition-all duration-700 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'}`}>
         <div className="text-center mb-10">
           <h2 className="text-xl font-black text-white tracking-tighter uppercase">{t('loading.preparing')}</h2>
-          <p className="text-[10px] font-black uppercase tracking-[0.4em] text-white/20 mt-2">{t('loading.wait')}</p>
+          <p className="text-xs font-black uppercase tracking-[0.4em] text-white/20 mt-2">{t('loading.wait')}</p>
         </div>
 
         <div className="space-y-3">

@@ -105,14 +105,14 @@ const ExpenseReminderModal: React.FC<ExpenseReminderModalProps> = ({
             {isOverdue ? (
               <Badge
                 variant="destructive"
-                className="text-[9px] font-black uppercase tracking-widest"
+                className="text-xs font-black uppercase tracking-widest"
               >
                 {t("expense_reminder.overdue")}
               </Badge>
             ) : (
               <Badge
                 variant="default"
-                className="text-[9px] font-black uppercase tracking-widest bg-amber-500/10 text-amber-500 border-amber-500/20"
+                className="text-xs font-black uppercase tracking-widest bg-amber-500/10 text-amber-500 border-amber-500/20"
               >
                 {t("expense_reminder.due_today")}
               </Badge>
@@ -127,7 +127,7 @@ const ExpenseReminderModal: React.FC<ExpenseReminderModalProps> = ({
           <div className="flex items-center justify-between p-3 rounded-xl bg-muted/50">
             <div className="flex items-center gap-2">
               <Wallet className="h-4 w-4 text-muted-foreground" />
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 {t("expense_reminder.amount")}
               </span>
             </div>
@@ -138,13 +138,13 @@ const ExpenseReminderModal: React.FC<ExpenseReminderModalProps> = ({
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 {t("expense_reminder.category")}
               </p>
               <p className="text-sm font-medium">{expense.category}</p>
             </div>
             <div className="space-y-1">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 {t("expense_reminder.frequency")}
               </p>
               <p className="text-sm font-medium capitalize">
@@ -158,7 +158,7 @@ const ExpenseReminderModal: React.FC<ExpenseReminderModalProps> = ({
               <CalendarDays
                 className={`h-4 w-4 ${isOverdue ? "text-destructive" : "text-muted-foreground"}`}
               />
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 {t("expense_reminder.due_date")}
               </span>
             </div>
@@ -169,7 +169,7 @@ const ExpenseReminderModal: React.FC<ExpenseReminderModalProps> = ({
               {isOverdue && (
                 <Badge
                   variant="destructive"
-                  className="text-[9px] font-black uppercase tracking-widest"
+                  className="text-xs font-black uppercase tracking-widest"
                 >
                   {t("expense_reminder.overdue_by", { days: overdueDays })}
                 </Badge>
@@ -183,7 +183,7 @@ const ExpenseReminderModal: React.FC<ExpenseReminderModalProps> = ({
             variant="outline"
             size="sm"
             onClick={onClose}
-            className="rounded-xl text-[10px] font-black uppercase tracking-widest flex-1"
+            className="rounded-xl text-xs font-black uppercase tracking-widest flex-1"
           >
             <Bell className="h-3 w-3 mr-1" />
             {t("expense_reminder.snooze")}
@@ -191,7 +191,7 @@ const ExpenseReminderModal: React.FC<ExpenseReminderModalProps> = ({
           <Button
             size="sm"
             onClick={handleMarkPaid}
-            className="rounded-xl text-[10px] font-black uppercase tracking-widest flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
+            className="rounded-xl text-xs font-black uppercase tracking-widest flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
           >
             {t("expense_reminder.mark_paid")}
           </Button>

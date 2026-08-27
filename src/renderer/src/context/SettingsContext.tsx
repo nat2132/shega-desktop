@@ -62,7 +62,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const setEnabledModules = useCallback((modules: string[]) => {
     setEnabledModulesState(modules);
-    window.api.setSetting('enabled_modules', modules);
+    window.api.setSetting('enabled_modules', modules).catch(() => {});
   }, []);
 
   const isModuleEnabled = useCallback((moduleId: string): boolean => {
@@ -94,7 +94,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Save settings when they change
   useEffect(() => {
-    window.api.setSetting('app_settings', { language, calendarType, timeSystem, theme });
+    window.api.setSetting('app_settings', { language, calendarType, timeSystem, theme }).catch(() => {});
   }, [language, calendarType, timeSystem, theme]);
 
   // Apply theme & language to document

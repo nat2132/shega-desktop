@@ -277,13 +277,13 @@ export const UpdateDialog: React.FC<Props> = ({
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="rounded-xl bg-muted/30 p-3">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1">
                     Current Version
                   </p>
                   <p className="text-sm font-bold">v{appVersion}</p>
                 </div>
                 <div className="rounded-xl bg-primary/5 p-3 border border-primary/10">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-primary/70 mb-1">
+                  <p className="text-xs font-black uppercase tracking-widest text-primary/70 mb-1">
                     Latest Version
                   </p>
                   <p className="text-sm font-bold text-primary">v{updateInfo.version}</p>
@@ -304,7 +304,7 @@ export const UpdateDialog: React.FC<Props> = ({
               <div className="rounded-xl border bg-muted/10">
                 <button
                   onClick={() => setShowNotes(!showNotes)}
-                  className="w-full flex items-center justify-between px-3 py-2.5 text-[10px] font-black uppercase tracking-widest text-muted-foreground"
+                  className="w-full flex items-center justify-between px-3 py-2.5 text-xs font-black uppercase tracking-widest text-muted-foreground"
                 >
                   Release Notes
                   <ChevronDown
@@ -329,7 +329,7 @@ export const UpdateDialog: React.FC<Props> = ({
                     variant="outline"
                     size="sm"
                     onClick={handleRemindLater}
-                    className="flex-1 h-8 text-[10px] font-bold"
+                    className="flex-1 h-8 text-xs font-bold"
                   >
                     <Clock size={12} />
                     Remind Later
@@ -338,7 +338,7 @@ export const UpdateDialog: React.FC<Props> = ({
                     variant="ghost"
                     size="sm"
                     onClick={handleSkip}
-                    className="flex-1 h-8 text-[10px] font-bold text-muted-foreground"
+                    className="flex-1 h-8 text-xs font-bold text-muted-foreground"
                   >
                     <XCircle size={12} />
                     Skip This Version
@@ -365,7 +365,7 @@ export const UpdateDialog: React.FC<Props> = ({
               {progress && (
                 <div className="grid grid-cols-3 gap-3 text-center">
                   <div className="rounded-lg bg-muted/20 p-2">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       Speed
                     </p>
                     <p className="text-xs font-bold mt-0.5">
@@ -373,7 +373,7 @@ export const UpdateDialog: React.FC<Props> = ({
                     </p>
                   </div>
                   <div className="rounded-lg bg-muted/20 p-2">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       Downloaded
                     </p>
                     <p className="text-xs font-bold mt-0.5">
@@ -381,7 +381,7 @@ export const UpdateDialog: React.FC<Props> = ({
                     </p>
                   </div>
                   <div className="rounded-lg bg-muted/20 p-2">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                       Remaining
                     </p>
                     <p className="text-xs font-bold mt-0.5">
@@ -414,7 +414,7 @@ export const UpdateDialog: React.FC<Props> = ({
                 variant="ghost"
                 size="sm"
                 onClick={() => onOpenChange(false)}
-                className="text-[10px] font-bold text-muted-foreground"
+                className="text-xs font-bold text-muted-foreground"
               >
                 Later
               </Button>

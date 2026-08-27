@@ -115,7 +115,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ collapsed }) =>
       >
         <Bell className="h-4 w-4" />
         {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] rounded-full bg-red-600 text-white text-[10px] font-black flex items-center justify-center px-1">
+          <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] rounded-full bg-red-600 text-white text-xs font-black flex items-center justify-center px-1">
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
@@ -131,14 +131,14 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ collapsed }) =>
             <div className="flex items-center justify-between p-3 border-b">
               <div className="flex items-center gap-2">
                 <Bell size={14} className="text-muted-foreground" />
-                <span className="text-[10px] font-black uppercase tracking-widest">{t('notifications.title')}</span>
+                <span className="text-xs font-black uppercase tracking-widest">{t('notifications.title')}</span>
                 {unreadCount > 0 && (
-                  <Badge variant="destructive" className="text-[9px]">{unreadCount}</Badge>
+                  <Badge variant="destructive" className="text-xs">{unreadCount}</Badge>
                 )}
               </div>
               <div className="flex items-center gap-1">
                 {unreadCount > 0 && (
-                  <Button variant="ghost" size="sm" onClick={markAllRead} className="h-7 text-[10px]">
+                  <Button variant="ghost" size="sm" onClick={markAllRead} className="h-7 text-xs">
                     <CheckCheck className="h-3 w-3 mr-1" />{t('notifications.mark_all_read')}
                   </Button>
                 )}
@@ -167,7 +167,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ collapsed }) =>
                 <button
                   key={c.key}
                   onClick={() => setActiveCategory(c.key)}
-                  className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors ${
+                  className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider whitespace-nowrap transition-colors ${
                     activeCategory === c.key
                       ? 'bg-primary text-primary-foreground'
                       : 'bg-muted/30 hover:bg-muted/60'
@@ -176,7 +176,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ collapsed }) =>
                   {c.key !== 'all' && CATEGORY_ICONS[c.key] && <span className="opacity-70">{CATEGORY_ICONS[c.key]}</span>}
                   <span>{c.label}</span>
                   {c.unread > 0 && (
-                    <span className={`ml-1 px-1 rounded-full text-[9px] ${activeCategory === c.key ? 'bg-white/20' : 'bg-red-500/20 text-red-600'}`}>
+                    <span className={`ml-1 px-1 rounded-full text-xs ${activeCategory === c.key ? 'bg-white/20' : 'bg-red-500/20 text-red-600'}`}>
                       {c.unread}
                     </span>
                   )}
@@ -189,7 +189,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ collapsed }) =>
               {filtered.length === 0 ? (
                 <div className="p-8 text-center">
                   <BellOff className="h-8 w-8 mx-auto mb-2 text-muted-foreground/30" />
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/40">
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground/40">
                     {t('notifications.empty')}
                   </p>
                 </div>
@@ -209,24 +209,24 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ collapsed }) =>
                           <div className="flex items-center gap-2 mb-1">
                             {!n.isRead && <div className="h-1.5 w-1.5 rounded-full bg-primary" />}
                             <p className={`text-sm ${!n.isRead ? 'font-semibold' : 'font-normal'} truncate`}>{n.title}</p>
-                            <span className="text-[9px] text-muted-foreground whitespace-nowrap ml-auto">{relativeTime(n.createdAt)}</span>
+                            <span className="text-xs text-muted-foreground whitespace-nowrap ml-auto">{relativeTime(n.createdAt)}</span>
                           </div>
                           <p className="text-xs text-muted-foreground line-clamp-2">{n.message}</p>
                           <div className="flex items-center gap-1 mt-2">
                             {n.actionUrl && (
-                              <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={(e) => { e.stopPropagation(); handleAction(n); }}>
+                              <Button variant="outline" size="sm" className="h-6 text-xs" onClick={(e) => { e.stopPropagation(); handleAction(n); }}>
                                 <Eye className="h-3 w-3 mr-1" />{n.actionLabel || t('common.view')}
                               </Button>
                             )}
                             {!n.isRead && (
-                              <Button variant="ghost" size="sm" className="h-6 text-[10px]" onClick={(e) => { e.stopPropagation(); markRead(n.id); }}>
+                              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={(e) => { e.stopPropagation(); markRead(n.id); }}>
                                 <Check className="h-3 w-3 mr-1" />{t('notifications.mark_read')}
                               </Button>
                             )}
-                            <Button variant="ghost" size="sm" className="h-6 text-[10px]" onClick={(e) => { e.stopPropagation(); snooze(n.id, 1); }} title={t('notifications.snooze_1h')}>
+                            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={(e) => { e.stopPropagation(); snooze(n.id, 1); }} title={t('notifications.snooze_1h')}>
                               <Hourglass className="h-3 w-3" />
                             </Button>
-                            <Button variant="ghost" size="sm" className="h-6 text-[10px] text-red-500" onClick={(e) => { e.stopPropagation(); dismiss(n.id); }}>
+                            <Button variant="ghost" size="sm" className="h-6 text-xs text-red-500" onClick={(e) => { e.stopPropagation(); dismiss(n.id); }}>
                               <X className="h-3 w-3" />
                             </Button>
                           </div>
@@ -241,10 +241,10 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ collapsed }) =>
             {/* Footer */}
             {notifications.length > 0 && (
               <div className="flex items-center justify-between p-2 border-t bg-muted/20">
-                <Button variant="ghost" size="sm" onClick={() => setShowHistory(!showHistory)} className="h-7 text-[10px]">
+                <Button variant="ghost" size="sm" onClick={() => setShowHistory(!showHistory)} className="h-7 text-xs">
                   <Filter className="h-3 w-3 mr-1" />{showHistory ? t('notifications.hide_history') : t('notifications.show_history')}
                 </Button>
-                <Button variant="ghost" size="sm" onClick={clearAll} className="h-7 text-[10px] text-red-500">
+                <Button variant="ghost" size="sm" onClick={clearAll} className="h-7 text-xs text-red-500">
                   <Trash2 className="h-3 w-3 mr-1" />{t('notifications.clear_all')}
                 </Button>
               </div>

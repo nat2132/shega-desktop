@@ -8,7 +8,9 @@ export function addPdfHeader(doc: jsPDF, business: { businessName?: string; logo
 
   if (business?.logo) {
     try {
-      doc.addImage(business.logo, 'PNG', 14, y - 4, 10, 10);
+      const m = business.logo.match(/^data:image\/(\w+);base64/i);
+      const fmt = m ? m[1].toUpperCase() : 'PNG';
+      doc.addImage(business.logo, fmt, 14, y - 4, 10, 10);
     } catch {}
   }
 

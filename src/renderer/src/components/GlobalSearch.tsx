@@ -137,10 +137,10 @@ export function GlobalSearch({ placeholder, onSelect }: GlobalSearchProps) {
               <div key={type}>
                 <div className="flex items-center gap-2 px-4 py-2 bg-muted/30 sticky top-0">
                   <Icon className={`h-3.5 w-3.5 ${config.color}`} />
-                  <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                  <span className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                     {t(config.labelKey)}
                   </span>
-                  <span className="text-[9px] text-muted-foreground/50 ml-auto">{items.length}</span>
+                  <span className="text-xs text-muted-foreground/50 ml-auto">{items.length}</span>
                 </div>
                 {items.slice(0, 5).map((result: any, idx: number) => (
                   <button

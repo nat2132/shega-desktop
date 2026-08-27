@@ -59,7 +59,7 @@ const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete })
           <div className="grid grid-cols-2 gap-6 mb-8">
             {/* Basic Plan */}
             <div className="relative p-6 rounded-3xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.04] transition-all">
-              <p className="text-[10px] font-black uppercase tracking-[0.3em] text-white/30 mb-3">{t('subscription.basic_plan')}</p>
+              <p className="text-xs font-black uppercase tracking-[0.3em] text-white/30 mb-3">{t('subscription.basic_plan')}</p>
               <p className="text-3xl font-black text-white mb-1">2,499 <span className="text-sm text-white/30 font-bold">{t('subscription.etb')}</span></p>
               <p className="text-[11px] text-white/30 mb-4">/ {t('subscription.month')}</p>
               <p className="text-[12px] text-white/50 mb-4">{t('subscription.basic_desc')}</p>
@@ -76,7 +76,7 @@ const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete })
               <button
                 onClick={handleStartBasic}
                 disabled={starting}
-                className="w-full py-3.5 rounded-2xl bg-white/10 text-white font-black uppercase tracking-widest text-[10px] hover:bg-white/15 active:scale-[0.98] transition-all disabled:opacity-50"
+                className="w-full py-3.5 rounded-2xl bg-white/10 text-white font-black uppercase tracking-widest text-xs hover:bg-white/15 active:scale-[0.98] transition-all disabled:opacity-50"
               >
                 {t('subscription.welcome_basic')}
               </button>
@@ -84,11 +84,11 @@ const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete })
 
             {/* Premium Plan */}
             <div className="relative p-6 rounded-3xl border border-amber-500/30 bg-gradient-to-b from-amber-500/[0.04] to-transparent">
-              <div className="absolute -top-3 right-6 px-3 py-1 rounded-full bg-amber-500 text-[8px] font-black uppercase tracking-widest text-[#0B0705]">
+              <div className="absolute -top-3 right-6 px-3 py-1 rounded-full bg-amber-500 text-xs font-black uppercase tracking-widest text-[#0B0705]">
                 {t('subscription.most_popular')}
               </div>
               <div className="flex items-center gap-2 mb-3">
-                <p className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-400">{t('subscription.premium_plan')}</p>
+                <p className="text-xs font-black uppercase tracking-[0.3em] text-amber-400">{t('subscription.premium_plan')}</p>
                 <Sparkles size={12} className="text-amber-400" />
               </div>
               <p className="text-3xl font-black text-white mb-1">4,499 <span className="text-sm text-white/30 font-bold">{t('subscription.etb')}</span></p>
@@ -105,7 +105,7 @@ const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete })
                 ))}
               </div>
               <div className="border-t border-white/10 pt-4 mb-6">
-                <p className="text-[9px] font-black uppercase tracking-widest text-amber-400/60 mb-2">{t('subscription.premium_features')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-amber-400/60 mb-2">{t('subscription.premium_features')}</p>
                 <div className="space-y-2">
                   {premiumFeatureKeys.map((f, i) => (
                     <div key={i} className="flex items-center gap-2.5">
@@ -118,13 +118,13 @@ const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete })
                 </div>
               </div>
               <div className="p-3 rounded-2xl bg-white/[0.03] border border-white/10 mb-4">
-                <p className="text-[10px] font-black uppercase tracking-widest text-amber-400/60 mb-1">{t('subscription.trial_heading')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-amber-400/60 mb-1">{t('subscription.trial_heading')}</p>
                 <p className="text-[11px] text-white/30">{t('subscription.welcome_trial_desc')}</p>
               </div>
               <button
                 onClick={handleStartTrial}
                 disabled={starting}
-                className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 text-[#0B0705] font-black uppercase tracking-widest text-[10px] hover:from-amber-400 hover:to-amber-500 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 text-[#0B0705] font-black uppercase tracking-widest text-xs hover:from-amber-400 hover:to-amber-500 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {starting ? (
                   <>{t('subscription.loading')}</>
@@ -135,7 +135,7 @@ const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete })
             </div>
           </div>
 
-          <p className="text-center text-[10px] text-white/20">
+          <p className="text-center text-xs text-white/20">
             {t('subscription.welcome_basic_desc')}
           </p>
         </div>
@@ -167,23 +167,23 @@ const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete })
         {/* Plan Overview Cards */}
         <div className="grid grid-cols-2 gap-4 mb-10">
           <div className="p-5 rounded-3xl bg-white/[0.03] border border-white/10 text-left">
-            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-white/30 mb-2">{t('subscription.basic_plan')}</p>
+            <p className="text-xs font-black uppercase tracking-[0.3em] text-white/30 mb-2">{t('subscription.basic_plan')}</p>
             <p className="text-white/60 text-sm leading-relaxed mb-3">{t('subscription.basic_desc')}</p>
             <div className="flex items-center gap-2 text-white/30">
               <Package size={14} />
-              <span className="text-[10px]">{t('subscription.basic_features')}</span>
+              <span className="text-xs">{t('subscription.basic_features')}</span>
             </div>
           </div>
 
           <div className="p-5 rounded-3xl bg-gradient-to-b from-amber-500/[0.06] to-transparent border border-amber-500/20 text-left">
             <div className="flex items-center gap-2 mb-2">
-              <p className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-400">{t('subscription.premium_plan')}</p>
+              <p className="text-xs font-black uppercase tracking-[0.3em] text-amber-400">{t('subscription.premium_plan')}</p>
               <Sparkles size={12} className="text-amber-400" />
             </div>
             <p className="text-white/60 text-sm leading-relaxed mb-3">{t('subscription.premium_desc')}</p>
             <div className="flex items-center gap-2 text-amber-400/60">
               <Crown size={14} />
-              <span className="text-[10px]">{t('subscription.premium_features')}</span>
+              <span className="text-xs">{t('subscription.premium_features')}</span>
             </div>
           </div>
         </div>
@@ -191,7 +191,7 @@ const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete })
         <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 mb-8 max-w-md mx-auto">
           <div className="flex items-center justify-center gap-2 text-amber-400 mb-1">
             <Sparkles size={14} />
-            <span className="text-[10px] font-black uppercase tracking-widest">{t('subscription.trial_heading')}</span>
+            <span className="text-xs font-black uppercase tracking-widest">{t('subscription.trial_heading')}</span>
           </div>
           <p className="text-[11px] text-white/30">{t('subscription.welcome_trial_desc')}</p>
         </div>
@@ -199,13 +199,13 @@ const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete })
         <div className="flex gap-3 justify-center">
           <button
             onClick={() => setShowPlans(true)}
-            className="px-8 py-4 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 text-[#0B0705] font-black uppercase tracking-widest text-[10px] hover:from-amber-400 hover:to-amber-500 active:scale-[0.98] transition-all flex items-center gap-2"
+            className="px-8 py-4 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 text-[#0B0705] font-black uppercase tracking-widest text-xs hover:from-amber-400 hover:to-amber-500 active:scale-[0.98] transition-all flex items-center gap-2"
           >
             {t('subscription.welcome_premium')} <ArrowRight size={14} />
           </button>
           <button
             onClick={handleStartBasic}
-            className="px-8 py-4 rounded-2xl bg-white/10 text-white font-black uppercase tracking-widest text-[10px] hover:bg-white/15 active:scale-[0.98] transition-all"
+            className="px-8 py-4 rounded-2xl bg-white/10 text-white font-black uppercase tracking-widest text-xs hover:bg-white/15 active:scale-[0.98] transition-all"
           >
             {t('subscription.welcome_basic')}
           </button>

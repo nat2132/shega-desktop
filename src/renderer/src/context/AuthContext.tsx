@@ -17,9 +17,34 @@ interface AuthContextType {
   isSuperAdmin: boolean;
   login: (username: string, pin: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
-  hasPermission: (perm: string) => boolean;
+  hasPermission: (perm: string | null) => boolean;
   refreshAdmin: () => Promise<void>;
 }
+
+// Maps granular permission prefixes (and module names) to the module-level permission that grants them.
+const PERMISSION_MODULE: Record<string, string> = {
+  dashboard: 'dashboard',
+  inventory: 'inventory',
+  purchases: 'inventory',
+  sales: 'sales',
+  orders: 'sales',
+  payments: 'sales',
+  expenses: 'expenses',
+  budgets: 'expenses',
+  customers: 'customers',
+  contacts: 'customers',
+  analytics: 'analytics',
+  reports: 'analytics',
+  adjustments: 'adjustments',
+  settings: 'settings',
+  notifications: 'settings',
+  employees: 'employees',
+  shipments: 'shipments',
+  suppliers: 'suppliers',
+  warehouses: 'warehouses',
+  audit: 'audit',
+  records: 'audit',
+};
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -43,10 +68,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCurrentAdmin(null);
   };
 
-  const hasPermission = (perm: string): boolean => {
+  const hasPermission = (perm: string | null): boolean => {
     if (!currentAdmin) return false;
+    if (!perm) return true;
     if (currentAdmin.role === 'super_admin') return true;
-    return currentAdmin.permissions.includes(perm);
+    const perms = currentAdmin.permissions || [];
+    if (perms.includes('*') || perms.includes(perm)) return true;
+    const prefix = perm.split('.')[0];
+    const modulePerm = PERMISSION_MODULE[prefix] || prefix;
+    const effective = perms.map(p => PERMISSION_MODULE[p.split('.')[0]] || p);
+    if (effective.includes(modulePerm)) return true;
+    return false;
   };
 
   const refreshAdmin = async () => {

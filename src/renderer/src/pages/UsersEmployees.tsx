@@ -292,7 +292,7 @@ const UsersEmployees: React.FC = () => {
 
   const getStatusBadge = (status: string) => {
     const variants: Record<string, any> = { active: 'success', inactive: 'secondary', suspended: 'destructive', pending: 'warning' };
-    return <Badge variant={variants[status] || 'outline'} className="text-[9px] font-black uppercase tracking-widest">{status}</Badge>;
+    return <Badge variant={variants[status] || 'outline'} className="text-xs font-black uppercase tracking-widest">{status}</Badge>;
   };
 
   const tabs: { id: Tab; label: string; icon: any }[] = [
@@ -307,7 +307,7 @@ const UsersEmployees: React.FC = () => {
       <div className="px-4 lg:px-6 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-black tracking-tight">{t('employees.heading', 'Users & Employees')}</h1>
-          <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest mt-1">{t('employees.subtitle', 'Unified workforce management')}</p>
+          <p className="text-xs text-muted-foreground font-black uppercase tracking-widest mt-1">{t('employees.subtitle', 'Unified workforce management')}</p>
         </div>
       </div>
 
@@ -319,7 +319,7 @@ const UsersEmployees: React.FC = () => {
               variant={activeTab === tab.id ? 'default' : 'ghost'}
               size="sm"
               onClick={() => setActiveTab(tab.id)}
-              className="h-8 px-4 text-[9px] font-black uppercase tracking-widest gap-1.5"
+              className="h-8 px-4 text-xs font-black uppercase tracking-widest gap-1.5"
             >
               <tab.icon size={12} />
               {tab.label}
@@ -348,7 +348,7 @@ const UsersEmployees: React.FC = () => {
                 <option value="suspended">{t('employees.suspended', 'Suspended')}</option>
               </select>
               <Button size="sm" variant="outline" onClick={() => loadData()} className="h-9 px-3"><RefreshCw size={14} /></Button>
-              <Button size="sm" onClick={() => openEmployeeModal()} className="h-9 px-4 gap-1.5 text-[9px] font-black uppercase tracking-widest">
+              <Button size="sm" onClick={() => openEmployeeModal()} className="h-9 px-4 gap-1.5 text-xs font-black uppercase tracking-widest">
                 <UserPlus size={14} /> {t('employees.add_employee', 'Add Employee')}
               </Button>
             </div>
@@ -357,13 +357,13 @@ const UsersEmployees: React.FC = () => {
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b bg-muted/20">
-                      <th className="text-left p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee', 'Employee')}</th>
-                      <th className="text-left p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.code', 'Code')}</th>
-                      <th className="text-left p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.role', 'Role')}</th>
-                      <th className="text-left p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.department', 'Department')}</th>
-                      <th className="text-left p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.phone', 'Contact')}</th>
-                      <th className="text-left p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.status', 'Status')}</th>
-                      <th className="text-right p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.actions', 'Actions')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee', 'Employee')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.code', 'Code')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.role', 'Role')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.department', 'Department')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.phone', 'Contact')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.status', 'Status')}</th>
+                      <th className="text-right p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.actions', 'Actions')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -379,15 +379,15 @@ const UsersEmployees: React.FC = () => {
                             </div>
                             <div>
                               <p className="font-bold text-xs">{emp.firstName} {emp.lastName}</p>
-                              <p className="text-[9px] text-muted-foreground">{emp.email || t('employees.no_email', 'No email')}</p>
+                              <p className="text-xs text-muted-foreground">{emp.email || t('employees.no_email', 'No email')}</p>
                             </div>
                           </div>
                         </td>
-                        <td className="p-3"><code className="text-[9px] bg-muted px-1.5 py-0.5 rounded">{emp.employeeCode || '—'}</code></td>
-                        <td className="p-3"><Badge variant="outline" className="text-[9px] font-bold">{emp.roleName || '—'}</Badge></td>
+                        <td className="p-3"><code className="text-xs bg-muted px-1.5 py-0.5 rounded">{emp.employeeCode || '—'}</code></td>
+                        <td className="p-3"><Badge variant="outline" className="text-xs font-bold">{emp.roleName || '—'}</Badge></td>
                         <td className="p-3 text-muted-foreground">{emp.department || '—'}</td>
                         <td className="p-3">
-                          <p className="text-[10px]">{emp.phone || '—'}</p>
+                          <p className="text-xs">{emp.phone || '—'}</p>
                         </td>
                         <td className="p-3">{getStatusBadge(emp.employmentStatus || (emp.isActive ? 'active' : 'inactive'))}</td>
                         <td className="p-3 text-right">
@@ -410,8 +410,8 @@ const UsersEmployees: React.FC = () => {
         {activeTab === 'accounts' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest">{t('employees.accounts_count', '{count} accounts', { count: accounts.length })}</p>
-              <Button size="sm" onClick={() => openAccountModal()} className="h-9 px-4 gap-1.5 text-[9px] font-black uppercase tracking-widest">
+              <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">{t('employees.accounts_count', '{count} accounts', { count: accounts.length })}</p>
+              <Button size="sm" onClick={() => openAccountModal()} className="h-9 px-4 gap-1.5 text-xs font-black uppercase tracking-widest">
                 <Plus size={14} /> {t('employees.create_account_btn', 'Create Account')}
               </Button>
             </div>
@@ -425,33 +425,33 @@ const UsersEmployees: React.FC = () => {
                       </div>
                       <div>
                         <p className="text-xs font-bold">{acct.firstName} {acct.lastName}</p>
-                        <p className="text-[9px] text-muted-foreground">@{acct.username}</p>
+                        <p className="text-xs text-muted-foreground">@{acct.username}</p>
                       </div>
                     </div>
-                    <Badge variant={acct.isActive ? 'success' : 'secondary'} className="text-[8px] h-4 px-1.5">
+                    <Badge variant={acct.isActive ? 'success' : 'secondary'} className="text-xs h-4 px-1.5">
                       {acct.isActive ? t('employees.active', 'Active') : t('employees.inactive', 'Inactive')}
                     </Badge>
                   </div>
-                  <div className="flex items-center gap-2 text-[9px] text-muted-foreground">
-                    <Badge variant="outline" className="text-[8px]">{acct.roleName || t('employees.no_role', 'No role')}</Badge>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Badge variant="outline" className="text-xs">{acct.roleName || t('employees.no_role', 'No role')}</Badge>
                     {acct.lastLogin && <span>Last: {formatDate(acct.lastLogin)}</span>}
                   </div>
                   {acct.lockedUntil && new Date(acct.lockedUntil) > new Date() && (
-                    <div className="flex items-center gap-1.5 text-[9px] text-destructive font-bold">
+                    <div className="flex items-center gap-1.5 text-xs text-destructive font-bold">
                       <AlertCircle size={10} /> Locked until {formatTime(acct.lockedUntil)}
                     </div>
                   )}
                   <div className="flex flex-wrap gap-1 pt-1 border-t">
-                    <Button variant="ghost" size="sm" className="h-7 text-[9px] px-2 gap-1" onClick={() => openAccountModal(acct)}><Edit size={10} /> {t('employees.edit', 'Edit')}</Button>
+                    <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1" onClick={() => openAccountModal(acct)}><Edit size={10} /> {t('employees.edit', 'Edit')}</Button>
                     {acct.isActive ? (
-                      <Button variant="ghost" size="sm" className="h-7 text-[9px] px-2 gap-1 text-destructive" onClick={() => handleLockAccount(acct.id, true)}><Lock size={10} /> {t('employees.lock_account', 'Lock')}</Button>
+                      <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1 text-destructive" onClick={() => handleLockAccount(acct.id, true)}><Lock size={10} /> {t('employees.lock_account', 'Lock')}</Button>
                     ) : (
-                      <Button variant="ghost" size="sm" className="h-7 text-[9px] px-2 gap-1 text-green-600" onClick={() => handleLockAccount(acct.id, false)}><Unlock size={10} /> {t('employees.unlock_account', 'Unlock')}</Button>
+                      <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1 text-green-600" onClick={() => handleLockAccount(acct.id, false)}><Unlock size={10} /> {t('employees.unlock_account', 'Unlock')}</Button>
                     )}
-                    <Button variant="ghost" size="sm" className="h-7 text-[9px] px-2 gap-1" onClick={() => handleResetPin(acct.id)}><Key size={10} /> {t('employees.reset_pin_btn', 'Reset PIN')}</Button>
-                    <Button variant="ghost" size="sm" className="h-7 text-[9px] px-2 gap-1" onClick={() => handleForcePinChange(acct.id)}><ShieldAlert size={10} /> {t('employees.force_change_btn', 'Force Change')}</Button>
-                    <Button variant="ghost" size="sm" className="h-7 text-[9px] px-2 gap-1" onClick={() => handleGenerateRecoveryKey(acct)}><KeyRound size={10} /> {t('employees.recovery_key_btn', 'Recovery Key')}</Button>
-                    <Button variant="ghost" size="sm" className="h-7 text-[9px] px-2 gap-1 text-destructive" onClick={() => setShowDeleteConfirm({ type: 'account', id: acct.id, name: acct.username })}><Trash2 size={10} /></Button>
+                    <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1" onClick={() => handleResetPin(acct.id)}><Key size={10} /> {t('employees.reset_pin_btn', 'Reset PIN')}</Button>
+                    <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1" onClick={() => handleForcePinChange(acct.id)}><ShieldAlert size={10} /> {t('employees.force_change_btn', 'Force Change')}</Button>
+                    <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1" onClick={() => handleGenerateRecoveryKey(acct)}><KeyRound size={10} /> {t('employees.recovery_key_btn', 'Recovery Key')}</Button>
+                    <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1 text-destructive" onClick={() => setShowDeleteConfirm({ type: 'account', id: acct.id, name: acct.username })}><Trash2 size={10} /></Button>
                   </div>
                 </div>
               ))}
@@ -466,8 +466,8 @@ const UsersEmployees: React.FC = () => {
         {activeTab === 'roles' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest">{t('employees.roles_count', '{count} roles', { count: roles.length })}</p>
-              <Button size="sm" onClick={() => openRoleModal()} className="h-9 px-4 gap-1.5 text-[9px] font-black uppercase tracking-widest">
+              <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">{t('employees.roles_count', '{count} roles', { count: roles.length })}</p>
+              <Button size="sm" onClick={() => openRoleModal()} className="h-9 px-4 gap-1.5 text-xs font-black uppercase tracking-widest">
                 <Plus size={14} /> {t('employees.create_role_btn', 'Create Role')}
               </Button>
             </div>
@@ -481,10 +481,10 @@ const UsersEmployees: React.FC = () => {
                         <Shield size={16} className="text-primary" />
                         <div>
                           <p className="text-xs font-bold">{role.name}</p>
-                          <p className="text-[8px] text-muted-foreground">{role.description || ''}</p>
+                          <p className="text-xs text-muted-foreground">{role.description || ''}</p>
                         </div>
                       </div>
-                      {role.isSystem ? <Badge variant="secondary" className="text-[8px]">{t('employees.system', 'System')}</Badge> : null}
+                      {role.isSystem ? <Badge variant="secondary" className="text-xs">{t('employees.system', 'System')}</Badge> : null}
                     </div>
                     <div className="flex flex-wrap gap-1">
                       {perms.slice(0, 5).map((p: string) => (
@@ -493,10 +493,10 @@ const UsersEmployees: React.FC = () => {
                       {perms.length > 5 && <Badge variant="outline" className="text-[7px]">+{perms.length - 5}</Badge>}
                     </div>
                     <div className="flex gap-1 pt-1 border-t">
-                      <Button variant="ghost" size="sm" className="h-7 text-[9px] px-2 gap-1" onClick={() => openRoleModal(role)}><Edit size={10} /> {t('employees.edit', 'Edit')}</Button>
-                      <Button variant="ghost" size="sm" className="h-7 text-[9px] px-2 gap-1" onClick={() => copyRole(role.id)}><Copy size={10} /> {t('employees.copy', 'Copy')}</Button>
+                      <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1" onClick={() => openRoleModal(role)}><Edit size={10} /> {t('employees.edit', 'Edit')}</Button>
+                      <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1" onClick={() => copyRole(role.id)}><Copy size={10} /> {t('employees.copy', 'Copy')}</Button>
                       {!role.isSystem && (
-                        <Button variant="ghost" size="sm" className="h-7 text-[9px] px-2 gap-1 text-destructive" onClick={() => setShowDeleteConfirm({ type: 'role', id: role.id, name: role.name })}><Trash2 size={10} /></Button>
+                        <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1 text-destructive" onClick={() => setShowDeleteConfirm({ type: 'role', id: role.id, name: role.name })}><Trash2 size={10} /></Button>
                       )}
                     </div>
                   </div>
@@ -516,37 +516,37 @@ const UsersEmployees: React.FC = () => {
             <Button size="sm" variant="outline" onClick={loadAttendance} className="h-9 px-3"><RefreshCw size={14} /></Button>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="rounded-xl border bg-card/40 p-4">
-                <h3 className="text-[9px] font-black uppercase tracking-widest mb-3">{t('employees.today_attendance', "Today's Attendance")}</h3>
+                <h3 className="text-xs font-black uppercase tracking-widest mb-3">{t('employees.today_attendance', "Today's Attendance")}</h3>
                 <div className="space-y-2">
                   {todayAtt.length === 0 && <p className="text-xs text-muted-foreground">{t('employees.no_one_clocked_in', 'No one clocked in yet today.')}</p>}
                   {todayAtt.map(a => (
                     <div key={a.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/20">
                       <div>
                         <p className="text-xs font-bold">{a.firstName} {a.lastName}</p>
-                        <p className="text-[9px] text-muted-foreground">
+                        <p className="text-xs text-muted-foreground">
                           {t('employees.in', 'In')}: {a.clockIn ? formatTime(a.clockIn) : '—'} | {t('employees.out', 'Out')}: {a.clockOut ? formatTime(a.clockOut) : <span className="text-green-500">{t('employees.active_status', 'Active')}</span>}
                         </p>
                       </div>
-                      <Badge variant={a.status === 'present' ? 'success' : a.status === 'partial' ? 'warning' : 'secondary'} className="text-[8px]">{a.status}</Badge>
+                      <Badge variant={a.status === 'present' ? 'success' : a.status === 'partial' ? 'warning' : 'secondary'} className="text-xs">{a.status}</Badge>
                     </div>
                   ))}
                 </div>
               </div>
               <div className="rounded-xl border bg-card/40 p-4">
-                <h3 className="text-[9px] font-black uppercase tracking-widest mb-3">{t('employees.quick_clock', 'Quick Clock')}</h3>
-                <p className="text-[9px] text-muted-foreground mb-3">{t('employees.clock_in_out_desc', 'Clock in/out for employees')}</p>
+                <h3 className="text-xs font-black uppercase tracking-widest mb-3">{t('employees.quick_clock', 'Quick Clock')}</h3>
+                <p className="text-xs text-muted-foreground mb-3">{t('employees.clock_in_out_desc', 'Clock in/out for employees')}</p>
                 <div className="space-y-2 max-h-64 overflow-y-auto">
                   {employees.filter(e => e.isActive).map(emp => (
                     <div key={emp.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/20">
                       <div className="flex items-center gap-2">
-                        <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center text-[8px] font-bold text-primary">
+                        <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
                           {emp.firstName?.[0]}
                         </div>
-                        <p className="text-[10px] font-bold">{emp.firstName} {emp.lastName}</p>
+                        <p className="text-xs font-bold">{emp.firstName} {emp.lastName}</p>
                       </div>
                       <div className="flex gap-1">
-                        <Button size="sm" variant="outline" className="h-6 text-[8px] px-2" onClick={() => handleClockIn(emp.id)}>{t('employees.clock_in', 'Clock In')}</Button>
-                        <Button size="sm" variant="outline" className="h-6 text-[8px] px-2" onClick={() => handleClockOut(emp.id)}>{t('employees.clock_out', 'Clock Out')}</Button>
+                        <Button size="sm" variant="outline" className="h-6 text-xs px-2" onClick={() => handleClockIn(emp.id)}>{t('employees.clock_in', 'Clock In')}</Button>
+                        <Button size="sm" variant="outline" className="h-6 text-xs px-2" onClick={() => handleClockOut(emp.id)}>{t('employees.clock_out', 'Clock Out')}</Button>
                       </div>
                     </div>
                   ))}
@@ -558,11 +558,11 @@ const UsersEmployees: React.FC = () => {
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b bg-muted/20">
-                      <th className="text-left p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee', 'Employee')}</th>
-                      <th className="text-left p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.date', 'Date')}</th>
-                      <th className="text-left p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.clock_in', 'Clock In')}</th>
-                      <th className="text-left p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.clock_out', 'Clock Out')}</th>
-                      <th className="text-left p-3 text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.status', 'Status')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee', 'Employee')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.date', 'Date')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.clock_in', 'Clock In')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.clock_out', 'Clock Out')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.status', 'Status')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -590,41 +590,41 @@ const UsersEmployees: React.FC = () => {
       <Modal isOpen={showEmployeeModal} onClose={() => setShowEmployeeModal(false)} title={editEmployee ? t('employees.edit_employee', 'Edit Employee') : t('employees.new_employee', 'New Employee')} size="lg">
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.first_name_label', 'First Name *')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.first_name_label', 'First Name *')}</label>
             <Input className="h-9 text-xs" value={empForm.firstName} onChange={e => setEmpForm({ ...empForm, firstName: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.last_name_label', 'Last Name *')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.last_name_label', 'Last Name *')}</label>
             <Input className="h-9 text-xs" value={empForm.lastName} onChange={e => setEmpForm({ ...empForm, lastName: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.phone_label_form', 'Phone')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.phone_label_form', 'Phone')}</label>
             <Input className="h-9 text-xs" value={empForm.phone} onChange={e => setEmpForm({ ...empForm, phone: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.email_label_form', 'Email')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.email_label_form', 'Email')}</label>
             <Input className="h-9 text-xs" value={empForm.email} onChange={e => setEmpForm({ ...empForm, email: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.role_label', 'Role')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.role_label', 'Role')}</label>
             <select className="w-full h-9 rounded-lg border bg-background px-3 text-xs" value={empForm.roleId} onChange={e => setEmpForm({ ...empForm, roleId: e.target.value })}>
               <option value="">{t('employees.select_role', 'No Role')}</option>
               {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.department_label', 'Department')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.department_label', 'Department')}</label>
             <Input className="h-9 text-xs" value={empForm.department} onChange={e => setEmpForm({ ...empForm, department: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.warehouse_label', 'Warehouse')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.warehouse_label', 'Warehouse')}</label>
             <select className="w-full h-9 rounded-lg border bg-background px-3 text-xs" value={empForm.warehouseId} onChange={e => setEmpForm({ ...empForm, warehouseId: e.target.value })}>
               <option value="">{t('employees.select_warehouse', 'None')}</option>
               {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.employment_status_label', 'Employment Status')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employment_status_label', 'Employment Status')}</label>
             <select className="w-full h-9 rounded-lg border bg-background px-3 text-xs" value={empForm.employmentStatus} onChange={e => setEmpForm({ ...empForm, employmentStatus: e.target.value })}>
               <option value="active">{t('employees.active', 'Active')}</option>
               <option value="inactive">{t('employees.inactive', 'Inactive')}</option>
@@ -632,7 +632,7 @@ const UsersEmployees: React.FC = () => {
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.gender_label_form', 'Gender')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.gender_label_form', 'Gender')}</label>
             <select className="w-full h-9 rounded-lg border bg-background px-3 text-xs" value={empForm.gender} onChange={e => setEmpForm({ ...empForm, gender: e.target.value })}>
               <option value="">{t('employees.prefer_not_to_say_option', 'Prefer not to say')}</option>
               <option value="male">{t('employees.male_option', 'Male')}</option>
@@ -640,31 +640,31 @@ const UsersEmployees: React.FC = () => {
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.date_of_birth_label', 'Date of Birth')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.date_of_birth_label', 'Date of Birth')}</label>
             <DatePicker value={empForm.dateOfBirth} onChange={v => setEmpForm({ ...empForm, dateOfBirth: v })} className="h-9 text-xs" />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.hire_date_label', 'Hire Date')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.hire_date_label', 'Hire Date')}</label>
             <DatePicker value={empForm.hireDate} onChange={v => setEmpForm({ ...empForm, hireDate: v })} className="h-9 text-xs" />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.emergency_contact_label_form', 'Emergency Contact')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.emergency_contact_label_form', 'Emergency Contact')}</label>
             <Input className="h-9 text-xs" value={empForm.emergencyContact} onChange={e => setEmpForm({ ...empForm, emergencyContact: e.target.value })} />
           </div>
           <div className="space-y-1.5 col-span-2">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.address_label_form', 'Address')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.address_label_form', 'Address')}</label>
             <Input className="h-9 text-xs" value={empForm.address} onChange={e => setEmpForm({ ...empForm, address: e.target.value })} />
           </div>
           <div className="space-y-1.5 col-span-2">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.notes_label_form', 'Notes')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.notes_label_form', 'Notes')}</label>
             <Input className="h-9 text-xs" value={empForm.notes} onChange={e => setEmpForm({ ...empForm, notes: e.target.value })} />
           </div>
         </div>
         <div className="flex gap-3 mt-6">
-          <Button className="flex-1 h-10 text-[10px] font-black uppercase tracking-widest" onClick={saveEmployee}>
+          <Button className="flex-1 h-10 text-xs font-black uppercase tracking-widest" onClick={saveEmployee}>
             {editEmployee ? t('employees.update_employee', 'Update Employee') : t('employees.create_employee', 'Create Employee')}
           </Button>
-          <Button variant="outline" className="h-10 text-[10px] font-black uppercase tracking-widest" onClick={() => setShowEmployeeModal(false)}>{t('employees.cancel', 'Cancel')}</Button>
+          <Button variant="outline" className="h-10 text-xs font-black uppercase tracking-widest" onClick={() => setShowEmployeeModal(false)}>{t('employees.cancel', 'Cancel')}</Button>
         </div>
       </Modal>
 
@@ -672,7 +672,7 @@ const UsersEmployees: React.FC = () => {
       <Modal isOpen={showAccountModal} onClose={() => setShowAccountModal(false)} title={editAccount ? t('employees.edit_account', 'Edit Account') : t('employees.new_account', 'New Account')} size="md">
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee_required', 'Employee *')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee_required', 'Employee *')}</label>
             <select className="w-full h-9 rounded-lg border bg-background px-3 text-xs" value={acctForm.employeeId} onChange={e => setAcctForm({ ...acctForm, employeeId: e.target.value })}>
               <option value="">{t('employees.select_employee_placeholder', 'Select employee...')}</option>
               {employees.filter(e => !editAccount || e.id === editAccount.employeeId).map(emp => (
@@ -681,16 +681,16 @@ const UsersEmployees: React.FC = () => {
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.username_label', 'Username *')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.username_label', 'Username *')}</label>
             <Input className="h-9 text-xs" value={acctForm.username} onChange={e => setAcctForm({ ...acctForm, username: e.target.value })} />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{editAccount ? t('employees.pin_label_edit', 'New PIN (leave blank to keep)') : t('employees.pin_label_create', 'PIN *')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{editAccount ? t('employees.pin_label_edit', 'New PIN (leave blank to keep)') : t('employees.pin_label_create', 'PIN *')}</label>
               <Input type="password" className="h-9 text-xs" value={acctForm.pin} onChange={e => setAcctForm({ ...acctForm, pin: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.confirm_pin', 'Confirm PIN')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.confirm_pin', 'Confirm PIN')}</label>
               <Input type="password" className="h-9 text-xs" value={acctForm.confirmPin} onChange={e => setAcctForm({ ...acctForm, confirmPin: e.target.value })} />
             </div>
           </div>
@@ -700,10 +700,10 @@ const UsersEmployees: React.FC = () => {
           </label>
         </div>
         <div className="flex gap-3 mt-6">
-          <Button className="flex-1 h-10 text-[10px] font-black uppercase tracking-widest" onClick={saveAccount}>
+          <Button className="flex-1 h-10 text-xs font-black uppercase tracking-widest" onClick={saveAccount}>
             {editAccount ? t('employees.update_account_btn', 'Update Account') : t('employees.create_account_btn', 'Create Account')}
           </Button>
-          <Button variant="outline" className="h-10 text-[10px] font-black uppercase tracking-widest" onClick={() => setShowAccountModal(false)}>{t('employees.cancel', 'Cancel')}</Button>
+          <Button variant="outline" className="h-10 text-xs font-black uppercase tracking-widest" onClick={() => setShowAccountModal(false)}>{t('employees.cancel', 'Cancel')}</Button>
         </div>
       </Modal>
 
@@ -712,24 +712,24 @@ const UsersEmployees: React.FC = () => {
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.role_name_label', 'Role Name *')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.role_name_label', 'Role Name *')}</label>
               <Input className="h-9 text-xs" value={roleForm.name} onChange={e => setRoleForm({ ...roleForm, name: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('employees.description_label', 'Description')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.description_label', 'Description')}</label>
               <Input className="h-9 text-xs" value={roleForm.description} onChange={e => setRoleForm({ ...roleForm, description: e.target.value })} />
             </div>
           </div>
           <div>
-            <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-3">{t('employees.permissions_label', 'Permissions')}</p>
+            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-3">{t('employees.permissions_label', 'Permissions')}</p>
             <div className="grid grid-cols-2 gap-2 max-h-80 overflow-y-auto p-1">
               {PERMISSION_GROUPS.map(g => {
                 const allSelected = g.permissions.every(p => rolePerms[p]);
                 return (
                   <div key={g.key} className="p-3 rounded-xl border bg-muted/10 space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <p className="text-[10px] font-bold uppercase tracking-widest">{t(`tabs.${g.key}`, g.label)}</p>
-                      <Button variant="ghost" size="sm" className="h-5 text-[8px] px-1.5" onClick={() => toggleGroup(g.permissions, !allSelected)}>
+                      <p className="text-xs font-bold uppercase tracking-widest">{t(`tabs.${g.key}`, g.label)}</p>
+                      <Button variant="ghost" size="sm" className="h-5 text-xs px-1.5" onClick={() => toggleGroup(g.permissions, !allSelected)}>
                         {allSelected ? t('employees.deselect_all', 'Deselect all') : t('employees.select_all', 'Select all')}
                       </Button>
                     </div>
@@ -738,7 +738,7 @@ const UsersEmployees: React.FC = () => {
                         <button
                           key={p}
                           onClick={() => togglePerm(p)}
-                          className={`text-[8px] px-2 py-0.5 rounded-full border transition-all ${
+                          className={`text-xs px-2 py-0.5 rounded-full border transition-all ${
                             rolePerms[p] ? 'bg-primary text-primary-foreground border-primary' : 'bg-background border-muted-foreground/20 hover:border-muted-foreground/40'
                           }`}
                         >
@@ -753,10 +753,10 @@ const UsersEmployees: React.FC = () => {
           </div>
         </div>
         <div className="flex gap-3 mt-6">
-          <Button className="flex-1 h-10 text-[10px] font-black uppercase tracking-widest" onClick={saveRole}>
+          <Button className="flex-1 h-10 text-xs font-black uppercase tracking-widest" onClick={saveRole}>
             {editRole ? t('employees.update_role_btn', 'Update Role') : t('employees.create_role_btn', 'Create Role')}
           </Button>
-          <Button variant="outline" className="h-10 text-[10px] font-black uppercase tracking-widest" onClick={() => setShowRoleModal(false)}>{t('employees.cancel', 'Cancel')}</Button>
+          <Button variant="outline" className="h-10 text-xs font-black uppercase tracking-widest" onClick={() => setShowRoleModal(false)}>{t('employees.cancel', 'Cancel')}</Button>
         </div>
       </Modal>
 
@@ -767,7 +767,7 @@ const UsersEmployees: React.FC = () => {
             <Trash2 size={24} />
           </div>
           <p className="text-sm font-bold">{t('employees.confirm_delete_question', 'Delete "{name}"?', { name: showDeleteConfirm?.name || '' })}</p>
-          <p className="text-[10px] text-muted-foreground">{t('employees.cannot_undo', 'This action cannot be undone.')}</p>
+          <p className="text-xs text-muted-foreground">{t('employees.cannot_undo', 'This action cannot be undone.')}</p>
           <div className="flex gap-3">
             <Button variant="destructive" className="flex-1" onClick={deleteItem}>{t('employees.delete_btn', 'Delete')}</Button>
             <Button variant="outline" className="flex-1" onClick={() => setShowDeleteConfirm(null)}>{t('employees.cancel', 'Cancel')}</Button>
@@ -789,22 +789,22 @@ const UsersEmployees: React.FC = () => {
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3 text-xs">
-              <div><span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">{t('employees.code', 'Code')}</span><p>{showDetail.employeeCode || '—'}</p></div>
-              <div><span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">{t('employees.status', 'Status')}</span><p>{getStatusBadge(showDetail.employmentStatus || (showDetail.isActive ? 'active' : 'inactive'))}</p></div>
-              <div><span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">{t('employees.phone', 'Phone')}</span><p>{showDetail.phone || '—'}</p></div>
-              <div><span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">{t('employees.email_label', 'Email')}</span><p>{showDetail.email || '—'}</p></div>
-              <div><span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">{t('employees.gender', 'Gender')}</span><p>{showDetail.gender || '—'}</p></div>
-              <div><span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">{t('employees.dob', 'DOB')}</span><p>{showDetail.dateOfBirth || '—'}</p></div>
-              <div><span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">{t('employees.hire_date', 'Hire Date')}</span><p>{showDetail.hireDate || '—'}</p></div>
-              <div><span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">{t('employees.warehouse', 'Warehouse')}</span><p>{showDetail.warehouseName || '—'}</p></div>
-              <div className="col-span-2"><span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">{t('employees.address', 'Address')}</span><p>{showDetail.address || '—'}</p></div>
-              <div className="col-span-2"><span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">{t('employees.emergency_contact', 'Emergency Contact')}</span><p>{showDetail.emergencyContact || '—'}</p></div>
-              {showDetail.notes && <div className="col-span-2"><span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">{t('employees.notes', 'Notes')}</span><p>{showDetail.notes}</p></div>}
+              <div><span className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('employees.code', 'Code')}</span><p>{showDetail.employeeCode || '—'}</p></div>
+              <div><span className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('employees.status', 'Status')}</span><p>{getStatusBadge(showDetail.employmentStatus || (showDetail.isActive ? 'active' : 'inactive'))}</p></div>
+              <div><span className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('employees.phone', 'Phone')}</span><p>{showDetail.phone || '—'}</p></div>
+              <div><span className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('employees.email_label', 'Email')}</span><p>{showDetail.email || '—'}</p></div>
+              <div><span className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('employees.gender', 'Gender')}</span><p>{showDetail.gender || '—'}</p></div>
+              <div><span className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('employees.dob', 'DOB')}</span><p>{showDetail.dateOfBirth || '—'}</p></div>
+              <div><span className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('employees.hire_date', 'Hire Date')}</span><p>{showDetail.hireDate || '—'}</p></div>
+              <div><span className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('employees.warehouse', 'Warehouse')}</span><p>{showDetail.warehouseName || '—'}</p></div>
+              <div className="col-span-2"><span className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('employees.address', 'Address')}</span><p>{showDetail.address || '—'}</p></div>
+              <div className="col-span-2"><span className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('employees.emergency_contact', 'Emergency Contact')}</span><p>{showDetail.emergencyContact || '—'}</p></div>
+              {showDetail.notes && <div className="col-span-2"><span className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('employees.notes', 'Notes')}</span><p>{showDetail.notes}</p></div>}
             </div>
           </div>
         )}
         <div className="flex gap-3 mt-6">
-          <Button variant="outline" className="flex-1 h-10 text-[10px] font-black uppercase tracking-widest" onClick={() => setShowDetail(null)}>{t('employees.close_btn', 'Close')}</Button>
+          <Button variant="outline" className="flex-1 h-10 text-xs font-black uppercase tracking-widest" onClick={() => setShowDetail(null)}>{t('employees.close_btn', 'Close')}</Button>
         </div>
       </Modal>
     </div>

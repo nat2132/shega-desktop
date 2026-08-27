@@ -117,7 +117,7 @@ const Shipments: React.FC = () => {
     const config = statusConfig[status] || statusConfig.pending;
     const Icon = config.icon;
     return (
-      <Badge variant={config.variant} className="text-[9px] font-black uppercase gap-1">
+      <Badge variant={config.variant} className="text-xs font-black uppercase gap-1">
         <Icon size={10} /> {t(`shipments.status_${status}`)}
       </Badge>
     );
@@ -149,10 +149,10 @@ const Shipments: React.FC = () => {
               <option key={s} value={s}>{t(`shipments.status_${s}`)}</option>
             ))}
           </select>
-          <Button size="sm" variant="outline" className="h-9 text-[10px] font-black uppercase tracking-widest" onClick={loadShipments}>
+          <Button size="sm" variant="outline" className="h-9 text-xs font-black uppercase tracking-widest" onClick={loadShipments}>
             <RefreshCw size={14} className="mr-2" /> {t('shipments.refresh')}
           </Button>
-          <Button size="sm" className="h-9 px-5 text-[10px] font-black uppercase tracking-widest" onClick={openCreate}>
+          <Button size="sm" className="h-9 px-5 text-xs font-black uppercase tracking-widest" onClick={openCreate}>
             <Truck size={14} className="mr-2" /> {t('shipments.new_shipment')}
           </Button>
         </div>
@@ -170,7 +170,7 @@ const Shipments: React.FC = () => {
                   </div>
                   <div>
                     <p className="text-xs font-black uppercase tracking-tight">{s.destination}</p>
-                    <p className="text-[9px] text-muted-foreground font-bold uppercase mt-0.5">
+                    <p className="text-xs text-muted-foreground font-bold uppercase mt-0.5">
                       {s.origin || t('shipments.no_origin')}
                     </p>
                   </div>
@@ -179,34 +179,34 @@ const Shipments: React.FC = () => {
               </div>
               <div className="mt-4 space-y-1.5">
                 {s.driverName && (
-                  <div className="flex items-center gap-2 text-[10px] font-semibold text-muted-foreground">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
                     <User size={12} /> {s.driverName}
                   </div>
                 )}
                 {s.driverPhone && (
-                  <div className="flex items-center gap-2 text-[10px] font-semibold text-muted-foreground">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
                     <Phone size={12} /> {s.driverPhone}
                   </div>
                 )}
                 {s.vehicleInfo && (
-                  <div className="flex items-center gap-2 text-[10px] font-semibold text-muted-foreground">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
                     <Truck size={12} /> {s.vehicleInfo}
                   </div>
                 )}
                 {s.scheduledDate && (
-                  <div className="flex items-center gap-2 text-[10px] font-semibold text-muted-foreground">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
                     <CalendarDays size={12} /> {formatDate(s.scheduledDate)}
                   </div>
                 )}
               </div>
               {s.notes && (
-                <p className="mt-3 text-[9px] text-muted-foreground line-clamp-2">{s.notes}</p>
+                <p className="mt-3 text-xs text-muted-foreground line-clamp-2">{s.notes}</p>
               )}
               <div className="flex items-center justify-between mt-4 pt-3 border-t border-border/30">
-                <p className="text-[9px] text-muted-foreground font-bold">{formatDate(s.createdAt)}</p>
+                <p className="text-xs text-muted-foreground font-bold">{formatDate(s.createdAt)}</p>
                 <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
                   {!['delivered', 'cancelled'].includes(s.status) && (
-                    <Button variant="outline" size="sm" className="h-7 text-[8px] font-black uppercase tracking-widest" onClick={() => {
+                    <Button variant="outline" size="sm" className="h-7 text-xs font-black uppercase tracking-widest" onClick={() => {
                       const next = nextStatus(s.status);
                       if (next) handleStatusChange(s.id, next);
                     }}>
@@ -214,14 +214,14 @@ const Shipments: React.FC = () => {
                     </Button>
                   )}
                   {s.status === 'pending' && (
-                    <Button variant="outline" size="sm" className="h-7 text-[8px] font-black uppercase tracking-widest text-destructive" onClick={() => handleStatusChange(s.id, 'cancelled')}>
+                    <Button variant="outline" size="sm" className="h-7 text-xs font-black uppercase tracking-widest text-destructive" onClick={() => handleStatusChange(s.id, 'cancelled')}>
                       <X size={11} className="mr-1" /> {t('shipments.cancel')}
                     </Button>
                   )}
-                  <Button variant="ghost" size="sm" className="h-7 text-[8px] font-black uppercase tracking-widest" onClick={() => openEdit(s)}>
+                  <Button variant="ghost" size="sm" className="h-7 text-xs font-black uppercase tracking-widest" onClick={() => openEdit(s)}>
                     <Edit2 size={11} />
                   </Button>
-                  <Button variant="ghost" size="sm" className="h-7 text-[8px] font-black uppercase tracking-widest text-destructive" onClick={() => { setDeleteTarget(s); }}>
+                  <Button variant="ghost" size="sm" className="h-7 text-xs font-black uppercase tracking-widest text-destructive" onClick={() => { setDeleteTarget(s); }}>
                     <Trash2 size={11} />
                   </Button>
                 </div>
@@ -231,7 +231,7 @@ const Shipments: React.FC = () => {
           {shipments.length === 0 && (
             <div className="col-span-full p-12 text-center">
               <Truck size={32} className="mx-auto mb-3 text-muted-foreground/30" />
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.no_shipments')}</p>
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.no_shipments')}</p>
               <Button size="sm" className="mt-4" onClick={openCreate}>{t('shipments.create_first')}</Button>
             </div>
           )}
@@ -243,36 +243,36 @@ const Shipments: React.FC = () => {
         <div className="space-y-5">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.origin')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.origin')}</label>
               <Input value={form.origin} onChange={e => setForm({ ...form, origin: e.target.value })} placeholder={t('shipments.origin_placeholder')} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.destination')} *</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.destination')} *</label>
               <Input value={form.destination} onChange={e => setForm({ ...form, destination: e.target.value })} placeholder={t('shipments.destination_placeholder')} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.driver_name')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.driver_name')}</label>
               <Input value={form.driverName} onChange={e => setForm({ ...form, driverName: e.target.value })} placeholder={t('shipments.driver_placeholder')} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.driver_phone')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.driver_phone')}</label>
               <Input value={form.driverPhone} onChange={e => setForm({ ...form, driverPhone: e.target.value })} placeholder="e.g. +251..." />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.vehicle')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.vehicle')}</label>
               <Input value={form.vehicleInfo} onChange={e => setForm({ ...form, vehicleInfo: e.target.value })} placeholder={t('shipments.vehicle_placeholder')} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.scheduled_date')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.scheduled_date')}</label>
               <DatePicker value={form.scheduledDate} onChange={v => setForm({ ...form, scheduledDate: v })} className="h-10" />
             </div>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.notes')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.notes')}</label>
             <textarea
               value={form.notes}
               onChange={e => setForm({ ...form, notes: e.target.value })}
@@ -281,10 +281,10 @@ const Shipments: React.FC = () => {
             />
           </div>
           <div className="flex gap-4 pt-2">
-            <Button className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={handleSave}>
+            <Button className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={handleSave}>
               {editingShipment ? t('shipments.update') : t('shipments.create')}
             </Button>
-            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={() => setShowShipmentModal(false)}>
+            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={() => setShowShipmentModal(false)}>
               {t('common.cancel')}
             </Button>
           </div>
@@ -300,7 +300,7 @@ const Shipments: React.FC = () => {
               <StatusBadge status={selectedShipment.status} />
               <div className="flex gap-2">
                 {!['delivered', 'cancelled'].includes(selectedShipment.status) && (
-                  <Button size="sm" className="h-8 text-[9px] font-black uppercase tracking-widest" onClick={() => {
+                  <Button size="sm" className="h-8 text-xs font-black uppercase tracking-widest" onClick={() => {
                     const next = nextStatus(selectedShipment.status);
                     if (next) handleStatusChange(selectedShipment.id, next);
                   }}>
@@ -309,7 +309,7 @@ const Shipments: React.FC = () => {
                   </Button>
                 )}
                 {selectedShipment.status === 'pending' && (
-                  <Button size="sm" variant="destructive" className="h-8 text-[9px] font-black uppercase tracking-widest" onClick={() => handleStatusChange(selectedShipment.id, 'cancelled')}>
+                  <Button size="sm" variant="destructive" className="h-8 text-xs font-black uppercase tracking-widest" onClick={() => handleStatusChange(selectedShipment.id, 'cancelled')}>
                     <X size={12} className="mr-1" /> {t('shipments.cancel')}
                   </Button>
                 )}
@@ -319,7 +319,7 @@ const Shipments: React.FC = () => {
             {/* Details Grid */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-3 p-4 rounded-xl bg-muted/20">
-                <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.route')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.route')}</p>
                 <div className="flex items-center gap-2 text-xs font-bold">
                   <MapPin size={14} className="text-primary" />
                   <span>{selectedShipment.origin || t('shipments.no_origin')}</span>
@@ -329,7 +329,7 @@ const Shipments: React.FC = () => {
                 </div>
               </div>
               <div className="space-y-3 p-4 rounded-xl bg-muted/20">
-                <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.driver_info')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.driver_info')}</p>
                 {selectedShipment.driverName ? (
                   <>
                     <div className="flex items-center gap-2 text-xs font-bold">
@@ -353,37 +353,37 @@ const Shipments: React.FC = () => {
             </div>
 
             {selectedShipment.scheduledDate && (
-              <div className="flex items-center gap-2 text-[10px] font-semibold text-muted-foreground">
+              <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
                 <CalendarDays size={14} /> {t('shipments.scheduled')}: {formatDate(selectedShipment.scheduledDate)}
               </div>
             )}
 
             {selectedShipment.deliveredAt && (
-              <div className="flex items-center gap-2 text-[10px] font-semibold text-green-600">
+              <div className="flex items-center gap-2 text-xs font-semibold text-green-600">
                 <CheckCircle size={14} /> {t('shipments.delivered_at')}: {formatDateTime(selectedShipment.deliveredAt)}
               </div>
             )}
 
             {selectedShipment.notes && (
               <div className="space-y-1">
-                <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.notes')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.notes')}</p>
                 <p className="text-xs">{selectedShipment.notes}</p>
               </div>
             )}
 
             {/* History */}
             <div className="space-y-2">
-              <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('shipments.history')}</p>
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('shipments.history')}</p>
               <div className="space-y-1">
                 {(selectedShipment.history || []).map((h: any) => (
                   <div key={h.id} className="flex items-center gap-3 p-3 rounded-xl bg-muted/10">
                     <StatusBadge status={h.status} />
-                    <span className="text-[9px] text-muted-foreground">{formatDateTime(h.createdAt)}</span>
-                    {h.notes && <span className="text-[9px] text-muted-foreground">— {h.notes}</span>}
+                    <span className="text-xs text-muted-foreground">{formatDateTime(h.createdAt)}</span>
+                    {h.notes && <span className="text-xs text-muted-foreground">— {h.notes}</span>}
                   </div>
                 ))}
                 {(!selectedShipment.history || selectedShipment.history.length === 0) && (
-                  <p className="text-[10px] text-muted-foreground">{t('shipments.no_history')}</p>
+                  <p className="text-xs text-muted-foreground">{t('shipments.no_history')}</p>
                 )}
               </div>
             </div>
@@ -396,14 +396,14 @@ const Shipments: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => { setDeleteTarget(null); }}>
           <div className="p-6 rounded-2xl bg-card border shadow-xl max-w-sm w-full mx-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-sm font-black uppercase tracking-widest">{t('shipments.delete_title')}</h3>
-            <p className="text-[10px] font-semibold text-muted-foreground mt-3">
+            <p className="text-xs font-semibold text-muted-foreground mt-3">
               {t('shipments.delete_desc').replace('{destination}', deleteTarget.destination)}
             </p>
             <div className="flex gap-3 mt-6">
-              <Button variant="destructive" className="flex-1 h-11 text-[10px] font-black uppercase tracking-widest" onClick={handleDelete}>
+              <Button variant="destructive" className="flex-1 h-11 text-xs font-black uppercase tracking-widest" onClick={handleDelete}>
                 {t('shipments.delete')}
               </Button>
-              <Button variant="outline" className="flex-1 h-11 text-[10px] font-black uppercase tracking-widest" onClick={() => { setDeleteTarget(null); }}>
+              <Button variant="outline" className="flex-1 h-11 text-xs font-black uppercase tracking-widest" onClick={() => { setDeleteTarget(null); }}>
                 {t('common.cancel')}
               </Button>
             </div>

@@ -15,6 +15,15 @@ export interface ElectronAPI {
   updateItem: (id: number, item: any) => Promise<any>;
   deleteItem: (id: number) => Promise<any>;
   getLowStockItems: () => Promise<any[]>;
+  getReorderSuggestions: () => Promise<any[]>;
+  getReportDrilldowns: (range: { start: string; end: string }) => Promise<any>;
+  getGlJournal: (range: { start: string; end: string }) => Promise<any>;
+  getGiftCards: () => Promise<any[]>;
+  issueGiftCard: (data: any) => Promise<any>;
+  redeemGiftCard: (data: any) => Promise<any>;
+  topupGiftCard: (data: any) => Promise<any>;
+  voidGiftCard: (id: number) => Promise<any>;
+  getGiftCardTransactions: (cardId: number) => Promise<any[]>;
   getExpiringItems: () => Promise<any[]>;
   getItemsBySupplier: (supplierId: number) => Promise<any[]>;
   restockItem: (id: number, quantity: number) => Promise<{ success: boolean }>;
@@ -93,6 +102,7 @@ export interface ElectronAPI {
   getDashboardStats: () => Promise<any>;
   getRecentActivity: (limit?: number, dateRange?: { start: string; end: string }) => Promise<any[]>;
   getAnalytics: (period: string, dateRange?: { start: string; end: string }) => Promise<any>;
+  getVatReport: (dateRange?: { start: string; end: string }) => Promise<any>;
   getVoidedSales: (options?: any) => Promise<any>;
   getReversalStats: () => Promise<any>;
 
@@ -111,7 +121,7 @@ export interface ElectronAPI {
 
   // Data Management
   exportData: () => Promise<any>;
-  resetData: () => Promise<any>;
+  resetData: (mode?: 'transactions' | 'all' | 'factory') => Promise<any>;
 
   // Admin Management
   login: (username: string, pin: string) => Promise<any>;
@@ -233,17 +243,6 @@ export interface ElectronAPI {
   toggleSupplierFavorite: (id: number) => Promise<{ success: boolean; isFavorite: boolean }>;
   getSupplierActivityLog: (supplierId: number, limit?: number) => Promise<any[]>;
   getSupplierAnalytics: () => Promise<{ topSuppliers: any[]; monthlyTrends: any[]; outstandingBySupplier: any[]; avgPurchase: number; summary: any }>;
-
-  generateTestSuppliers: (count: number) => Promise<{ success: boolean; count: number }>;
-  clearTestSuppliers: () => Promise<{ deleted: number }>;
-
-  // Comprehensive Test Data Generator
-  generateTestData: (count: number) => Promise<{ success: boolean; totalCreated: number; duration: number; phases: { name: string; count: number; time: number }[] }>;
-  clearTestData: () => Promise<{ deleted: number; duration: number; details: Record<string, number> }>;
-  onTestDataProgress: (callback: (data: { phase: string; current: number; total: number; message: string; totalCreated: number; overallPercent: number }) => void) => void;
-  removeTestDataProgressListener: () => void;
-  measurePerformance: () => Promise<Record<string, number>>;
-  getDatabaseSize: () => Promise<number>;
 
   // Backup & Restore
   createBackup: () => Promise<{ success: boolean; name?: string; size?: number; error?: string }>;

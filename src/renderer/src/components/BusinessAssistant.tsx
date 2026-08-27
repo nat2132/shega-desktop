@@ -76,19 +76,19 @@ export function BusinessAssistant() {
             </div>
             <div>
               <CardTitle className="text-sm">{t('business_assistant.title')}</CardTitle>
-              <p className="text-[9px] text-muted-foreground font-black uppercase tracking-widest">
+              <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">
                 {t('business_assistant.subtitle')}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             {criticalCount > 0 && (
-              <Badge variant="destructive" className="text-[9px] px-1.5 h-5">
+              <Badge variant="destructive" className="text-xs px-1.5 h-5">
                 {t('business_assistant.critical_count', '{count} critical').replace('{count}', String(criticalCount))}
               </Badge>
             )}
             {warningCount > 0 && (
-              <Badge variant="default" className="text-[9px] px-1.5 h-5 bg-amber-500/20 text-amber-500 hover:bg-amber-500/30">
+              <Badge variant="default" className="text-xs px-1.5 h-5 bg-amber-500/20 text-amber-500 hover:bg-amber-500/30">
                 {t('business_assistant.alerts_count', '{count} alerts').replace('{count}', String(warningCount))}
               </Badge>
             )}
@@ -107,7 +107,7 @@ export function BusinessAssistant() {
           <Alert variant="destructive">
             <AlertTriangle className="h-4 w-4" />
             <AlertDescription>{error}</AlertDescription>
-            <Button variant="outline" size="sm" onClick={loadInsights} className="mt-2 text-[10px]">
+            <Button variant="outline" size="sm" onClick={loadInsights} className="mt-2 text-xs">
               <RefreshCw className="h-3 w-3 mr-1" /> {t('business_assistant.retry')}
             </Button>
           </Alert>
@@ -115,7 +115,7 @@ export function BusinessAssistant() {
           <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
             <Sparkles className="h-8 w-8 mb-3 opacity-30" />
             <p className="text-sm font-medium">{t('business_assistant.no_insights')}</p>
-            <p className="text-[10px] mt-1">{t('business_assistant.no_insights_desc')}</p>
+            <p className="text-xs mt-1">{t('business_assistant.no_insights_desc')}</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -141,13 +141,13 @@ export function BusinessAssistant() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <p className="text-xs font-bold truncate">{insight.title}</p>
-                        <Badge variant={badge.variant} className="text-[8px] h-4 px-1 shrink-0">
+                        <Badge variant={badge.variant} className="text-xs h-4 px-1 shrink-0">
                           {t(badge.labelKey)}
                         </Badge>
                       </div>
-                      <p className="text-[10px] text-muted-foreground leading-relaxed">{insight.message}</p>
+                      <p className="text-xs text-muted-foreground leading-relaxed">{insight.message}</p>
                       {insight.action && (
-                        <div className="mt-2 flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="mt-2 flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-primary opacity-0 group-hover:opacity-100 transition-opacity">
                           {insight.action.label}
                           <ArrowRight className="h-3 w-3" />
                         </div>

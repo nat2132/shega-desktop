@@ -286,7 +286,7 @@ const Adjustments: React.FC = () => {
                             <tr key={i} className="border-b border-border hover:bg-muted/30 transition-colors">
                               <td className="px-6 py-4 font-medium whitespace-nowrap text-foreground">
                                 {formatDate(h.date)}
-                                <div className="text-[10px] text-muted-foreground">{formatTime(h.createdAt ? new Date(h.createdAt) : new Date())}</div>
+                                <div className="text-xs text-muted-foreground">{formatTime(h.createdAt ? new Date(h.createdAt) : new Date())}</div>
                               </td>
                               <td className="px-6 py-4 font-bold text-foreground">{h.itemName}</td>
                               <td className="px-6 py-4">
@@ -296,14 +296,14 @@ const Adjustments: React.FC = () => {
                                 {isPrice ? (
                                   <div className="flex flex-col items-end">
                                     <span className="font-black text-foreground">{t('common.etb')} {h.newValue.toLocaleString()}</span>
-                                    <span className="text-[10px] text-muted-foreground line-through">{t('common.etb')} {h.oldValue.toLocaleString()}</span>
+                                    <span className="text-xs text-muted-foreground line-through">{t('common.etb')} {h.oldValue.toLocaleString()}</span>
                                   </div>
                                 ) : (
                                   <div className="flex flex-col items-end">
                                     <span className={`font-black text-foreground`}>
                                       {h.type === 'add_stock' ? '+' : '-'}{h.quantity} {h.unitType}
                                     </span>
-                                    <span className="text-[10px] text-muted-foreground">{t('adjustments.now')}: {h.newValue}</span>
+                                    <span className="text-xs text-muted-foreground">{t('adjustments.now')}: {h.newValue}</span>
                                   </div>
                                 )}
                               </td>
@@ -311,7 +311,7 @@ const Adjustments: React.FC = () => {
                               <td className="px-6 py-4 font-medium text-foreground">{t('common.operator')}</td>
                               <td className="px-6 py-4 text-center">
                                 {h.reversalId ? (
-                                  <Badge variant="outline" className="bg-muted/50 text-muted-foreground border-border font-bold text-[10px]">{t('adjustments.reversed_badge') || 'Reversed'}</Badge>
+                                  <Badge variant="outline" className="bg-muted/50 text-muted-foreground border-border font-bold text-xs">{t('adjustments.reversed_badge') || 'Reversed'}</Badge>
                                 ) : hasPermission('adjustments.reverse') ? (
                                   <Button
                                     variant="ghost"
@@ -660,7 +660,7 @@ const Adjustments: React.FC = () => {
                                 <div key={item.id} className="p-3 bg-background rounded-xl border border-border flex justify-between items-center">
                                   <div>
                                     <p className="font-bold text-sm truncate max-w-[150px]">{item.name}</p>
-                                    <p className="text-[10px] text-muted-foreground">{t('common.etb')} {oldP.toLocaleString()} → {t('common.etb')} {newP.toLocaleString()}</p>
+                                    <p className="text-xs text-muted-foreground">{t('common.etb')} {oldP.toLocaleString()} → {t('common.etb')} {newP.toLocaleString()}</p>
                                   </div>
                                   <Badge variant="outline" className={`font-bold bg-muted text-foreground border-border`}>
                                     {diff > 0 ? '+' : ''}{diff.toLocaleString()}

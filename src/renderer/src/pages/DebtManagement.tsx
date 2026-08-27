@@ -288,25 +288,25 @@ const DebtManagement: React.FC = () => {
             <SheetTrigger asChild>
               <Button variant="outline" size="sm" className={`h-8 px-3 transition-all ${hasActiveFilters ? 'border-primary text-primary bg-primary/5 shadow-sm' : 'border-border/60 hover:bg-muted/50'}`}>
                 <Filter className="mr-1.5 h-3.5 w-3.5" />
-                {t('inventory.filters')} {hasActiveFilters && <Badge className="ml-1.5 h-4 px-1 text-[9px] rounded-full">{t('inventory.active')}</Badge>}
+                {t('inventory.filters')} {hasActiveFilters && <Badge className="ml-1.5 h-4 px-1 text-xs rounded-full">{t('inventory.active')}</Badge>}
               </Button>
             </SheetTrigger>
             <SheetContent side="right" className="w-[400px] sm:w-[540px] border-l-border/40 p-0 flex flex-col">
               <SheetHeader className="border-b border-border/50 p-6">
                 <SheetTitle className="text-2xl font-black uppercase tracking-tight">{t('debt.filter_title')}</SheetTitle>
-                <SheetDescription className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">{t('inventory.refine_view')}</SheetDescription>
+                <SheetDescription className="text-xs font-bold text-muted-foreground uppercase tracking-widest">{t('inventory.refine_view')}</SheetDescription>
               </SheetHeader>
 
               <div className="space-y-8 p-6 flex-1 overflow-y-auto">
                 <div className="space-y-3">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">{t('inventory.timeframe')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-primary">{t('inventory.timeframe')}</h4>
                   <div className="space-y-3">
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.start_date')}</label>
+                        <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.start_date')}</label>
                         <DatePicker value={filterStartDate} onChange={setFilterStartDate} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs w-full" />
                       </div>
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.end_date')}</label>
+                        <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.end_date')}</label>
                         <DatePicker value={filterEndDate} onChange={setFilterEndDate} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs w-full" />
                     </div>
                   </div>
@@ -338,7 +338,7 @@ const DebtManagement: React.FC = () => {
 
         <div className="border rounded-[32px] overflow-hidden bg-card">
           <table className="w-full text-left">
-            <thead className="bg-muted/50 text-[10px] font-black uppercase tracking-widest">
+            <thead className="bg-muted/50 text-xs font-black uppercase tracking-widest">
               <tr>
                 <th className="px-5 py-4">{t('debt.customer')}</th>
                 <th className="px-5 py-4">{t('inventory.product')}</th>
@@ -361,7 +361,7 @@ const DebtManagement: React.FC = () => {
                         <div className="flex flex-col">
                           <span className="font-bold">{debt.customerName}</span>
                           {debt.customerPhone && (
-                            <span className="text-[10px] text-muted-foreground">{debt.customerPhone}</span>
+                            <span className="text-xs text-muted-foreground">{debt.customerPhone}</span>
                           )}
                         </div>
                       </td>
@@ -433,13 +433,13 @@ const DebtManagement: React.FC = () => {
                                       </div>
                                       <div>
                                         <p className="text-sm font-bold">{t('common.etb')} {p.amount.toLocaleString()}</p>
-                                        <p className="text-[10px] text-muted-foreground">{t(paymentMethodKeys[p.paymentMethod] || p.paymentMethod)}</p>
+                                        <p className="text-xs text-muted-foreground">{t(paymentMethodKeys[p.paymentMethod] || p.paymentMethod)}</p>
                                       </div>
                                     </div>
                                     <div className="flex items-center gap-2">
                                       <div className="text-right">
                                         <p className="text-xs text-muted-foreground">{formatDate(p.createdAt)}</p>
-                                        {p.note && <p className="text-[10px] text-muted-foreground">{p.note}</p>}
+                                        {p.note && <p className="text-xs text-muted-foreground">{p.note}</p>}
                                       </div>
                                       {!p.reversalId && hasPermission('payments.reverse') && (
                                         <Button
@@ -480,12 +480,12 @@ const DebtManagement: React.FC = () => {
         {selectedDebt && (
           <form onSubmit={handlePayment} className="space-y-6">
             <div className="p-4 rounded-xl bg-muted/20 space-y-1">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('debt.customer')}</p>
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('debt.customer')}</p>
               <p className="font-bold">{selectedDebt.customerName}</p>
               <p className="text-xs text-muted-foreground">{selectedDebt.itemName}</p>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 {t('debt.payment_amount')}
               </Label>
               <Input
@@ -497,12 +497,12 @@ const DebtManagement: React.FC = () => {
                 value={paymentAmount}
                 onChange={e => setPaymentAmount(e.target.value)}
               />
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 {t('common.max')}: {t('common.etb')} {(selectedDebt.totalPrice - selectedDebt.paidAmount).toLocaleString()}
               </p>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 {t('debt.payment_method')}
               </Label>
               <Select value={paymentMethod} onValueChange={setPaymentMethod}>
@@ -518,7 +518,7 @@ const DebtManagement: React.FC = () => {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 {t('debt.payment_note')}
               </Label>
               <Input
@@ -549,7 +549,7 @@ const DebtManagement: React.FC = () => {
           </AlertDialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 {t('adjustments.reason_req')}
               </Label>
               <Textarea

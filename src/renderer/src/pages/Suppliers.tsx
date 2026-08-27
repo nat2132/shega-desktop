@@ -575,7 +575,7 @@ const Suppliers: React.FC = () => {
                         <td className="p-2 hidden xl:table-cell">{s.productCount || 0}</td>
                         <td className="p-2 text-xs hidden xl:table-cell">{s.lastPurchaseDate ? formatDate(s.lastPurchaseDate) : '-'}</td>
                         <td className="p-2">
-                          <Badge variant={s.isActive ? 'default' : 'secondary'} className="text-[10px]">
+                          <Badge variant={s.isActive ? 'default' : 'secondary'} className="text-xs">
                             {s.isActive ? t('suppliers.status_active') : t('suppliers.status_inactive')}
                           </Badge>
                         </td>
@@ -867,7 +867,7 @@ const Suppliers: React.FC = () => {
                         <td className="p-2 text-right font-semibold" style={{ color: (p.totalAmount - (p.paidAmount || 0)) > 0 ? 'var(--destructive)' : 'var(--green-600)' }}>
                           {cur} {((p.totalAmount || 0) - (p.paidAmount || 0)).toLocaleString()}
                         </td>
-                        <td className="p-2"><Badge variant={p.status === 'received' ? 'default' : 'secondary'} className="text-[10px]">{p.status}</Badge></td>
+                        <td className="p-2"><Badge variant={p.status === 'received' ? 'default' : 'secondary'} className="text-xs">{p.status}</Badge></td>
                         <td className="p-2 text-xs">{p.dueDate ? formatDate(p.dueDate) : '-'}</td>
                       </tr>
                     ))}
@@ -910,7 +910,7 @@ const Suppliers: React.FC = () => {
                       <tr key={p.id} className="border-t hover:bg-muted/20">
                         <td className="p-2">{formatDate(p.paymentDate)}</td>
                         <td className="p-2 text-right font-semibold text-green-600">{cur} {(p.amount || 0).toLocaleString()}</td>
-                        <td className="p-2"><Badge variant="outline" className="text-[10px]">{p.paymentMethod}</Badge></td>
+                        <td className="p-2"><Badge variant="outline" className="text-xs">{p.paymentMethod}</Badge></td>
                         <td className="p-2 font-mono text-xs">{p.referenceNumber || '-'}</td>
                         <td className="p-2 font-mono text-xs">{p.purchaseNumber || '-'}</td>
                         <td className="p-2 text-xs text-muted-foreground">{p.notes || '-'}</td>

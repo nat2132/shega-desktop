@@ -13,10 +13,20 @@ contextBridge.exposeInMainWorld('api', {
   // Items
   getItems: (options?: any) => ipcRenderer.invoke('get-items', options),
   getItem: (id: number) => ipcRenderer.invoke('get-item', id),
+  getItemByBarcode: (code: string) => ipcRenderer.invoke('get-item-by-barcode', code),
   insertItem: (item: any) => ipcRenderer.invoke('insert-item', item),
   updateItem: (id: number, item: any) => ipcRenderer.invoke('update-item', id, item),
   deleteItem: (id: number) => ipcRenderer.invoke('delete-item', id),
   getLowStockItems: () => ipcRenderer.invoke('get-low-stock-items'),
+  getReorderSuggestions: () => ipcRenderer.invoke('get-reorder-suggestions'),
+  getReportDrilldowns: (range: { start: string; end: string }) => ipcRenderer.invoke('get-report-drilldowns', range),
+  getGlJournal: (range: { start: string; end: string }) => ipcRenderer.invoke('get-gl-journal', range),
+  getGiftCards: () => ipcRenderer.invoke('get-gift-cards'),
+  issueGiftCard: (data: any) => ipcRenderer.invoke('issue-gift-card', data),
+  redeemGiftCard: (data: any) => ipcRenderer.invoke('redeem-gift-card', data),
+  topupGiftCard: (data: any) => ipcRenderer.invoke('topup-gift-card', data),
+  voidGiftCard: (id: number) => ipcRenderer.invoke('void-gift-card', id),
+  getGiftCardTransactions: (cardId: number) => ipcRenderer.invoke('get-gift-card-transactions', cardId),
   getExpiringItems: () => ipcRenderer.invoke('get-expiring-items'),
   getItemsBySupplier: (supplierId: number) => ipcRenderer.invoke('get-items-by-supplier', supplierId),
   restockItem: (id: number, quantity: number) => ipcRenderer.invoke('restock-item', id, quantity),
@@ -95,6 +105,7 @@ contextBridge.exposeInMainWorld('api', {
   getDashboardStats: () => ipcRenderer.invoke('get-dashboard-stats'),
   getRecentActivity: (limit?: number, dateRange?: { start: string; end: string }) => ipcRenderer.invoke('get-recent-activity', limit, dateRange),
   getAnalytics: (period: string, dateRange?: { start: string; end: string }) => ipcRenderer.invoke('get-analytics', period, dateRange),
+  getVatReport: (dateRange?: { start: string; end: string }) => ipcRenderer.invoke('get-vat-report', dateRange),
   getVoidedSales: (options?: any) => ipcRenderer.invoke('get-voided-sales', options),
   getReversalStats: () => ipcRenderer.invoke('get-reversal-stats'),
 
@@ -113,7 +124,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // Data Management
   exportData: () => ipcRenderer.invoke('export-data'),
-  resetData: () => ipcRenderer.invoke('reset-data'),
+  resetData: (mode: 'transactions' | 'all' | 'factory' = 'all') => ipcRenderer.invoke('reset-data', mode),
 
   // Admin Management
   login: (username: string, pin: string) => ipcRenderer.invoke('login', username, pin),
@@ -143,6 +154,10 @@ contextBridge.exposeInMainWorld('api', {
   getStockMovements: (options?: any) => ipcRenderer.invoke('get-stock-movements', options),
   cleanupStockMovements: () => ipcRenderer.invoke('cleanup-stock-movements'),
   getWarehouseReport: (warehouseId: number) => ipcRenderer.invoke('get-warehouse-report', warehouseId),
+
+  // Stock Consistency
+  checkStockConsistency: () => ipcRenderer.invoke('check-stock-consistency'),
+  fixStockConsistency: () => ipcRenderer.invoke('fix-stock-consistency'),
 
   // Employee Roles
   getEmployeeRoles: () => ipcRenderer.invoke('get-employee-roles'),
@@ -243,22 +258,6 @@ contextBridge.exposeInMainWorld('api', {
   getSupplierActivityLog: (supplierId: number, limit?: number) => ipcRenderer.invoke('get-supplier-activity-log', supplierId, limit),
   getSupplierAnalytics: () => ipcRenderer.invoke('get-supplier-analytics'),
 
-  // Test Data
-  generateTestSuppliers: (count: number) => ipcRenderer.invoke('generate-test-suppliers', count),
-  clearTestSuppliers: () => ipcRenderer.invoke('clear-test-suppliers'),
-
-  // Comprehensive Test Data Generator
-  generateTestData: (count: number) => ipcRenderer.invoke('generate-test-data', count),
-  clearTestData: () => ipcRenderer.invoke('clear-test-data'),
-  onTestDataProgress: (callback: (data: any) => void) => {
-    ipcRenderer.on('test-data-progress', (_event, data) => callback(data));
-  },
-  removeTestDataProgressListener: () => {
-    ipcRenderer.removeAllListeners('test-data-progress');
-  },
-  measurePerformance: () => ipcRenderer.invoke('measure-performance'),
-  getDatabaseSize: () => ipcRenderer.invoke('get-database-size'),
-
   // Backup & Restore
   createBackup: () => ipcRenderer.invoke('create-backup'),
   listBackups: () => ipcRenderer.invoke('list-backups'),
@@ -267,6 +266,27 @@ contextBridge.exposeInMainWorld('api', {
 
   // Receipt Printing
   printReceipt: (sale: any) => ipcRenderer.invoke('print-receipt', sale),
+
+  // Peripherals (Phase 2)
+  openCashDrawer: () => ipcRenderer.invoke('open-cash-drawer'),
+  printTestPage: () => ipcRenderer.invoke('print-test-page'),
+  printLabel: (label: any) => ipcRenderer.invoke('print-label', label),
+  getPrintStatus: () => ipcRenderer.invoke('get-print-status'),
+  setPrinterConfig: (cfg: any) => ipcRenderer.invoke('set-printer-config', cfg),
+  parseScaleReading: (line: string) => ipcRenderer.invoke('parse-scale-reading', line),
+
+  // Sync hub (Phase 3)
+   syncStatus: () => ipcRenderer.invoke('sync:status'),
+  syncVerify: () => ipcRenderer.invoke('sync:verify'),
+  syncLog: (limit: number) => ipcRenderer.invoke('sync:log', limit),
+  syncResync: (deviceId: string) => ipcRenderer.invoke('sync:resync', deviceId),
+  cloudStatus: () => ipcRenderer.invoke('cloud:status'),
+  cloudSync: () => ipcRenderer.invoke('cloud:sync'),
+  saveCloudConfig: (url: string, key: string) => ipcRenderer.invoke('cloud:save-config', url, key),
+  cloudEnabled: (enabled: boolean) => ipcRenderer.invoke('cloud:set-enabled', enabled),
+
+  // Audit (Phase 4)
+  verifyAuditChain: () => ipcRenderer.invoke('verify-audit-chain'),
 
   // Draft Sales
   getDraftSales: () => ipcRenderer.invoke('get-draft-sales'),

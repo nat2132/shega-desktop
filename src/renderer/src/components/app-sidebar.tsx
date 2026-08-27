@@ -78,6 +78,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const { t, currentBusiness, isModuleEnabled } = useSettings();
   const { isPremium, isTrial } = useSubscription();
 
+  const [appVersion, setAppVersion] = React.useState('');
+  React.useEffect(() => {
+    window.api?.getAppVersion().then(setAppVersion).catch(() => {});
+  }, []);
+
   const filteredMain = navMain.filter(item => {
     if (!hasPermission(item.permission)) return false;
     const moduleId = NAV_ITEM_MODULE[item.title];
@@ -95,7 +100,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       : currentAdmin?.role === 'super_admin'
         ? t('common.super_admin')
         : t('common.admin'),
-    avatar: currentAdmin?.avatar || "/avatars/admin.jpg",
+    avatar: currentAdmin?.avatar || "",
   };
 
   return (
@@ -108,9 +113,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 <div className="flex size-8 items-center justify-center rounded-xl bg-primary/10">
                   <BrandedLogo size="xs" logoSrc={currentBusiness?.logo} />
                 </div>
-                <div className="flex flex-col gap-0 leading-none">
+                <div className="flex flex-col gap-0 leading-none group-data-[collapsible=icon]:hidden">
                   <span className="text-xs font-semibold tracking-tight">{currentBusiness?.businessName || t('common.app_name')}</span>
-                  <span className="text-[9px] font-medium uppercase tracking-wider text-muted-foreground/60">{t('common.terminal_version')}</span>
+                  <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground/60">{t('common.terminal_version', { version: appVersion })}</span>
                 </div>
               </Link>
             </SidebarMenuButton>
@@ -126,7 +131,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           >
             <SidebarMenu>
               <div className="space-y-0.5 py-2">
-                <p className="px-3 py-1.5 text-[9px] font-semibold uppercase tracking-[0.2em] text-muted-foreground/50">{t('tabs.main_terminal')}</p>
+                <p className="px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground/50 group-data-[collapsible=icon]:hidden">{t('tabs.main_terminal')}</p>
                 {filteredMain.map((item) => {
                   const isPremiumItem = NAV_ITEM_PREMIUM[item.title];
                   const isLocked = isPremiumItem && !isPremium && !isTrial;
@@ -140,7 +145,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                     >
                       <Link to={item.url} className="flex items-center gap-3">
                         <item.icon className="size-[18px]" />
-                        <span className="text-xs font-medium tracking-wide">{t(`tabs.${item.title}` as any)}</span>
+                        <span className="text-xs font-medium tracking-wide group-data-[collapsible=icon]:hidden">{t(`tabs.${item.title}` as any)}</span>
                         {isPremiumItem && !isPremium && !isTrial && (
                           <PremiumBadge size="sm" showIcon={false} className="ml-auto" />
                         )}
@@ -154,7 +159,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               </div>
 
               <div className="space-y-0.5 py-2">
-                <p className="px-3 py-1.5 text-[9px] font-semibold uppercase tracking-[0.2em] text-muted-foreground/50">{t('tabs.system_config')}</p>
+                <p className="px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground/50 group-data-[collapsible=icon]:hidden">{t('tabs.system_config')}</p>
                 {filteredSecondary.map((item) => (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton
@@ -165,12 +170,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                       {item.url.startsWith('http') ? (
                         <button onClick={() => window.api.openExternal(item.url)} className="flex items-center gap-3 w-full">
                           <item.icon className="size-[18px]" />
-                          <span className="text-xs font-medium tracking-wide">{t(`tabs.${item.title}` as any)}</span>
+                          <span className="text-xs font-medium tracking-wide group-data-[collapsible=icon]:hidden">{t(`tabs.${item.title}` as any)}</span>
                         </button>
                       ) : (
                         <Link to={item.url} className="flex items-center gap-3">
                           <item.icon className="size-[18px]" />
-                          <span className="text-xs font-medium tracking-wide">{t(`tabs.${item.title}` as any)}</span>
+                          <span className="text-xs font-medium tracking-wide group-data-[collapsible=icon]:hidden">{t(`tabs.${item.title}` as any)}</span>
                         </Link>
                       )}
                     </SidebarMenuButton>

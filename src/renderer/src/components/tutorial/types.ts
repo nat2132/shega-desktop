@@ -8,11 +8,6 @@ export interface TutorialStep {
   instructionKey?: string;
   targetSelector?: string;
   tooltipPosition?: 'top' | 'bottom' | 'left' | 'right' | 'center';
-  waitForInteraction?: boolean;
-  autoAdvance?: boolean;
-  autoAdvanceDelay?: number;
-  placeholderText?: string;
-  exampleValue?: string;
   media?: string;
 }
 

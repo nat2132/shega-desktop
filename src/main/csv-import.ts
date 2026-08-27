@@ -111,12 +111,14 @@ function importSales(rows: ImportRow[]): ImportResult {
         const item = db.prepare('SELECT unitsPerPack, totalBaseQuantity FROM items WHERE id = ?').get(itemId) as any
         let baseDeduction = quantity
         if (unitType === 'pack') baseDeduction = quantity * (item?.unitsPerPack || 1)
-        db.prepare('UPDATE items SET totalBaseQuantity = MAX(0, totalBaseQuantity - ?) WHERE id = ?').run(baseDeduction, itemId)
+        const salesItemResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(baseDeduction, itemId, baseDeduction)
+        if (salesItemResult.changes === 0) throw new Error(`Insufficient stock: item "${itemName}" has less than ${baseDeduction} units available`)
 
         const defWhId = getDefaultWarehouseId()
         const whRow = db.prepare('SELECT id, quantity FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, itemId) as any
         if (whRow) {
-          db.prepare('UPDATE warehouse_inventory SET quantity = MAX(0, quantity - ?), updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(baseDeduction, whRow.id)
+          const whResult = db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND quantity >= ?').run(baseDeduction, whRow.id, baseDeduction)
+          if (whResult.changes === 0) throw new Error(`Insufficient warehouse stock for item "${itemName}"`)
         }
 
         result.imported++
@@ -346,11 +348,15 @@ function importAdjustments(rows: ImportRow[]): ImportResult {
           const item = db.prepare('SELECT unitsPerPack FROM items WHERE id = ?').get(itemId) as any
           let baseDeduction = quantity
           if (unitType === 'pack') baseDeduction = quantity * (item?.unitsPerPack || 1)
-          db.prepare('UPDATE items SET totalBaseQuantity = MAX(0, totalBaseQuantity - ?) WHERE id = ?').run(baseDeduction, itemId)
+          const itemResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(baseDeduction, itemId, baseDeduction)
+          if (itemResult.changes === 0) throw new Error(`Insufficient stock: item "${itemName}" has less than ${baseDeduction} units available`)
 
           const defWhId = getDefaultWarehouseId()
           const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, itemId) as any
-          if (whRow) { db.prepare('UPDATE warehouse_inventory SET quantity = MAX(0, quantity - ?), updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(baseDeduction, whRow.id) }
+          if (whRow) {
+            const whAdjustResult = db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND quantity >= ?').run(baseDeduction, whRow.id, baseDeduction)
+            if (whAdjustResult.changes === 0) throw new Error(`Insufficient warehouse stock for item "${itemName}"`)
+          }
         } else if (type === 'add_stock') {
           const item = db.prepare('SELECT unitsPerPack FROM items WHERE id = ?').get(itemId) as any
           let baseAddition = quantity
@@ -590,7 +596,20 @@ const IMPORTERS: Record<string, (rows: ImportRow[]) => ImportResult> = {
 export function validateData(module: string, rows: ImportRow[]): { valid: boolean; errors: { row: number; message: string }[] } {
   const importer = IMPORTERS[module]
   if (!importer) return { valid: false, errors: [{ row: 0, message: `Unknown module: ${module}` }] }
-  const result = importer(rows.slice(0, 1))
+
+  let result: ImportResult = { success: true, imported: 0, errors: [], skipped: 0 }
+  try {
+    db.transaction(() => {
+      const r = importer(rows)
+      result = r
+      throw new Error('__rollback__')
+    })()
+  } catch (e: any) {
+    if (e.message !== '__rollback__') {
+      return { valid: false, errors: [{ row: 0, message: `Validation failed: ${e.message}` }] }
+    }
+  }
+
   return { valid: result.errors.length === 0, errors: result.errors }
 }
 

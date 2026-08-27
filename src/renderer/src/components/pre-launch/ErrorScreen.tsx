@@ -32,7 +32,7 @@ const ErrorScreen: React.FC<ErrorScreenProps> = ({ message, onRetry }) => {
         <p className="text-[11px] text-white/30 leading-relaxed mb-2">
           {message || t('error.desc')}
         </p>
-        <p className="text-[9px] font-black uppercase tracking-widest text-white/15 mb-8">
+        <p className="text-xs font-black uppercase tracking-widest text-white/15 mb-8">
           Error Code: SYS_INIT_FAIL
         </p>
 
@@ -48,7 +48,7 @@ const ErrorScreen: React.FC<ErrorScreenProps> = ({ message, onRetry }) => {
           )}
         </button>
 
-        <p className="text-[9px] text-white/10 font-black uppercase tracking-[0.2em] mt-6">
+        <p className="text-xs text-white/10 font-black uppercase tracking-[0.2em] mt-6">
           {t('error.support')}
         </p>
       </div>

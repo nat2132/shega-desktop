@@ -143,11 +143,11 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
 
         {/* Step indicator */}
         <div className="flex items-center justify-between mb-8">
-          <p className="text-[10px] font-black uppercase tracking-[0.3em] text-white/30">
+          <p className="text-xs font-black uppercase tracking-[0.3em] text-white/30">
             {t('onboarding.step')} {currentStep + 1} {t('onboarding.of')} {totalSteps}
           </p>
           <button onClick={handleComplete}
-            className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-white/20 hover:text-white/40 transition-colors"
+            className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-white/20 hover:text-white/40 transition-colors"
           >
             <SkipForward size={14} /> {t('onboarding.skip_all')}
           </button>
@@ -163,7 +163,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
                   <Check className="h-5 w-5 text-white/50" />
                 </div>
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.3em] text-white/30 mb-1">{t('onboarding.feature_subtitle')}</p>
+                  <p className="text-xs font-black uppercase tracking-[0.3em] text-white/30 mb-1">{t('onboarding.feature_subtitle')}</p>
                   <h2 className="text-2xl font-black text-white tracking-tighter uppercase">{t('onboarding.feature_title')}</h2>
                 </div>
               </div>
@@ -203,10 +203,10 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
                       <p className={`text-[11px] font-black uppercase tracking-wider mb-1 ${isEnabled ? 'text-white/80' : 'text-white/40'}`}>
                         {t(meta.nameKey)}
                       </p>
-                      <p className={`text-[9px] leading-relaxed ${isEnabled ? 'text-white/30' : 'text-white/20'}`}>
+                      <p className={`text-xs leading-relaxed ${isEnabled ? 'text-white/30' : 'text-white/20'}`}>
                         {t(meta.descKey)}
                       </p>
-                      <p className={`text-[8px] font-bold mt-1.5 uppercase tracking-wider ${isEnabled ? 'text-white/20' : 'text-white/10'}`}>
+                      <p className={`text-xs font-bold mt-1.5 uppercase tracking-wider ${isEnabled ? 'text-white/20' : 'text-white/10'}`}>
                         {t('onboarding.benefits')}: {t(meta.benefitKey)}
                       </p>
                     </button>
@@ -225,7 +225,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
                       <step.icon className="h-8 w-8 text-white/50" />
                     </div>
                     <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.3em] text-white/30 mb-1">{step.subtitle}</p>
+                      <p className="text-xs font-black uppercase tracking-[0.3em] text-white/30 mb-1">{step.subtitle}</p>
                       <h2 className="text-2xl font-black text-white tracking-tighter uppercase">{step.title}</h2>
                     </div>
                   </div>
@@ -252,7 +252,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
         <div className="flex items-center gap-3">
           {currentStep > 0 && (
             <button onClick={() => goToStep(currentStep - 1)}
-              className="px-6 py-4 bg-white/5 text-white/40 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-white/10 transition-all"
+              className="px-6 py-4 bg-white/5 text-white/40 rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-white/10 transition-all"
             >
               {t('onboarding.back')}
             </button>
@@ -268,7 +268,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
           </button>
           {currentStep < totalSteps - 1 && (
             <button onClick={() => goToStep(currentStep + 1)}
-              className="px-6 py-4 bg-white/5 text-white/40 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-white/10 transition-all"
+              className="px-6 py-4 bg-white/5 text-white/40 rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-white/10 transition-all"
             >
               {t('onboarding.skip')}
             </button>

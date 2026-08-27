@@ -1,28 +1,56 @@
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { app, BrowserWindow } from 'electron';
 import { join } from 'path';
 import { initDB } from './database';
 import { registerIPCHandlers } from './ipc-handlers';
 import { appUpdater } from './updater';
+import { SyncHub, SYNC_PORT } from './sync-hub';
+import { logger } from './logger';
+
+export const syncHub = new SyncHub();
 
 // Global error handlers
 process.on('uncaughtException', (error) => {
-  console.error('[FATAL] Uncaught exception:', error);
+  logger.fatal('uncaughtException', { error: String(error), stack: error?.stack });
 });
 process.on('unhandledRejection', (reason) => {
-  console.error('[FATAL] Unhandled rejection:', reason);
+  logger.fatal('unhandledRejection', { reason: String(reason), stack: (reason as any)?.stack });
 });
 
 function createWindow() {
+  const settingsPath = join(app.getPath('userData'), 'window-state.json');
+  let windowState: { width: number; height: number; x?: number; y?: number } = { width: 1200, height: 800 };
+
+  if (existsSync(settingsPath)) {
+    try {
+      const saved = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      windowState = { ...windowState, ...saved };
+    } catch {}
+  }
+
   const mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: windowState.width,
+    height: windowState.height,
+    ...(windowState.x !== undefined && windowState.y !== undefined ? { x: windowState.x, y: windowState.y } : {}),
     show: false,
     autoHideMenuBar: true,
     icon: join(__dirname, '../../src/assets/images/logo.ico'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
     }
+  });
+
+  mainWindow.on('resize', () => {
+    const bounds = mainWindow.getBounds();
+    try { writeFileSync(settingsPath, JSON.stringify({ width: bounds.width, height: bounds.height, x: bounds.x, y: bounds.y })); } catch {}
+  });
+
+  mainWindow.on('move', () => {
+    const bounds = mainWindow.getBounds();
+    try { writeFileSync(settingsPath, JSON.stringify({ width: bounds.width, height: bounds.height, x: bounds.x, y: bounds.y })); } catch {}
   });
 
   mainWindow.on('ready-to-show', () => {
@@ -43,6 +71,7 @@ function createWindow() {
 app.whenReady().then(() => {
   initDB();
   registerIPCHandlers();
+  syncHub.start(SYNC_PORT);
   createWindow();
 
   const wins = BrowserWindow.getAllWindows();

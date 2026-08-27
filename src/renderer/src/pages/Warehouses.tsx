@@ -179,15 +179,15 @@ const Warehouses: React.FC = () => {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {kpiCards.map((card, i) => (
             <div key={i} className="p-5 rounded-2xl border bg-card/40">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{card.title}</p>
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{card.title}</p>
               <p className="text-2xl font-black tracking-tight mt-2">{card.value}</p>
               <div className="flex items-center gap-2 mt-3">
-                <Badge variant={card.trendType === 'up' ? 'default' : 'destructive'} className="text-[8px] font-black uppercase">
+                <Badge variant={card.trendType === 'up' ? 'default' : 'destructive'} className="text-xs font-black uppercase">
                   {card.trendType === 'up' ? '+0%' : '0%'}
                 </Badge>
-                <span className="text-[9px] text-muted-foreground font-bold">{card.footerTitle}</span>
+                <span className="text-xs text-muted-foreground font-bold">{card.footerTitle}</span>
               </div>
-              <p className="text-[8px] text-muted-foreground mt-1">{card.footerSub}</p>
+              <p className="text-xs text-muted-foreground mt-1">{card.footerSub}</p>
             </div>
           ))}
         </div>
@@ -202,7 +202,7 @@ const Warehouses: React.FC = () => {
               variant={activeTab === tab.id ? 'default' : 'ghost'}
               size="sm"
               onClick={() => setActiveTab(tab.id)}
-              className="h-8 px-4 text-[10px] font-black uppercase tracking-widest rounded-lg"
+              className="h-8 px-4 text-xs font-black uppercase tracking-widest rounded-lg"
             >
               <tab.icon size={14} className="mr-2" />
               {tab.label}
@@ -216,8 +216,8 @@ const Warehouses: React.FC = () => {
         {activeTab === 'warehouses' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{warehouses.length} {t('warehouses.title')}</p>
-              <Button size="sm" className="h-9 px-5 text-[10px] font-black uppercase tracking-widest" onClick={openCreateWh}>
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{warehouses.length} {t('warehouses.title')}</p>
+              <Button size="sm" className="h-9 px-5 text-xs font-black uppercase tracking-widest" onClick={openCreateWh}>
                 <Plus size={14} className="mr-2" /> {t('warehouses.add_warehouse')}
               </Button>
             </div>
@@ -234,7 +234,7 @@ const Warehouses: React.FC = () => {
                       </div>
                       <div>
                         <p className="text-xs font-black uppercase tracking-tight">{wh.name}</p>
-                        <p className="text-[9px] text-muted-foreground font-bold uppercase mt-0.5">{wh.location || t('warehouses.no_warehouse_location')}</p>
+                        <p className="text-xs text-muted-foreground font-bold uppercase mt-0.5">{wh.location || t('warehouses.no_warehouse_location')}</p>
                       </div>
                     </div>
                     <Badge variant={wh.isActive ? 'default' : 'secondary'} className="text-[7px] font-black uppercase">
@@ -243,21 +243,21 @@ const Warehouses: React.FC = () => {
                   </div>
                   <div className="mt-4 space-y-1.5">
                     {wh.managerName && (
-                      <div className="flex items-center gap-2 text-[10px] font-semibold text-muted-foreground">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
                         <User size={12} /> {wh.managerName}
                       </div>
                     )}
                     {wh.managerPhone && (
-                      <div className="flex items-center gap-2 text-[10px] font-semibold text-muted-foreground">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
                         <Phone size={12} /> {wh.managerPhone}
                       </div>
                     )}
                   </div>
                   <div className="flex gap-2 mt-4 pt-3 border-t border-border/30 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Button variant="outline" size="sm" className="h-7 text-[9px] font-black uppercase tracking-widest" onClick={() => openEditWh(wh)}>
+                    <Button variant="outline" size="sm" className="h-7 text-xs font-black uppercase tracking-widest" onClick={() => openEditWh(wh)}>
                       <Edit2 size={11} className="mr-1" /> {t('warehouses.edit_warehouse')}
                     </Button>
-                    <Button variant="outline" size="sm" className="h-7 text-[9px] font-black uppercase tracking-widest text-destructive hover:text-destructive" onClick={() => { setDeleteTarget(wh); setShowDeleteConfirm(true); }}>
+                    <Button variant="outline" size="sm" className="h-7 text-xs font-black uppercase tracking-widest text-destructive hover:text-destructive" onClick={() => { setDeleteTarget(wh); setShowDeleteConfirm(true); }}>
                       <Trash2 size={11} className="mr-1" /> {t('warehouses.delete')}
                     </Button>
                   </div>
@@ -266,7 +266,7 @@ const Warehouses: React.FC = () => {
               {warehouses.length === 0 && (
                 <div className="col-span-full p-12 text-center">
                   <Warehouse size={32} className="mx-auto mb-3 text-muted-foreground/30" />
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.no_warehouses')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.no_warehouses')}</p>
                   <Button size="sm" className="mt-4" onClick={openCreateWh}>{t('warehouses.create_first')}</Button>
                 </div>
               )}
@@ -278,7 +278,7 @@ const Warehouses: React.FC = () => {
           <div className="space-y-4">
             <div className="flex items-center gap-4 flex-wrap">
               <div className="flex items-center gap-2">
-                <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.warehouse_name')}:</label>
+                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.warehouse_name')}:</label>
                 <select
                   value={selectedWarehouse || ''}
                   onChange={e => setSelectedWarehouse(Number(e.target.value))}
@@ -300,10 +300,10 @@ const Warehouses: React.FC = () => {
                   />
                 </div>
               </div>
-              <Button size="sm" variant="outline" className="h-9 text-[10px] font-black uppercase tracking-widest" onClick={() => { setAdjustForm({ warehouseId: selectedWarehouse || 0, itemId: 0, quantity: 0 }); setShowAdjustModal(true); }}>
+              <Button size="sm" variant="outline" className="h-9 text-xs font-black uppercase tracking-widest" onClick={() => { setAdjustForm({ warehouseId: selectedWarehouse || 0, itemId: 0, quantity: 0 }); setShowAdjustModal(true); }}>
                 <Package size={14} className="mr-2" /> {t('warehouses.set_quantity')}
               </Button>
-              <Button size="sm" variant="outline" className="h-9 text-[10px] font-black uppercase tracking-widest" onClick={() => { loadInventory(selectedWarehouse!); }}>
+              <Button size="sm" variant="outline" className="h-9 text-xs font-black uppercase tracking-widest" onClick={() => { loadInventory(selectedWarehouse!); }}>
                 <RefreshCw size={14} className="mr-2" /> {t('warehouses.refresh')}
               </Button>
             </div>
@@ -311,7 +311,7 @@ const Warehouses: React.FC = () => {
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
                   <thead>
-                    <tr className="border-b border-border/50 text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <tr className="border-b border-border/50 text-xs font-black uppercase tracking-widest text-muted-foreground">
                       <th className="p-4">{t('warehouses.item')}</th>
                       <th className="p-4">{t('warehouses.item_category')}</th>
                       <th className="p-4">{t('warehouses.quantity')}</th>
@@ -328,21 +328,21 @@ const Warehouses: React.FC = () => {
                       <tr key={inv.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
                         <td className="p-4">
                           <p className="text-xs font-black uppercase tracking-tight">{inv.itemName}</p>
-                          {inv.companyName && <p className="text-[9px] text-muted-foreground">{inv.companyName}</p>}
+                          {inv.companyName && <p className="text-xs text-muted-foreground">{inv.companyName}</p>}
                         </td>
-                        <td className="p-4 text-[10px] font-semibold">{inv.categoryName || '-'}</td>
+                        <td className="p-4 text-xs font-semibold">{inv.categoryName || '-'}</td>
                         <td className="p-4">
-                          <Badge variant={inv.quantity < 10 ? 'destructive' : 'default'} className="text-[10px] font-black">
+                          <Badge variant={inv.quantity < 10 ? 'destructive' : 'default'} className="text-xs font-black">
                             {inv.quantity || 0}
                           </Badge>
                         </td>
-                        <td className="p-4 text-[10px] font-semibold">{inv.baseUnit || 'pcs'}</td>
-                        <td className="p-4 text-[10px] font-semibold">ETB {inv.baseSellingPrice?.toLocaleString() || 0}</td>
-                        <td className="p-4 text-[10px] font-black">ETB {((inv.quantity || 0) * (inv.baseSellingPrice || 0)).toLocaleString()}</td>
+                        <td className="p-4 text-xs font-semibold">{inv.baseUnit || 'pcs'}</td>
+                        <td className="p-4 text-xs font-semibold">ETB {inv.baseSellingPrice?.toLocaleString() || 0}</td>
+                        <td className="p-4 text-xs font-black">ETB {((inv.quantity || 0) * (inv.baseSellingPrice || 0)).toLocaleString()}</td>
                       </tr>
                     ))}
                     {inventory.length === 0 && (
-                      <tr><td colSpan={6} className="p-12 text-center"><p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.no_inventory')}</p></td></tr>
+                      <tr><td colSpan={6} className="p-12 text-center"><p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.no_inventory')}</p></td></tr>
                     )}
                   </tbody>
                 </table>
@@ -354,8 +354,8 @@ const Warehouses: React.FC = () => {
         {activeTab === 'transfers' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.transfer_history')}</p>
-              <Button size="sm" className="h-9 px-5 text-[10px] font-black uppercase tracking-widest" onClick={() => {
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.transfer_history')}</p>
+              <Button size="sm" className="h-9 px-5 text-xs font-black uppercase tracking-widest" onClick={() => {
                 setTransferForm({ fromWarehouseId: 0, toWarehouseId: 0, itemId: 0, quantity: 0, notes: '', transferredBy: '' });
                 setShowTransferModal(true);
               }}>
@@ -366,7 +366,7 @@ const Warehouses: React.FC = () => {
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
                   <thead>
-                    <tr className="border-b border-border/50 text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <tr className="border-b border-border/50 text-xs font-black uppercase tracking-widest text-muted-foreground">
                       <th className="p-4">{t('warehouses.date')}</th>
                       <th className="p-4">{t('warehouses.from')}</th>
                       <th className="p-4">{t('warehouses.to')}</th>
@@ -379,27 +379,27 @@ const Warehouses: React.FC = () => {
                   <tbody>
                     {transfers.map((tr: any) => (
                       <tr key={tr.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
-                        <td className="p-4 text-[10px] font-semibold">{formatDate(tr.createdAt)}</td>
+                        <td className="p-4 text-xs font-semibold">{formatDate(tr.createdAt)}</td>
                         <td className="p-4">
-                          <Badge variant="secondary" className="text-[9px] font-black">{tr.fromWarehouseName}</Badge>
+                          <Badge variant="secondary" className="text-xs font-black">{tr.fromWarehouseName}</Badge>
                         </td>
                         <td className="p-4">
-                          <Badge variant="default" className="text-[9px] font-black">{tr.toWarehouseName}</Badge>
+                          <Badge variant="default" className="text-xs font-black">{tr.toWarehouseName}</Badge>
                         </td>
                         <td className="p-4">
                           <p className="text-xs font-black uppercase tracking-tight">{tr.itemName}</p>
                         </td>
                         <td className="p-4 text-xs font-black">{tr.quantity}</td>
                         <td className="p-4">
-                          <Badge variant={tr.status === 'completed' ? 'default' : 'secondary'} className="text-[9px] font-black uppercase">
+                          <Badge variant={tr.status === 'completed' ? 'default' : 'secondary'} className="text-xs font-black uppercase">
                             {tr.status}
                           </Badge>
                         </td>
-                        <td className="p-4 text-[10px] text-muted-foreground">{tr.notes || '-'}</td>
+                        <td className="p-4 text-xs text-muted-foreground">{tr.notes || '-'}</td>
                       </tr>
                     ))}
                     {transfers.length === 0 && (
-                      <tr><td colSpan={7} className="p-12 text-center"><p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.no_transfers')}</p></td></tr>
+                      <tr><td colSpan={7} className="p-12 text-center"><p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.no_transfers')}</p></td></tr>
                     )}
                   </tbody>
                 </table>
@@ -412,7 +412,7 @@ const Warehouses: React.FC = () => {
           <div className="space-y-4">
             <div className="flex items-center gap-4 flex-wrap">
               <div className="flex items-center gap-2">
-                <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.warehouse_name')}:</label>
+                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.warehouse_name')}:</label>
                 <select
                   value={selectedWarehouse || ''}
                   onChange={e => setSelectedWarehouse(Number(e.target.value))}
@@ -424,7 +424,7 @@ const Warehouses: React.FC = () => {
                   ))}
                 </select>
               </div>
-              <Button size="sm" variant="outline" className="h-9 text-[10px] font-black uppercase tracking-widest" onClick={loadMovements}>
+              <Button size="sm" variant="outline" className="h-9 text-xs font-black uppercase tracking-widest" onClick={loadMovements}>
                 <RefreshCw size={14} className="mr-2" /> {t('warehouses.refresh')}
               </Button>
             </div>
@@ -432,7 +432,7 @@ const Warehouses: React.FC = () => {
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
                   <thead>
-                    <tr className="border-b border-border/50 text-[9px] font-black uppercase tracking-widest text-muted-foreground">
+                    <tr className="border-b border-border/50 text-xs font-black uppercase tracking-widest text-muted-foreground">
                       <th className="p-4">{t('warehouses.date')}</th>
                       <th className="p-4">{t('warehouses.title')}</th>
                       <th className="p-4">{t('warehouses.item')}</th>
@@ -445,25 +445,25 @@ const Warehouses: React.FC = () => {
                   <tbody>
                     {movements.map((mv: any) => (
                       <tr key={mv.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
-                        <td className="p-4 text-[10px] font-semibold">{formatDateTime(mv.createdAt)}</td>
+                        <td className="p-4 text-xs font-semibold">{formatDateTime(mv.createdAt)}</td>
                         <td className="p-4">
-                          <Badge variant="outline" className="text-[9px] font-black">{mv.warehouseName}</Badge>
+                          <Badge variant="outline" className="text-xs font-black">{mv.warehouseName}</Badge>
                         </td>
                         <td className="p-4">
                           <p className="text-xs font-black uppercase tracking-tight">{mv.itemName}</p>
                         </td>
                         <td className="p-4">
-                          <Badge variant={mv.type === 'transfer_in' ? 'default' : mv.type === 'transfer_out' ? 'secondary' : 'outline'} className="text-[9px] font-black uppercase">
+                          <Badge variant={mv.type === 'transfer_in' ? 'default' : mv.type === 'transfer_out' ? 'secondary' : 'outline'} className="text-xs font-black uppercase">
                             {mv.type.replace('_', ' ')}
                           </Badge>
                         </td>
                         <td className="p-4 text-xs font-black">{mv.quantity}</td>
-                        <td className="p-4 text-[10px] text-muted-foreground">{mv.referenceType || '-'}</td>
-                        <td className="p-4 text-[10px] text-muted-foreground max-w-[200px] truncate" title={mv.notes}>{mv.notes || '-'}</td>
+                        <td className="p-4 text-xs text-muted-foreground">{mv.referenceType || '-'}</td>
+                        <td className="p-4 text-xs text-muted-foreground max-w-[200px] truncate" title={mv.notes}>{mv.notes || '-'}</td>
                       </tr>
                     ))}
                     {movements.length === 0 && (
-                      <tr><td colSpan={7} className="p-12 text-center"><p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.no_movements_recorded')}</p></td></tr>
+                      <tr><td colSpan={7} className="p-12 text-center"><p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.no_movements_recorded')}</p></td></tr>
                     )}
                   </tbody>
                 </table>
@@ -477,32 +477,32 @@ const Warehouses: React.FC = () => {
       <Modal isOpen={showWarehouseModal} onClose={() => setShowWarehouseModal(false)} title={editingWh ? t('warehouses.edit_warehouse') : t('warehouses.new_warehouse')} size="md">
         <div className="space-y-5">
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.warehouse_name')} *</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.warehouse_name')} *</label>
             <Input value={whForm.name} onChange={e => setWhForm({ ...whForm, name: e.target.value })} placeholder="e.g. Main Warehouse" />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.warehouse_location')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.warehouse_location')}</label>
             <Input value={whForm.location} onChange={e => setWhForm({ ...whForm, location: e.target.value })} placeholder="e.g. Headquarters" />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.manager_name')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.manager_name')}</label>
               <Input value={whForm.managerName} onChange={e => setWhForm({ ...whForm, managerName: e.target.value })} placeholder="e.g. John Doe" />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.manager_phone')}</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.manager_phone')}</label>
               <Input value={whForm.managerPhone} onChange={e => setWhForm({ ...whForm, managerPhone: e.target.value })} placeholder="e.g. +251..." />
             </div>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Email</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Email</label>
             <Input value={whForm.email} onChange={e => setWhForm({ ...whForm, email: e.target.value })} placeholder="e.g. warehouse@shega.tech" type="email" />
           </div>
           <div className="flex gap-4 pt-2">
-            <Button className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={handleSaveWarehouse}>
+            <Button className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={handleSaveWarehouse}>
               {editingWh ? t('warehouses.update_warehouse') : t('warehouses.create_warehouse')}
             </Button>
-            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={() => setShowWarehouseModal(false)}>
+            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={() => setShowWarehouseModal(false)}>
               {t('common.cancel')}
             </Button>
           </div>
@@ -514,7 +514,7 @@ const Warehouses: React.FC = () => {
         <div className="space-y-5">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.source')} *</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.source')} *</label>
               <select
                 value={transferForm.fromWarehouseId}
                 onChange={e => setTransferForm({ ...transferForm, fromWarehouseId: Number(e.target.value) })}
@@ -527,7 +527,7 @@ const Warehouses: React.FC = () => {
               </select>
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.destination')} *</label>
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.destination')} *</label>
               <select
                 value={transferForm.toWarehouseId}
                 onChange={e => setTransferForm({ ...transferForm, toWarehouseId: Number(e.target.value) })}
@@ -541,7 +541,7 @@ const Warehouses: React.FC = () => {
             </div>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.item')} *</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.item')} *</label>
             <select
               value={transferForm.itemId}
               onChange={e => setTransferForm({ ...transferForm, itemId: Number(e.target.value) })}
@@ -554,15 +554,15 @@ const Warehouses: React.FC = () => {
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.quantity')} *</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.quantity')} *</label>
             <Input type="number" min={1} value={transferForm.quantity || ''} onChange={e => setTransferForm({ ...transferForm, quantity: Number(e.target.value) })} placeholder="e.g. 50" />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.transferred_by')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.transferred_by')}</label>
             <Input value={transferForm.transferredBy} onChange={e => setTransferForm({ ...transferForm, transferredBy: e.target.value })} placeholder="e.g. Operations Manager" />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.notes')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.notes')}</label>
             <textarea
               value={transferForm.notes}
               onChange={e => setTransferForm({ ...transferForm, notes: e.target.value })}
@@ -571,10 +571,10 @@ const Warehouses: React.FC = () => {
             />
           </div>
           <div className="flex gap-4 pt-2">
-            <Button className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={handleTransfer}>
+            <Button className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={handleTransfer}>
               <ArrowRightLeft size={14} className="mr-2" /> {t('warehouses.execute_transfer')}
             </Button>
-            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={() => setShowTransferModal(false)}>
+            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={() => setShowTransferModal(false)}>
               {t('common.cancel')}
             </Button>
           </div>
@@ -585,7 +585,7 @@ const Warehouses: React.FC = () => {
       <Modal isOpen={showAdjustModal} onClose={() => setShowAdjustModal(false)} title={t('warehouses.set_inventory_qty')} size="sm">
         <div className="space-y-5">
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.title')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.title')}</label>
             <select
               value={adjustForm.warehouseId}
               onChange={e => setAdjustForm({ ...adjustForm, warehouseId: Number(e.target.value) })}
@@ -598,7 +598,7 @@ const Warehouses: React.FC = () => {
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.item')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.item')}</label>
             <select
               value={adjustForm.itemId}
               onChange={e => setAdjustForm({ ...adjustForm, itemId: Number(e.target.value) })}
@@ -611,14 +611,14 @@ const Warehouses: React.FC = () => {
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.new_qty')}</label>
+            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.new_qty')}</label>
             <Input type="number" min={0} value={adjustForm.quantity || ''} onChange={e => setAdjustForm({ ...adjustForm, quantity: Number(e.target.value) })} placeholder="e.g. 100" />
           </div>
           <div className="flex gap-4 pt-2">
-            <Button className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={handleAdjustInventory}>
+            <Button className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={handleAdjustInventory}>
               <Package size={14} className="mr-2" /> {t('warehouses.set_quantity')}
             </Button>
-            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-[10px] tracking-widest" onClick={() => setShowAdjustModal(false)}>
+            <Button variant="outline" className="flex-1 h-12 font-black uppercase text-xs tracking-widest" onClick={() => setShowAdjustModal(false)}>
               {t('common.cancel')}
             </Button>
           </div>

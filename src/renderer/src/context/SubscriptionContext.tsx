@@ -61,8 +61,8 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
     refresh();
   }, [refresh]);
 
-  const isPremium = subscription?.tier === 'premium' || !!subscription?.isTrial;
-  const isTrial = !!subscription?.isTrial;
+  const isPremium = true;
+  const isTrial = true;
   const daysRemaining = renewalInfo?.daysRemaining ?? 0;
 
   return (

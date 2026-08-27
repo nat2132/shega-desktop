@@ -84,7 +84,7 @@ const LockedFeatureModal: React.FC<LockedFeatureModalProps> = ({ open, onClose, 
             <div className="p-2 rounded-full bg-gradient-to-br from-amber-500/20 to-amber-600/20">
               <Sparkles className="h-5 w-5 text-amber-500" />
             </div>
-            <Badge variant="secondary" className="text-[9px] font-black uppercase tracking-widest bg-amber-500/10 text-amber-500 border-amber-500/20">
+            <Badge variant="secondary" className="text-xs font-black uppercase tracking-widest bg-amber-500/10 text-amber-500 border-amber-500/20">
               {t('premium.badge')}
             </Badge>
           </div>
@@ -104,7 +104,7 @@ const LockedFeatureModal: React.FC<LockedFeatureModalProps> = ({ open, onClose, 
                 <Icon className="h-5 w-5 text-amber-500" />
               </div>
               <div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                   {t('premium.locked_what')}
                 </p>
                 <p className="text-xs font-medium mt-0.5">{t(info.whatKey)}</p>
@@ -114,20 +114,20 @@ const LockedFeatureModal: React.FC<LockedFeatureModalProps> = ({ open, onClose, 
 
           <div className="grid grid-cols-2 gap-3">
             <div className="p-3 rounded-2xl bg-muted/20 border border-border/50">
-              <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1.5">
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1.5">
                 {t('premium.locked_why')}
               </p>
               <p className="text-[11px] leading-relaxed">{t(info.whyKey)}</p>
             </div>
             <div className="p-3 rounded-2xl bg-muted/20 border border-border/50">
-              <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1.5">
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1.5">
                 {t('premium.locked_benefits')}
               </p>
               <div className="space-y-1">
                 {t(info.benefitsKey).split(', ').map((b, i) => (
                   <div key={i} className="flex items-center gap-1.5">
                     <div className="h-1 w-1 rounded-full bg-amber-500 shrink-0" />
-                    <span className="text-[10px]">{b}</span>
+                    <span className="text-xs">{b}</span>
                   </div>
                 ))}
               </div>
@@ -136,13 +136,13 @@ const LockedFeatureModal: React.FC<LockedFeatureModalProps> = ({ open, onClose, 
         </div>
 
         <div className="flex gap-2 pt-2">
-          <Button variant="outline" size="sm" onClick={onClose} className="rounded-xl text-[10px] font-black uppercase tracking-widest flex-1">
+          <Button variant="outline" size="sm" onClick={onClose} className="rounded-xl text-xs font-black uppercase tracking-widest flex-1">
             {t('contact_us') || 'Close'}
           </Button>
           <Button
             size="sm"
             onClick={handleUpgrade}
-            className="rounded-xl text-[10px] font-black uppercase tracking-widest flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
+            className="rounded-xl text-xs font-black uppercase tracking-widest flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
           >
             {isTrial ? t('premium.trial_available') : t('premium.locked_upgrade')} <ArrowRight className="h-3 w-3 ml-1" />
           </Button>

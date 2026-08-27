@@ -188,7 +188,7 @@ const Contacts: React.FC = () => {
       other: t('contacts.other'),
     };
     return (
-      <Badge variant={variantMap[cat] || 'outline'} className="text-[10px] gap-1">
+      <Badge variant={variantMap[cat] || 'outline'} className="text-xs gap-1">
         {CATEGORY_ICONS[cat]}
         {labelMap[cat] || cat}
       </Badge>
@@ -305,7 +305,7 @@ const Contacts: React.FC = () => {
 
                 {contact.subCategory && (
                   <div className="text-xs text-muted-foreground mb-1">
-                    <span className="text-[10px] font-black uppercase tracking-widest">
+                    <span className="text-xs font-black uppercase tracking-widest">
                       {t('contacts.sub_category')}:
                     </span>{' '}
                     {contact.subCategory}
@@ -332,7 +332,7 @@ const Contacts: React.FC = () => {
           </DialogHeader>
           <form onSubmit={handleSave} className="space-y-4">
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                 {t('contacts.name')} *
               </Label>
               <Input
@@ -343,7 +343,7 @@ const Contacts: React.FC = () => {
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                 {t('contacts.phone')} *
               </Label>
               <Input
@@ -354,7 +354,7 @@ const Contacts: React.FC = () => {
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                 {t('contacts.category')} *
               </Label>
               <Select
@@ -377,7 +377,7 @@ const Contacts: React.FC = () => {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                 {t('contacts.sub_category')}
               </Label>
               <Input
@@ -387,7 +387,7 @@ const Contacts: React.FC = () => {
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+              <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">
                 {t('contacts.notes')}
               </Label>
               <Textarea

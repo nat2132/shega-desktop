@@ -250,7 +250,7 @@ const AdminManagement: React.FC = () => {
                 <Crown className="h-3.5 w-3.5 text-amber-500" />
               )}
             </div>
-            <span className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest">
+            <span className="text-xs text-muted-foreground uppercase font-bold tracking-widest">
               @{row.original.username}
             </span>
           </div>
@@ -263,7 +263,7 @@ const AdminManagement: React.FC = () => {
       cell: ({ row }) => (
         <Badge
           variant={row.original.role === 'super_admin' ? 'default' : 'outline'}
-          className="uppercase text-[9px] font-bold"
+          className="uppercase text-xs font-bold"
         >
           {row.original.role === 'super_admin' ? t('admin.super_admins') : t('common.operator')}
         </Badge>
@@ -275,18 +275,18 @@ const AdminManagement: React.FC = () => {
       cell: ({ row }) => (
         <div className="flex flex-wrap gap-1 max-w-[200px]">
           {row.original.role === 'super_admin' ? (
-            <Badge variant="outline" className="text-[8px] font-bold bg-primary/5 border-primary/20 text-primary">
+            <Badge variant="outline" className="text-xs font-bold bg-primary/5 border-primary/20 text-primary">
               {t('admin.full_access')}
             </Badge>
           ) : (
             <>
               {row.original.permissions.slice(0, 3).map(p => (
-                <Badge key={p} variant="outline" className="text-[8px] font-bold">
+                <Badge key={p} variant="outline" className="text-xs font-bold">
                   {p}
                 </Badge>
               ))}
               {row.original.permissions.length > 3 && (
-                <Badge variant="outline" className="text-[8px] font-bold">
+                <Badge variant="outline" className="text-xs font-bold">
                   +{row.original.permissions.length - 3}
                 </Badge>
               )}
@@ -301,7 +301,7 @@ const AdminManagement: React.FC = () => {
       cell: ({ row }) => (
         <Badge
           variant={row.original.isActive ? 'default' : 'destructive'}
-          className="uppercase text-[9px] font-bold"
+          className="uppercase text-xs font-bold"
         >
           {row.original.isActive ? t('settings.active') : t('admin.inactive')}
         </Badge>
@@ -349,10 +349,10 @@ const AdminManagement: React.FC = () => {
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter className="gap-3">
-                    <AlertDialogCancel className="rounded-xl border-border h-11 text-[10px] font-black uppercase tracking-widest">{t('common.abort')}</AlertDialogCancel>
+                    <AlertDialogCancel className="rounded-xl border-border h-11 text-xs font-black uppercase tracking-widest">{t('common.abort')}</AlertDialogCancel>
                     <AlertDialogAction
                       onClick={() => handleDelete(row.original.id)}
-                      className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-[10px] font-black uppercase tracking-widest"
+                      className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90 h-11 text-xs font-black uppercase tracking-widest"
                     >
                       {t('admin.confirm_removal')}
                     </AlertDialogAction>
@@ -382,10 +382,10 @@ const AdminManagement: React.FC = () => {
         <Modal isOpen={showModal} onClose={() => { setShowModal(false); resetForm(); }} title={editingAdmin ? t('admin.modify') : t('admin.create')} size="lg">
           <form onSubmit={handleSubmit} className="space-y-8 py-2">
             <div className="space-y-6">
-              <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('admin.identity')}</h4>
+              <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('admin.identity')}</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('admin.display_name')}</label>
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('admin.display_name')}</label>
                   <Input
                     required
                     value={formData.name}
@@ -395,7 +395,7 @@ const AdminManagement: React.FC = () => {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('admin.username')}</label>
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('admin.username')}</label>
                   <Input
                     required
                     value={formData.username}
@@ -408,12 +408,12 @@ const AdminManagement: React.FC = () => {
             </div>
 
             <div className="space-y-6">
-              <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">
+              <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">
                 {editingAdmin ? t('admin.pin_reset') : t('admin.security_pin')}
               </h4>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('admin.pin_code')}</label>
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('admin.pin_code')}</label>
                   <div className="relative">
                     <Input
                       type={showPin ? 'text' : 'password'}
@@ -434,7 +434,7 @@ const AdminManagement: React.FC = () => {
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('admin.confirm_pin')}</label>
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('admin.confirm_pin')}</label>
                   <Input
                     type={showPin ? 'text' : 'password'}
                     maxLength={4}
@@ -452,11 +452,11 @@ const AdminManagement: React.FC = () => {
             {(!editingAdmin || editingAdmin.role !== 'super_admin') && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between border-b border-border/50 pb-2">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground">{t('admin.access_permissions')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground">{t('admin.access_permissions')}</h4>
                   <div className="flex gap-2">
-                    <button type="button" onClick={selectAllPermissions} className="text-[9px] font-black uppercase tracking-widest text-primary hover:underline">{t('common.max')}</button>
+                    <button type="button" onClick={selectAllPermissions} className="text-xs font-black uppercase tracking-widest text-primary hover:underline">{t('common.max')}</button>
                     <span className="text-muted-foreground/30">|</span>
-                    <button type="button" onClick={clearAllPermissions} className="text-[9px] font-black uppercase tracking-widest text-muted-foreground hover:underline">{t('common.abort')}</button>
+                    <button type="button" onClick={clearAllPermissions} className="text-xs font-black uppercase tracking-widest text-muted-foreground hover:underline">{t('common.abort')}</button>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -476,7 +476,7 @@ const AdminManagement: React.FC = () => {
                       >
                         <span className="text-xl">{perm.icon}</span>
                         <span className={cn(
-                          "text-[9px] font-black uppercase tracking-widest",
+                          "text-xs font-black uppercase tracking-widest",
                           isActive ? "text-primary" : "text-muted-foreground"
                         )}>
                           {t(`tabs.${perm.id}` as any)}
@@ -495,15 +495,15 @@ const AdminManagement: React.FC = () => {
               <div className="p-6 rounded-2xl border bg-primary/5 border-primary/20 flex items-center gap-4">
                 <Crown className="h-6 w-6 text-retail-orange" />
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest">{t('admin.super_admins')}</p>
-                  <p className="text-[9px] text-muted-foreground font-bold">{t('admin.super_admin_desc')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest">{t('admin.super_admins')}</p>
+                  <p className="text-xs text-muted-foreground font-bold">{t('admin.super_admin_desc')}</p>
                 </div>
               </div>
             )}
 
             {error && (
               <div className="p-4 rounded-xl bg-destructive/10 border border-destructive/20">
-                <p className="text-destructive text-[10px] font-black uppercase tracking-widest">{error}</p>
+                <p className="text-destructive text-xs font-black uppercase tracking-widest">{error}</p>
               </div>
             )}
 
@@ -525,7 +525,7 @@ const AdminManagement: React.FC = () => {
         onClick={() => { resetForm(); setShowModal(true); }}
       >
         <Plus className="h-8 w-8 group-hover:rotate-90 transition-transform duration-300" strokeWidth={4} />
-        <span className="text-[8px] font-black uppercase tracking-tighter">{t('common.operator')}</span>
+        <span className="text-xs font-black uppercase tracking-tighter">{t('common.operator')}</span>
       </Button>
     </>
   );

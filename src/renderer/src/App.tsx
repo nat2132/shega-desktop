@@ -27,12 +27,11 @@ const Orders = lazy(() => import('./pages/Orders'))
 const OrderDetail = lazy(() => import('./pages/OrderDetail'))
 const SubscriptionDashboard = lazy(() => import('./pages/SubscriptionDashboard'))
 const SubscriptionPayment = lazy(() => import('./pages/SubscriptionPayment'))
+const GiftCards = lazy(() => import('./pages/GiftCards'))
+const Register = lazy(() => import('./pages/Register'))
 import { useAuth } from './context/AuthContext'
 import { useSettings } from './context/SettingsContext'
 import { SubscriptionProvider, useSubscription } from './context/SubscriptionContext'
-import { ROUTE_PREMIUM } from './utils/feature-modules'
-import PremiumBadge from './components/PremiumBadge'
-import LockedFeatureModal from './components/LockedFeatureModal'
 import { TutorialOverlay } from './components/tutorial'
 import { initSound, playSound } from './utils/sound'
 
@@ -137,15 +136,10 @@ function App() {
     return result;
   };
 
-  const handleRegister = async (name: string, username: string, pin: string) => {
+  const handleRegister = async (name: string, username: string, pin: string, role: string = 'super_admin', permissions: string[] = []) => {
     try {
-      const allPermissions = [
-        'dashboard', 'inventory', 'sales', 'expenses',
-        'customers', 'analytics', 'adjustments', 'settings',
-        'warehouses', 'employees', 'shipments'
-      ];
       const result = await window.api?.insertAdmin({
-        name, username, pin, role: 'super_admin', permissions: allPermissions
+        name, username, pin, role, permissions
       });
       // Generate recovery key
       let recoveryKey = '';
@@ -289,6 +283,7 @@ function App() {
                 >
                   <Routes location={location}>
                     <Route path="/" element={<ProtectedRoute permission="dashboard"><Dashboard /></ProtectedRoute>} />
+                    <Route path="/register" element={<ProtectedRoute permission="sales.create" moduleId="sales"><Register /></ProtectedRoute>} />
                     <Route path="/inventory" element={<ProtectedRoute permission="inventory" moduleId="inventory"><Inventory /></ProtectedRoute>} />
                     <Route path="/sales" element={<ProtectedRoute permission="sales" moduleId="sales"><Sales /></ProtectedRoute>} />
                     <Route path="/sales/:id" element={<ProtectedRoute permission="sales" moduleId="sales"><SaleDetail /></ProtectedRoute>} />
@@ -306,6 +301,7 @@ function App() {
                     <Route path="/reminders" element={<ProtectedRoute permission="dashboard"><ReminderHistory /></ProtectedRoute>} />
                     <Route path="/reports" element={<PremiumRoute premiumFeature="reports"><ProtectedRoute permission="analytics" moduleId="analytics"><Reports /></ProtectedRoute></PremiumRoute>} />
                     <Route path="/budgets" element={<ProtectedRoute permission="expenses" moduleId="expenses"><BudgetManagement /></ProtectedRoute>} />
+                    <Route path="/gift-cards" element={<ProtectedRoute permission="inventory" moduleId="inventory"><GiftCards /></ProtectedRoute>} />
                     <Route path="/contacts" element={<ProtectedRoute permission="customers" moduleId="customers"><Contacts /></ProtectedRoute>} />
                     <Route path="/orders" element={<ProtectedRoute permission="orders.view" moduleId="sales"><Orders /></ProtectedRoute>} />
                     <Route path="/orders/:id" element={<ProtectedRoute permission="orders.view" moduleId="sales"><OrderDetail /></ProtectedRoute>} />

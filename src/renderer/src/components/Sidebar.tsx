@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import { 
   LayoutDashboard, Package, ShoppingCart, 
   Receipt, Users, BarChart3, Settings, 
-  LogOut, RefreshCcw
+  LogOut, RefreshCcw, Gift
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { Button } from './ui/button';
@@ -21,6 +21,7 @@ const Sidebar = () => {
     { id: 'customers', path: '/customers', icon: Users },
     { id: 'analytics', path: '/analytics', icon: BarChart3 },
     { id: 'expense', path: '/expenses', icon: Receipt },
+    { id: 'giftcards', path: '/gift-cards', icon: Gift },
   ];
 
   return (
@@ -49,7 +50,7 @@ const Sidebar = () => {
                 <item.icon size={22} strokeWidth={2.5} className="transition-transform group-hover:scale-110" />
               </NavLink>
             </TooltipTrigger>
-            <TooltipContent side="right" className="bg-foreground text-background font-black text-[10px] uppercase tracking-widest border-none px-3 py-1.5 shadow-2xl">
+            <TooltipContent side="right" className="bg-foreground text-background font-black text-xs uppercase tracking-widest border-none px-3 py-1.5 shadow-2xl">
               {t(`tabs.${item.id}`)}
             </TooltipContent>
           </Tooltip>
@@ -69,7 +70,7 @@ const Sidebar = () => {
               <Settings size={22} strokeWidth={2.5} />
             </NavLink>
           </TooltipTrigger>
-          <TooltipContent side="right" className="bg-foreground text-background font-black text-[10px] uppercase tracking-widest border-none px-3 py-1.5 shadow-2xl">
+          <TooltipContent side="right" className="bg-foreground text-background font-black text-xs uppercase tracking-widest border-none px-3 py-1.5 shadow-2xl">
             {t('tabs.settings')}
           </TooltipContent>
         </Tooltip>

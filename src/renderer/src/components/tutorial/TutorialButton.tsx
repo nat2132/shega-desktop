@@ -1,4 +1,4 @@
-﻿import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GraduationCap, Play, CheckCircle2 } from 'lucide-react';
 import { useTutorial } from '../../context/TutorialContext';
@@ -92,7 +92,7 @@ export default function TutorialButton() {
                   <Play className="size-3.5 text-primary" />
                   <div>
                     <span className="font-medium">{t('tutorial.resume_tutorial')}</span>
-                    <span className="block text-[10px] text-muted-foreground/70">
+                    <span className="block text-xs text-muted-foreground/70">
                       {t('tutorial.step_n').replace('{n}', String(progress.lastStepIndex + 1))}
                     </span>
                   </div>
@@ -119,11 +119,11 @@ export default function TutorialButton() {
 
               {availableTutorial && (
                 <div className="px-3 py-2 border-t border-border/30 mt-1">
-                  <p className="text-[10px] text-muted-foreground/60 font-medium uppercase tracking-wider">
+                  <p className="text-xs text-muted-foreground/60 font-medium uppercase tracking-wider">
                     {availableTutorial.title}
                   </p>
-                  <p className="text-[10px] text-muted-foreground/50 mt-0.5">
-                    {availableTutorial.steps.length} steps · ~{availableTutorial.estimatedDuration} min
+                  <p className="text-xs text-muted-foreground/50 mt-0.5">
+                    {availableTutorial.steps.length} steps � ~{availableTutorial.estimatedDuration} min
                   </p>
                 </div>
               )}

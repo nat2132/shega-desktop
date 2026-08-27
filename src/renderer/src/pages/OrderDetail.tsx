@@ -231,7 +231,7 @@ const OrderDetail: React.FC = () => {
               </h2>
             </div>
             <table className="w-full text-left">
-              <thead className="bg-muted/50 text-[10px] font-black uppercase tracking-widest">
+              <thead className="bg-muted/50 text-xs font-black uppercase tracking-widest">
                 <tr>
                   <th className="px-6 py-3">{t('inventory.product')}</th>
                   <th className="px-6 py-3 text-right">{t('orders.qty')}</th>
@@ -282,15 +282,15 @@ const OrderDetail: React.FC = () => {
                           {entry.action === 'converted_to_debt' && t('orders.history_converted_debt')}
                           {entry.action === 'cancelled' && t('orders.history_cancelled')}
                         </p>
-                        <p className="text-[10px] text-muted-foreground">{formatDateTime(entry.createdAt)}</p>
+                        <p className="text-xs text-muted-foreground">{formatDateTime(entry.createdAt)}</p>
                       </div>
                       {entry.performedBy && (
-                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                        <p className="text-xs text-muted-foreground mt-0.5">
                           {t('orders.by')} {entry.performedBy}
                         </p>
                       )}
                       {entry.notes && (
-                        <p className="text-[10px] text-muted-foreground/70 mt-0.5 italic">{entry.notes}</p>
+                        <p className="text-xs text-muted-foreground/70 mt-0.5 italic">{entry.notes}</p>
                       )}
                     </div>
                   </div>
@@ -309,11 +309,11 @@ const OrderDetail: React.FC = () => {
             </div>
             <div className="p-6 space-y-4">
               <div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.status')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.status')}</p>
                 {getStatusBadge(order.status)}
               </div>
               <div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.customer')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.customer')}</p>
                 <div className="flex items-center gap-2">
                   <User size={14} className="text-muted-foreground" />
                   <span className="text-sm font-bold">{order.customerName || t('orders.walk_in')}</span>
@@ -326,11 +326,11 @@ const OrderDetail: React.FC = () => {
                 )}
               </div>
               <div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.created_by')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.created_by')}</p>
                 <p className="text-sm font-bold">{order.createdByName || '—'}</p>
               </div>
               <div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.created_at')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.created_at')}</p>
                 <div className="flex items-center gap-2">
                   <Clock size={14} className="text-muted-foreground" />
                   <span className="text-xs">{formatDateTime(order.createdAt)}</span>
@@ -338,28 +338,28 @@ const OrderDetail: React.FC = () => {
               </div>
               {order.convertedAt && (
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.converted_at')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.converted_at')}</p>
                   <div className="flex items-center gap-2">
                     <CheckCircle size={14} className="text-green-500" />
                     <span className="text-xs">{formatDateTime(order.convertedAt)}</span>
                   </div>
-                  {order.convertedBy && <p className="text-[10px] text-muted-foreground mt-0.5">{t('orders.by')} {order.convertedBy}</p>}
+                  {order.convertedBy && <p className="text-xs text-muted-foreground mt-0.5">{t('orders.by')} {order.convertedBy}</p>}
                 </div>
               )}
               {order.cancelledAt && (
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.cancelled_at')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.cancelled_at')}</p>
                   <div className="flex items-center gap-2">
                     <Ban size={14} className="text-red-500" />
                     <span className="text-xs">{formatDateTime(order.cancelledAt)}</span>
                   </div>
-                  {order.cancelledBy && <p className="text-[10px] text-muted-foreground mt-0.5">{t('orders.by')} {order.cancelledBy}</p>}
-                  {order.cancelReason && <p className="text-[10px] text-muted-foreground/70 mt-0.5 italic">{t('orders.reason')}: {order.cancelReason}</p>}
+                  {order.cancelledBy && <p className="text-xs text-muted-foreground mt-0.5">{t('orders.by')} {order.cancelledBy}</p>}
+                  {order.cancelReason && <p className="text-xs text-muted-foreground/70 mt-0.5 italic">{t('orders.reason')}: {order.cancelReason}</p>}
                 </div>
               )}
               {order.notes && (
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.notes')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1">{t('orders.notes')}</p>
                   <p className="text-xs text-muted-foreground">{order.notes}</p>
                 </div>
               )}
@@ -371,12 +371,12 @@ const OrderDetail: React.FC = () => {
       <Modal isOpen={showConvertSale} onClose={() => setShowConvertSale(false)} title={t('orders.convert_to_sale')} size="sm">
         <div className="space-y-6">
           <div className="p-4 rounded-xl bg-muted/20 space-y-1">
-            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('orders.order_number')}</p>
+            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('orders.order_number')}</p>
             <p className="font-mono font-bold">{order.orderNumber}</p>
             <p className="text-xs text-muted-foreground">{t('orders.total')}: {t('common.etb')} {order.totalAmount.toLocaleString()}</p>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('orders.payment_method')}</Label>
+            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('orders.payment_method')}</Label>
             <Select value={salePaymentMethod} onValueChange={setSalePaymentMethod}>
               <SelectTrigger className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs">
                 <SelectValue />
@@ -404,13 +404,13 @@ const OrderDetail: React.FC = () => {
       <Modal isOpen={showConvertDebt} onClose={() => setShowConvertDebt(false)} title={t('orders.convert_to_debt')} size="sm">
         <div className="space-y-6">
           <div className="p-4 rounded-xl bg-muted/20 space-y-1">
-            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('orders.order_number')}</p>
+            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('orders.order_number')}</p>
             <p className="font-mono font-bold">{order.orderNumber}</p>
             <p className="text-xs text-muted-foreground">{t('orders.customer')}: {order.customerName}</p>
             <p className="text-xs text-muted-foreground">{t('orders.total')}: {t('common.etb')} {order.totalAmount.toLocaleString()}</p>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('orders.due_date')}</Label>
+            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('orders.due_date')}</Label>
             <DatePicker value={debtDueDate} onChange={setDebtDueDate} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs w-full" />
           </div>
           <div className="flex gap-4">
@@ -434,7 +434,7 @@ const OrderDetail: React.FC = () => {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-1.5 py-4">
-            <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('orders.cancel_reason')}</Label>
+            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('orders.cancel_reason')}</Label>
             <Textarea value={cancelReason} onChange={e => setCancelReason(e.target.value)} placeholder={t('orders.cancel_reason_placeholder')} className="bg-muted/30 border-border/50 rounded-xl text-xs resize-none" rows={3} />
           </div>
           <AlertDialogFooter className="gap-3">

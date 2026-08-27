@@ -42,7 +42,7 @@ export function SectionCards({ cards }: SectionCardsProps) {
                 {card.value}
               </CardTitle>
               <CardAction>
-                <Badge variant={card.trendType === "up" ? "success" : "warning"} className="gap-1 text-[10px]">
+                <Badge variant={card.trendType === "up" ? "success" : "warning"} className="gap-1 text-xs">
                   {card.trendType === "up" ? <TrendingUp className="size-3" /> : <TrendingDown className="size-3" />}
                   {card.trend}
                 </Badge>

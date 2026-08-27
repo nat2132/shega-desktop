@@ -46,7 +46,7 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ onComplete }) => {
       {/* Title */}
       <div className={`mt-10 text-center transition-all duration-700 ease-out ${showTitle ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
         <h1 className="text-3xl font-black tracking-tighter text-white uppercase">Shega OS</h1>
-        <p className="text-[10px] font-black uppercase tracking-[0.5em] text-white/30 mt-2">{t('auth.terminal_desc')}</p>
+        <p className="text-xs font-black uppercase tracking-[0.5em] text-white/30 mt-2">{t('auth.terminal_desc')}</p>
       </div>
 
       {/* Progress */}
@@ -57,7 +57,7 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ onComplete }) => {
             style={{ width: `${progress}%` }}
           />
         </div>
-        <p className="text-[9px] font-black uppercase tracking-[0.3em] text-white/20 text-center mt-3">
+        <p className="text-xs font-black uppercase tracking-[0.3em] text-white/20 text-center mt-3">
           {t('splash.initializing')}
         </p>
       </div>

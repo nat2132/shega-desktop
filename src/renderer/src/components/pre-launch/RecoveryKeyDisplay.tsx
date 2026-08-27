@@ -54,7 +54,7 @@ Keep this key safe. It is the ONLY way to recover your PIN.
 
         <div>
           <h1 className="text-2xl font-black text-white tracking-tighter uppercase">Recovery Key</h1>
-          <p className="text-[9px] font-black uppercase tracking-[0.3em] text-amber-400/80 mt-2">
+          <p className="text-xs font-black uppercase tracking-[0.3em] text-amber-400/80 mt-2">
             <ShieldAlert size={12} className="inline mr-1.5 -mt-0.5" />
             Save this key — you cannot retrieve it later
           </p>
@@ -62,12 +62,12 @@ Keep this key safe. It is the ONLY way to recover your PIN.
 
         <div className="bg-amber-500/5 border-2 border-amber-500/20 rounded-2xl p-6 space-y-4">
           <div className="text-left">
-            <p className="text-[9px] font-black uppercase tracking-widest text-white/30 mb-1">Username</p>
+            <p className="text-xs font-black uppercase tracking-widest text-white/30 mb-1">Username</p>
             <p className="text-sm font-bold text-white">{username}</p>
           </div>
 
           <div className="text-left">
-            <p className="text-[9px] font-black uppercase tracking-widest text-white/30 mb-1">Recovery Key</p>
+            <p className="text-xs font-black uppercase tracking-widest text-white/30 mb-1">Recovery Key</p>
             <div className="relative">
               <div className="w-full bg-black/40 rounded-xl px-4 py-3 font-mono text-xs break-all select-all
                 border border-white/10 text-amber-300/90"
@@ -79,19 +79,19 @@ Keep this key safe. It is the ONLY way to recover your PIN.
 
           <div className="flex gap-2">
             <button type="button" onClick={() => setShowKey(!showKey)}
-              className="flex-1 py-3 bg-white/5 rounded-xl text-[10px] font-black uppercase tracking-widest text-white/40 hover:text-white/60 hover:bg-white/10 transition-all"
+              className="flex-1 py-3 bg-white/5 rounded-xl text-xs font-black uppercase tracking-widest text-white/40 hover:text-white/60 hover:bg-white/10 transition-all"
             >
               {showKey ? <EyeOff size={14} className="inline mr-1.5" /> : <Eye size={14} className="inline mr-1.5" />}
               {showKey ? 'Hide' : 'Reveal'}
             </button>
             <button type="button" onClick={handleCopy}
-              className="flex-1 py-3 bg-white/5 rounded-xl text-[10px] font-black uppercase tracking-widest text-white/40 hover:text-white/60 hover:bg-white/10 transition-all"
+              className="flex-1 py-3 bg-white/5 rounded-xl text-xs font-black uppercase tracking-widest text-white/40 hover:text-white/60 hover:bg-white/10 transition-all"
             >
               {copied ? <Check size={14} className="inline mr-1.5" /> : <Copy size={14} className="inline mr-1.5" />}
               {copied ? 'Copied' : 'Copy'}
             </button>
             <button type="button" onClick={handleDownload}
-              className="flex-1 py-3 bg-white/5 rounded-xl text-[10px] font-black uppercase tracking-widest text-white/40 hover:text-white/60 hover:bg-white/10 transition-all"
+              className="flex-1 py-3 bg-white/5 rounded-xl text-xs font-black uppercase tracking-widest text-white/40 hover:text-white/60 hover:bg-white/10 transition-all"
             >
               <Download size={14} className="inline mr-1.5" />
               Save
@@ -106,7 +106,7 @@ Keep this key safe. It is the ONLY way to recover your PIN.
             onChange={e => setAcknowledged(e.target.checked)}
             className="mt-0.5 w-4 h-4 rounded border-white/20 bg-white/5 accent-white"
           />
-          <span className="text-[10px] font-bold leading-relaxed text-white/40 group-hover:text-white/60 transition-colors">
+          <span className="text-xs font-bold leading-relaxed text-white/40 group-hover:text-white/60 transition-colors">
             I have saved my recovery key. I understand that if I lose this key, I may not be able to recover my PIN.
           </span>
         </label>

@@ -35,7 +35,7 @@ const PremiumUpsellModal: React.FC<PremiumUpsellModalProps> = ({ open, onClose, 
             <div className="p-2 rounded-full bg-gradient-to-br from-amber-500/20 to-amber-600/20">
               <Sparkles className="h-5 w-5 text-amber-500" />
             </div>
-            <Badge variant="secondary" className="text-[9px] font-black uppercase tracking-widest bg-amber-500/10 text-amber-500 border-amber-500/20">
+            <Badge variant="secondary" className="text-xs font-black uppercase tracking-widest bg-amber-500/10 text-amber-500 border-amber-500/20">
               {t('premium.badge')}
             </Badge>
           </div>
@@ -53,20 +53,20 @@ const PremiumUpsellModal: React.FC<PremiumUpsellModalProps> = ({ open, onClose, 
               <Crown className="h-5 w-5 text-amber-500" />
             </div>
             <div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-amber-500">{t('premium.get_premium')}</p>
-              <p className="text-[10px] text-muted-foreground">{t('premium.subtitle')}</p>
+              <p className="text-xs font-black uppercase tracking-widest text-amber-500">{t('premium.get_premium')}</p>
+              <p className="text-xs text-muted-foreground">{t('premium.subtitle')}</p>
             </div>
           </div>
         </div>
 
         <div className="flex gap-2 pt-2">
-          <Button variant="outline" size="sm" onClick={onClose} className="rounded-xl text-[10px] font-black uppercase tracking-widest flex-1">
+          <Button variant="outline" size="sm" onClick={onClose} className="rounded-xl text-xs font-black uppercase tracking-widest flex-1">
             {t('contact_us') || 'Close'}
           </Button>
           <Button
             size="sm"
             onClick={handleUpgrade}
-            className="rounded-xl text-[10px] font-black uppercase tracking-widest flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
+            className="rounded-xl text-xs font-black uppercase tracking-widest flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
           >
             {t('premium.locked_upgrade')} <ArrowRight className="h-3 w-3 ml-1" />
           </Button>

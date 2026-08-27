@@ -89,7 +89,7 @@ const SubscriptionDashboard: React.FC = () => {
     const v = variants[status] || variants.active;
     const Icon = v.icon;
     return (
-      <Badge variant="outline" className={`text-[9px] font-black uppercase tracking-widest ${v.color}`}>
+      <Badge variant="outline" className={`text-xs font-black uppercase tracking-widest ${v.color}`}>
         <Icon className="h-2.5 w-2.5 mr-1" />
         {v.label}
       </Badge>
@@ -101,7 +101,7 @@ const SubscriptionDashboard: React.FC = () => {
       <div className="flex items-center justify-center h-full py-32">
         <div className="text-center">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mx-auto mb-2" />
-          <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('subscription.loading')}</p>
+          <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('subscription.loading')}</p>
         </div>
       </div>
     );
@@ -116,12 +116,12 @@ const SubscriptionDashboard: React.FC = () => {
             <h1 className="text-lg font-black uppercase tracking-tight">{t('subscription.title')}</h1>
             {isPremium && <PremiumBadge size="md" />}
           </div>
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">{t('subscription.subtitle')}</p>
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t('subscription.subtitle')}</p>
         </div>
         {daysRemaining > 0 && daysRemaining <= 7 && !isTrial && (
           <Button
             onClick={() => navigate('/subscription/payment')}
-            className="rounded-xl text-[10px] font-black uppercase tracking-widest bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
+            className="rounded-xl text-xs font-black uppercase tracking-widest bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
           >
             {t('subscription.renew')} <RefreshCw className="h-3 w-3 ml-1" />
           </Button>
@@ -139,14 +139,14 @@ const SubscriptionDashboard: React.FC = () => {
               <p className="text-xs font-black uppercase tracking-widest text-amber-500">
                 {t('premium.locked_title')}
               </p>
-              <p className="text-[10px] text-muted-foreground mt-0.5">
+              <p className="text-xs text-muted-foreground mt-0.5">
                 {t('premium.locked_desc')} {t('subscription.upgrade_access', { feature: lockedFeature }).replace('{{feature}}', lockedFeature)}
               </p>
             </div>
             <Button
               onClick={() => setActiveTab('plans')}
               size="sm"
-              className="rounded-xl text-[10px] font-black uppercase tracking-widest bg-gradient-to-r from-amber-500 to-amber-600"
+              className="rounded-xl text-xs font-black uppercase tracking-widest bg-gradient-to-r from-amber-500 to-amber-600"
             >
               {t('subscription.compare_plans')}
             </Button>
@@ -156,16 +156,16 @@ const SubscriptionDashboard: React.FC = () => {
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="rounded-2xl">
-          <TabsTrigger value="overview" className="text-[10px] font-black uppercase tracking-widest rounded-xl">
+          <TabsTrigger value="overview" className="text-xs font-black uppercase tracking-widest rounded-xl">
             {t('subscription.current_plan')}
           </TabsTrigger>
-          <TabsTrigger value="plans" className="text-[10px] font-black uppercase tracking-widest rounded-xl">
+          <TabsTrigger value="plans" className="text-xs font-black uppercase tracking-widest rounded-xl">
             {t('subscription.pricing')}
           </TabsTrigger>
-          <TabsTrigger value="payments" className="text-[10px] font-black uppercase tracking-widest rounded-xl">
+          <TabsTrigger value="payments" className="text-xs font-black uppercase tracking-widest rounded-xl">
             {t('subscription.payment_history')}
           </TabsTrigger>
-          <TabsTrigger value="history" className="text-[10px] font-black uppercase tracking-widest rounded-xl">
+          <TabsTrigger value="history" className="text-xs font-black uppercase tracking-widest rounded-xl">
             {t('subscription.subscription_history')}
           </TabsTrigger>
         </TabsList>
@@ -175,7 +175,7 @@ const SubscriptionDashboard: React.FC = () => {
           <div className="grid grid-cols-4 gap-4">
             <Card className="rounded-2xl border-border/50">
               <CardHeader className="p-4 pb-2">
-                <CardTitle className="text-[9px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
+                <CardTitle className="text-xs font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
                   <Crown className="h-3 w-3" />
                   {t('subscription.plan')}
                 </CardTitle>
@@ -192,7 +192,7 @@ const SubscriptionDashboard: React.FC = () => {
 
             <Card className="rounded-2xl border-border/50">
               <CardHeader className="p-4 pb-2">
-                <CardTitle className="text-[9px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
+                <CardTitle className="text-xs font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
                   <Shield className="h-3 w-3" />
                   {t('subscription.status')}
                 </CardTitle>
@@ -204,7 +204,7 @@ const SubscriptionDashboard: React.FC = () => {
 
             <Card className="rounded-2xl border-border/50">
               <CardHeader className="p-4 pb-2">
-                <CardTitle className="text-[9px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
+                <CardTitle className="text-xs font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
                   <Clock className="h-3 w-3" />
                   {t('subscription.days_remaining')}
                 </CardTitle>
@@ -213,7 +213,7 @@ const SubscriptionDashboard: React.FC = () => {
                 <span className="text-lg font-black">
                   {isTrial ? trialDaysLeft : daysRemaining}
                 </span>
-                <span className="text-[10px] text-muted-foreground ml-1">
+                <span className="text-xs text-muted-foreground ml-1">
                   {t('premium.days_remaining', { days: String(isTrial ? trialDaysLeft : daysRemaining) })}
                 </span>
               </CardContent>
@@ -221,7 +221,7 @@ const SubscriptionDashboard: React.FC = () => {
 
             <Card className="rounded-2xl border-border/50">
               <CardHeader className="p-4 pb-2">
-                <CardTitle className="text-[9px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
+                <CardTitle className="text-xs font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
                   <Calendar className="h-3 w-3" />
                   {t('subscription.expiry_date')}
                 </CardTitle>
@@ -244,14 +244,14 @@ const SubscriptionDashboard: React.FC = () => {
                   </div>
                   <div>
                     <p className="text-xs font-black uppercase tracking-widest text-amber-500">{t('subscription.trial_heading')}</p>
-                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                    <p className="text-xs text-muted-foreground mt-0.5">
                       {t('premium.trial_ends', { date: subscription?.trialEndsAt ? formatDate(subscription.trialEndsAt) : '--' })}
                     </p>
                   </div>
                 </div>
                 <Button
                   onClick={() => navigate('/subscription/payment')}
-                  className="rounded-xl text-[10px] font-black uppercase tracking-widest bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
+                  className="rounded-xl text-xs font-black uppercase tracking-widest bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
                 >
                   {t('subscription.upgrade_now')} <ArrowRight className="h-3 w-3 ml-1" />
                 </Button>
@@ -270,13 +270,13 @@ const SubscriptionDashboard: React.FC = () => {
                   <p className="text-xs font-black uppercase tracking-widest text-red-500">
                     {t('subscription.expires_soon', { plan: isPremium ? t('subscription.premium_plan') : t('subscription.basic_plan'), days: String(daysRemaining) })}
                   </p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">{t('subscription.renew_desc')}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{t('subscription.renew_desc')}</p>
                 </div>
                 <Button
                   onClick={() => navigate('/subscription/payment')}
                   variant="outline"
                   size="sm"
-                  className="ml-auto rounded-xl text-[10px] font-black uppercase tracking-widest"
+                  className="ml-auto rounded-xl text-xs font-black uppercase tracking-widest"
                 >
                   {t('subscription.renew')}
                 </Button>
@@ -304,8 +304,8 @@ const SubscriptionDashboard: React.FC = () => {
                   <CreditCard className="h-5 w-5 text-amber-500" />
                 </div>
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest">{t('subscription.billing')}</p>
-                  <p className="text-[9px] text-muted-foreground">{t('subscription.renew')} / {t('subscription.upgrade')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest">{t('subscription.billing')}</p>
+                  <p className="text-xs text-muted-foreground">{t('subscription.renew')} / {t('subscription.upgrade')}</p>
                 </div>
                 <ArrowRight className="h-4 w-4 text-muted-foreground ml-auto" />
               </CardContent>
@@ -317,8 +317,8 @@ const SubscriptionDashboard: React.FC = () => {
                   <HelpCircle className="h-5 w-5 text-muted-foreground" />
                 </div>
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest">{t('subscription.support')}</p>
-                  <p className="text-[9px] text-muted-foreground">{t('subscription.support_url')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest">{t('subscription.support')}</p>
+                  <p className="text-xs text-muted-foreground">{t('subscription.support_url')}</p>
                 </div>
                 <ArrowRight className="h-4 w-4 text-muted-foreground ml-auto" />
               </CardContent>
@@ -331,27 +331,27 @@ const SubscriptionDashboard: React.FC = () => {
           <div className="grid grid-cols-2 gap-6">
             {/* Basic Plans */}
             <div className="space-y-3">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('subscription.basic_plan')}</p>
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('subscription.basic_plan')}</p>
               {plans.filter(p => p.tier === 'basic').map(plan => {
                 const isCurrent = subscription?.planId === plan.id || (!isPremium && !isTrial);
                 return (
                   <Card key={plan.id} className={`rounded-2xl border-border/50 transition-all ${isCurrent ? 'ring-1 ring-primary/20' : ''}`}>
                     <CardContent className="p-4">
                       <div className="flex items-center justify-between mb-2">
-                        <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{plan.name}</p>
+                        <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{plan.name}</p>
                         {isCurrent && (
-                          <Badge variant="outline" className="text-[8px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
+                          <Badge variant="outline" className="text-xs font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
                             {t('subscription.current')}
                           </Badge>
                         )}
                       </div>
                       <p className="text-2xl font-black">{plan.price.toLocaleString()} <span className="text-sm text-muted-foreground font-bold">{t('subscription.etb')}</span></p>
-                      <p className="text-[10px] text-muted-foreground mt-1">{plan.description}</p>
+                      <p className="text-xs text-muted-foreground mt-1">{plan.description}</p>
                       <Button
                         onClick={() => navigate('/subscription/payment')}
                         variant={isCurrent ? 'outline' : 'default'}
                         size="sm"
-                        className="mt-3 rounded-xl text-[10px] font-black uppercase tracking-widest w-full"
+                        className="mt-3 rounded-xl text-xs font-black uppercase tracking-widest w-full"
                       >
                         {isCurrent ? t('subscription.current') : t('subscription.choose_plan')}
                       </Button>
@@ -364,7 +364,7 @@ const SubscriptionDashboard: React.FC = () => {
             {/* Premium Plans */}
             <div className="space-y-3">
               <div className="flex items-center gap-2">
-                <p className="text-[10px] font-black uppercase tracking-widest text-amber-500">{t('subscription.premium_plan')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-amber-500">{t('subscription.premium_plan')}</p>
                 <Sparkles className="h-3 w-3 text-amber-500" />
               </div>
               {plans.filter(p => p.tier === 'premium').map(plan => {
@@ -373,9 +373,9 @@ const SubscriptionDashboard: React.FC = () => {
                   <Card key={plan.id} className={`rounded-2xl border-amber-500/20 bg-gradient-to-b from-amber-500/[0.02] to-transparent transition-all ${isCurrent ? 'ring-1 ring-amber-500/30' : ''}`}>
                     <CardContent className="p-4">
                       <div className="flex items-center justify-between mb-2">
-                        <p className="text-[10px] font-black uppercase tracking-widest text-amber-500">{plan.name}</p>
+                        <p className="text-xs font-black uppercase tracking-widest text-amber-500">{plan.name}</p>
                         {isCurrent ? (
-                          <Badge variant="outline" className="text-[8px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
+                          <Badge variant="outline" className="text-xs font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
                             {t('subscription.current')}
                           </Badge>
                         ) : (
@@ -383,11 +383,11 @@ const SubscriptionDashboard: React.FC = () => {
                         )}
                       </div>
                       <p className="text-2xl font-black">{plan.price.toLocaleString()} <span className="text-sm text-muted-foreground font-bold">{t('subscription.etb')}</span></p>
-                      <p className="text-[10px] text-muted-foreground mt-1">{plan.description}</p>
+                      <p className="text-xs text-muted-foreground mt-1">{plan.description}</p>
                       <Button
                         onClick={() => navigate('/subscription/payment')}
                         size="sm"
-                        className="mt-3 rounded-xl text-[10px] font-black uppercase tracking-widest w-full bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
+                        className="mt-3 rounded-xl text-xs font-black uppercase tracking-widest w-full bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
                       >
                         {isCurrent ? t('subscription.current') : t('subscription.choose_plan')}
                       </Button>
@@ -402,11 +402,11 @@ const SubscriptionDashboard: React.FC = () => {
         {/* Payments Tab */}
         <TabsContent value="payments" className="space-y-4">
           <div className="flex items-center justify-between">
-            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('subscription.transaction_history')}</p>
+            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('subscription.transaction_history')}</p>
             <Button
               onClick={() => navigate('/subscription/payment')}
               size="sm"
-              className="rounded-xl text-[10px] font-black uppercase tracking-widest"
+              className="rounded-xl text-xs font-black uppercase tracking-widest"
             >
               <CreditCard className="h-3 w-3 mr-1" />
               {t('subscription.submit_payment')}
@@ -417,7 +417,7 @@ const SubscriptionDashboard: React.FC = () => {
             <Card className="rounded-2xl border-border/50">
               <CardContent className="p-8 text-center">
                 <CreditCard className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('subscription.no_transactions')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('subscription.no_transactions')}</p>
               </CardContent>
             </Card>
           ) : (
@@ -435,15 +435,15 @@ const SubscriptionDashboard: React.FC = () => {
                        <Hourglass className="h-4 w-4 text-amber-500" />}
                     </div>
                     <div>
-                      <p className="text-[10px] font-black uppercase tracking-widest">{tx.selectedPlan}</p>
-                      <p className="text-[9px] text-muted-foreground">{tx.transactionId} · {formatDate(tx.createdAt)}</p>
+                      <p className="text-xs font-black uppercase tracking-widest">{tx.selectedPlan}</p>
+                      <p className="text-xs text-muted-foreground">{tx.transactionId} · {formatDate(tx.createdAt)}</p>
                     </div>
                   </div>
                   <div className="text-right">
                     <p className="text-[11px] font-bold">{tx.amount.toLocaleString()} {t('subscription.etb')}</p>
                     {statusBadge(tx.status)}
                     {tx.adminNotes && tx.status === 'rejected' && (
-                      <p className="text-[8px] text-red-400 mt-0.5">{tx.adminNotes}</p>
+                      <p className="text-xs text-red-400 mt-0.5">{tx.adminNotes}</p>
                     )}
                   </div>
                 </div>
@@ -458,7 +458,7 @@ const SubscriptionDashboard: React.FC = () => {
             <Card className="rounded-2xl border-border/50">
               <CardContent className="p-8 text-center">
                 <Clock className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('subscription.no_subscription_history')}</p>
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('subscription.no_subscription_history')}</p>
               </CardContent>
             </Card>
           ) : (
@@ -469,10 +469,10 @@ const SubscriptionDashboard: React.FC = () => {
                     <Clock className="h-3 w-3 text-muted-foreground" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-[10px] font-semibold">{h.action.replace(/_/g, ' ')}</p>
-                    <p className="text-[9px] text-muted-foreground truncate">{h.details}</p>
+                    <p className="text-xs font-semibold">{h.action.replace(/_/g, ' ')}</p>
+                    <p className="text-xs text-muted-foreground truncate">{h.details}</p>
                   </div>
-                  <p className="text-[8px] text-muted-foreground shrink-0">{formatDate(h.createdAt)}</p>
+                  <p className="text-xs text-muted-foreground shrink-0">{formatDate(h.createdAt)}</p>
                 </div>
               ))}
             </div>

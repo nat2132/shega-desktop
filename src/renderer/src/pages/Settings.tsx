@@ -3,10 +3,10 @@ import {
   Palette, Globe, Building2,
   CheckCircle, UploadCloud,
   ShieldCheck, Database, Sun, Moon, Trash2, Upload, UserCog, Bell, HardDrive, RotateCcw, FileText,
-  Sparkles, Leaf, Flame, Gem, Coffee, Clock, Headphones, Camera,
+  Sparkles, Leaf, Flame, Gem, Coffee, Clock, Headphones,
   Phone, Users, HeartPulse, Info, RefreshCw, Download,
   Package, ShoppingCart, Receipt, TrendingDown,
-  CreditCard, Warehouse, Truck, BarChart3, SlidersHorizontal
+  CreditCard, Warehouse, Truck, BarChart3, SlidersHorizontal, Printer, Server
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -23,6 +23,10 @@ import NotificationSettings from '../components/NotificationSettings';
 import DataTransferModal from '../components/DataTransferModal';
 import { BusinessHealthScore } from '../components/BusinessHealthScore';
 import { UpdateDialog } from '../components/UpdateDialog';
+import DeviceSettings from '../components/DeviceSettings';
+import SyncSettings from '../components/SyncSettings';
+
+import companyLogo from '../assets/company.png';
 
 const profileImages = (import.meta as any).glob('../assets/profile/*.png', { eager: true, import: 'default' });
 const AVATAR_OPTIONS = Object.values(profileImages) as string[];
@@ -45,7 +49,7 @@ const Settings: React.FC = () => {
   } = useSettings();
   const { isSuperAdmin, currentAdmin, refreshAdmin } = useAuth();
   
-  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'notifications' | 'security' | 'data' | 'support' | 'health' | 'about'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'notifications' | 'security' | 'data' | 'devices' | 'sync' | 'support' | 'health' | 'about'>('profile');
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [updateDialogAction, setUpdateDialogAction] = useState<'check' | 'auto'>('auto');
   const [appVersion, setAppVersion] = useState('');
@@ -57,6 +61,7 @@ const Settings: React.FC = () => {
   const [showBackups, setShowBackups] = useState(false);
   const [backupLoading, setBackupLoading] = useState(false);
   const [showRestoreConfirm, setShowRestoreConfirm] = useState<string | null>(null);
+  const [backupResult, setBackupResult] = useState<{ name: string; size: number; path: string } | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const [bizForm, setBizForm] = useState({
@@ -140,10 +145,21 @@ const Settings: React.FC = () => {
     reader.readAsDataURL(file);
   };
 
-  const handleReset = async () => {
+  const handleResetBackup = async () => {
+    const result = await window.api?.createBackup();
+    if (result?.success) {
+      setBackupResult(result);
+      toast.success(t('settings.backup_created'));
+    } else {
+      toast.error(result?.error || t('settings.backup_error'));
+    }
+  };
+
+  const handleConfirmReset = async () => {
     try {
-      await window.api?.resetData();
+      await window.api?.resetData('all');
       setShowResetConfirm(false);
+      setBackupResult(null);
       window.location.reload();
     } catch (err: any) {
       toast.error(err?.message || t('settings.wipe_error', 'Wipe failed'));
@@ -195,6 +211,8 @@ const Settings: React.FC = () => {
     { id: 'notifications' as const, label: t('settings.notifications'), icon: Bell },
     { id: 'security' as const, label: t('settings.security_protocols'), icon: ShieldCheck },
     { id: 'data' as const, label: t('settings.core_database'), icon: Database },
+    { id: 'devices' as const, label: 'Devices', icon: Printer },
+    { id: 'sync' as const, label: 'Sync Hub', icon: Server },
     { id: 'support' as const, label: t('settings.support'), icon: Headphones },
     { id: 'health' as const, label: 'Health Score', icon: HeartPulse },
     { id: 'about' as const, label: 'About', icon: Info },
@@ -205,7 +223,7 @@ const Settings: React.FC = () => {
       <div className="px-4 lg:px-6 grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Navigation Sidebar */}
         <div className="lg:col-span-3 space-y-2">
-           <p className="text-[10px] font-black text-muted-foreground uppercase tracking-[0.3em] mb-4 px-2">{t('settings.header')}</p>
+           <p className="text-xs font-black text-muted-foreground uppercase tracking-[0.3em] mb-4 px-2">{t('settings.header')}</p>
            <div className="flex flex-col gap-1">
             {tabs.map(tab => (
               <Button
@@ -219,7 +237,7 @@ const Settings: React.FC = () => {
               >
                 <div className="flex items-center gap-3">
                   <tab.icon size={16} strokeWidth={activeTab === tab.id ? 3 : 2} />
-                  <span className="font-black text-[10px] uppercase tracking-widest">{tab.label}</span>
+                  <span className="font-black text-xs uppercase tracking-widest">{tab.label}</span>
                 </div>
                 {activeTab === tab.id && <div className="w-1.5 h-1.5 rounded-full bg-primary" />}
               </Button>
@@ -234,40 +252,43 @@ const Settings: React.FC = () => {
                 <div className="space-y-8">
                    <div className="space-y-1">
                       <h4 className="text-sm font-black uppercase tracking-widest">{t('settings.org_identity')}</h4>
-                      <p className="text-[9px] text-muted-foreground font-black uppercase tracking-widest">{t('settings.org_desc')} {currentBusiness?.businessName}.</p>
+                      <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">{t('settings.org_desc')} {currentBusiness?.businessName}.</p>
                    </div>
                    
                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                       <div className="space-y-5">
                          <div className="space-y-1.5">
-                            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.corporate_name')}</label>
+                            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('settings.corporate_name')}</label>
                             <Input value={bizForm.businessName} onChange={e => setBizForm({...bizForm, businessName: e.target.value})} />
                          </div>
                          <div className="space-y-1.5">
-                            <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.store_name')}</label>
+                            <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('settings.store_name')}</label>
                             <Input value={bizForm.storeName} onChange={e => setBizForm({...bizForm, storeName: e.target.value})} />
                          </div>
 
-                         <Button className="w-full h-12 font-black uppercase text-[10px] tracking-widest mt-4 shadow-xl shadow-primary/20" onClick={handleUpdateBiz}>
+                          <Button className="w-full h-12 text-xs tracking-widest mt-4 shadow-xl shadow-primary/20" onClick={handleUpdateBiz}>
                             {t('settings.commit_changes')}
                          </Button>
                       </div>
 
                       <div className="space-y-5">
                           <div className="space-y-1.5">
-                             <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">{t('settings.org_branding')}</label>
+                             <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('settings.org_branding')}</label>
                              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleLogoChange} className="hidden" />
                              <div onClick={() => fileInputRef.current?.click()} className="aspect-video rounded-2xl border-2 border-dashed flex flex-col items-center justify-center gap-3 cursor-pointer hover:bg-muted/30 transition-all group/upload bg-muted/10 relative overflow-hidden">
                                 {bizForm.logo ? (
                                   <img src={bizForm.logo} alt={t('settings.logo_alt', 'Logo')} className="absolute inset-0 w-full h-full object-contain p-4" />
                                 ) : (
                                   <>
-                                    <div className="h-12 w-12 rounded-full bg-card flex items-center justify-center shadow-md group-hover/upload:scale-110 transition-transform">
-                                       <UploadCloud size={20} className="text-muted-foreground" />
-                                    </div>
-                                    <div className="text-center">
-                                       <p className="text-[9px] font-black uppercase tracking-widest">{t('settings.drop_asset')}</p>
-                                       <p className="text-[8px] text-muted-foreground font-black uppercase mt-1">{t('settings.asset_desc')}</p>
+                                    <img src={companyLogo} alt={t('settings.logo_alt', 'Logo')} className="absolute inset-0 w-full h-full object-contain p-4 opacity-40" />
+                                    <div className="relative z-10 flex flex-col items-center justify-center gap-3">
+                                      <div className="h-12 w-12 rounded-full bg-card flex items-center justify-center shadow-md group-hover/upload:scale-110 transition-transform">
+                                         <UploadCloud size={20} className="text-muted-foreground" />
+                                      </div>
+                                      <div className="text-center">
+                                         <p className="text-xs font-black uppercase tracking-widest">{t('settings.drop_asset')}</p>
+                                         <p className="text-xs text-muted-foreground font-black uppercase mt-1">{t('settings.asset_desc')}</p>
+                                      </div>
                                     </div>
                                   </>
                                 )}
@@ -277,16 +298,8 @@ const Settings: React.FC = () => {
                     </div>
                     {/* Profile Avatar */}
                     <div className="space-y-3">
-                      <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground">{t('settings.avatar_title')}</h4>
+                      <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground">{t('settings.avatar_title')}</h4>
                       <div className="flex flex-wrap gap-3">
-                        <div
-                          onClick={() => { setAvatar(null); handleUpdateAvatar(null); }}
-                          className={`relative w-14 h-14 rounded-2xl border-2 flex items-center justify-center cursor-pointer transition-all hover:scale-105 ${
-                            !currentAvatar ? 'border-primary bg-primary/10 ring-2 ring-primary/20' : 'border-border bg-muted/50'
-                          }`}
-                        >
-                          <Camera className="h-5 w-5 text-muted-foreground" />
-                        </div>
                         {AVATAR_OPTIONS.map((src, idx) => {
                           const filename = `profile${idx + 1}.png`;
                           const isSelected = currentAvatar === filename;
@@ -315,7 +328,7 @@ const Settings: React.FC = () => {
                 <div className="space-y-8">
                    <div className="space-y-1">
                       <h3 className="text-xl font-black tracking-tight">{t('settings.visual_interface')}</h3>
-                      <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.appearance_desc')}</p>
+                      <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">{t('settings.appearance_desc')}</p>
                    </div>
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                        {[
@@ -342,10 +355,10 @@ const Settings: React.FC = () => {
                                <t_item.icon size={16} />
                             </div>
                             <div>
-                              <span className="text-[10px] font-black uppercase tracking-widest block">{t_item.name}</span>
-                              <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider">{t_item.desc}</span>
+                              <span className="text-xs font-black uppercase tracking-widest block">{t_item.name}</span>
+                              <span className="text-xs text-muted-foreground font-bold uppercase tracking-wider">{t_item.desc}</span>
                             </div>
-                            {theme === t_item.id && <Badge variant="default" className="text-[8px] h-4 px-1.5">{t('settings.active')}</Badge>}
+                            {theme === t_item.id && <Badge variant="default" className="text-xs h-4 px-1.5">{t('settings.active')}</Badge>}
                          </div>
                        ))}
                     </div>
@@ -353,13 +366,13 @@ const Settings: React.FC = () => {
                       <div className="flex items-center gap-3">
                         <Clock className="h-5 w-5 text-muted-foreground" />
                         <div>
-                          <p className="text-[10px] font-black uppercase tracking-widest">{t('settings.time_system')}</p>
-                          <p className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider">{t('settings.time_system_desc')}</p>
+                          <p className="text-xs font-black uppercase tracking-widest">{t('settings.time_system')}</p>
+                          <p className="text-xs text-muted-foreground font-bold uppercase tracking-wider">{t('settings.time_system_desc')}</p>
                         </div>
                       </div>
                       <div className="flex bg-card p-1 rounded-lg border">
-                        <Button size="sm" variant={timeSystem === 'device' ? 'default' : 'ghost'} onClick={() => setTimeSystem('device')} className="h-7 px-3 text-[8px] font-black uppercase">{t('settings.device_time')}</Button>
-                        <Button size="sm" variant={timeSystem === 'ethiopian' ? 'default' : 'ghost'} onClick={() => setTimeSystem('ethiopian')} className="h-7 px-3 text-[8px] font-black uppercase">{t('settings.ethiopian_time')}</Button>
+                        <Button size="sm" variant={timeSystem === 'device' ? 'default' : 'ghost'} onClick={() => setTimeSystem('device')} className="h-7 px-3 text-xs">{t('settings.device_time')}</Button>
+                        <Button size="sm" variant={timeSystem === 'ethiopian' ? 'default' : 'ghost'} onClick={() => setTimeSystem('ethiopian')} className="h-7 px-3 text-xs">{t('settings.ethiopian_time')}</Button>
                       </div>
                     </div>
                 </div>
@@ -369,7 +382,7 @@ const Settings: React.FC = () => {
                 <div className="space-y-8">
                    <div className="space-y-1">
                       <h3 className="text-xl font-black tracking-tight">{t('settings.localization_engine')}</h3>
-                      <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.date_formatting')}</p>
+                      <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">{t('settings.date_formatting')}</p>
                    </div>
                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {LANGUAGES.map(lang => (
@@ -382,8 +395,8 @@ const Settings: React.FC = () => {
                            <div className="flex items-center gap-4">
                               <span className="text-lg font-black opacity-30">{lang.id.toUpperCase()}</span>
                               <div className="text-left">
-                                  <p className="text-[10px] font-black uppercase tracking-widest">{t(lang.nameKey, lang.native)}</p>
-                                 <p className="text-[9px] opacity-60">{lang.native}</p>
+                                  <p className="text-xs font-black uppercase tracking-widest">{t(lang.nameKey, lang.native)}</p>
+                                 <p className="text-xs opacity-60">{lang.native}</p>
                               </div>
                            </div>
                            {language === lang.id && <CheckCircle size={16} />}
@@ -392,12 +405,12 @@ const Settings: React.FC = () => {
                    </div>
                    <div className="p-6 rounded-xl border bg-muted/20 flex items-center justify-between">
                       <div>
-                         <p className="text-[10px] font-black uppercase tracking-widest">{t('settings.calendar_protocol')}</p>
-                         <p className="text-[9px] text-muted-foreground font-bold uppercase">{t('settings.date_formatting')}</p>
+                         <p className="text-xs font-black uppercase tracking-widest">{t('settings.calendar_protocol')}</p>
+                         <p className="text-xs text-muted-foreground font-bold uppercase">{t('settings.date_formatting')}</p>
                       </div>
                       <div className="flex bg-card p-1 rounded-lg border">
-                         <Button size="sm" variant={calendarType === 'ethiopian' ? 'default' : 'ghost'} onClick={() => setCalendarType('ethiopian')} className="h-7 px-4 text-[9px] font-black uppercase">{t('common.ethiopian')}</Button>
-                         <Button size="sm" variant={calendarType === 'gregorian' ? 'default' : 'ghost'} onClick={() => setCalendarType('gregorian')} className="h-7 px-4 text-[9px] font-black uppercase">{t('common.gregorian')}</Button>
+                         <Button size="sm" variant={calendarType === 'ethiopian' ? 'default' : 'ghost'} onClick={() => setCalendarType('ethiopian')} className="h-7 px-4 text-xs">{t('common.ethiopian')}</Button>
+                         <Button size="sm" variant={calendarType === 'gregorian' ? 'default' : 'ghost'} onClick={() => setCalendarType('gregorian')} className="h-7 px-4 text-xs">{t('common.gregorian')}</Button>
                       </div>
                    </div>
 
@@ -405,7 +418,7 @@ const Settings: React.FC = () => {
                    <div className="space-y-4 pt-4 border-t border-border">
                       <div className="space-y-1">
                          <h4 className="text-sm font-black uppercase tracking-widest">{t('settings.modules')}</h4>
-                         <p className="text-[9px] text-muted-foreground font-black uppercase tracking-widest">{t('settings.modules_desc')}</p>
+                         <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">{t('settings.modules_desc')}</p>
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         {MODULE_META.map(meta => {
@@ -436,10 +449,10 @@ const Settings: React.FC = () => {
                                 <SettingIcon size={14} />
                               </div>
                               <div className="flex-1 min-w-0">
-                                <p className={`text-[10px] font-black uppercase tracking-wider ${isOn ? 'text-foreground' : 'text-muted-foreground'}`}>
+                                <p className={`text-xs font-black uppercase tracking-wider ${isOn ? 'text-foreground' : 'text-muted-foreground'}`}>
                                   {t(meta.nameKey)}
                                 </p>
-                                <p className="text-[8px] text-muted-foreground font-bold leading-tight">{t(meta.descKey)}</p>
+                                <p className="text-xs text-muted-foreground font-bold leading-tight">{t(meta.descKey)}</p>
                               </div>
                               <div className={`h-4 w-7 rounded-full border transition-colors ${
                                 isOn ? 'bg-primary border-primary/50' : 'bg-muted border-border'
@@ -452,7 +465,7 @@ const Settings: React.FC = () => {
                           );
                         })}
                       </div>
-                      <p className="text-[8px] text-muted-foreground/60 font-bold uppercase tracking-wider">{t('settings.modules_hint')}</p>
+                      <p className="text-xs text-muted-foreground/60 font-bold uppercase tracking-wider">{t('settings.modules_hint')}</p>
                    </div>
                 </div>
               )}
@@ -461,7 +474,7 @@ const Settings: React.FC = () => {
                 <div className="space-y-8">
                    <div className="space-y-1">
                       <h3 className="text-xl font-black tracking-tight">{t('settings.notifications')}</h3>
-                      <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.notif_desc')}</p>
+                      <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">{t('settings.notif_desc')}</p>
                    </div>
                    <NotificationSettings />
                 </div>
@@ -471,7 +484,7 @@ const Settings: React.FC = () => {
                 <div className="space-y-8">
                    <div className="space-y-1">
                       <h3 className="text-xl font-black tracking-tight">{t('settings.security_studio')}</h3>
-                      <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.security_desc')}</p>
+                      <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">{t('settings.security_desc')}</p>
                    </div>
                    <div className="p-8 rounded-2xl border bg-muted/20 flex items-center justify-between">
                       <div className="flex items-center gap-5">
@@ -480,17 +493,17 @@ const Settings: React.FC = () => {
                          </div>
                          <div>
                             <p className="text-sm font-black tracking-tight">{t('settings.admin_auth')}</p>
-                            <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest">{t('settings.admin_auth_desc')}</p>
+                            <p className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('settings.admin_auth_desc')}</p>
                          </div>
                       </div>
-                      <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20 text-[9px] font-black">{t('settings.active')}</Badge>
+                      <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20 text-xs font-black">{t('settings.active')}</Badge>
                    </div>
                    {isSuperAdmin && (
                      <Link to="/admin-management">
                        <div className="p-8 rounded-2xl border bg-muted/20 hover:border-primary transition-all cursor-pointer group">
                           <UserCog size={24} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
                           <p className="text-sm font-black uppercase tracking-widest">{t('settings.admin_management')}</p>
-                          <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.admin_management_desc')}</p>
+                          <p className="text-xs text-muted-foreground font-bold uppercase mt-2">{t('settings.admin_management_desc')}</p>
                        </div>
                      </Link>
                    )}
@@ -501,7 +514,7 @@ const Settings: React.FC = () => {
                 <div className="space-y-8">
                    <div className="space-y-1">
                       <h3 className="text-xl font-black tracking-tight">{t('settings.core_database')}</h3>
-                      <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.purge_desc')}</p>
+                      <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">{t('settings.purge_desc')}</p>
                    </div>
                    <div className="p-6 rounded-2xl border bg-muted/20">
                       <div className="flex items-center justify-between mb-4">
@@ -509,15 +522,15 @@ const Settings: React.FC = () => {
                             <HardDrive size={20} className="text-foreground" />
                             <div>
                                <p className="text-sm font-black uppercase tracking-widest">{t('settings.backup_title')}</p>
-                               <p className="text-[9px] text-muted-foreground font-bold uppercase mt-0.5">{t('settings.backup_desc')}</p>
+                               <p className="text-xs text-muted-foreground font-bold uppercase mt-0.5">{t('settings.backup_desc')}</p>
                             </div>
                          </div>
                          <div className="flex gap-2">
-                            <Button size="sm" variant="default" onClick={handleCreateBackup} disabled={backupLoading} className="h-8 px-3 text-[9px] font-black uppercase">
+                            <Button size="sm" variant="default" onClick={handleCreateBackup} disabled={backupLoading} className="h-8 px-3 text-xs">
                                <Upload size={12} className="mr-1.5" />
                                {t('settings.backup_create')}
                             </Button>
-                            <Button size="sm" variant="outline" onClick={handleToggleBackups} className="h-8 px-3 text-[9px] font-black uppercase">
+                            <Button size="sm" variant="outline" onClick={handleToggleBackups} className="h-8 px-3 text-xs">
                                <FileText size={12} className="mr-1.5" />
                                {t('settings.backup_list')}
                             </Button>
@@ -526,15 +539,15 @@ const Settings: React.FC = () => {
                       {showBackups && (
                         <div className="space-y-2 mt-4 pt-4 border-t">
                           {backups.length === 0 ? (
-                            <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest text-center py-4">{t('settings.backup_none')}</p>
+                            <p className="text-xs text-muted-foreground font-black uppercase tracking-widest text-center py-4">{t('settings.backup_none')}</p>
                           ) : (
                             backups.map(b => (
                               <div key={b.name} className="flex items-center justify-between p-3 rounded-xl bg-muted/30">
                                 <div className="flex items-center gap-3">
                                    <FileText size={14} className="text-muted-foreground" />
                                    <div>
-                                      <p className="text-[10px] font-black uppercase tracking-widest">{b.name.replace('.db', '').replace('shega-backup-', '')}</p>
-                                      <p className="text-[8px] text-muted-foreground font-bold">{(b.size / 1024).toFixed(1)} KB</p>
+                                      <p className="text-xs font-black uppercase tracking-widest">{b.name.replace('.db', '').replace('shega-backup-', '')}</p>
+                                      <p className="text-xs text-muted-foreground font-bold">{(b.size / 1024).toFixed(1)} KB</p>
                                    </div>
                                 </div>
                                 <div className="flex gap-1">
@@ -555,16 +568,23 @@ const Settings: React.FC = () => {
                         <div className="p-8 rounded-2xl border bg-muted/20 hover:border-primary transition-all cursor-pointer group" onClick={() => setShowDataTransfer(true)}>
                            <Upload size={24} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
                            <p className="text-sm font-black uppercase tracking-widest">{t('settings.data_transfer') || 'Data Transfer'}</p>
-                           <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.data_transfer_desc') || 'Import/export your data'}</p>
+                           <p className="text-xs text-muted-foreground font-bold uppercase mt-2">{t('settings.data_transfer_desc') || 'Import/export your data'}</p>
                         </div>
                        <div className="p-8 rounded-2xl border bg-muted/20 hover:border-destructive transition-all cursor-pointer group" onClick={() => setShowResetConfirm(true)}>
                           <Trash2 size={24} className="mb-4 text-muted-foreground group-hover:text-destructive transition-colors" />
                           <p className="text-sm font-black uppercase tracking-widest">{t('settings.purge_system')}</p>
-                          <p className="text-[9px] text-muted-foreground font-bold uppercase mt-2">{t('settings.purge_desc')}</p>
+                          <p className="text-xs text-muted-foreground font-bold uppercase mt-2">{t('settings.purge_desc')}</p>
                        </div>
                     </div>
                 </div>
               )}
+
+{activeTab === 'devices' && (
+              <DeviceSettings />
+            )}
+            {activeTab === 'sync' && (
+              <SyncSettings />
+            )}
 
                {activeTab === 'health' && (
                 <BusinessHealthScore />
@@ -574,7 +594,7 @@ const Settings: React.FC = () => {
                  <div className="space-y-8">
                    <div className="space-y-1">
                      <h3 className="text-xl font-black tracking-tight">About Shega</h3>
-                     <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">Application information & updates</p>
+                     <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">Application information & updates</p>
                    </div>
 
                    <div className="rounded-2xl border bg-muted/20 p-6 flex flex-col items-center text-center gap-4">
@@ -588,7 +608,7 @@ const Settings: React.FC = () => {
                      <Badge variant="outline" className="text-xs font-mono px-3 py-1">
                        v{appVersion || '1.0.0'}
                      </Badge>
-                     <p className="text-[9px] text-muted-foreground font-bold uppercase tracking-wider">
+                     <p className="text-xs text-muted-foreground font-bold uppercase tracking-wider">
                        App ID: com.shega.inventory
                      </p>
                    </div>
@@ -599,7 +619,7 @@ const Settings: React.FC = () => {
                          setUpdateDialogAction('check');
                          setShowUpdateDialog(true);
                        }}
-                       className="h-14 rounded-2xl font-black uppercase text-[10px] tracking-widest"
+                       className="h-14 rounded-2xl font-black uppercase text-xs tracking-widest"
                      >
                        <RefreshCw size={14} />
                        Check for Updates
@@ -608,7 +628,7 @@ const Settings: React.FC = () => {
                      <Button
                        variant="outline"
                        onClick={() => window.api?.openExternal?.('https://github.com/nat2132/shega-desktop/releases')}
-                       className="h-14 rounded-2xl font-black uppercase text-[10px] tracking-widest"
+                       className="h-14 rounded-2xl font-black uppercase text-xs tracking-widest"
                      >
                        <Download size={14} />
                        View Releases
@@ -616,7 +636,7 @@ const Settings: React.FC = () => {
                    </div>
 
                    <div className="rounded-2xl border bg-muted/10 p-4 space-y-2">
-                     <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Technical Details</p>
+                     <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Technical Details</p>
                      <div className="grid grid-cols-2 gap-2 text-xs">
                        <div>
                          <span className="text-muted-foreground">Version: </span>
@@ -649,14 +669,14 @@ const Settings: React.FC = () => {
                  <div className="space-y-8">
                    <div className="space-y-1">
                      <h3 className="text-xl font-black tracking-tight">{t('settings.support')}</h3>
-                     <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">{t('settings.support_desc')}</p>
+                     <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">{t('settings.support_desc')}</p>
                    </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="p-8 rounded-2xl border bg-muted/20 hover:bg-primary/5 hover:border-primary/30 transition-all group">
                       <Phone size={28} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
                       <p className="text-sm font-black uppercase tracking-widest">{t('support.call_us')}</p>
                       <p className="text-lg font-bold mt-2 text-primary">{t('support.phone')}</p>
-                      <p className="text-[9px] text-muted-foreground font-bold uppercase tracking-wider mt-2">
+                      <p className="text-xs text-muted-foreground font-bold uppercase tracking-wider mt-2">
                         {t('support.business_hours')}: {t('support.mon_fri')}
                       </p>
                     </div>
@@ -664,18 +684,18 @@ const Settings: React.FC = () => {
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <a href="https://shega.tech/docs" target="_blank" rel="noopener noreferrer" className="p-6 rounded-2xl border bg-muted/20 hover:border-primary transition-all group cursor-pointer">
                       <FileText size={24} className="mb-3 text-muted-foreground group-hover:text-primary transition-colors" />
-                      <p className="text-[10px] font-black uppercase tracking-widest">{t('support.documentation')}</p>
-                      <p className="text-[8px] text-muted-foreground font-bold uppercase mt-1">shega.tech/docs</p>
+                      <p className="text-xs font-black uppercase tracking-widest">{t('support.documentation')}</p>
+                      <p className="text-xs text-muted-foreground font-bold uppercase mt-1">shega.tech/docs</p>
                     </a>
                     <a href="https://shega.tech/community" target="_blank" rel="noopener noreferrer" className="p-6 rounded-2xl border bg-muted/20 hover:border-primary transition-all group cursor-pointer">
                       <Users size={24} className="mb-3 text-muted-foreground group-hover:text-primary transition-colors" />
-                      <p className="text-[10px] font-black uppercase tracking-widest">{t('support.community')}</p>
-                      <p className="text-[8px] text-muted-foreground font-bold uppercase mt-1">{t('support.community')}</p>
+                      <p className="text-xs font-black uppercase tracking-widest">{t('support.community')}</p>
+                      <p className="text-xs text-muted-foreground font-bold uppercase mt-1">{t('support.community')}</p>
                     </a>
                     <a href="https://shega.tech/support" target="_blank" rel="noopener noreferrer" className="p-6 rounded-2xl border bg-muted/20 hover:border-primary transition-all group cursor-pointer">
                       <Headphones size={24} className="mb-3 text-muted-foreground group-hover:text-primary transition-colors" />
-                      <p className="text-[10px] font-black uppercase tracking-widest">{t('support.report_issue')}</p>
-                      <p className="text-[8px] text-muted-foreground font-bold uppercase mt-1">{t('support.report_issue')}</p>
+                      <p className="text-xs font-black uppercase tracking-widest">{t('support.report_issue')}</p>
+                      <p className="text-xs text-muted-foreground font-bold uppercase mt-1">{t('support.report_issue')}</p>
                     </a>
                   </div>
                 </div>
@@ -684,21 +704,45 @@ const Settings: React.FC = () => {
         </div>
       </div>
 
-      <Modal isOpen={showResetConfirm} onClose={() => setShowResetConfirm(false)} title={t('settings.wipe_protocol')} size="sm">
+      <Modal isOpen={showResetConfirm} onClose={() => { setShowResetConfirm(false); setBackupResult(null); }} title={t('settings.wipe_protocol')} size="sm">
          <div className="text-center space-y-6">
-            <div className="h-20 w-20 rounded-full bg-destructive/10 flex items-center justify-center text-destructive mx-auto">
-               <Trash2 size={32} />
-            </div>
-            <div className="space-y-2">
-               <h4 className="text-lg font-black tracking-tight">{t('settings.initialize_purge')}</h4>
-               <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground leading-relaxed">
-                  {t('settings.wipe_warning')}
-               </p>
-            </div>
-            <div className="flex gap-4">
-               <Button variant="destructive" className="flex-1" onClick={handleReset}>{t('settings.wipe_confirm')}</Button>
-               <Button variant="outline" className="flex-1" onClick={() => setShowResetConfirm(false)}>{t('common.abort')}</Button>
-            </div>
+           {!backupResult ? (
+             <>
+              <div className="h-20 w-20 rounded-full bg-destructive/10 flex items-center justify-center text-destructive mx-auto">
+                 <Trash2 size={32} />
+              </div>
+              <div className="space-y-2">
+                 <h4 className="text-lg font-black tracking-tight">{t('settings.initialize_purge')}</h4>
+                 <p className="text-xs font-black uppercase tracking-widest text-muted-foreground leading-relaxed">
+                    {t('settings.wipe_warning')}
+                 </p>
+              </div>
+              <div className="flex gap-4">
+                 <Button variant="destructive" className="flex-1" onClick={handleResetBackup}>{t('settings.wipe_create_backup', 'Create Backup & Reset')}</Button>
+                 <Button variant="outline" className="flex-1" onClick={() => { setShowResetConfirm(false); setBackupResult(null); }}>{t('common.abort')}</Button>
+              </div>
+             </>
+           ) : (
+             <>
+              <div className="h-20 w-20 rounded-full bg-green-500/10 flex items-center justify-center text-green-500 mx-auto">
+                 <ShieldCheck size={32} />
+              </div>
+              <div className="space-y-2">
+                 <h4 className="text-lg font-black tracking-tight">{t('settings.backup_created_title', 'Backup Created')}</h4>
+                 <div className="text-xs text-left space-y-1 bg-muted/30 p-4 rounded-xl">
+                   <p><span className="font-bold">{t('settings.backup_name', 'Name')}:</span> {backupResult.name}</p>
+                   <p><span className="font-bold">{t('settings.backup_size', 'Size')}:</span> {(backupResult.size / 1024).toFixed(1)} KB</p>
+                 </div>
+                 <p className="text-xs text-muted-foreground leading-relaxed mt-2">
+                   {t('settings.wipe_after_backup', 'A backup was created. Proceed with data reset?')}
+                 </p>
+              </div>
+              <div className="flex gap-4">
+                 <Button variant="destructive" className="flex-1" onClick={handleConfirmReset}>{t('settings.wipe_confirm')}</Button>
+                 <Button variant="outline" className="flex-1" onClick={() => { setShowResetConfirm(false); setBackupResult(null); }}>{t('common.abort')}</Button>
+              </div>
+             </>
+           )}
          </div>
       </Modal>
 
@@ -709,7 +753,7 @@ const Settings: React.FC = () => {
             </div>
             <div className="space-y-2">
                <h4 className="text-lg font-black tracking-tight">{t('settings.backup_restore_title')}</h4>
-               <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground leading-relaxed">
+               <p className="text-xs font-black uppercase tracking-widest text-muted-foreground leading-relaxed">
                   {t('settings.backup_restore_warn')}
                </p>
             </div>

@@ -330,17 +330,17 @@ const Orders: React.FC = () => {
             <SheetTrigger asChild>
               <Button variant="outline" size="sm" className={`h-8 px-3 transition-all ${hasActiveFilters ? 'border-primary text-primary bg-primary/5 shadow-sm' : 'border-border/60 hover:bg-muted/50'}`}>
                 <Filter className="mr-1.5 h-3.5 w-3.5" />
-                {t('inventory.filters')} {hasActiveFilters && <Badge className="ml-1.5 h-4 px-1 text-[9px] rounded-full">{t('inventory.active')}</Badge>}
+                {t('inventory.filters')} {hasActiveFilters && <Badge className="ml-1.5 h-4 px-1 text-xs rounded-full">{t('inventory.active')}</Badge>}
               </Button>
             </SheetTrigger>
             <SheetContent side="right" className="w-[400px] sm:w-[540px] border-l-border/40 p-0 flex flex-col">
               <SheetHeader className="border-b border-border/50 p-6">
                 <SheetTitle className="text-2xl font-black uppercase tracking-tight">{t('orders.filter_title')}</SheetTitle>
-                <SheetDescription className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">{t('orders.filter_desc')}</SheetDescription>
+                <SheetDescription className="text-xs font-bold text-muted-foreground uppercase tracking-widest">{t('orders.filter_desc')}</SheetDescription>
               </SheetHeader>
               <div className="space-y-8 p-6 flex-1 overflow-y-auto">
                 <div className="space-y-3">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">{t('orders.status')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-primary">{t('orders.status')}</h4>
                   <Select value={statusFilter} onValueChange={setStatusFilter}>
                     <SelectTrigger className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs">
                       <SelectValue />
@@ -354,14 +354,14 @@ const Orders: React.FC = () => {
                   </Select>
                 </div>
                 <div className="space-y-3">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">{t('inventory.timeframe')}</h4>
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-primary">{t('inventory.timeframe')}</h4>
                   <div className="space-y-3">
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.start_date')}</label>
+                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.start_date')}</label>
                       <DatePicker value={filterStartDate} onChange={setFilterStartDate} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs w-full" />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.end_date')}</label>
+                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.end_date')}</label>
                       <DatePicker value={filterEndDate} onChange={setFilterEndDate} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs w-full" />
                     </div>
                   </div>
@@ -383,7 +383,7 @@ const Orders: React.FC = () => {
 
         <div className="border rounded-[32px] overflow-hidden bg-card">
           <table className="w-full text-left">
-            <thead className="bg-muted/50 text-[10px] font-black uppercase tracking-widest">
+            <thead className="bg-muted/50 text-xs font-black uppercase tracking-widest">
               <tr>
                 <th className="px-5 py-4">{t('orders.order_number')}</th>
                 <th className="px-5 py-4">{t('orders.customer')}</th>
@@ -401,7 +401,7 @@ const Orders: React.FC = () => {
                   <td className="px-5 py-4">
                     <div className="flex flex-col">
                       <span className="font-bold">{order.customerName || t('orders.walk_in')}</span>
-                      {order.customerPhone && <span className="text-[10px] text-muted-foreground">{order.customerPhone}</span>}
+                      {order.customerPhone && <span className="text-xs text-muted-foreground">{order.customerPhone}</span>}
                     </div>
                   </td>
                   <td className="px-5 py-4 text-right font-bold">{t('common.etb')} {order.totalAmount.toLocaleString()}</td>
@@ -464,17 +464,17 @@ const Orders: React.FC = () => {
         <div className="space-y-6">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('orders.customer_name')}</Label>
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('orders.customer_name')}</Label>
               <Input value={customerName} onChange={e => setCustomerName(e.target.value)} placeholder={t('orders.customer_name_placeholder')} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs" />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('orders.customer_phone')}</Label>
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('orders.customer_phone')}</Label>
               <Input value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} placeholder={t('orders.customer_phone_placeholder')} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs" />
             </div>
           </div>
 
           <div className="space-y-1.5">
-            <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('orders.notes')}</Label>
+            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('orders.notes')}</Label>
             <Textarea value={orderNotes} onChange={e => setOrderNotes(e.target.value)} placeholder={t('orders.notes_placeholder')} className="bg-muted/30 border-border/50 rounded-xl text-xs resize-none" rows={2} />
           </div>
 
@@ -496,7 +496,7 @@ const Orders: React.FC = () => {
                 <div key={item.id} className="flex items-center justify-between p-2 rounded-lg hover:bg-muted/20 transition-colors cursor-pointer" onClick={() => addToCart(item)}>
                   <div>
                     <p className="text-xs font-bold">{item.name}</p>
-                    <p className="text-[10px] text-muted-foreground">{t('common.etb')} {item.baseSellingPrice?.toLocaleString() || 0} / {item.baseUnit || t('common.pcs')}</p>
+                    <p className="text-xs text-muted-foreground">{t('common.etb')} {item.baseSellingPrice?.toLocaleString() || 0} / {item.baseUnit || t('common.pcs')}</p>
                   </div>
                   <Button variant="ghost" size="sm" className="h-7 w-7 p-0 rounded-full">
                     <Plus size={14} />
@@ -556,12 +556,12 @@ const Orders: React.FC = () => {
       <Modal isOpen={!!showConvertSale} onClose={() => setShowConvertSale(null)} title={t('orders.convert_to_sale')} size="sm">
         <div className="space-y-6">
           <div className="p-4 rounded-xl bg-muted/20 space-y-1">
-            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('orders.order_number')}</p>
+            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('orders.order_number')}</p>
             <p className="font-mono font-bold">{showConvertSale?.orderNumber}</p>
             <p className="text-xs text-muted-foreground">{t('orders.total')}: {t('common.etb')} {showConvertSale?.totalAmount.toLocaleString()}</p>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('orders.payment_method')}</Label>
+            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('orders.payment_method')}</Label>
             <Select value={salePaymentMethod} onValueChange={setSalePaymentMethod}>
               <SelectTrigger className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs">
                 <SelectValue />
@@ -590,13 +590,13 @@ const Orders: React.FC = () => {
       <Modal isOpen={!!showConvertDebt} onClose={() => setShowConvertDebt(null)} title={t('orders.convert_to_debt')} size="sm">
         <div className="space-y-6">
           <div className="p-4 rounded-xl bg-muted/20 space-y-1">
-            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t('orders.order_number')}</p>
+            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('orders.order_number')}</p>
             <p className="font-mono font-bold">{showConvertDebt?.orderNumber}</p>
             <p className="text-xs text-muted-foreground">{t('orders.customer')}: {showConvertDebt?.customerName}</p>
             <p className="text-xs text-muted-foreground">{t('orders.total')}: {t('common.etb')} {showConvertDebt?.totalAmount.toLocaleString()}</p>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('orders.due_date')}</Label>
+            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('orders.due_date')}</Label>
             <DatePicker value={debtDueDate} onChange={setDebtDueDate} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs w-full" />
           </div>
           <p className="text-xs text-muted-foreground">{t('orders.convert_debt_warning')}</p>
@@ -621,7 +621,7 @@ const Orders: React.FC = () => {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-1.5 py-4">
-            <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t('orders.cancel_reason')}</Label>
+            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('orders.cancel_reason')}</Label>
             <Textarea value={cancelReason} onChange={e => setCancelReason(e.target.value)} placeholder={t('orders.cancel_reason_placeholder')} className="bg-muted/30 border-border/50 rounded-xl text-xs resize-none" rows={3} />
           </div>
           <AlertDialogFooter className="gap-3">

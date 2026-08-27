@@ -84,7 +84,7 @@ export function BusinessHealthScore() {
     <div className="space-y-8">
       <div className="space-y-1">
         <h3 className="text-xl font-black tracking-tight">{t('health.title')}</h3>
-        <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">
+        <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">
           {t('health.subtitle')}
         </p>
       </div>
@@ -108,7 +108,7 @@ export function BusinessHealthScore() {
               </svg>
               <div className="absolute inset-0 flex flex-col items-center justify-center">
                 <span className={`text-4xl font-black ${colorClass}`}>{data.score}</span>
-                <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">/ 100</span>
+                <span className="text-xs font-black uppercase tracking-widest text-muted-foreground">/ 100</span>
               </div>
             </div>
             <div className={`px-4 py-1.5 rounded-full text-[11px] font-black uppercase tracking-wider ${
@@ -155,7 +155,7 @@ export function BusinessHealthScore() {
                       </span>
                     </div>
                   </div>
-                  <p className="text-[10px] text-muted-foreground leading-relaxed">{factor.detail}</p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">{factor.detail}</p>
                 </div>
               );
             })}
@@ -180,7 +180,7 @@ export function BusinessHealthScore() {
         </div>
       )}
 
-      <Button variant="outline" size="sm" onClick={loadData} className="text-[10px] font-black uppercase tracking-widest">
+      <Button variant="outline" size="sm" onClick={loadData} className="text-xs font-black uppercase tracking-widest">
         <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> {t('health.refresh')}
       </Button>
     </div>
