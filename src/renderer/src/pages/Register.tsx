@@ -47,7 +47,7 @@ const CATEGORIES = [
 ];
 
 const PAYMENT_METHODS = [
-  { id: 'cash', label: 'Cash', icon: Cash, shortcut: 'F4' },
+  { id: 'cash', label: 'Cash', icon: Banknote, shortcut: 'F4' },
   { id: 'card', label: 'Card', icon: CreditCard, shortcut: 'F5' },
   { id: 'mobile', label: 'Mobile', icon: Zap, shortcut: 'F6' },
 ];

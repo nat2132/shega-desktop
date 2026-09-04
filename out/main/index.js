@@ -3,7 +3,7 @@ Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 const fs = require("fs");
 const electron = require("electron");
 const path = require("path");
-const crypto = require("crypto");
+const crypto$1 = require("crypto");
 const Database = require("better-sqlite3");
 const electronUpdater = require("electron-updater");
 const zod = require("zod");
@@ -86,17 +86,22 @@ try {
   const result = Array.isArray(integrity) ? integrity[0] : integrity;
   if (result !== "ok") {
     console.error(`[DB] Integrity check FAILED: ${result}`);
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({
-      ok: false,
-      message: Array.isArray(integrity) ? integrity.join(", ") : integrity,
-      timestamp: (/* @__PURE__ */ new Date()).toISOString()
-    }));
+    try {
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({
+        ok: false,
+        message: Array.isArray(integrity) ? integrity.join(", ") : integrity,
+        timestamp: (/* @__PURE__ */ new Date()).toISOString()
+      }));
+    } catch {
+    }
   } else {
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({ ok: true, timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
+    try {
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({ ok: true, timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
+    } catch {
+    }
   }
 } catch (_) {
   console.warn("[DB] Integrity check skipped (empty DB?)");
-  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({ ok: true, note: "skipped - empty database", timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
 }
 const dbProxy = new Proxy({}, {
   get(target, prop) {
@@ -175,8 +180,8 @@ const DEFAULT_ROLES = [
   { name: "Driver", description: "Handle shipments and deliveries", permissions: ["shipments", "inventory.view", "warehouses.view"] }
 ];
 function hashPin$1(pin) {
-  const salt = crypto.randomBytes(16).toString("hex");
-  const key = crypto.scryptSync(pin, salt, 64).toString("hex");
+  const salt = crypto$1.randomBytes(16).toString("hex");
+  const key = crypto$1.scryptSync(pin, salt, 64).toString("hex");
   return `${salt}:${key}`;
 }
 function initDB() {
@@ -1119,7 +1124,7 @@ function initDB() {
     }
     const rows = db.prepare("SELECT * FROM audit_logs ORDER BY id ASC").all();
     const mk = (prev2, r) => {
-      const c = crypto.createHash("sha256");
+      const c = crypto$1.createHash("sha256");
       c.update(`${prev2}|${r.id}|${r.action}|${r.entityType}|${r.entityId ?? ""}|${r.fieldName ?? ""}|${r.oldValue ?? ""}|${r.newValue ?? ""}|${r.changedBy ?? ""}|${r.description ?? ""}|${r.createdAt ?? ""}`);
       return c.digest("hex");
     };
@@ -1704,7 +1709,7 @@ function reopenDB() {
 }
 const AUDIT_GENESIS = "GENESIS";
 function auditHash(prev, r) {
-  const c = crypto.createHash("sha256");
+  const c = crypto$1.createHash("sha256");
   c.update(
     `${prev}|${r.id}|${r.action}|${r.entityType}|${r.entityId ?? ""}|${r.fieldName ?? ""}|${r.oldValue ?? ""}|${r.newValue ?? ""}|${r.changedBy ?? ""}|${r.description ?? ""}|${r.createdAt ?? ""}`
   );
@@ -2304,46 +2309,46 @@ async function openDrawer() {
   await printRaw(w.toUint8Array());
   lastPrintAt = (/* @__PURE__ */ new Date()).toISOString();
 }
-const WIDTH = 42;
-function padRight(s, w) {
+const WIDTH$1 = 42;
+function padRight$1(s, w) {
   if (s.length >= w) return s.slice(0, w);
   return s + " ".repeat(w - s.length);
 }
-function money(n) {
+function money$1(n) {
   return `ETB ${(Math.round(n * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
-const divider = "-".repeat(WIDTH);
+const divider$1 = "-".repeat(WIDTH$1);
 function buildReceiptCommands(input) {
   const w = new EscposWriter().init();
-  w.align(1).bold(true).text(input.context.businessName.slice(0, WIDTH)).lineFeed();
+  w.align(1).bold(true).text(input.context.businessName.slice(0, WIDTH$1)).lineFeed();
   w.bold(false).align(0);
-  if (input.context.address) w.align(1).text(input.context.address.slice(0, WIDTH)).lineFeed().align(0);
+  if (input.context.address) w.align(1).text(input.context.address.slice(0, WIDTH$1)).lineFeed().align(0);
   if (input.context.tin) w.text(`TIN: ${input.context.tin}`).lineFeed();
-  w.text(divider).lineFeed();
+  w.text(divider$1).lineFeed();
   for (const line of input.lines) {
-    w.text(padRight(line.name.slice(0, 28), 28)).text(padRight(String(line.quantity), 4)).text(padRight(line.unit.slice(0, 3), 4)).text(money(line.total).padStart(6)).lineFeed();
+    w.text(padRight$1(line.name.slice(0, 28), 28)).text(padRight$1(String(line.quantity), 4)).text(padRight$1(line.unit.slice(0, 3), 4)).text(money$1(line.total).padStart(6)).lineFeed();
     if (line.unitPrice !== line.total) {
-      w.text(`  @ ${money(line.unitPrice)}`).lineFeed();
+      w.text(`  @ ${money$1(line.unitPrice)}`).lineFeed();
     }
   }
-  w.text(divider).lineFeed();
-  w.column("Subtotal", money(input.subtotal), WIDTH);
-  if (input.discount > 0) w.column("Discount", `-${money(input.discount)}`, WIDTH);
-  if (input.vat > 0) w.column(`${input.taxType || "VAT"}`, money(input.vat), WIDTH);
-  w.text(divider).lineFeed();
-  w.bold(true).size(2, 2).text(padRight("TOTAL", WIDTH - 6) + money(input.total)).lineFeed().size(1, 1).bold(false);
-  w.text(divider).lineFeed();
-  if (input.customerName) w.column("Customer", input.customerName.slice(0, 30), WIDTH);
-  w.column("Payment", input.paymentMethod || "Cash", WIDTH);
+  w.text(divider$1).lineFeed();
+  w.column("Subtotal", money$1(input.subtotal), WIDTH$1);
+  if (input.discount > 0) w.column("Discount", `-${money$1(input.discount)}`, WIDTH$1);
+  if (input.vat > 0) w.column(`${input.taxType || "VAT"}`, money$1(input.vat), WIDTH$1);
+  w.text(divider$1).lineFeed();
+  w.bold(true).size(2, 2).text(padRight$1("TOTAL", WIDTH$1 - 6) + money$1(input.total)).lineFeed().size(1, 1).bold(false);
+  w.text(divider$1).lineFeed();
+  if (input.customerName) w.column("Customer", input.customerName.slice(0, 30), WIDTH$1);
+  w.column("Payment", input.paymentMethod || "Cash", WIDTH$1);
   if (input.paymentStatus === "Debt") {
-    w.column("Status", "DEBT", WIDTH);
+    w.column("Status", "DEBT", WIDTH$1);
   } else if (input.change > 0) {
-    w.column("Paid", money(input.paid), WIDTH);
-    w.column("Change", money(input.change), WIDTH);
+    w.column("Paid", money$1(input.paid), WIDTH$1);
+    w.column("Change", money$1(input.change), WIDTH$1);
   }
-  w.text(divider).lineFeed();
-  w.text(padRight("Date: " + (input.createdAt ? input.createdAt.slice(0, 16).replace("T", " ") : (/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace("T", " ")), WIDTH / 2) + padRight("Rcpt #" + (input.context.receiptSerial ?? ""), WIDTH / 2)).lineFeed();
-  if (input.context.cashier) w.text(`Cashier: ${input.context.cashier.slice(0, WIDTH)}`).lineFeed();
+  w.text(divider$1).lineFeed();
+  w.text(padRight$1("Date: " + (input.createdAt ? input.createdAt.slice(0, 16).replace("T", " ") : (/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace("T", " ")), WIDTH$1 / 2) + padRight$1("Rcpt #" + (input.context.receiptSerial ?? ""), WIDTH$1 / 2)).lineFeed();
+  if (input.context.cashier) w.text(`Cashier: ${input.context.cashier.slice(0, WIDTH$1)}`).lineFeed();
   w.align(1).text("Thank you for shopping with us!").lineFeed(2).align(0);
   w.cut(true);
   return w.toUint8Array();
@@ -2359,7 +2364,7 @@ function buildLabelCommands(label, copies = 1) {
     } else if (label.sku) {
       w.qr(label.sku, 6);
     }
-    w.align(1).size(2, 2).text(money(label.price)).lineFeed().size(1, 1).align(0);
+    w.align(1).size(2, 2).text(money$1(label.price)).lineFeed().size(1, 1).align(0);
     w.lineFeed(1);
   }
   w.cut(true);
@@ -2368,7 +2373,7 @@ function buildLabelCommands(label, copies = 1) {
 function buildTestPageCommands() {
   const w = new EscposWriter().init();
   w.align(1).bold(true).size(2, 2).text("SHEGA TEST PAGE").lineFeed().size(1, 1).bold(false);
-  w.text(divider).lineFeed();
+  w.text(divider$1).lineFeed();
   w.text("Date: " + (/* @__PURE__ */ new Date()).toLocaleString()).lineFeed();
   w.text("ESC/POS transport OK").lineFeed();
   w.text("  - align left  : Shega").lineFeed();
@@ -2378,7 +2383,7 @@ function buildTestPageCommands() {
   w.barcodeEan13("1234567890128");
   w.text("QR test:").lineFeed();
   w.qr("SHEGA::TEST::" + Date.now(), 6);
-  w.text(divider).lineFeed();
+  w.text(divider$1).lineFeed();
   w.lineFeed(2);
   w.cut(true);
   return w.toUint8Array();
@@ -2494,7 +2499,7 @@ const SHARED_TABLES = [
 ];
 function changeChecksum(change) {
   const canonical = `${change.entity}|${change.entity_uuid}|${change.op}|${JSON.stringify(change.payload)}`;
-  return crypto.createHash("sha256").update(canonical).digest("hex");
+  return crypto$1.createHash("sha256").update(canonical).digest("hex");
 }
 let columnCache = {};
 function columnsOf(entity) {
@@ -2506,7 +2511,7 @@ function columnsOf(entity) {
 function ensureHubDeviceId() {
   const row = dbProxy.prepare("SELECT device_id, pairing_token FROM sync_meta WHERE id = 1").get();
   if (row?.device_id) return row.device_id;
-  const id = crypto.randomUUID();
+  const id = crypto$1.randomUUID();
   const token = generatePairingToken();
   dbProxy.prepare("INSERT OR REPLACE INTO sync_meta (id, device_id, pairing_token, schema_version) VALUES (1, ?, ?, 21)").run(id, token);
   return id;
@@ -2520,7 +2525,7 @@ function getPairingToken() {
 }
 function generatePairingToken() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const bytes = crypto.randomBytes(6);
+  const bytes = crypto$1.randomBytes(6);
   let out = "";
   for (const b of bytes) out += alphabet[b % alphabet.length];
   return out;
@@ -2757,7 +2762,7 @@ function verifyChecksums() {
   const out = {};
   for (const entity of SHARED_TABLES) {
     const rows = dbProxy.prepare(`SELECT uuid, updated_at, row_version, is_deleted FROM ${entity} WHERE is_deleted = 0`).all();
-    const h = crypto.createHash("sha256");
+    const h = crypto$1.createHash("sha256");
     const sorted = rows.slice().sort((a, b) => a.uuid < b.uuid ? -1 : 1);
     for (const r of sorted) {
       h.update(`${entity}|${r.uuid}|${r.updated_at ?? ""}|${r.row_version ?? 0}|${r.is_deleted ?? 0}|`);
@@ -2895,6 +2900,1605 @@ class SyncHub {
   getDeviceId() {
     return this.deviceId || ensureHubDeviceId();
   }
+}
+function openShift(businessId, registerId, cashierId, openingFloat, notes) {
+  const existing = dbProxy.prepare(`
+    SELECT id FROM shifts 
+    WHERE registerId = ? AND status IN ('open', 'mid_audit', 'blind_count')
+  `).get(registerId);
+  if (existing) {
+    throw new Error("Register already has an open shift");
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const result = dbProxy.prepare(`
+    INSERT INTO shifts (businessId, registerId, cashierId, openingFloat, expectedCash, status, openedAt, notes, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
+  `).run(businessId, registerId, cashierId, openingFloat, openingFloat, now, notes || "", now, now);
+  const shiftId = result.lastInsertRowid;
+  dbProxy.prepare(`
+    INSERT INTO shift_transactions (shiftId, saleId, paymentMethod, amount, createdAt)
+    VALUES (?, NULL, 'float', ?, ?)
+  `).run(shiftId, openingFloat, (/* @__PURE__ */ new Date()).toISOString());
+  logger.info(`[Shift] Opened shift ${shiftId} for register ${registerId} by cashier ${cashierId} with float ${openingFloat}`);
+  return shiftId;
+}
+function getOpenShift(registerId) {
+  return dbProxy.prepare(`
+    SELECT * FROM shifts 
+    WHERE registerId = ? AND status IN ('open', 'mid_audit', 'blind_count')
+    ORDER BY openedAt DESC LIMIT 1
+  `).get(registerId);
+}
+function getShiftById$1(shiftId) {
+  return dbProxy.prepare("SELECT * FROM shifts WHERE id = ?").get(shiftId);
+}
+function recordMidShiftAudit(shiftId, countedCash, notes) {
+  const shift = getShiftById$1(shiftId);
+  if (!shift) throw new Error("Shift not found");
+  if (shift.status !== "open") throw new Error("Shift is not open");
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const variance = countedCash - shift.expectedCash;
+  dbProxy.prepare(`
+    UPDATE shifts 
+    SET status = 'mid_audit', 
+        countedCash = ?, 
+        variance = ?, 
+        midAuditAt = ?, 
+        notes = COALESCE(notes || '; ', '') || ?,
+        updatedAt = ?
+    WHERE id = ?
+  `).run(countedCash, variance, now, notes || "", now, shiftId);
+  logger.info(`[Shift] Mid-shift audit for shift ${shiftId}: counted ${countedCash}, variance ${variance}`);
+}
+function recordBlindCount(shiftId, countedCash, notes) {
+  const shift = getShiftById$1(shiftId);
+  if (!shift) throw new Error("Shift not found");
+  if (shift.status !== "open" && shift.status !== "mid_audit") {
+    throw new Error("Shift must be open or in mid-audit for blind count");
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const variance = countedCash - shift.expectedCash;
+  dbProxy.prepare(`
+    UPDATE shifts 
+    SET status = 'blind_count', 
+        countedCash = ?, 
+        variance = ?, 
+        blindCountAt = ?, 
+        notes = COALESCE(notes || '; ', '') || ?,
+        updatedAt = ?
+    WHERE id = ?
+  `).run(countedCash, variance, now, notes || "", now, shiftId);
+  logger.info(`[Shift] Blind count for shift ${shiftId}: counted ${countedCash}, variance ${variance}`);
+}
+function closeShift$1(shiftId, countedCash, cashDrawerCounts, notes) {
+  const shift = getShiftById$1(shiftId);
+  if (!shift) throw new Error("Shift not found");
+  if (shift.status === "closed") throw new Error("Shift already closed");
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const variance = countedCash - shift.expectedCash;
+  calculateShiftTotals(shiftId);
+  dbProxy.prepare(`
+    UPDATE shifts 
+    SET status = 'closed', 
+        countedCash = ?, 
+        variance = ?, 
+        closedAt = ?, 
+        expectedCash = ?,
+        notes = COALESCE(notes || '; ', '') || ?,
+        updatedAt = ?
+    WHERE id = ?
+  `).run(countedCash, variance, now, shift.expectedCash, notes || "", now, shiftId);
+  for (const count of cashDrawerCounts) {
+    dbProxy.prepare(`
+      INSERT INTO shift_cash_counts (shiftId, denomination, count, total, createdAt)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(shiftId, count.denomination, count.count, count.total, (/* @__PURE__ */ new Date()).toISOString());
+  }
+  const summary = generateShiftSummary(shiftId, countedCash, cashDrawerCounts);
+  logger.info(`[Shift] Closed shift ${shiftId}: variance ${variance}`);
+  return summary;
+}
+function calculateShiftTotals(shiftId) {
+  const sales = dbProxy.prepare(`
+    SELECT paymentMethod, COALESCE(SUM(amount), 0) as total, COUNT(*) as count
+    FROM shift_transactions
+    WHERE shiftId = ? AND saleId IS NOT NULL
+    GROUP BY paymentMethod
+  `).all(shiftId);
+  const totals = { cash: 0, card: 0, mobile: 0, total: 0 };
+  const counts = { sales: 0, voids: 0, refunds: 0, returns: 0 };
+  for (const s of sales) {
+    const method = s.paymentMethod?.toLowerCase();
+    if (method === "cash") totals.cash = s.total;
+    else if (method === "card") totals.card = s.total;
+    else if (method === "mobile") totals.mobile = s.total;
+    totals.total += s.total;
+  }
+  const voids = dbProxy.prepare("SELECT COUNT(*) as c FROM sales WHERE shiftId = ? AND status = ?").get(shiftId, "Voided");
+  const refunds = dbProxy.prepare("SELECT COUNT(*) as c FROM returns WHERE shiftId = ?").get(shiftId);
+  counts.voids = voids?.c || 0;
+  counts.refunds = refunds?.c || 0;
+  return { totals, counts };
+}
+function generateShiftSummary(shiftId, countedCash, cashDrawerCounts) {
+  const shift = getShiftById$1(shiftId);
+  const totals = calculateShiftTotals(shiftId);
+  const expected = shift.expectedCash;
+  const variance = countedCash - expected;
+  return {
+    shift,
+    totals: totals.totals,
+    counts: totals.counts,
+    cashDrawer: {
+      expected,
+      counted: countedCash,
+      variance,
+      breakdown: cashDrawerCounts
+    }
+  };
+}
+function getCashDrawerBreakdown(shiftId) {
+  return dbProxy.prepare(`
+    SELECT denomination, count, total
+    FROM shift_cash_counts
+    WHERE shiftId = ?
+    ORDER BY denomination DESC
+  `).all(shiftId);
+}
+function calculateExpectedCash(shiftId) {
+  const shift = getShiftById$1(shiftId);
+  if (!shift) return 0;
+  const cashSales = dbProxy.prepare(`
+    SELECT COALESCE(SUM(amount), 0) as total
+    FROM shift_transactions
+    WHERE shiftId = ? AND paymentMethod = 'cash' AND saleId IS NOT NULL
+  `).get(shiftId);
+  const cashRefunds = dbProxy.prepare(`
+    SELECT COALESCE(SUM(amount), 0) as total
+    FROM shift_transactions st
+    JOIN returns r ON st.saleId = r.saleId
+    WHERE st.shiftId = ? AND st.paymentMethod = 'cash' AND r.refundAmount > 0
+  `).get(shiftId);
+  const cashPaidOut = dbProxy.prepare(`
+    SELECT COALESCE(SUM(amount), 0) as total
+    FROM shift_transactions
+    WHERE shiftId = ? AND paymentMethod = 'cash' AND saleId IS NULL AND amount < 0
+  `).get(shiftId);
+  return (shift.openingFloat || 0) + (cashSales?.total || 0) - (cashRefunds?.total || 0) + (cashPaidOut?.total || 0);
+}
+function addShiftTransaction(shiftId, saleId, paymentMethod, amount) {
+  const result = dbProxy.prepare(`
+    INSERT INTO shift_transactions (shiftId, saleId, paymentMethod, amount, createdAt)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(shiftId, saleId, paymentMethod, amount, (/* @__PURE__ */ new Date()).toISOString());
+  const shift = getShiftById$1(arguments[0]);
+  if (shift && shift.status === "open") {
+    const method = paymentMethod.toLowerCase();
+    if (method === "cash") {
+      dbProxy.prepare("UPDATE shifts SET expectedCash = expectedCash + ? WHERE id = ?").run(amount, shiftId);
+    }
+  }
+  return result.lastInsertRowid;
+}
+function getShiftTransactions(shiftId) {
+  return dbProxy.prepare(`
+    SELECT st.*, s.customerName, s.totalPrice
+    FROM shift_transactions st
+    LEFT JOIN sales s ON st.saleId = s.id
+    WHERE st.shiftId = ?
+    ORDER BY st.createdAt DESC
+  `).all(shiftId);
+}
+function generateShiftReport(shiftId) {
+  const shift = getShiftById$1(shiftId);
+  const transactions = getShiftTransactions(shiftId);
+  const totals = calculateShiftTotals(shiftId);
+  getCashDrawerBreakdown(shiftId);
+  calculateExpectedCash(shiftId);
+  shift.countedCash || 0;
+  const topItems = dbProxy.prepare(`
+    SELECT i.name, SUM(sl.qty) as totalQty, SUM(sl.totalPrice) as totalRevenue
+    FROM sales s
+    JOIN sale_lines sl ON s.id = sl.saleId
+    JOIN items i ON sl.itemId = i.id
+    WHERE s.id IN (SELECT saleId FROM shift_transactions WHERE shiftId = ?)
+    GROUP BY i.id
+    ORDER BY totalQty DESC
+    LIMIT 10
+  `).all(shiftId);
+  const categoryBreakdown = dbProxy.prepare(`
+    SELECT c.name as category, COUNT(*) as salesCount, SUM(sl.totalPrice) as revenue
+    FROM sales s
+    JOIN sale_lines sl ON s.id = sl.saleId
+    JOIN items i ON sl.itemId = i.id
+    JOIN categories c ON i.categoryId = c.id
+    WHERE s.id IN (SELECT saleId FROM shift_transactions WHERE shiftId = ?)
+    GROUP BY c.id
+    ORDER BY revenue DESC
+  `).all(shiftId);
+  return {
+    shift: getShiftById$1(shiftId),
+    transactions,
+    totals: {
+      cash: totals.totals.cash,
+      card: totals.totals.card,
+      mobile: totals.totals.mobile,
+      total: totals.totals.total
+    },
+    counts: totals.counts,
+    cashDrawer: {
+      expected: calculateExpectedCash(shiftId),
+      counted: shift.countedCash || 0,
+      variance: (shift.countedCash || 0) - calculateExpectedCash(shiftId),
+      breakdown: getCashDrawerBreakdown(shiftId)
+    },
+    topItems,
+    categoryBreakdown
+  };
+}
+let reportCounter = 0;
+function generateXReport(businessId, registerId) {
+  const openShift2 = dbProxy.prepare(`
+    SELECT * FROM shifts 
+    WHERE registerId = ? AND status IN ('open', 'mid_audit', 'blind_count')
+    ORDER BY openedAt DESC LIMIT 1
+  `).get(registerId);
+  const shift = openShift2 || { id: 0, registerId, openingFloat: 0, openedAt: (/* @__PURE__ */ new Date()).toISOString() };
+  return generateReportData("X", businessId, shift);
+}
+function generateZReport(businessId, registerId, countedCash, cashDrawerCounts) {
+  const shift = dbProxy.prepare(`
+    SELECT * FROM shifts 
+    WHERE registerId = ? AND status IN ('open', 'mid_audit', 'blind_count')
+    ORDER BY openedAt DESC LIMIT 1
+  `).get(registerId);
+  if (!shift) throw new Error("No open shift to close");
+  closeShiftForReport(shift.id, countedCash);
+  return generateReportData("Z", shift.businessId, shift);
+}
+function closeShiftForReport(shiftId, countedCash, cashDrawerCounts) {
+  dbProxy.prepare("SELECT * FROM shifts WHERE id = ?").get(countedCash);
+  return closeShift(shiftId, countedCash);
+}
+function closeShift(shiftId, countedCash, cashDrawerCounts) {
+  const shift = getShiftById(shiftId);
+  if (!shift) throw new Error("Shift not found");
+  (/* @__PURE__ */ new Date()).toISOString();
+  const variance = countedCash - shift.expectedCash;
+  const tx = dbProxy.transaction(() => {
+    dbProxy.prepare(`
+      UPDATE shifts 
+      SET status = 'closed', 
+          countedCash = ?, 
+          variance = ?, 
+          closedAt = ?, 
+          updatedAt = ?
+      WHERE id = ?
+    `).run(countedCash, variance, (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString(), shiftId);
+  });
+  tx();
+  return { variance, closedAt: (/* @__PURE__ */ new Date()).toISOString() };
+}
+function getShiftById(shiftId) {
+  return dbProxy.prepare("SELECT * FROM shifts WHERE id = ?").get(shiftId);
+}
+function generateReportData(reportType, businessId, shift, isZReport, closeResult) {
+  const business = dbProxy.prepare("SELECT * FROM businesses WHERE id = ?").get(businessId);
+  const settings = dbProxy.prepare("SELECT * FROM settings WHERE key IN (?, ?, ?, ?)").all("tin", "business_name", "address", "phone");
+  const settingsMap = Object.fromEntries(settings.map((s) => [s.key, s.value]));
+  reportCounter++;
+  const reportNumber = reportCounter;
+  const shiftReport = generateShiftReport(shift.id);
+  calculateShiftTotals(shift.id);
+  calculateExpectedCash(shift.id);
+  getCashDrawerBreakdown(shift.id);
+  const expectedCashAmount = calculateExpectedCash(shift.id);
+  const countedCash = shift.countedCash || 0;
+  const variance = countedCash - expectedCashAmount;
+  const taxBreakdown = calculateTaxBreakdown(shift.id);
+  const voids = getVoids(shift.id);
+  const refunds = getRefunds(shift.id);
+  const returns = getReturns(shift.id);
+  const topItems = getTopItems(shift.id);
+  const categoryBreakdown = getCategoryBreakdown(shift.id);
+  const fiscalSignature = generateFiscalSignature(shift.id);
+  return {
+    reportType,
+    reportNumber,
+    businessName: settingsMap?.business_name || business?.businessName || "Shega POS",
+    tin: settingsMap?.tin || "",
+    address: settingsMap?.address || business?.address || "",
+    date: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
+    time: (/* @__PURE__ */ new Date()).toISOString().split("T")[1].substring(0, 8),
+    shift: {
+      id: shift.id,
+      registerId: shift.registerId,
+      cashierId: shift.cashierId,
+      openedAt: shift.openedAt,
+      closedAt: shift.closedAt
+    },
+    totals: {
+      grossSales: shiftReport.totals.subtotal,
+      netSales: shiftReport.totals.total,
+      vat: taxBreakdown.vat15,
+      tot: taxBreakdown.tot2 + taxBreakdown.tot10,
+      discounts: shiftReport.totals.discount,
+      voids: voids.amount,
+      refunds: refunds.amount,
+      cash: shiftReport.totals.cash,
+      card: shiftReport.totals.card,
+      mobile: shiftReport.totals.mobile,
+      total: shiftReport.totals.total
+    },
+    taxBreakdown,
+    paymentBreakdown: {
+      cash: shiftReport.totals.cash,
+      card: shiftReport.totals.card,
+      mobile: shiftReport.totals.mobile,
+      other: 0
+    },
+    voids: { count: voids.count, amount: voids.amount, reasons: voids.reasons },
+    refunds: { count: refunds.count, amount: refunds.amount },
+    returns: { count: returns.count, amount: returns.amount },
+    cashDrawer: {
+      openingFloat: shift.openingFloat,
+      expectedCash: expectedCashAmount,
+      countedCash: shift.countedCash || 0,
+      variance,
+      breakdown: getCashDrawerBreakdown(shift.id)
+    },
+    topItems: topItems.slice(0, 10),
+    categoryBreakdown,
+    fiscalSignature
+  };
+}
+function calculateTaxBreakdown(shiftId) {
+  const sales = dbProxy.prepare(`
+    SELECT sl.*, i.taxType, i.taxRate
+    FROM sales s
+    JOIN sale_lines sl ON s.id = sl.saleId
+    JOIN items i ON sl.itemId = i.id
+    WHERE s.id IN (SELECT saleId FROM shift_transactions WHERE shiftId = ?)
+  `).all(shiftId);
+  let vat15 = 0, tot2 = 0, tot10 = 0, exempt = 0, withholding = 0;
+  for (const line of sales) {
+    const taxType = line.taxType || "VAT";
+    const taxRate = line.taxRate || 0.15;
+    const taxAmount = (line.totalPrice - line.discount) * taxRate;
+    if (taxType === "VAT") vat15 += taxAmount;
+    else if (taxType === "TOT") {
+      if (taxRate >= 0.1) tot10 += taxAmount;
+      else tot2 += taxAmount;
+    } else if (taxType === "EXEMPT") exempt += line.totalPrice - line.discount;
+    else if (taxType === "WHT") withholding += taxAmount;
+  }
+  return { vat15, tot2, tot10, exempt, withholding };
+}
+function getVoids(shiftId) {
+  const voids = dbProxy.prepare(`
+    SELECT COUNT(*) as count, COALESCE(SUM(totalPrice), 0) as amount,
+           GROUP_CONCAT(voidReason) as reasons
+    FROM sales 
+    WHERE id IN (SELECT saleId FROM shift_transactions WHERE shiftId = ?)
+    AND status = 'Voided'
+  `).get(shiftId);
+  return {
+    count: voids?.count || 0,
+    amount: voids?.amount || 0,
+    reasons: voids?.reasons?.split(",").filter(Boolean) || []
+  };
+}
+function getRefunds(shiftId) {
+  const refunds = dbProxy.prepare(`
+    SELECT COUNT(*) as count, COALESCE(SUM(refundAmount), 0) as amount
+    FROM returns 
+    WHERE saleId IN (SELECT saleId FROM shift_transactions WHERE shiftId = ?)
+  `).get(shiftId);
+  return { count: refunds?.count || 0, amount: refunds?.amount || 0 };
+}
+function getReturns(shiftId) {
+  const returns = dbProxy.prepare(`
+    SELECT COUNT(*) as count, COALESCE(SUM(refundAmount), 0) as amount
+    FROM returns 
+    WHERE saleId IN (SELECT saleId FROM shift_transactions WHERE shiftId = ?)
+  `).get(shiftId);
+  return { count: returns?.count || 0, amount: returns?.amount || 0 };
+}
+function getTopItems(shiftId) {
+  return dbProxy.prepare(`
+    SELECT i.name, SUM(sl.qty) as totalQty, SUM(sl.totalPrice) as totalRevenue
+    FROM sales s
+    JOIN sale_lines sl ON s.id = sl.saleId
+    JOIN items i ON sl.itemId = i.id
+    WHERE s.id IN (SELECT saleId FROM shift_transactions WHERE shiftId = ?)
+    GROUP BY i.id
+    ORDER BY totalQty DESC
+    LIMIT 20
+  `).all(shiftId);
+}
+function getCategoryBreakdown(shiftId) {
+  return dbProxy.prepare(`
+    SELECT c.name as category, COUNT(*) as salesCount, SUM(sl.totalPrice) as revenue
+    FROM sales s
+    JOIN sale_lines sl ON s.id = sl.saleId
+    JOIN items i ON sl.itemId = i.id
+    JOIN categories c ON i.categoryId = c.id
+    WHERE s.id IN (SELECT saleId FROM shift_transactions WHERE shiftId = ?)
+    GROUP BY c.id
+    ORDER BY revenue DESC
+  `).all(shiftId);
+}
+function generateFiscalSignature(shiftId) {
+  return {
+    fiscalNumber: `F-${String(shiftId).padStart(8, "0")}`,
+    signature: null
+  };
+}
+function printFiscalReport(report, escposDriver) {
+  const { EscposWriter: EscposWriter2 } = require("../escpos");
+  const w = new EscposWriter2().init();
+  const WIDTH2 = 42;
+  function money2(n) {
+    return `ETB ${(Math.round(n * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  const divider2 = "-".repeat(WIDTH2);
+  w.align(1).bold(true).size(2, 2).text(report.reportType === "Z" ? "Z-REPORT" : "X-REPORT").lineFeed().size(1, 1).bold(false);
+  w.align(1).text(report.businessName.slice(0, WIDTH2)).lineFeed();
+  if (report.tin) w.text(`TIN: ${report.tin}`).lineFeed();
+  if (report.address) w.align(1).text(report.address.slice(0, WIDTH2)).lineFeed().align(0);
+  w.text(`Date: ${report.date}  Time: ${report.time}`).lineFeed();
+  w.text(`Report #${report.reportNumber}`).lineFeed();
+  w.text(divider2).lineFeed();
+  w.text(`Shift: ${report.shift.id}  Register: ${report.shift.registerId}`).lineFeed();
+  w.text(`Cashier: ${report.shift.cashierId}`).lineFeed();
+  w.text(`Opened: ${report.shift.openedAt?.slice(0, 16).replace("T", " ")}`).lineFeed();
+  if (report.shift.closedAt) w.text(`Closed: ${report.shift.closedAt.slice(0, 16).replace("T", " ")}`).lineFeed();
+  w.text(divider2).lineFeed();
+  w.bold(true).text("SALES SUMMARY").lineFeed().bold(false);
+  w.column("Gross Sales", money2(report.totals.grossSales), WIDTH2);
+  w.column("Discounts", money2(-report.totals.discounts), WIDTH2);
+  w.column("Net Sales", money2(report.totals.netSales), WIDTH2);
+  w.text(divider2).lineFeed();
+  w.bold(true).text("TAX BREAKDOWN").lineFeed().bold(false);
+  if (report.taxBreakdown.vat15 > 0) w.column("VAT 15%", money2(report.taxBreakdown.vat15), WIDTH2);
+  if (report.taxBreakdown.tot2 > 0) w.column("TOT 2%", money2(report.taxBreakdown.tot2), WIDTH2);
+  if (report.taxBreakdown.tot10 > 0) w.column("TOT 10%", money2(report.taxBreakdown.tot10), WIDTH2);
+  if (report.taxBreakdown.exempt > 0) w.column("Exempt", money2(report.taxBreakdown.exempt), WIDTH2);
+  if (report.taxBreakdown.withholding > 0) w.column("WHT", money2(report.taxBreakdown.withholding), WIDTH2);
+  w.text(divider2).lineFeed();
+  w.bold(true).column("NET SALES", money2(report.totals.netSales), WIDTH2).bold(false).lineFeed();
+  w.text(divider2).lineFeed();
+  w.bold(true).text("PAYMENT METHODS").lineFeed().bold(false);
+  w.column("Cash", money2(report.paymentBreakdown.cash), WIDTH2);
+  w.column("Card", money2(report.paymentBreakdown.card), WIDTH2);
+  w.column("Mobile", money2(report.paymentBreakdown.mobile), WIDTH2);
+  w.text(divider2).lineFeed();
+  w.column("Voids", `${report.voids.count} (${money2(-report.voids.amount)})`, WIDTH2);
+  w.column("Refunds", `${report.refunds.count} (${money2(-report.refunds.amount)})`, WIDTH2);
+  w.column("Returns", `${report.returns.count} (${money2(-report.returns.amount)})`, WIDTH2);
+  w.text(divider2).lineFeed();
+  w.bold(true).text("CASH DRAWER").lineFeed().bold(false);
+  w.column("Opening Float", money2(report.cashDrawer.openingFloat), WIDTH2);
+  w.column("Expected Cash", money2(report.cashDrawer.expectedCash), WIDTH2);
+  w.column("Counted Cash", money2(report.cashDrawer.countedCash), WIDTH2);
+  w.column("Variance", money2(report.cashDrawer.variance), WIDTH2);
+  w.text(divider2).lineFeed();
+  for (const c of report.cashDrawer.breakdown) {
+    w.column(`${c.denomination} x ${c.count}`, money2(c.total), WIDTH2);
+  }
+  w.text(divider2).lineFeed();
+  if (report.topItems.length > 0) {
+    w.bold(true).text("TOP ITEMS").lineFeed().bold(false);
+    for (const item of report.topItems.slice(0, 5)) {
+      w.text(`${item.name} x${item.totalQty} - ${money2(item.totalRevenue)}`).lineFeed();
+    }
+    w.text(divider2).lineFeed();
+  }
+  if (report.categoryBreakdown.length > 0) {
+    w.bold(true).text("BY CATEGORY").lineFeed().bold(false);
+    for (const cat of report.categoryBreakdown.slice(0, 10)) {
+      w.column(cat.category, money2(cat.revenue), WIDTH2);
+    }
+    w.text(divider2).lineFeed();
+  }
+  w.text(`Fiscal #: ${report.fiscalSignature.fiscalNumber}`).lineFeed();
+  if (report.fiscalSignature.signature) {
+    w.text(`Sig: ${report.fiscalSignature.signature}`).lineFeed();
+  }
+  w.text(divider2).lineFeed();
+  w.align(1).text("Thank you!").lineFeed(2).align(0);
+  w.cut(true);
+  return w.toUint8Array();
+}
+function createLedgerEntry(params) {
+  (/* @__PURE__ */ new Date()).toISOString();
+  crypto.randomUUID();
+  const lastEntry = dbProxy.prepare(`
+    SELECT balance FROM ledger_entries 
+    WHERE businessId = ? 
+    ORDER BY id DESC LIMIT 1
+  `).get(arguments[0].businessId);
+  const currentBalance = lastEntry?.balance || 0;
+  const newBalance = currentBalance + arguments[0].amount;
+  const entry = {
+    businessId: arguments[0].businessId,
+    shiftId: arguments[0].shiftId || null,
+    type: arguments[0].type,
+    referenceId: arguments[0].referenceId || null,
+    referenceType: arguments[0].referenceType || null,
+    amount: arguments[0].amount,
+    balance: newBalance,
+    description: arguments[0].description,
+    metadata: JSON.stringify(arguments[0].metadata || {}),
+    createdBy: arguments[0].createdBy || null,
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    uuid: crypto.randomUUID(),
+    isReversal: false,
+    originalEntryId: null
+  };
+  const result = dbProxy.prepare(`
+    INSERT INTO ledger_entries (
+      businessId, shiftId, type, referenceId, referenceType,
+      amount, balance, description, metadata, createdBy,
+      createdAt, uuid, isReversal, originalEntryId
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    entry.businessId,
+    entry.shiftId,
+    entry.type,
+    entry.referenceId,
+    entry.referenceType,
+    entry.amount,
+    entry.balance,
+    entry.description,
+    entry.metadata,
+    entry.createdBy,
+    entry.createdAt,
+    entry.uuid,
+    entry.isReversal,
+    entry.originalEntryId
+  );
+  const entryId = result.lastInsertRowid;
+  logger.info(`[Ledger] Created entry ${entryId}: ${entry.type} ${entry.amount > 0 ? "+" : ""}${entry.amount} (balance: ${newBalance})`);
+  return { ...entry, id: entryId };
+}
+function reverseEntry(request) {
+  const original = dbProxy.prepare("SELECT * FROM ledger_entries WHERE id = ?").get(request.entryId);
+  if (!original) throw new Error("Original entry not found");
+  if (original.isReversal) throw new Error("Entry already reversed");
+  if (original.businessId !== request.performedBy) ;
+  const reversalAmount = -original.amount;
+  const reversalDescription = `REVERSAL: ${original.description} (Reason: ${request.reason})`;
+  const reversal = createLedgerEntry({
+    businessId: original.businessId,
+    shiftId: original.shiftId,
+    type: original.type + "_REVERSAL",
+    referenceId: original.referenceId,
+    referenceType: original.referenceType,
+    amount: reversalAmount,
+    description: reversalDescription,
+    metadata: {
+      originalEntryId: original.id,
+      reversalReason: request.reason,
+      reversedBy: request.performedBy
+    },
+    createdBy: request.performedBy
+  });
+  dbProxy.prepare("UPDATE ledger_entries SET isReversal = 1 WHERE id = ?").run(original.id);
+  logger.info(`[Ledger] Reversed entry ${original.id} with reversal ${reversal.id}`);
+  return reversal;
+}
+function getLedgerBalance(businessId) {
+  const result = dbProxy.prepare(`
+    SELECT 
+      SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as credits,
+      SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as debits,
+      MAX(balance) as balance
+    FROM ledger_entries WHERE businessId = ?
+  `).get(businessId);
+  return {
+    credits: result?.credits || 0,
+    debits: Math.abs(result?.debits || 0),
+    balance: result?.balance || 0
+  };
+}
+function getLedgerEntries(businessId, options) {
+  let query = "SELECT * FROM ledger_entries WHERE businessId = ?";
+  const params = [businessId];
+  if (options?.shiftId) {
+    query += " AND shiftId = ?";
+    params.push(options.shiftId);
+  }
+  if (options?.type) {
+    query += " AND type = ?";
+    params.push(options.type);
+  }
+  if (options?.fromDate) {
+    query += " AND createdAt >= ?";
+    params.push(options.fromDate);
+  }
+  if (options?.toDate) {
+    query += " AND createdAt <= ?";
+    params.push(options.toDate);
+  }
+  query += " ORDER BY createdAt DESC";
+  if (options?.limit) {
+    query += " LIMIT ?";
+    params.push(options.limit);
+  }
+  if (options?.offset) {
+    query += " OFFSET ?";
+    params.push(options.offset);
+  }
+  return dbProxy.prepare(query).all(...params);
+}
+function getShiftLedgerSummary(shiftId) {
+  const entries = dbProxy.prepare(`
+    SELECT type, COUNT(*) as count, SUM(amount) as total
+    FROM ledger_entries
+    WHERE shiftId = ?
+    GROUP BY type
+    ORDER BY total DESC
+  `).all(shiftId);
+  const summary = {
+    totalCredits: 0,
+    totalDebits: 0,
+    netAmount: 0,
+    byType: {}
+  };
+  for (const e of entries) {
+    if (e.total > 0) summary.totalCredits += e.total;
+    else summary.totalDebits += Math.abs(e.total);
+    summary.byType[e.type] = { count: e.count, total: e.total };
+  }
+  summary.netAmount = summary.totalCredits - summary.totalDebits;
+  return summary;
+}
+function verifyLedgerIntegrity(businessId) {
+  const errors = [];
+  const entries = dbProxy.prepare(`
+    SELECT id, amount, balance, createdAt 
+    FROM ledger_entries 
+    WHERE businessId = ? 
+    ORDER BY id ASC
+  `).all(businessId);
+  let runningBalance = 0;
+  for (let i = 0; i < entries.length; i++) {
+    runningBalance += entries[i].amount;
+    if (Math.abs(runningBalance - entries[i].balance) > 0.01) {
+      errors.push(`Balance mismatch at entry ${entries[i].id}: expected ${runningBalance}, got ${entries[i].balance}`);
+    }
+  }
+  const reversals = dbProxy.prepare(`
+    SELECT * FROM ledger_entries 
+    WHERE businessId = ? AND isReversal = 1
+  `).all(businessId);
+  for (const rev of reversals) {
+    const original = dbProxy.prepare("SELECT * FROM ledger_entries WHERE id = ?").get(
+      JSON.parse(rev.metadata).originalEntryId
+    );
+    if (!original) {
+      errors.push(`Reversal ${rev.id} references non-existent original entry`);
+    }
+  }
+  return { valid: errors.length === 0, errors };
+}
+const TAX_RATES = {
+  VAT: { type: "VAT", rate: 0.15, description: "Value Added Tax 15%", applicableTo: "sales" },
+  TOT_2: { type: "TOT_2", rate: 0.02, description: "Turnover Tax 2%", applicableTo: "sales" },
+  TOT_10: { type: "TOT_10", rate: 0.1, description: "Turnover Tax 10%", applicableTo: "sales" },
+  EXEMPT: { type: "EXEMPT", rate: 0, description: "Tax Exempt", applicableTo: "sales" },
+  WHT_2: { type: "WHT_2", rate: 0.02, description: "Withholding Tax 2%", applicableTo: "payments" },
+  WHT_3: { type: "WHT_3", rate: 0.03, description: "Withholding Tax 3%", applicableTo: "payments" }
+};
+function calculateTax(lines) {
+  const result = {
+    lines: [],
+    subtotal: 0,
+    totalDiscount: 0,
+    totalTax: 0,
+    total: 0,
+    taxBreakdown: {
+      VAT: 0,
+      TOT_2: 0,
+      TOT_10: 0,
+      WHT_2: 0,
+      WHT_3: 0,
+      EXEMPT: 0
+    }
+  };
+  for (const line of lines) {
+    const taxRate = TAX_RATES[line.taxType].rate;
+    const qty = line.qty || 0;
+    const unitPrice = line.unitPrice || 0;
+    const discount = line.discount || 0;
+    const gross = qty * unitPrice;
+    const discountAmount = discount;
+    const net2 = gross - discountAmount;
+    let tax = 0;
+    if (line.isInclusive) {
+      tax = gross - gross / (1 + taxRate);
+    } else {
+      tax = net2 * taxRate;
+    }
+    const total = net2 + tax;
+    result.lines.push({
+      qty,
+      unitPrice,
+      discount: discountAmount,
+      taxType: line.taxType,
+      taxRate,
+      gross,
+      discountAmount,
+      net: net2,
+      tax,
+      total
+    });
+    result.subtotal += gross;
+    result.totalDiscount += discountAmount;
+    result.totalTax += tax;
+    result.total += total;
+    switch (line.taxType) {
+      case "VAT":
+        result.taxBreakdown.VAT += tax;
+        break;
+      case "TOT_2":
+        result.taxBreakdown.TOT_2 += tax;
+        break;
+      case "TOT_10":
+        result.taxBreakdown.TOT_10 += tax;
+        break;
+      case "WHT_2":
+        result.taxBreakdown.WHT_2 += tax;
+        break;
+      case "WHT_3":
+        result.taxBreakdown.WHT_3 += tax;
+        break;
+      case "EXEMPT":
+        result.taxBreakdown.EXEMPT += tax;
+        break;
+    }
+  }
+  return result;
+}
+function calculateWHT(input) {
+  if (input.isExempt) {
+    return {
+      whtType: "EXEMPT",
+      rate: 0,
+      baseAmount: input.paymentAmount,
+      whtAmount: 0,
+      netPayment: input.paymentAmount,
+      isExempt: true,
+      exemptionCertificate: input.exemptionCertificate
+    };
+  }
+  let rate = 0;
+  let whtType = "WHT_2";
+  if (input.supplierCategory === "non-resident") {
+    rate = 0.1;
+    whtType = "WHT_3";
+  } else {
+    switch (input.paymentType) {
+      case "service":
+        rate = 0.02;
+        whtType = "WHT_2";
+        break;
+      case "goods":
+        rate = 0.02;
+        whtType = "WHT_2";
+        break;
+      case "rent":
+        rate = 0.1;
+        whtType = "WHT_3";
+        break;
+      case "interest":
+        rate = 0.05;
+        whtType = "WHT_3";
+        break;
+      case "dividend":
+        rate = 0.1;
+        whtType = "WHT_3";
+        break;
+      case "royalty":
+        rate = 0.05;
+        whtType = "WHT_3";
+        break;
+      default:
+        rate = 0.02;
+        whtType = "WHT_2";
+    }
+  }
+  const baseAmount = input.paymentAmount;
+  const whtAmount = Math.round(baseAmount * rate * 100) / 100;
+  const netPayment = baseAmount - whtAmount;
+  return {
+    whtType,
+    rate,
+    baseAmount,
+    whtAmount,
+    netPayment,
+    isExempt: false
+  };
+}
+function calculateVatReturn(input) {
+  const netVat = input.outputVat - input.inputVat + (input.adjustments || 0);
+  let status = "nil";
+  if (netVat > 0) status = "payable";
+  else if (netVat < 0) status = "refundable";
+  return {
+    period: input.period,
+    outputVat: input.outputVat,
+    inputVat: input.inputVat,
+    netVat,
+    adjustments: input.adjustments || 0,
+    payable: Math.max(0, netVat),
+    status
+  };
+}
+function calculateTotReturn(input) {
+  const taxRate = TAX_RATES[input.taxType].rate;
+  const taxDue = Math.round(input.turnover * taxRate * 100) / 100;
+  return {
+    period: input.period,
+    turnover: input.turnover,
+    taxRate,
+    taxDue
+  };
+}
+function calculateMAT(grossTurnover) {
+  return Math.round(grossTurnover * 0.025 * 100) / 100;
+}
+function calculateAdvanceTax(estimatedAnnualTax) {
+  return Math.round(estimatedAnnualTax * 0.25 * 100) / 100;
+}
+function calculatePAYE(input) {
+  const brackets = [
+    { max: 600, rate: 0 },
+    { max: 1650, rate: 0.1 },
+    { max: 3200, rate: 0.15 },
+    { max: 5250, rate: 0.2 },
+    { max: 7800, rate: 0.25 },
+    { max: 10900, rate: 0.3 },
+    { max: Infinity, rate: 0.35 }
+  ];
+  const pensionContribution = Math.min(input.grossSalary * 0.07, 5e3);
+  const taxableIncome = input.grossSalary - input.allowances - pensionContribution;
+  let remainingIncome = Math.max(0, taxableIncome);
+  let paye = 0;
+  const breakdown = [];
+  for (const bracket of brackets) {
+    if (remainingIncome <= 0) break;
+    const previousMax = brackets[brackets.indexOf(bracket) - 1]?.max || 0;
+    const bracketWidth = bracket.max - previousMax;
+    const taxableInBracket = Math.min(remainingIncome, bracketWidth);
+    if (taxableInBracket > 0) {
+      const tax = Math.round(taxableInBracket * bracket.rate * 100) / 100;
+      paye += tax;
+      breakdown.push({
+        bracket: `ETB ${previousMax + 1} - ${bracket.max === Infinity ? "∞" : bracket.max}`,
+        rate: bracket.rate * 100,
+        amount: tax
+      });
+      remainingIncome -= taxableInBracket;
+    }
+  }
+  const dependentDeduction = Math.min(input.dependents * 150, paye * 0.5);
+  paye = Math.max(0, paye - dependentDeduction);
+  if (dependentDeduction > 0) {
+    breakdown.push({
+      bracket: "Dependent deduction",
+      rate: 0,
+      amount: -dependentDeduction
+    });
+  }
+  const netSalary = input.grossSalary - pensionContribution - paye;
+  return {
+    grossSalary: input.grossSalary,
+    taxableIncome,
+    paye,
+    netSalary,
+    pensionContribution,
+    breakdown
+  };
+}
+function calculatePension(input) {
+  const employeeRate = input.employeeRate || 0.07;
+  const employerRate = input.employerRate || 0.11;
+  const cap = input.cap || 5e3;
+  let employeeContribution = Math.round(input.grossSalary * employeeRate * 100) / 100;
+  let employerContribution = Math.round(input.grossSalary * employerRate * 100) / 100;
+  let capped = false;
+  if (employeeContribution > cap) {
+    employeeContribution = cap;
+    capped = true;
+  }
+  if (employerContribution > cap) {
+    employerContribution = cap;
+    capped = true;
+  }
+  return {
+    employeeContribution,
+    employerContribution,
+    totalContribution: employeeContribution + employerContribution,
+    capped
+  };
+}
+function generateMorQrPayload(data) {
+  const formatAmount2 = (amount) => {
+    return (Math.round(amount * 100) / 100).toFixed(2);
+  };
+  const parts = [
+    data.tin.padStart(10, "0"),
+    // TIN: 10 digits, zero-padded
+    data.invoiceNo,
+    // Invoice number
+    data.date,
+    // YYYY-MM-DD
+    formatAmount2(data.totalAmount),
+    // Total amount
+    formatAmount2(data.vatAmount),
+    // VAT amount
+    formatAmount2(data.totAmount || 0),
+    // TOT amount (0 if not applicable)
+    formatAmount2(data.whtAmount || 0)
+    // WHT amount (0 if not applicable)
+  ];
+  return parts.join("|");
+}
+const WIDTH = 42;
+function money(n) {
+  return `ETB ${(Math.round(n * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function padRight(s, w) {
+  if (s.length >= w) return s.slice(0, w);
+  return s + " ".repeat(w - s.length);
+}
+const divider = "-".repeat(WIDTH);
+function buildMorReceipt(input) {
+  const w = new EscposWriter().init();
+  w.align(1).bold(true).size(2, 2).text("SALES RECEIPT").lineFeed().size(1, 1).bold(false).lineFeed();
+  w.align(1).bold(true).text(input.businessName.slice(0, WIDTH)).lineFeed().bold(false);
+  if (input.address) w.align(1).text(input.address.slice(0, WIDTH)).lineFeed().align(0);
+  if (input.phone) w.text(`Tel: ${input.phone}`).lineFeed();
+  w.text(`TIN: ${input.tin}`).lineFeed();
+  w.text(divider).lineFeed();
+  w.text(`Invoice: ${input.invoiceNo}`).lineFeed();
+  w.text(`Date: ${input.date}  Time: ${input.time}`).lineFeed();
+  w.text(`Cashier: ${input.cashier}`).lineFeed();
+  w.text(divider).lineFeed();
+  for (const item of input.items) {
+    const lineTotal = item.qty * item.unitPrice - (item.discount || 0);
+    w.text(padRight(item.name.slice(0, 28), 28)).text(padRight(String(item.qty), 4)).text(padRight(item.unit.slice(0, 3), 4)).text(money(lineTotal).padStart(6)).lineFeed();
+    if (item.discount && item.discount > 0) {
+      w.text(`  Discount: ${money(item.discount)}`).lineFeed();
+    }
+    w.text(`  @ ${money(item.unitPrice)} (${item.taxType} ${(item.taxRate * 100).toFixed(0)}%)`).lineFeed();
+  }
+  w.text(divider).lineFeed();
+  w.column("Subtotal", money(input.subtotal), WIDTH);
+  if (input.discount > 0) w.column("Discount", `-${money(input.discount)}`, WIDTH);
+  if (input.vatAmount > 0) w.column("VAT 15%", money(input.vatAmount), WIDTH);
+  if (input.totAmount > 0) w.column("TOT", money(input.totAmount), WIDTH);
+  w.text(divider).lineFeed();
+  w.bold(true).size(2, 2).column("TOTAL", money(input.total), WIDTH).size(1, 1).bold(false).lineFeed();
+  w.text(divider).lineFeed();
+  w.column("Payment", input.paymentMethod, WIDTH);
+  if (input.paid > 0) w.column("Paid", money(input.paid), WIDTH);
+  if (input.change > 0) w.column("Change", money(input.change), WIDTH);
+  w.text(divider).lineFeed();
+  const qrPayload = generateMorQrPayload({
+    tin: input.tin,
+    invoiceNo: input.invoiceNo,
+    date: input.date,
+    totalAmount: input.total,
+    vatAmount: input.vatAmount,
+    totAmount: input.totAmount
+  });
+  w.align(1).text("MoR QR Code:").lineFeed();
+  w.qr(qrPayload, 6, 1);
+  w.lineFeed();
+  w.text(`TIN: ${input.tin} | Inv: ${input.invoiceNo} | ${input.date}`).lineFeed();
+  w.text(`Total: ${money(input.total)} | VAT: ${money(input.vatAmount)}`).lineFeed();
+  w.lineFeed();
+  w.text(divider).lineFeed();
+  w.align(1).text("Thank you for your business!").lineFeed(2).align(0);
+  w.text("This receipt is valid for tax purposes").lineFeed();
+  w.text(`Fiscal Sign: F-${String(Date.now()).slice(-8)}`).lineFeed();
+  w.cut(true);
+  return w.toUint8Array();
+}
+function validateMorQrPayload(payload) {
+  const errors = [];
+  const parts = payload.split("|");
+  if (parts.length !== 7) {
+    errors.push(`Expected 7 parts, got ${parts.length}`);
+    return { valid: false, errors };
+  }
+  const [tin, invoiceNo, date, totalAmount, vatAmount, totAmount, whtAmount] = parts;
+  if (!/^\d{10}$/.test(tin)) {
+    errors.push("TIN must be 10 digits");
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    errors.push("Date must be YYYY-MM-DD format");
+  } else {
+    const d = new Date(date);
+    if (isNaN(d.getTime())) {
+      errors.push("Invalid date");
+    }
+  }
+  const amountFields = [
+    { name: "Total", value: totalAmount },
+    { name: "VAT", value: vatAmount },
+    { name: "TOT", value: totAmount },
+    { name: "WHT", value: whtAmount }
+  ];
+  for (const field of amountFields) {
+    if (!/^\d+\.\d{2}$/.test(field.value)) {
+      errors.push(`${field.name} amount must have 2 decimal places`);
+    }
+    const val = parseFloat(field.value);
+    if (isNaN(val) || val < 0) {
+      errors.push(`${field.name} amount must be a positive number`);
+    }
+  }
+  const total = parseFloat(totalAmount);
+  const vat = parseFloat(vatAmount);
+  const tot = parseFloat(totAmount);
+  const wht = parseFloat(whtAmount);
+  const net2 = total - vat - tot - wht;
+  if (net2 < -0.01) {
+    errors.push("Total amount less than sum of taxes");
+  }
+  return { valid: errors.length === 0, errors };
+}
+async function printMorReceipt(escposDriver, input) {
+  const receiptData = buildMorReceipt(input);
+  await escposDriver.write(receiptData);
+}
+const CASH_TRANSACTION_LIMIT = 5e4;
+function checkCashTransactionLimit(context) {
+  if (context.paymentMethod === "cash" && context.amount && context.amount > CASH_TRANSACTION_LIMIT) {
+    return {
+      passed: false,
+      message: `Cash transaction of ${context.amount} ETB exceeds the legal limit of ${CASH_TRANSACTION_LIMIT} ETB. Digital payment required.`,
+      code: "CASH_LIMIT_EXCEEDED",
+      severity: "blocking",
+      remediation: "Use digital payment (Telebirr, CBE Birr, Card) for amounts over 50,000 ETB"
+    };
+  }
+  return { passed: true, message: "Cash transaction within limit", code: "CASH_LIMIT_OK", severity: "warning" };
+}
+function checkDigitalPaymentRequired(context) {
+  if (context.amount && context.amount > CASH_TRANSACTION_LIMIT && context.paymentMethod === "cash") {
+    return {
+      passed: false,
+      message: `Transactions over ${CASH_TRANSACTION_LIMIT} ETB require digital payment (Telebirr, CBE Birr, Card)`,
+      code: "DIGITAL_PAYMENT_REQUIRED",
+      severity: "blocking",
+      remediation: "Select Telebirr, CBE Birr, or Card payment method"
+    };
+  }
+  return { passed: true, message: "Payment method compliant", code: "PAYMENT_OK", severity: "warning" };
+}
+function checkMATCompliance(context) {
+  if (context.amount && context.amount > 1e6) {
+    return {
+      passed: true,
+      message: "Business may be subject to Minimum Alternative Tax (2.5% of turnover)",
+      code: "MAT_WARNING",
+      severity: "warning",
+      remediation: "Ensure MAT is calculated and paid quarterly"
+    };
+  }
+  return { passed: true, message: "MAT check passed", code: "MAT_OK", severity: "warning" };
+}
+function checkAdvanceTaxCompliance(context) {
+  const now = /* @__PURE__ */ new Date();
+  Math.floor(now.getMonth() / 3) + 1;
+  const quarterEndMonths = [3, 6, 9, 12];
+  const isQuarterEnd = quarterEndMonths.includes(now.getMonth() + 1);
+  if (isQuarterEnd && now.getDate() > 25) {
+    return {
+      passed: true,
+      message: "Quarterly advance tax (25% of estimated annual tax) due this month",
+      code: "ADVANCE_TAX_DUE",
+      severity: "warning",
+      remediation: "Calculate and pay 25% of estimated annual tax before quarter end"
+    };
+  }
+  return { passed: true, message: "Advance tax not due", code: "ADVANCE_TAX_OK", severity: "warning" };
+}
+function validateTin(tin) {
+  if (!tin) {
+    return {
+      passed: false,
+      message: "TIN is required",
+      code: "TIN_MISSING",
+      severity: "error",
+      remediation: "Provide valid 10-digit TIN"
+    };
+  }
+  if (!/^\d{10}$/.test(tin)) {
+    return {
+      passed: false,
+      message: "TIN must be 10 digits",
+      code: "TIN_INVALID_FORMAT",
+      severity: "error",
+      remediation: "Provide valid 10-digit TIN"
+    };
+  }
+  const digits = tin.split("").map(Number);
+  const sum = digits.reduce((acc, d, i) => acc + d * (i % 2 === 0 ? 1 : 2), 0);
+  if (sum % 10 !== 0) {
+    return {
+      passed: false,
+      message: "TIN checksum validation failed",
+      code: "TIN_INVALID_CHECKSUM",
+      severity: "warning",
+      remediation: "Verify TIN with Ministry of Revenues"
+    };
+  }
+  return { passed: true, message: "TIN valid", code: "TIN_VALID", severity: "warning" };
+}
+function checkBuyerTinRequired(context) {
+  if (context.amount && context.amount > 1e4 && !context.customerTin) {
+    return {
+      passed: false,
+      message: "Buyer TIN required for transactions over 10,000 ETB",
+      code: "BUYER_TIN_REQUIRED",
+      severity: "blocking",
+      remediation: "Collect buyer TIN before completing sale"
+    };
+  }
+  return { passed: true, message: "Buyer TIN not required", code: "BUYER_TIN_OK", severity: "warning" };
+}
+function checkFiscalReceiptRequirements(context) {
+  if (!context.items || context.items.length === 0) {
+    return {
+      passed: false,
+      message: "Receipt must contain at least one item",
+      code: "EMPTY_RECEIPT",
+      severity: "blocking",
+      remediation: "Add at least one item to the receipt"
+    };
+  }
+  for (const item of context.items) {
+    if (!item.qty || item.qty <= 0) {
+      return {
+        passed: false,
+        message: "All items must have quantity > 0",
+        code: "INVALID_QUANTITY",
+        severity: "blocking",
+        remediation: "Set valid quantity for all items"
+      };
+    }
+    if (!item.unitPrice || item.unitPrice <= 0) {
+      return {
+        passed: false,
+        message: "All items must have unit price > 0",
+        code: "INVALID_PRICE",
+        severity: "blocking",
+        remediation: "Set valid price for all items"
+      };
+    }
+    if (!item.taxType) {
+      return {
+        passed: false,
+        message: "All items must have a tax type (VAT, TOT, EXEMPT)",
+        code: "MISSING_TAX_TYPE",
+        severity: "blocking",
+        remediation: "Assign tax type to all items"
+      };
+    }
+  }
+  return { passed: true, message: "Receipt requirements met", code: "RECEIPT_OK", severity: "warning" };
+}
+function checkShiftCompliance(context) {
+  if (!context.shiftId) {
+    return {
+      passed: false,
+      message: "No active shift. Open a shift before processing sales.",
+      code: "NO_ACTIVE_SHIFT",
+      severity: "blocking",
+      remediation: "Open a shift before processing transactions"
+    };
+  }
+  return { passed: true, message: "Shift compliance OK", code: "SHIFT_OK", severity: "warning" };
+}
+function checkStockCompliance(context) {
+  if (!context.items) return { passed: true, message: "No items to check", code: "STOCK_OK", severity: "warning" };
+  for (const item of context.items) {
+    if (item.qty <= 0) {
+      return {
+        passed: false,
+        message: "Sale quantity must be positive",
+        code: "INVALID_QUANTITY",
+        severity: "blocking",
+        remediation: "Enter valid sale quantity"
+      };
+    }
+  }
+  return { passed: true, message: "Stock compliance OK", code: "STOCK_OK", severity: "warning" };
+}
+function runComplianceChecks(context, rules = DEFAULT_COMPLIANCE_RULES) {
+  const results = [];
+  let blocked = false;
+  for (const rule of rules) {
+    try {
+      const result = rule.check(context);
+      results.push(result);
+      if (!result.passed && result.severity === "blocking") {
+        blocked = true;
+      }
+    } catch (e) {
+      logger.error(`Compliance check ${rule.id} failed:`, e);
+      results.push({
+        passed: false,
+        message: `Compliance check failed: ${e.message}`,
+        code: "CHECK_ERROR",
+        severity: "error"
+      });
+    }
+  }
+  return {
+    passed: !blocked,
+    results,
+    blocked
+  };
+}
+const DEFAULT_COMPLIANCE_RULES = [
+  {
+    id: "cash_limit",
+    name: "Cash Transaction Limit",
+    description: "Enforce ETB 50,000 cash transaction limit",
+    severity: "blocking",
+    check: checkCashTransactionLimit
+  },
+  {
+    id: "digital_payment",
+    name: "Digital Payment Required",
+    description: "Enforce digital payment for transactions over 50,000 ETB",
+    severity: "blocking",
+    check: checkDigitalPaymentRequired
+  },
+  {
+    id: "buyer_tin",
+    name: "Buyer TIN Required",
+    description: "Require buyer TIN for transactions over 10,000 ETB",
+    severity: "blocking",
+    check: checkBuyerTinRequired
+  },
+  {
+    id: "fiscal_receipt",
+    name: "Fiscal Receipt Requirements",
+    description: "Ensure receipt has all required fields",
+    severity: "blocking",
+    check: checkFiscalReceiptRequirements
+  },
+  {
+    id: "shift_compliance",
+    name: "Shift Compliance",
+    description: "Ensure active shift before processing",
+    severity: "blocking",
+    check: checkShiftCompliance
+  },
+  {
+    id: "stock_compliance",
+    name: "Stock Compliance",
+    description: "Validate stock levels for sale items",
+    severity: "blocking",
+    check: checkStockCompliance
+  },
+  {
+    id: "mat_warning",
+    name: "MAT Warning",
+    description: "Minimum Alternative Tax awareness",
+    severity: "warning",
+    check: checkMATCompliance
+  },
+  {
+    id: "advance_tax",
+    name: "Advance Tax Reminder",
+    description: "Quarterly advance tax reminder",
+    severity: "warning",
+    check: checkAdvanceTaxCompliance
+  }
+];
+function logComplianceEvent(businessId, eventType, details, userId) {
+  ({
+    details: JSON.stringify(details),
+    timestamp: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  const db2 = require("../database").default;
+  db2.prepare(`
+    INSERT INTO compliance_audit_log (businessId, eventType, details, userId, timestamp)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(businessId, eventType, JSON.stringify(details), userId || null, (/* @__PURE__ */ new Date()).toISOString());
+  logger.info(`[Compliance] ${eventType}:`, details);
+}
+function generateComplianceReport(businessId, fromDate, toDate) {
+  const db2 = require("../database").default;
+  const logs = db2.prepare(`
+    SELECT * FROM compliance_audit_log 
+    WHERE businessId = ? AND timestamp >= ? AND timestamp <= ?
+    ORDER BY timestamp DESC
+  `).all(businessId, fromDate, toDate);
+  const byRule = {};
+  for (const log of logs) {
+    const details = JSON.parse(log.details);
+    const ruleId = details.ruleId || "unknown";
+    const passed2 = details.passed === true;
+    if (!byRule[ruleId]) byRule[ruleId] = { passed: 0, failed: 0 };
+    if (passed2) byRule[ruleId].passed++;
+    else byRule[ruleId].failed++;
+  }
+  const totalChecks = logs.length;
+  const passed = logs.filter((l) => JSON.parse(l.details).passed === true).length;
+  const warnings = logs.filter((l) => {
+    const d = JSON.parse(l.details);
+    return d.severity === "warning" && d.passed === false;
+  }).length;
+  const errors = logs.filter((l) => {
+    const d = JSON.parse(l.details);
+    return d.severity === "error" && d.passed === false;
+  }).length;
+  const blocked = logs.filter((l) => {
+    const d = JSON.parse(l.details);
+    return d.severity === "blocking" && d.passed === false;
+  }).length;
+  return {
+    period: `${fromDate} to ${toDate}`,
+    totalChecks,
+    passed,
+    warnings,
+    errors,
+    blocked,
+    byRule
+  };
+}
+function formatAmount(amount) {
+  return (Math.round(amount * 100) / 100).toFixed(2);
+}
+function formatDate(dateStr) {
+  const d = new Date(dateStr);
+  return d.toISOString().split("T")[0];
+}
+function formatTime(dateStr) {
+  const d = new Date(dateStr);
+  return d.toTimeString().slice(0, 8);
+}
+function generateEtaxSalesCsv(options) {
+  const db2 = require("../database").default;
+  const { businessId, period, includeVoided = false, includeRefunded = false } = options;
+  const [year, month] = period.split("-").map(Number);
+  const startDate = `${year}-${month.toString().padStart(2, "0")}-01`;
+  const endDate = new Date(year, month, 0).toISOString().split("T")[0];
+  let whereClause = `WHERE s.businessId = ? AND s.createdAt >= ? AND s.createdAt <= ?`;
+  const params = [businessId, startDate, endDate + " 23:59:59"];
+  if (!includeVoided) {
+    whereClause += ` AND s.status != 'Voided'`;
+  }
+  if (!includeRefunded) {
+    whereClause += ` AND s.status != 'Refunded'`;
+  }
+  const query = `
+    SELECT 
+      s.id,
+      s.invoiceNo,
+      s.createdAt,
+      s.customerTin,
+      s.customerName,
+      s.totalPrice,
+      s.vatAmount,
+      s.totAmount,
+      s.whtAmount,
+      s.paymentMethod,
+      s.status
+    FROM sales s
+    ${whereClause}
+    ORDER BY s.createdAt ASC
+  `;
+  const sales = db2.prepare(query).all(...params);
+  const errors = [];
+  const headers = [
+    "TIN",
+    "Invoice_Number",
+    "Invoice_Date",
+    "Invoice_Time",
+    "Buyer_TIN",
+    "Buyer_Name",
+    "Total_Amount",
+    "VAT_Amount",
+    "TOT_Amount",
+    "WHT_Amount",
+    "Payment_Method",
+    "Status"
+  ];
+  let csv = headers.join(",") + "\n";
+  let count = 0;
+  let totalVat = 0;
+  let totalWht = 0;
+  for (const sale of sales) {
+    try {
+      if (!sale.invoiceNo) {
+        errors.push(`Sale ${sale.id}: Missing invoice number`);
+        continue;
+      }
+      let buyerTin = sale.customerTin || "";
+      if (!buyerTin) {
+        const customer = db2.prepare("SELECT tin FROM customers WHERE id = (SELECT customerId FROM sales WHERE id = ?)").get(sale.id);
+        buyerTin = customer?.tin || "";
+      }
+      if (!buyerTin) {
+        errors.push(`Sale ${sale.invoiceNo}: Missing buyer TIN`);
+      }
+      let buyerName = sale.customerName || "";
+      if (!buyerName) {
+        const customer = db2.prepare("SELECT name FROM customers WHERE id = (SELECT customerId FROM sales WHERE id = ?)").get(sale.id);
+        buyerName = customer?.name || "";
+      }
+      const row = [
+        sale.tin || "",
+        // Seller TIN (from business settings)
+        sale.invoiceNo,
+        // Invoice Number
+        formatDate(sale.createdAt),
+        // Date
+        formatTime(sale.createdAt),
+        // Time
+        buyerTin.padStart(10, "0"),
+        // Buyer TIN (10 digits)
+        `"${buyerName.replace(/"/g, '""')}"`,
+        // Buyer Name (quoted)
+        formatAmount(sale.totalPrice),
+        // Total Amount
+        formatAmount(sale.vatAmount || 0),
+        // VAT Amount
+        formatAmount(sale.totAmount || 0),
+        // TOT Amount
+        formatAmount(sale.whtAmount || 0),
+        // WHT Amount
+        sale.paymentMethod || "Cash",
+        // Payment Method
+        sale.status || "Valid"
+        // Status
+      ];
+      csv += row.join(",") + "\n";
+      count++;
+      totalVat += sale.vatAmount || 0;
+      totalWht += sale.whtAmount || 0;
+    } catch (e) {
+      errors.push(`Sale ${sale.invoiceNo}: ${e.message}`);
+    }
+  }
+  return { csv, count, totalVat, totalWht, errors };
+}
+function generateEtaxPurchasesCsv(options) {
+  const db2 = require("../database").default;
+  const { businessId, period, includeVoided = false } = options;
+  const [year, month] = period.split("-").map(Number);
+  const startDate = `${year}-${month.toString().padStart(2, "0")}-01`;
+  const endDate = new Date(year, month, 0).toISOString().split("T")[0];
+  let whereClause = `WHERE sp.businessId = ? AND sp.purchaseDate >= ? AND sp.purchaseDate <= ?`;
+  const params = [businessId, startDate, endDate];
+  if (!includeVoided) {
+    whereClause += ` AND sp.status != 'Voided'`;
+  }
+  const query = `
+    SELECT 
+      sp.id,
+      sp.purchaseNumber,
+      sp.purchaseDate,
+      sp.supplierTin,
+      sp.supplierName,
+      sp.totalAmount,
+      sp.vatAmount,
+      sp.whtAmount,
+      sp.paymentMethod,
+      sp.status
+    FROM supplier_purchases sp
+    ${whereClause}
+    ORDER BY sp.purchaseDate ASC
+  `;
+  const purchases = db2.prepare(query).all(...params);
+  const errors = [];
+  const headers = [
+    "TIN",
+    "Invoice_Number",
+    "Invoice_Date",
+    "Supplier_TIN",
+    "Supplier_Name",
+    "Total_Amount",
+    "VAT_Amount",
+    "WHT_Amount",
+    "Payment_Method",
+    "Status"
+  ];
+  let csv = headers.join(",") + "\n";
+  let count = 0;
+  let totalVat = 0;
+  let totalWht = 0;
+  for (const purchase of purchases) {
+    try {
+      if (!purchase.purchaseNumber) {
+        errors.push(`Purchase ${purchase.id}: Missing purchase number`);
+        continue;
+      }
+      const row = [
+        purchase.tin || "",
+        // Business TIN
+        purchase.purchaseNumber,
+        // Invoice Number
+        formatDate(purchase.purchaseDate),
+        // Date
+        purchase.supplierTin?.padStart(10, "0") || "",
+        // Supplier TIN
+        `"${(purchase.supplierName || "").replace(/"/g, '""')}"`,
+        // Supplier Name
+        formatAmount(purchase.totalAmount),
+        // Total Amount
+        formatAmount(purchase.vatAmount || 0),
+        // VAT Amount
+        formatAmount(purchase.whtAmount || 0),
+        // WHT Amount
+        purchase.paymentMethod || "Cash",
+        // Payment Method
+        purchase.status || "Valid"
+        // Status
+      ];
+      csv += row.join(",") + "\n";
+      count++;
+      totalVat += purchase.vatAmount || 0;
+      totalWht += purchase.whtAmount || 0;
+    } catch (e) {
+      errors.push(`Purchase ${purchase.purchaseNumber}: ${e.message}`);
+    }
+  }
+  return { csv, count, totalVat, totalWht, errors };
+}
+function exportEtaxCsv(options) {
+  const salesResult = generateEtaxSalesCsv(options);
+  const purchasesResult = generateEtaxPurchasesCsv(options);
+  const result = {
+    salesFile: salesResult.csv,
+    purchasesFile: purchasesResult.csv,
+    salesCount: salesResult.count,
+    purchasesCount: purchasesResult.count,
+    totalVat: salesResult.totalVat + purchasesResult.totalVat,
+    totalWht: salesResult.totalWht + purchasesResult.totalWht,
+    errors: [...salesResult.errors, ...purchasesResult.errors]
+  };
+  if (options.outputPath) {
+    const fs2 = require("fs");
+    const path2 = require("path");
+    const period = options.period.replace("-", "");
+    const salesPath = path2.join(options.outputPath, `etax_sales_${period}.csv`);
+    const purchasesPath = path2.join(options.outputPath, `etax_purchases_${period}.csv`);
+    fs2.writeFileSync(salesPath, "\uFEFF" + result.salesFile, "utf8");
+    fs2.writeFileSync(purchasesPath, "\uFEFF" + result.purchasesFile, "utf8");
+    logger.info(`[eTax] Exported ${result.salesCount} sales and ${result.purchasesCount} purchases to ${options.outputPath}`);
+  }
+  logger.info(`[eTax] Export complete: ${result.salesCount} sales, ${result.purchasesCount} purchases, VAT: ${result.totalVat}, WHT: ${result.totalWht}`);
+  return result;
+}
+function validateEtaxCsv(csv, type) {
+  const lines = csv.trim().split("\n");
+  if (lines.length < 2) return { valid: false, errors: ["Empty CSV"] };
+  const headers = lines[0].split(",");
+  const requiredHeaders = type === "sales" ? ["TIN", "Invoice_Number", "Invoice_Date", "Invoice_Time", "Buyer_TIN", "Buyer_Name", "Total_Amount", "VAT_Amount", "TOT_Amount", "WHT_Amount", "Payment_Method", "Status"] : ["TIN", "Invoice_Number", "Invoice_Date", "Supplier_TIN", "Supplier_Name", "Total_Amount", "VAT_Amount", "WHT_Amount", "Payment_Method", "Status"];
+  const headerErrors = requiredHeaders.filter((h) => !headers.includes(h));
+  if (headerErrors.length > 0) {
+    return { valid: false, errors: [`Missing headers: ${headerErrors.join(", ")}`] };
+  }
+  const errors = [];
+  for (let i = 1; i < lines.length; i++) {
+    const row = lines[i].split(",");
+    if (row.length < requiredHeaders.length) {
+      errors.push(`Row ${i + 1}: Insufficient columns`);
+    }
+  }
+  return { valid: errors.length === 0, errors };
 }
 function getSetting(key) {
   const row = dbProxy.prepare("SELECT value FROM settings WHERE key = ?").get(key);
@@ -3764,18 +5368,18 @@ function requirePermission(perm) {
   throw new Error(`Permission denied: ${perm}`);
 }
 function hashPin(pin) {
-  const salt = crypto.randomBytes(16).toString("hex");
-  const key = crypto.scryptSync(pin, salt, 64).toString("hex");
+  const salt = crypto$1.randomBytes(16).toString("hex");
+  const key = crypto$1.scryptSync(pin, salt, 64).toString("hex");
   return `${salt}:${key}`;
 }
 function verifyPin(pin, stored) {
   const parts = stored.split(":");
   if (parts.length !== 2) {
-    const legacy = crypto.createHash("sha256").update(pin).digest("hex");
+    const legacy = crypto$1.createHash("sha256").update(pin).digest("hex");
     return legacy === stored;
   }
   const [salt, key] = parts;
-  const check = crypto.scryptSync(pin, salt, 64).toString("hex");
+  const check = crypto$1.scryptSync(pin, salt, 64).toString("hex");
   return check === key;
 }
 function getActiveBusinessId() {
@@ -6635,7 +8239,7 @@ function registerIPCHandlers() {
   });
   electron.ipcMain.handle("generate-recovery-key", (_, entityType, entityId) => {
     requirePermission("settings.users");
-    const recoveryKey = crypto.randomBytes(32).toString("hex");
+    const recoveryKey = crypto$1.randomBytes(32).toString("hex");
     const hint = recoveryKey.slice(0, 8) + "..." + recoveryKey.slice(-4);
     const hash = hashPin(recoveryKey);
     const existing = dbProxy.prepare("SELECT id FROM pin_recovery_keys WHERE employeeId = ? OR adminId = ?").get(entityType === "employee" ? entityId : null, entityType === "admin" ? entityId : null);
@@ -8664,7 +10268,7 @@ function registerIPCHandlers() {
     requirePermission("orders.create");
     const bizId = getActiveBusinessId();
     if (!data.items || data.items.length === 0) throw new Error("Order must have at least one item");
-    const orderNumber = data.orderNumber || `ORD-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const orderNumber = data.orderNumber || `ORD-${crypto$1.randomUUID().slice(0, 8).toUpperCase()}`;
     let totalAmount = 0;
     for (const item of data.items) {
       validatePositive(item.quantity, "Item quantity");
@@ -9823,6 +11427,141 @@ function registerIPCHandlers() {
     });
     fixTx();
     return { fixed: fixed.length, totalInconsistent: result.inconsistent.length };
+  });
+  electron.ipcMain.handle("shift:open", (_, data) => {
+    const bizId = getActiveBusinessId();
+    return openShift(bizId, data.registerId, data.cashierId, data.openingFloat);
+  });
+  electron.ipcMain.handle("shift:close", (_, shiftId, data) => {
+    return closeShift$1(shiftId, data.closedBy, data.closingCash, data.notes);
+  });
+  electron.ipcMain.handle("shift:mid-audit", (_, shiftId, countedCash, notes) => {
+    return recordMidShiftAudit(shiftId, countedCash, notes);
+  });
+  electron.ipcMain.handle("shift:blind-count", (_, shiftId, countedCash, notes) => {
+    return recordBlindCount(shiftId, countedCash, notes);
+  });
+  electron.ipcMain.handle("shift:active", (_, registerId) => {
+    return getOpenShift(registerId);
+  });
+  electron.ipcMain.handle("shift:by-id", (_, shiftId) => {
+    return getShiftById$1(shiftId);
+  });
+  electron.ipcMain.handle("shift:transactions", (_, shiftId) => {
+    return getShiftTransactions(shiftId);
+  });
+  electron.ipcMain.handle("shift:summary", (_, shiftId) => {
+    return generateShiftReport(shiftId);
+  });
+  electron.ipcMain.handle("shift:record-transaction", (_, data) => {
+    return addShiftTransaction(data.shiftId, data.type, data.amount, data.saleId, data.paymentMethod, data.notes);
+  });
+  electron.ipcMain.handle("reports:x-report", (_, registerId) => {
+    const bizId = getActiveBusinessId();
+    return generateXReport(bizId, registerId);
+  });
+  electron.ipcMain.handle("reports:z-report", (_, registerId, countedCash, cashDrawerCounts) => {
+    const bizId = getActiveBusinessId();
+    return generateZReport(bizId, registerId, countedCash);
+  });
+  electron.ipcMain.handle("reports:x-report-print", async (_, registerId) => {
+    const bizId = getActiveBusinessId();
+    const report = generateXReport(bizId, registerId);
+    const driver = getPrinterConfig();
+    if (driver) {
+      const cmds = printFiscalReport(report);
+      await printRaw(cmds);
+    }
+    return report;
+  });
+  electron.ipcMain.handle("reports:z-report-print", async (_, registerId, countedCash, cashDrawerCounts) => {
+    const bizId = getActiveBusinessId();
+    const report = generateZReport(bizId, registerId, countedCash);
+    const driver = getPrinterConfig();
+    if (driver) {
+      const cmds = printFiscalReport(report);
+      await printRaw(cmds);
+    }
+    return report;
+  });
+  electron.ipcMain.handle("ledger:entries", (_, options) => {
+    const bizId = getActiveBusinessId();
+    return getLedgerEntries(bizId, options);
+  });
+  electron.ipcMain.handle("ledger:reverse", (_, request) => {
+    return reverseEntry(request);
+  });
+  electron.ipcMain.handle("ledger:verify", () => {
+    const bizId = getActiveBusinessId();
+    return verifyLedgerIntegrity(bizId);
+  });
+  electron.ipcMain.handle("ledger:balance", () => {
+    const bizId = getActiveBusinessId();
+    return getLedgerBalance(bizId);
+  });
+  electron.ipcMain.handle("ledger:shift-summary", (_, shiftId) => {
+    return getShiftLedgerSummary(shiftId);
+  });
+  electron.ipcMain.handle("tax:calculate", (_, lines) => {
+    return calculateTax(lines);
+  });
+  electron.ipcMain.handle("tax:wht", (_, input) => {
+    return calculateWHT(input);
+  });
+  electron.ipcMain.handle("tax:vat-return", (_, input) => {
+    return calculateVatReturn(input);
+  });
+  electron.ipcMain.handle("tax:tot-return", (_, input) => {
+    return calculateTotReturn(input);
+  });
+  electron.ipcMain.handle("tax:mat", (_, grossTurnover) => {
+    return calculateMAT(grossTurnover);
+  });
+  electron.ipcMain.handle("tax:advance", (_, estimatedAnnualTax) => {
+    return calculateAdvanceTax(estimatedAnnualTax);
+  });
+  electron.ipcMain.handle("tax:paye", (_, input) => {
+    return calculatePAYE(input);
+  });
+  electron.ipcMain.handle("tax:pension", (_, input) => {
+    return calculatePension(input);
+  });
+  electron.ipcMain.handle("mor-qr:generate", (_, data) => {
+    return generateMorQrPayload(data);
+  });
+  electron.ipcMain.handle("mor-qr:validate", (_, payload) => {
+    return validateMorQrPayload(payload);
+  });
+  electron.ipcMain.handle("mor-qr:print-receipt", async (_, data) => {
+    const driver = getPrinterConfig();
+    if (!driver) throw new Error("No printer configured");
+    await printMorReceipt(data, driver);
+    return { success: true };
+  });
+  electron.ipcMain.handle("compliance:check", (_, context, rules) => {
+    return runComplianceChecks(context, rules);
+  });
+  electron.ipcMain.handle("compliance:validate-tin", (_, tin) => {
+    return validateTin(tin);
+  });
+  electron.ipcMain.handle("compliance:report", (_, fromDate, toDate) => {
+    const bizId = getActiveBusinessId();
+    return generateComplianceReport(bizId, fromDate, toDate);
+  });
+  electron.ipcMain.handle("compliance:log", (_, event) => {
+    return logComplianceEvent(event);
+  });
+  electron.ipcMain.handle("etax:export-sales", (_, options) => {
+    return generateEtaxSalesCsv(options);
+  });
+  electron.ipcMain.handle("etax:export-purchases", (_, options) => {
+    return generateEtaxPurchasesCsv(options);
+  });
+  electron.ipcMain.handle("etax:validate", (_, csv, type) => {
+    return validateEtaxCsv(csv, type);
+  });
+  electron.ipcMain.handle("etax:export-all", (_, options) => {
+    return exportEtaxCsv(options);
   });
   console.log("[Handlers] All IPC handlers registered successfully");
 }

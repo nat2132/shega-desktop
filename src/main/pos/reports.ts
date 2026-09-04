@@ -131,10 +131,6 @@ function closeShift(shiftId: number, countedCash: number, cashDrawerCounts: any[
 }
 
 // Reuse shift functions
-function getShiftById(shiftId: number) {
-  return db.prepare('SELECT * FROM shifts WHERE id = ?').get(shiftId);
-}
-
 function getShiftById(shiftId: number): any {
   return db.prepare('SELECT * FROM shifts WHERE id = ?').get(shiftId);
 }
@@ -146,7 +142,7 @@ import {
   generateShiftReport,
   calculateExpectedCash,
   getCashDrawerBreakdown 
-} from './pos/shifts';
+} from './shifts';
 
 // ============================================
 // Main Report Generation

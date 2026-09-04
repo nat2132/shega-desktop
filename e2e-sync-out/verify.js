@@ -48,17 +48,22 @@ try {
   const result = Array.isArray(integrity) ? integrity[0] : integrity;
   if (result !== "ok") {
     console.error(`[DB] Integrity check FAILED: ${result}`);
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({
-      ok: false,
-      message: Array.isArray(integrity) ? integrity.join(", ") : integrity,
-      timestamp: (/* @__PURE__ */ new Date()).toISOString()
-    }));
+    try {
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({
+        ok: false,
+        message: Array.isArray(integrity) ? integrity.join(", ") : integrity,
+        timestamp: (/* @__PURE__ */ new Date()).toISOString()
+      }));
+    } catch {
+    }
   } else {
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({ ok: true, timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
+    try {
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({ ok: true, timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
+    } catch {
+    }
   }
 } catch (_) {
   console.warn("[DB] Integrity check skipped (empty DB?)");
-  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({ ok: true, note: "skipped - empty database", timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
 }
 var dbProxy = new Proxy({}, {
   get(target, prop) {

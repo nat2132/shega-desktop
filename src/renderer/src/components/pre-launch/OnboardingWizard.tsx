@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Package, ShoppingCart, Receipt, TrendingDown, 
   UserCog, CreditCard, ChevronRight, Check, SkipForward,
-  Warehouse, Truck, Users, BarChart3, SlidersHorizontal
+  Warehouse, Truck, Users, BarChart3, SlidersHorizontal, Building2
 } from 'lucide-react';
 import { useSettings } from '../../context/SettingsContext';
 import { ALL_MODULES, MODULE_META } from '../../utils/feature-modules';
@@ -14,7 +14,7 @@ interface OnboardingWizardProps {
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   Package, ShoppingCart, Receipt, TrendingDown,
   UserCog, CreditCard, Warehouse, Truck,
-  Users, BarChart3, SlidersHorizontal,
+  Users, BarChart3, SlidersHorizontal, Building2,
 };
 
 const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {

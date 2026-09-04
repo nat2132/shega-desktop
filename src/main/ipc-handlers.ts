@@ -13,6 +13,13 @@ import { parseWeightLine, ScaleConfig } from './scale-service';
 import { fiscalAdapter } from './fiscal';
 import { syncHub } from './index';
 import { verifyChecksums, getPairingToken, getLanAddress, requestDeviceResync } from './sync-hub';
+import * as shifts from './pos/shifts';
+import * as reports from './pos/reports';
+import * as ledger from './pos/ledger';
+import * as tax from './pos/tax';
+import * as morQr from './pos/mor-qr';
+import * as compliance from './pos/compliance';
+import * as etaxExport from './pos/etax-export';
 import { getCloudStatus, syncToCloud } from './sync-cloud';
 
 
@@ -6586,6 +6593,188 @@ export function registerIPCHandlers() {
     fixTx();
 
     return { fixed: fixed.length, totalInconsistent: result.inconsistent.length };
+  });
+
+  // ========== POS MODULE: SHIFTS ==========
+  ipcMain.handle('shift:open', (_, data: { registerId: number; cashierId: number; openingFloat: number }) => {
+    const bizId = getActiveBusinessId();
+    return shifts.openShift(bizId, data.registerId, data.cashierId, data.openingFloat);
+  });
+
+  ipcMain.handle('shift:close', (_, shiftId: number, data: { closedBy: number; closingCash: number; notes?: string }) => {
+    return shifts.closeShift(shiftId, data.closedBy, data.closingCash, data.notes);
+  });
+
+  ipcMain.handle('shift:mid-audit', (_, shiftId: number, countedCash: number, notes?: string) => {
+    return shifts.recordMidShiftAudit(shiftId, countedCash, notes);
+  });
+
+  ipcMain.handle('shift:blind-count', (_, shiftId: number, countedCash: number, notes?: string) => {
+    return shifts.recordBlindCount(shiftId, countedCash, notes);
+  });
+
+  ipcMain.handle('shift:active', (_, registerId: number) => {
+    return shifts.getOpenShift(registerId);
+  });
+
+  ipcMain.handle('shift:by-id', (_, shiftId: number) => {
+    return shifts.getShiftById(shiftId);
+  });
+
+  ipcMain.handle('shift:transactions', (_, shiftId: number) => {
+    return shifts.getShiftTransactions(shiftId);
+  });
+
+  ipcMain.handle('shift:summary', (_, shiftId: number) => {
+    return shifts.generateShiftReport(shiftId);
+  });
+
+  ipcMain.handle('shift:record-transaction', (_, data: { shiftId: number; type: string; amount: number; saleId?: number; paymentMethod?: string; notes?: string }) => {
+    return shifts.addShiftTransaction(data.shiftId, data.type, data.amount, data.saleId, data.paymentMethod, data.notes);
+  });
+
+  // ========== POS MODULE: REPORTS ==========
+  ipcMain.handle('reports:x-report', (_, registerId: number) => {
+    const bizId = getActiveBusinessId();
+    return reports.generateXReport(bizId, registerId);
+  });
+
+  ipcMain.handle('reports:z-report', (_, registerId: number, countedCash: number, cashDrawerCounts: any[]) => {
+    const bizId = getActiveBusinessId();
+    return reports.generateZReport(bizId, registerId, countedCash, cashDrawerCounts);
+  });
+
+  ipcMain.handle('reports:x-report-print', async (_, registerId: number) => {
+    const bizId = getActiveBusinessId();
+    const report = reports.generateXReport(bizId, registerId);
+    const driver = getPrinterConfig();
+    if (driver) {
+      const cmds = reports.printFiscalReport(report, driver);
+      await printRaw(cmds);
+    }
+    return report;
+  });
+
+  ipcMain.handle('reports:z-report-print', async (_, registerId: number, countedCash: number, cashDrawerCounts: any[]) => {
+    const bizId = getActiveBusinessId();
+    const report = reports.generateZReport(bizId, registerId, countedCash, cashDrawerCounts);
+    const driver = getPrinterConfig();
+    if (driver) {
+      const cmds = reports.printFiscalReport(report, driver);
+      await printRaw(cmds);
+    }
+    return report;
+  });
+
+  // ========== POS MODULE: LEDGER ==========
+  ipcMain.handle('ledger:entries', (_, options?: { limit?: number; offset?: number; type?: string }) => {
+    const bizId = getActiveBusinessId();
+    return ledger.getLedgerEntries(bizId, options);
+  });
+
+  ipcMain.handle('ledger:reverse', (_, request: { entryId: number; reason: string; reversedBy: number }) => {
+    return ledger.reverseEntry(request);
+  });
+
+  ipcMain.handle('ledger:verify', () => {
+    const bizId = getActiveBusinessId();
+    return ledger.verifyLedgerIntegrity(bizId);
+  });
+
+  ipcMain.handle('ledger:balance', () => {
+    const bizId = getActiveBusinessId();
+    return ledger.getLedgerBalance(bizId);
+  });
+
+  ipcMain.handle('ledger:shift-summary', (_, shiftId: number) => {
+    return ledger.getShiftLedgerSummary(shiftId);
+  });
+
+  // ========== POS MODULE: TAX ==========
+  ipcMain.handle('tax:calculate', (_, lines: any[]) => {
+    return tax.calculateTax(lines);
+  });
+
+  ipcMain.handle('tax:wht', (_, input: { amount: number; rate: number; payerName: string; payerTin: string }) => {
+    return tax.calculateWHT(input);
+  });
+
+  ipcMain.handle('tax:vat-return', (_, input: any) => {
+    return tax.calculateVatReturn(input);
+  });
+
+  ipcMain.handle('tax:tot-return', (_, input: any) => {
+    return tax.calculateTotReturn(input);
+  });
+
+  ipcMain.handle('tax:mat', (_, grossTurnover: number) => {
+    return tax.calculateMAT(grossTurnover);
+  });
+
+  ipcMain.handle('tax:advance', (_, estimatedAnnualTax: number) => {
+    return tax.calculateAdvanceTax(estimatedAnnualTax);
+  });
+
+  ipcMain.handle('tax:paye', (_, input: any) => {
+    return tax.calculatePAYE(input);
+  });
+
+  ipcMain.handle('tax:pension', (_, input: any) => {
+    return tax.calculatePension(input);
+  });
+
+  // ========== POS MODULE: MoR QR ==========
+  ipcMain.handle('mor-qr:generate', (_, data: {
+    tin: string; invoiceNumber: string; invoiceDate: string;
+    totalAmount: number; vatAmount: number; totAmount: number; whtAmount: number;
+  }) => {
+    return morQr.generateMorQrPayload(data);
+  });
+
+  ipcMain.handle('mor-qr:validate', (_, payload: string) => {
+    return morQr.validateMorQrPayload(payload);
+  });
+
+  ipcMain.handle('mor-qr:print-receipt', async (_, data: any) => {
+    const driver = getPrinterConfig();
+    if (!driver) throw new Error('No printer configured');
+    await morQr.printMorReceipt(data, driver);
+    return { success: true };
+  });
+
+  // ========== POS MODULE: COMPLIANCE ==========
+  ipcMain.handle('compliance:check', (_, context: any, rules?: any[]) => {
+    return compliance.runComplianceChecks(context, rules);
+  });
+
+  ipcMain.handle('compliance:validate-tin', (_, tin: string) => {
+    return compliance.validateTin(tin);
+  });
+
+  ipcMain.handle('compliance:report', (_, fromDate: string, toDate: string) => {
+    const bizId = getActiveBusinessId();
+    return compliance.generateComplianceReport(bizId, fromDate, toDate);
+  });
+
+  ipcMain.handle('compliance:log', (_, event: any) => {
+    return compliance.logComplianceEvent(event);
+  });
+
+  // ========== POS MODULE: e-TAX EXPORT ==========
+  ipcMain.handle('etax:export-sales', (_, options: { fromDate: string; toDate: string; outputDir?: string }) => {
+    return etaxExport.generateEtaxSalesCsv(options);
+  });
+
+  ipcMain.handle('etax:export-purchases', (_, options: { fromDate: string; toDate: string; outputDir?: string }) => {
+    return etaxExport.generateEtaxPurchasesCsv(options);
+  });
+
+  ipcMain.handle('etax:validate', (_, csv: string, type: 'sales' | 'purchases') => {
+    return etaxExport.validateEtaxCsv(csv, type);
+  });
+
+  ipcMain.handle('etax:export-all', (_, options: { fromDate: string; toDate: string; outputDir: string }) => {
+    return etaxExport.exportEtaxCsv(options);
   });
 
   console.log('[Handlers] All IPC handlers registered successfully');

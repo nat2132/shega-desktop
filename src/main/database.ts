@@ -82,17 +82,24 @@ try {
   const result = Array.isArray(integrity) ? integrity[0] : integrity;
   if (result !== 'ok') {
     console.error(`[DB] Integrity check FAILED: ${result}`);
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({
-      ok: false,
-      message: Array.isArray(integrity) ? integrity.join(', ') : integrity,
-      timestamp: new Date().toISOString()
-    }));
+    try {
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({
+        ok: false,
+        message: Array.isArray(integrity) ? integrity.join(', ') : integrity,
+        timestamp: new Date().toISOString()
+      }));
+    } catch {
+      // Table may not exist on fresh DB — initDB() will handle it later
+    }
   } else {
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({ ok: true, timestamp: new Date().toISOString() }));
+    try {
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({ ok: true, timestamp: new Date().toISOString() }));
+    } catch {
+      // Table may not exist on fresh DB — initDB() will handle it later
+    }
   }
 } catch (_) {
   console.warn('[DB] Integrity check skipped (empty DB?)');
-  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_integrity_status', ?)").run(JSON.stringify({ ok: true, note: 'skipped - empty database', timestamp: new Date().toISOString() }));
 }
 
 // Proxy to dynamically route db calls to currentDb (main or demo)

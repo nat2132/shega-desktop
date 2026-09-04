@@ -203,7 +203,7 @@ export function closeShift(
   return summary;
 }
 
-function calculateShiftTotals(shiftId: number): any {
+export function calculateShiftTotals(shiftId: number): any {
   const sales = db.prepare(`
     SELECT paymentMethod, COALESCE(SUM(amount), 0) as total, COUNT(*) as count
     FROM shift_transactions
