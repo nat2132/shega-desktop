@@ -18,6 +18,8 @@ import { Input } from '../components/ui/input';
 import { DatePicker } from '../components/DatePicker';
 import Modal from '../components/Modal';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { RETURN_REASONS, OVERRIDE_REASONS, getDiscountCap } from '@shega/shared';
+import { useAuth } from '../context/AuthContext';
 import { exportCSV, exportPDF } from '../lib/export-utils';
 import { computeTrend } from '../lib/trend-utils';
 import { toast } from 'sonner';
@@ -100,12 +102,15 @@ const Sales: React.FC = () => {
   const [returnSale, setReturnSale] = useState<Sale | null>(null);
   const [returnQty, setReturnQty] = useState('');
   const [returnReason, setReturnReason] = useState('');
+  const [returnCustomReason, setReturnCustomReason] = useState('');
   const [returnRefund, setReturnRefund] = useState('');
   const [drafts, setDrafts] = useState<any[]>([]);
   const [showDraftsModal, setShowDraftsModal] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [lastSale, setLastSale] = useState<any>(null);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const { currentAdmin } = useAuth();
+  const [overrideReason, setOverrideReason] = useState('');
 
   useEffect(() => {
     loadData();
@@ -321,6 +326,7 @@ const Sales: React.FC = () => {
       unitType: item.allowSellByBaseUnit ? 'base' : 'pack',
       unit: item.allowSellByBaseUnit ? item.baseUnit : item.purchaseUnit,
       price: item.allowSellByBaseUnit ? item.baseSellingPrice : item.packSellingPrice,
+      baseSellingPrice: item.baseSellingPrice,
       discount: 0,
       vat: 0,
       total: item.allowSellByBaseUnit ? item.baseSellingPrice : item.packSellingPrice
@@ -368,6 +374,26 @@ const Sales: React.FC = () => {
     return { subtotal, totalDiscount, totalVAT, finalTotal };
   }, [cart, globalDiscount, globalVAT]);
 
+  const isApprover = ['Owner', 'Administrator', 'Manager', 'super_admin', 'admin'].includes(currentAdmin?.role || '');
+  const discountCap = isApprover ? null : getDiscountCap((currentAdmin?.role || '').toLowerCase());
+  const overCapLines = useMemo(() => {
+    if (discountCap === null) return [];
+    const cartSub = cart.reduce((sum, c) => sum + (c.quantity * c.price - c.discount + c.vat), 0);
+    const globalDisc = parseFloat(globalDiscount) || 0;
+    return cart
+      .map((c) => {
+        const itemSubtotal = c.quantity * c.price - c.discount + c.vat;
+        const ratio = cartSub > 0 ? itemSubtotal / cartSub : 0;
+        const effDisc = (parseFloat(c.discount as any) || 0) + ratio * globalDisc;
+        const basePrice = c.baseSellingPrice || c.price;
+        const pct = basePrice > 0 ? (effDisc / (c.quantity * basePrice)) * 100 : 0;
+        return { itemId: c.itemId, name: c.name, pct, disc: effDisc };
+      })
+      .filter((l) => l.disc > 0 && l.pct > discountCap);
+  }, [cart, globalDiscount, discountCap]);
+  const overCapRequired = overCapLines.length > 0;
+  const overCapMaxPct = overCapLines.reduce((max, l) => Math.max(max, l.pct), 0);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (cart.length === 0) return;
@@ -394,7 +420,8 @@ const Sales: React.FC = () => {
         customerName: customerInfo.name?.trim() || null,
         customerPhone: customerInfo.phone?.trim() || null,
         dueDate: paymentInfo.isDebt ? paymentInfo.dueDate : null,
-        paidAmount: paymentInfo.isDebt ? 0 : (itemSubtotal - propDiscount + propVAT)
+        paidAmount: paymentInfo.isDebt ? 0 : (itemSubtotal - propDiscount + propVAT),
+        overrideReason: overCapRequired ? (overrideReason || 'Over-limit discount') : undefined
       };
     });
 
@@ -457,6 +484,7 @@ const Sales: React.FC = () => {
     setPaymentInfo({ method: t('sales.cash'), status: t('sales.paid'), dueDate: '', isDebt: false });
     setGlobalDiscount('0');
     setGlobalVAT('0');
+    setOverrideReason('');
     setEditingId(null);
     setCurrentStep(1);
     setItemSearchQuery('');
@@ -557,11 +585,18 @@ const Sales: React.FC = () => {
   const handleReturn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!returnSale) return;
+    const reason = returnReason === 'other' && returnCustomReason.trim()
+      ? returnCustomReason.trim()
+      : returnReason;
+    if (!reason) {
+      toast.error(t('sales.return_reason_required', 'A reason is required for a return'));
+      return;
+    }
     const result = await window.api?.createReturn({
       saleId: returnSale.id,
       quantity: parseFloat(returnQty),
       refundAmount: parseFloat(returnRefund) || 0,
-      reason: returnReason
+      reason
     });
     if (result?.success) {
       toast.success(t('sales.return_success', 'Return processed successfully'));
@@ -988,6 +1023,28 @@ const Sales: React.FC = () => {
                         <p className="text-3xl font-black tracking-tight">{t('common.etb')} {totals.finalTotal.toLocaleString()}</p>
                       </div>
                     </div>
+
+                    {overCapRequired && (
+                      <div className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 space-y-2">
+                        <div className="flex items-start gap-2">
+                          <span className="text-xl leading-none">&#9888;</span>
+                          <div className="text-[11px] leading-relaxed text-amber-700">
+                            <p className="font-black uppercase tracking-widest">{t('sales.discount_limit_title', 'Discount Above Limit')}</p>
+                            <p>{t('sales.discount_limit_desc', 'Your discount of {pct}% exceeds the {cap}% limit for your role. Manager approval will be required at checkout.', { pct: Math.round(overCapMaxPct), cap: discountCap })}</p>
+                          </div>
+                        </div>
+                        <Select value={overrideReason || (OVERRIDE_REASONS[0].value)} onValueChange={setOverrideReason}>
+                          <SelectTrigger className="w-full h-9 bg-card text-xs rounded-xl border-amber-500/40">
+                            <SelectValue placeholder={t('sales.override_reason_placeholder', 'Select override reason…')} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {OVERRIDE_REASONS.map((r) => (
+                              <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
                   </div>
 
                   <div className="pt-2 flex flex-col gap-1.5">
@@ -1096,16 +1153,28 @@ const Sales: React.FC = () => {
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
-                {t('sales.return_reason_label', 'Reason')}
+                {t('sales.return_reason_label', 'Reason')} *
               </label>
-              <Input value={returnReason} onChange={e => setReturnReason(e.target.value)}
-                placeholder={t('sales.return_reason_placeholder', 'Defective, wrong item, customer request...')} />
+              <Select value={returnReason} onValueChange={(v) => { setReturnReason(v); if (v !== 'other') setReturnCustomReason(''); }}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder={t('sales.return_reason_placeholder', 'Select a reason…')} />
+                </SelectTrigger>
+                <SelectContent>
+                  {RETURN_REASONS.map((r) => (
+                    <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {returnReason === 'other' && (
+                <Input value={returnCustomReason} onChange={e => setReturnCustomReason(e.target.value)}
+                  placeholder={t('sales.return_reason_other', 'Describe the reason…')} />
+              )}
             </div>
             <div className="flex gap-2 pt-2">
               <Button type="button" variant="outline" className="flex-1 h-9 text-xs font-bold tracking-widest" onClick={() => setShowReturnModal(false)}>
                 {t('common.cancel')}
               </Button>
-              <Button type="submit" className="flex-1 h-9 text-xs font-bold tracking-widest" disabled={!returnQty || parseFloat(returnQty) < 1}>
+              <Button type="submit" className="flex-1 h-9 text-xs font-bold tracking-widest" disabled={!returnQty || parseFloat(returnQty) < 1 || !returnReason || (returnReason === 'other' && !returnCustomReason.trim())}>
                 {t('sales.process_return', 'Process Return')}
               </Button>
             </div>

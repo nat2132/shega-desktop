@@ -16,6 +16,7 @@ const Employees = lazy(() => import('./pages/Employees'))
 const Shipments = lazy(() => import('./pages/Shipments'))
 const AuditLogs = lazy(() => import('./pages/AuditLogs'))
 const UsersEmployees = lazy(() => import('./pages/UsersEmployees'))
+const BusinessCenter = lazy(() => import('./pages/BusinessCenter'))
 const Suppliers = lazy(() => import('./pages/Suppliers'))
 const AdminManagement = lazy(() => import('./pages/AdminManagement'))
 const DebtManagement = lazy(() => import('./pages/DebtManagement'))
@@ -33,6 +34,8 @@ import { useAuth } from './context/AuthContext'
 import { useSettings } from './context/SettingsContext'
 import { SubscriptionProvider, useSubscription } from './context/SubscriptionContext'
 import { TutorialOverlay } from './components/tutorial'
+import DeviceLockOverlay from './components/DeviceLockOverlay'
+import PinApprovalProvider from './components/PinApprovalProvider'
 import { initSound, playSound } from './utils/sound'
 
 // Pre-launch screens
@@ -53,7 +56,6 @@ import { SiteHeader } from './components/site-header'
 import { Toaster } from './components/ui/sonner'
 import NotificationBanners from './components/NotificationBanners'
 import NotificationModal from './components/NotificationModal'
-
 type AppPhase = 'splash' | 'auth' | 'recovery-key' | 'business-setup' | 'onboarding' | 'subscription-welcome' | 'loading' | 'ready' | 'error'
 
 function ProtectedRoute({ children, permission, moduleId }: { children: React.ReactNode; permission?: string; moduleId?: string }) {
@@ -181,7 +183,7 @@ function App() {
     setPhase('loading');
   };
 
-  const { settingsLoaded } = useSettings();
+  const { settingsLoaded, currentBusiness } = useSettings();
 
   const handleLoadingComplete = useCallback(() => {
     if (settingsLoaded) {
@@ -275,7 +277,7 @@ function App() {
               <Suspense fallback={<div className="flex items-center justify-center h-full py-32"><div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" /></div>}>
               <AnimatePresence mode="wait">
                 <motion.div
-                  key={location.pathname}
+                  key={`${location.pathname}:${currentBusiness?.id ?? 'none'}`}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
@@ -294,6 +296,7 @@ function App() {
                     <Route path="/warehouses" element={<ProtectedRoute permission="warehouses" moduleId="warehouses"><Warehouses /></ProtectedRoute>} />
                     <Route path="/employees" element={<PremiumRoute premiumFeature="employees"><ProtectedRoute permission="employees" moduleId="employees"><Employees /></ProtectedRoute></PremiumRoute>} />
                     <Route path="/users" element={<PremiumRoute premiumFeature="users"><ProtectedRoute permission="employees" moduleId="employees"><UsersEmployees /></ProtectedRoute></PremiumRoute>} />
+                    <Route path="/business" element={<ProtectedRoute permission="dashboard"><BusinessCenter /></ProtectedRoute>} />
                     <Route path="/shipments" element={<PremiumRoute premiumFeature="shipments"><ProtectedRoute permission="shipments" moduleId="shipments"><Shipments /></ProtectedRoute></PremiumRoute>} />
                     <Route path="/suppliers" element={<PremiumRoute premiumFeature="suppliers"><ProtectedRoute permission="suppliers" moduleId="suppliers"><Suppliers /></ProtectedRoute></PremiumRoute>} />
                     <Route path="/audit-logs" element={<PremiumRoute premiumFeature="audit"><ProtectedRoute permission="audit.view"><AuditLogs /></ProtectedRoute></PremiumRoute>} />
@@ -319,6 +322,8 @@ function App() {
       </SidebarProvider>
       <NotificationModal />
       <TutorialOverlay />
+      <DeviceLockOverlay />
+      <PinApprovalProvider />
     </TooltipProvider>
     </SubscriptionProvider>
   )

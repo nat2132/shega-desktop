@@ -7,7 +7,7 @@ interface BusinessSetupProps {
 }
 
 const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
-  const { t } = useSettings();
+  const { t, refreshBusiness } = useSettings();
   const [form, setForm] = useState({ businessName: '', storeName: '', currency: 'ETB' });
   const [mounted, setMounted] = useState(false);
 
@@ -18,7 +18,15 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.businessName.trim() || !form.storeName.trim()) return;
-    await window.api?.updateBusiness(1, form);
+    const created = await window.api?.businessCreate({
+      businessName: form.businessName.trim(),
+      storeName: form.storeName.trim(),
+      currency: form.currency || 'ETB',
+    });
+    await refreshBusiness();
+    if (created?.id) {
+      await window.api?.updateBusiness(created.id, form);
+    }
     onComplete();
   };
 

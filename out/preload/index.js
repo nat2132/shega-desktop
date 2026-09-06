@@ -4,6 +4,12 @@ electron.contextBridge.exposeInMainWorld("api", {
   // Businesses
   getActiveBusiness: () => electron.ipcRenderer.invoke("get-active-business"),
   updateBusiness: (id, biz) => electron.ipcRenderer.invoke("update-business", id, biz),
+  businessList: () => electron.ipcRenderer.invoke("business:list"),
+  businessCreate: (data) => electron.ipcRenderer.invoke("business:create", data),
+  businessSwitch: (id) => electron.ipcRenderer.invoke("business:switch", id),
+  businessSetDefault: (id) => electron.ipcRenderer.invoke("business:set-default", id),
+  businessArchive: (id) => electron.ipcRenderer.invoke("business:archive", id),
+  businessLeave: (id) => electron.ipcRenderer.invoke("business:leave", id),
   // Categories
   getCategories: () => electron.ipcRenderer.invoke("get-categories"),
   insertCategory: (name, icon) => electron.ipcRenderer.invoke("insert-category", name, icon),
@@ -244,6 +250,7 @@ electron.contextBridge.exposeInMainWorld("api", {
   cloudSync: () => electron.ipcRenderer.invoke("cloud:sync"),
   saveCloudConfig: (url, key) => electron.ipcRenderer.invoke("cloud:save-config", url, key),
   cloudEnabled: (enabled) => electron.ipcRenderer.invoke("cloud:set-enabled", enabled),
+  cloudSelfStatus: () => electron.ipcRenderer.invoke("cloud:self-status"),
   // Audit (Phase 4)
   verifyAuditChain: () => electron.ipcRenderer.invoke("verify-audit-chain"),
   // Draft Sales
@@ -339,5 +346,30 @@ electron.contextBridge.exposeInMainWorld("api", {
     electron.ipcRenderer.removeAllListeners("update:status");
     electron.ipcRenderer.removeAllListeners("update:progress");
     electron.ipcRenderer.removeAllListeners("update:error");
-  }
+  },
+  // �?U�? Shared Business Model (registers, devices, roles, people)
+  businessListRegisters: () => electron.ipcRenderer.invoke("business:list-registers"),
+  businessAddRegister: (name, locationId) => electron.ipcRenderer.invoke("business:add-register", name, locationId),
+  businessUpdateRegister: (id, patch) => electron.ipcRenderer.invoke("business:update-register", id, patch),
+  businessDeleteRegister: (id) => electron.ipcRenderer.invoke("business:delete-register", id),
+  businessListLocations: () => electron.ipcRenderer.invoke("business:list-locations"),
+  businessAddLocation: (name, address) => electron.ipcRenderer.invoke("business:add-location", name, address),
+  businessListDevices: () => electron.ipcRenderer.invoke("business:list-devices"),
+  businessSelfDeviceStatus: () => electron.ipcRenderer.invoke("business:self-device-status"),
+  businessSetDeviceStatus: (deviceId, status) => electron.ipcRenderer.invoke("business:set-device-status", deviceId, status),
+  businessRenameDevice: (deviceId, name) => electron.ipcRenderer.invoke("business:rename-device", deviceId, name),
+  businessReplaceDevice: (input) => electron.ipcRenderer.invoke("business:replace-device", input),
+  businessRoles: () => electron.ipcRenderer.invoke("business:roles"),
+  businessCan: (key) => electron.ipcRenderer.invoke("business:can", key),
+  businessListPeople: () => electron.ipcRenderer.invoke("business:list-people"),
+  businessSetPersonRole: (employeeId, roleKey) => electron.ipcRenderer.invoke("business:set-person-role", employeeId, roleKey),
+  // §15 — Manager PIN approval prompt (main → renderer event + renderer → main)
+  onApprovalPrompt: (callback) => {
+    electron.ipcRenderer.on("approval:prompt", (_event, payload) => callback(payload));
+  },
+  onApprovalPinInvalid: (callback) => {
+    electron.ipcRenderer.on("approval:pin-invalid", (_event, payload) => callback(payload));
+  },
+  approveWithPin: (requestId, pin) => electron.ipcRenderer.invoke("approval:resolve", { requestId, pin }),
+  cancelApproval: (requestId) => electron.ipcRenderer.invoke("approval:cancel", requestId)
 });

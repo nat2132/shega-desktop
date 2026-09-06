@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import { 
   LayoutDashboard, Package, ShoppingCart, 
   Receipt, Users, BarChart3, Settings, 
-  LogOut, RefreshCcw, Gift
+  LogOut, RefreshCcw, Gift, Building2
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { Button } from './ui/button';
@@ -22,6 +22,7 @@ const Sidebar = () => {
     { id: 'analytics', path: '/analytics', icon: BarChart3 },
     { id: 'expense', path: '/expenses', icon: Receipt },
     { id: 'giftcards', path: '/gift-cards', icon: Gift },
+    { id: 'business', path: '/business', icon: Building2 },
   ];
 
   return (

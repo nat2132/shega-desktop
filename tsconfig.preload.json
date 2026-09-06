@@ -10,7 +10,10 @@
     "types": ["node", "electron"],
     "outDir": "out/preload",
     "skipLibCheck": true,
-    "composite": true
+    "composite": true,
+    "paths": {
+      "@shega/shared": ["../shega-shared/src/index.ts"]
+    }
   },
   "include": ["src/preload/**/*"]
 }

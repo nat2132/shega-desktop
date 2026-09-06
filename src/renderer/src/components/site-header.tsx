@@ -9,6 +9,7 @@ import { useLocation } from "react-router-dom"
 import NotificationCenter from "./NotificationCenter"
 import { GlobalSearch } from "./GlobalSearch"
 import TutorialButton from "./tutorial/TutorialButton"
+import { BusinessSwitcher } from "./BusinessSwitcher"
 
 export function SiteHeader() {
   const { theme, setTheme, t } = useSettings();
@@ -34,6 +35,8 @@ export function SiteHeader() {
           <h1 className="text-xs font-semibold tracking-tight text-foreground">{getPageTitle()}</h1>
           <p className="text-xs font-medium text-muted-foreground/60">{t('header.terminal_active')}</p>
         </div>
+
+        <BusinessSwitcher />
 
         <div className="mx-3 flex-1 max-w-sm">
           <GlobalSearch />

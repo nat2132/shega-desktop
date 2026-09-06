@@ -9,6 +9,8 @@ export interface Admin {
   isActive: number;
   avatar?: string;
   isEmployee?: boolean;
+  roleKey?: string | null;
+  sharedPermissions?: Record<string, boolean | string> | null;
 }
 
 interface AuthContextType {
@@ -39,6 +41,7 @@ const PERMISSION_MODULE: Record<string, string> = {
   settings: 'settings',
   notifications: 'settings',
   employees: 'employees',
+  team: 'employees',
   shipments: 'shipments',
   suppliers: 'suppliers',
   warehouses: 'warehouses',

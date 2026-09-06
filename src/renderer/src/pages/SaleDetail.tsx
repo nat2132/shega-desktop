@@ -36,7 +36,15 @@ import {
   DialogFooter,
   DialogClose,
 } from "../components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 import Modal from '../components/Modal';
+import { VOID_REASONS, RETURN_REASONS } from '@shega/shared';
 
 interface Sale {
   id: number;
@@ -97,6 +105,8 @@ const SaleDetail: React.FC = () => {
   const [deleting, setDeleting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [voidReason, setVoidReason] = useState('');
+  const [voidCustomReason, setVoidCustomReason] = useState('');
+  const [returnCustomReason, setReturnCustomReason] = useState('');
 
   useEffect(() => {
     loadSale();
@@ -143,11 +153,18 @@ const SaleDetail: React.FC = () => {
   const handleReturn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sale) return;
+    const reason = returnReason === 'other' && returnCustomReason.trim()
+      ? returnCustomReason.trim()
+      : returnReason;
+    if (!reason) {
+      toast.error(t('sale_detail.return_reason_required', 'A reason is required for a return'));
+      return;
+    }
     const result = await window.api?.createReturn({
       saleId: sale.id,
       quantity: parseFloat(returnQty),
       refundAmount: parseFloat(returnRefund) || 0,
-      reason: returnReason,
+      reason,
     });
     if (result?.success) {
       toast.success(t('sale_detail.return_processed'));
@@ -202,11 +219,19 @@ const SaleDetail: React.FC = () => {
   };
 
   const handleVoidSale = async () => {
-    if (!sale || !voidReason.trim()) return;
+    if (!sale) return;
+    const reason = voidReason === 'other' && voidCustomReason.trim()
+      ? voidCustomReason.trim()
+      : voidReason;
+    if (!reason) {
+      toast.error(t('sale_detail.void_reason_required', 'A reason is required to void this sale'));
+      return;
+    }
     try {
-      await window.api?.voidSale({ saleId: sale.id, reason: voidReason.trim() });
+      await window.api?.voidSale({ saleId: sale.id, reason });
       toast.success(t('sale_detail.voided', { id: sale.id }));
       setVoidReason('');
+      setVoidCustomReason('');
       loadSale();
     } catch (err: any) {
       toast.error(err.message || t('sale_detail.void_error'));
@@ -284,17 +309,29 @@ const SaleDetail: React.FC = () => {
                 </AlertDialogHeader>
                 <div className="py-4">
                   <label className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-2 block">{t('sale_detail.void_reason_label')}</label>
-                  <textarea
-                    className="w-full h-24 px-3 py-2 rounded-xl border bg-background text-xs resize-none"
-                    placeholder={t('sale_detail.void_reason_placeholder')}
-                    value={voidReason}
-                    onChange={e => setVoidReason(e.target.value)}
-                  />
+                  <Select value={voidReason} onValueChange={(v) => { setVoidReason(v); if (v !== 'other') setVoidCustomReason(''); }}>
+                    <SelectTrigger className="w-full rounded-xl bg-muted/20 border-border/50">
+                      <SelectValue placeholder={t('sale_detail.void_reason_placeholder', 'Select a reason…')} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {VOID_REASONS.map((r) => (
+                        <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {voidReason === 'other' && (
+                    <textarea
+                      className="mt-3 w-full h-20 px-3 py-2 rounded-xl border bg-background text-xs resize-none"
+                      placeholder={t('sale_detail.void_reason_other', 'Describe the reason…')}
+                      value={voidCustomReason}
+                      onChange={e => setVoidCustomReason(e.target.value)}
+                    />
+                  )}
                 </div>
                 <AlertDialogFooter>
                   <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
                   <AlertDialogAction
-                    disabled={!voidReason.trim()}
+                    disabled={!voidReason || (voidReason === 'other' && !voidCustomReason.trim())}
                     onClick={handleVoidSale}
                     className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                   >
@@ -615,16 +652,29 @@ const SaleDetail: React.FC = () => {
               <p className="text-xs text-muted-foreground">{t('sales.refund_hint')}</p>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('sales.return_reason')}</Label>
-              <Input value={returnReason} onChange={e => setReturnReason(e.target.value)}
-                placeholder={t('sales.return_reason_placeholder')}
-                className="h-10 rounded-xl bg-muted/20 border-border/50" />
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('sales.return_reason')} *</Label>
+              <Select value={returnReason} onValueChange={(v) => { setReturnReason(v); if (v !== 'other') setReturnCustomReason(''); }}>
+                <SelectTrigger className="h-10 w-full rounded-xl bg-muted/20 border-border/50">
+                  <SelectValue placeholder={t('sales.return_reason_placeholder', 'Select a reason…')} />
+                </SelectTrigger>
+                <SelectContent>
+                  {RETURN_REASONS.map((r) => (
+                    <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {returnReason === 'other' && (
+                <Input value={returnCustomReason} onChange={e => setReturnCustomReason(e.target.value)}
+                  placeholder={t('sales.return_reason_other', 'Describe the reason…')}
+                  className="mt-2 h-10 rounded-xl bg-muted/20 border-border/50" />
+              )}
             </div>
             <div className="flex gap-2 pt-2">
               <Button type="button" variant="outline" className="flex-1 rounded-xl h-11 text-xs font-black uppercase tracking-widest" onClick={() => setShowReturnModal(false)}>
                 {t('common.cancel')}
               </Button>
-              <Button type="submit" className="flex-1 rounded-xl h-11 text-xs font-black uppercase tracking-widest shadow-lg" disabled={!returnQty || parseFloat(returnQty) < 1}>
+              <Button type="submit" className="flex-1 rounded-xl h-11 text-xs font-black uppercase tracking-widest shadow-lg"
+                disabled={!returnQty || parseFloat(returnQty) < 1 || !returnReason || (returnReason === 'other' && !returnCustomReason.trim())}>
                 {t('common.process')}
               </Button>
             </div>

@@ -17,8 +17,9 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@renderer/*": ["src/renderer/src/*"]
+      "@renderer/*": ["src/renderer/src/*"],
+      "@shega/shared": ["../shega-shared/src/index.ts"]
     }
   },
-  "include": ["src/renderer/src/**/*", "src/preload/index.d.ts"]
+  "include": ["src/renderer/src/**/*", "src/preload/index.d.ts", "../shega-shared/src/**/*"]
 }

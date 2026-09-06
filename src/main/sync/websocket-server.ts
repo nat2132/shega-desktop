@@ -20,6 +20,15 @@ import {
   type Change,
 } from './sync-hub';
 import { logger } from '../logger';
+import {
+  submitDeviceJoinRequest,
+  listDeviceJoinRequests,
+  decideDeviceJoinRequest,
+  publishInvitation,
+  resolveInvitation,
+  getDeviceJoinRequestBy,
+} from './device-requests';
+import { DEVICE_JOIN_MSG } from '@shega/shared';
 
 export const WS_SYNC_PORT = 5758;
 
@@ -130,6 +139,30 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
         this.handleResyncRequest(clientId, client, msg);
         break;
 
+      case DEVICE_JOIN_MSG.SUBMIT:
+        this.handleDeviceJoinSubmit(clientId, client, msg);
+        break;
+
+      case DEVICE_JOIN_MSG.LIST:
+        this.handleDeviceJoinList(clientId, client, msg);
+        break;
+
+      case DEVICE_JOIN_MSG.DECIDE:
+        this.handleDeviceJoinDecide(clientId, client, msg);
+        break;
+
+      case DEVICE_JOIN_MSG.PUBLISH:
+        this.handleInvitePublish(clientId, client, msg);
+        break;
+
+      case DEVICE_JOIN_MSG.RESOLVE:
+        this.handleInviteResolve(clientId, client, msg);
+        break;
+
+      case DEVICE_JOIN_MSG.STATUS:
+        this.handleDeviceJoinStatus(clientId, client, msg);
+        break;
+
       default:
         this.sendError(ws, 'UNKNOWN_TYPE', `Unknown message type: ${msg.type}`);
     }
@@ -167,6 +200,68 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
 
     logger.info(`[WS] Device paired: ${device_id} (${name || 'unknown'})`);
     this.emit('clientConnected', this.clients.get(clientId)!);
+  }
+
+  private handleDeviceJoinSubmit(clientId: string, client: WsClient, msg: WsMessage): void {
+    const ws = client.ws;
+    if (!client.paired) { this.sendError(ws, 'NOT_PAIRED', 'Device not paired'); return; }
+    const payload = msg.payload || {};
+    if (!payload.businessId || !payload.joinerDeviceId) {
+      this.sendError(ws, 'DEVICE_JOIN_FAILED', 'businessId and joinerDeviceId required');
+      return;
+    }
+    const rec = submitDeviceJoinRequest(payload);
+    this.send(ws, { type: DEVICE_JOIN_MSG.ACK, requestId: msg.requestId, payload: { requestId: rec.requestId, status: rec.status } });
+    logger.info(`[WS] Device join request staged: ${rec.joinerDeviceId} -> ${rec.businessId}`);
+  }
+
+  private handleDeviceJoinList(clientId: string, client: WsClient, msg: WsMessage): void {
+    const ws = client.ws;
+    if (!client.paired) { this.sendError(ws, 'NOT_PAIRED', 'Device not paired'); return; }
+    const { businessId } = msg.payload || {};
+    if (!businessId) { this.sendError(ws, 'DEVICE_JOIN_FAILED', 'businessId required'); return; }
+    const requests = listDeviceJoinRequests(businessId);
+    this.send(ws, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload: { requests } });
+  }
+
+  private handleDeviceJoinDecide(clientId: string, client: WsClient, msg: WsMessage): void {
+    const ws = client.ws;
+    if (!client.paired) { this.sendError(ws, 'NOT_PAIRED', 'Device not paired'); return; }
+    const payload = msg.payload || {};
+    if (!payload.requestId || !payload.decision) {
+      this.sendError(ws, 'DEVICE_JOIN_FAILED', 'requestId and decision required');
+      return;
+    }
+    const rec = decideDeviceJoinRequest(payload);
+    if (!rec) { this.sendError(ws, 'DEVICE_JOIN_FAILED', 'request not found'); return; }
+    this.send(ws, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload: { record: rec } });
+    logger.info(`[WS] Device join ${payload.decision}: ${rec.joinerDeviceId}`);
+  }
+
+  private handleInvitePublish(clientId: string, client: WsClient, msg: WsMessage): void {
+    const ws = client.ws;
+    if (!client.paired) { this.sendError(ws, 'NOT_PAIRED', 'Device not paired'); return; }
+    const p = msg.payload || {};
+    if (!p.id || !p.businessId || !p.code) { this.sendError(ws, 'INVITE_FAILED', 'id, businessId, code required'); return; }
+    publishInvitation(p);
+    this.send(ws, { type: DEVICE_JOIN_MSG.ACK, requestId: msg.requestId, payload: { published: true } });
+  }
+
+  private handleInviteResolve(clientId: string, client: WsClient, msg: WsMessage): void {
+    const ws = client.ws;
+    const { code } = msg.payload || {};
+    if (!code) { this.sendError(ws, 'INVITE_FAILED', 'code required'); return; }
+    const inv = resolveInvitation(code);
+    if (!inv) { this.sendError(ws, 'INVITE_INVALID', 'Invitation not found or expired'); return; }
+    this.send(ws, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload: { invitation: inv } });
+  }
+
+  private handleDeviceJoinStatus(clientId: string, client: WsClient, msg: WsMessage): void {
+    const ws = client.ws;
+    const { code, joinerDeviceId } = msg.payload || {};
+    if (!code || !joinerDeviceId) { this.sendError(ws, 'DEVICE_JOIN_FAILED', 'code and joinerDeviceId required'); return; }
+    const rec = getDeviceJoinRequestBy(code, joinerDeviceId);
+    this.send(ws, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload: { record: rec } });
   }
 
   private async handleSyncPush(clientId: string, client: WsClient, msg: WsMessage): Promise<void> {

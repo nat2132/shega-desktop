@@ -4,6 +4,12 @@ contextBridge.exposeInMainWorld('api', {
   // Businesses
   getActiveBusiness: () => ipcRenderer.invoke('get-active-business'),
   updateBusiness: (id: number, biz: any) => ipcRenderer.invoke('update-business', id, biz),
+  businessList: () => ipcRenderer.invoke('business:list'),
+  businessCreate: (data: any) => ipcRenderer.invoke('business:create', data),
+  businessSwitch: (id: number) => ipcRenderer.invoke('business:switch', id),
+  businessSetDefault: (id: number) => ipcRenderer.invoke('business:set-default', id),
+  businessArchive: (id: number) => ipcRenderer.invoke('business:archive', id),
+  businessLeave: (id: number) => ipcRenderer.invoke('business:leave', id),
 
   // Categories
   getCategories: () => ipcRenderer.invoke('get-categories'),
@@ -284,6 +290,7 @@ contextBridge.exposeInMainWorld('api', {
   cloudSync: () => ipcRenderer.invoke('cloud:sync'),
   saveCloudConfig: (url: string, key: string) => ipcRenderer.invoke('cloud:save-config', url, key),
   cloudEnabled: (enabled: boolean) => ipcRenderer.invoke('cloud:set-enabled', enabled),
+  cloudSelfStatus: () => ipcRenderer.invoke('cloud:self-status'),
 
   // Audit (Phase 4)
   verifyAuditChain: () => ipcRenderer.invoke('verify-audit-chain'),
@@ -397,4 +404,31 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.removeAllListeners('update:progress');
     ipcRenderer.removeAllListeners('update:error');
   },
+
+  // �?U�? Shared Business Model (registers, devices, roles, people)
+  businessListRegisters: () => ipcRenderer.invoke('business:list-registers'),
+  businessAddRegister: (name: string, locationId?: number) => ipcRenderer.invoke('business:add-register', name, locationId),
+  businessUpdateRegister: (id: number, patch: any) => ipcRenderer.invoke('business:update-register', id, patch),
+  businessDeleteRegister: (id: number) => ipcRenderer.invoke('business:delete-register', id),
+  businessListLocations: () => ipcRenderer.invoke('business:list-locations'),
+  businessAddLocation: (name: string, address?: string) => ipcRenderer.invoke('business:add-location', name, address),
+  businessListDevices: () => ipcRenderer.invoke('business:list-devices'),
+  businessSelfDeviceStatus: () => ipcRenderer.invoke('business:self-device-status'),
+  businessSetDeviceStatus: (deviceId: string | number, status: string) => ipcRenderer.invoke('business:set-device-status', deviceId, status),
+  businessRenameDevice: (deviceId: string | number, name: string) => ipcRenderer.invoke('business:rename-device', deviceId, name),
+  businessReplaceDevice: (input: any) => ipcRenderer.invoke('business:replace-device', input),
+  businessRoles: () => ipcRenderer.invoke('business:roles'),
+  businessCan: (key: string) => ipcRenderer.invoke('business:can', key),
+  businessListPeople: () => ipcRenderer.invoke('business:list-people'),
+  businessSetPersonRole: (employeeId: number, roleKey: string) => ipcRenderer.invoke('business:set-person-role', employeeId, roleKey),
+
+  // §15 — Manager PIN approval prompt (main → renderer event + renderer → main)
+  onApprovalPrompt: (callback: (payload: any) => void) => {
+    ipcRenderer.on('approval:prompt', (_event, payload) => callback(payload));
+  },
+  onApprovalPinInvalid: (callback: (payload: { requestId: string }) => void) => {
+    ipcRenderer.on('approval:pin-invalid', (_event, payload) => callback(payload));
+  },
+  approveWithPin: (requestId: string, pin: string) => ipcRenderer.invoke('approval:resolve', { requestId, pin }),
+  cancelApproval: (requestId: string) => ipcRenderer.invoke('approval:cancel', requestId),
 })

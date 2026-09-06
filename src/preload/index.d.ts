@@ -2,6 +2,12 @@ export interface ElectronAPI {
   // Businesses
   getActiveBusiness: () => Promise<any>;
   updateBusiness: (id: number, biz: any) => Promise<any>;
+  businessList: () => Promise<any[]>;
+  businessCreate: (data: any) => Promise<any>;
+  businessSwitch: (id: number) => Promise<any>;
+  businessSetDefault: (id: number) => Promise<any>;
+  businessArchive: (id: number) => Promise<any>;
+  businessLeave: (id: number) => Promise<any>;
 
   // Categories
   getCategories: () => Promise<any[]>;
@@ -342,6 +348,35 @@ export interface ElectronAPI {
   onUpdateProgress: (callback: (data: UpdateProgressData) => void) => void;
   onUpdateError: (callback: (data: { message: string }) => void) => void;
   removeUpdateListeners: () => void;
+
+  // Shared Business Model (registers, devices, roles, people)
+  businessListRegisters: () => Promise<any[]>;
+  businessAddRegister: (name: string, locationId?: number) => Promise<any>;
+  businessUpdateRegister: (id: number, patch: any) => Promise<any>;
+  businessDeleteRegister: (id: number) => Promise<any>;
+  businessListLocations: () => Promise<any[]>;
+  businessAddLocation: (name: string, address?: string) => Promise<any>;
+  businessListDevices: () => Promise<any[]>;
+  businessSelfDeviceStatus: () => Promise<{ found: boolean; deviceId: string; status: string | null; name: string | null }>;
+  businessSetDeviceStatus: (deviceId: string | number, status: string) => Promise<any>;
+  businessRenameDevice: (deviceId: string | number, name: string) => Promise<any>;
+  businessReplaceDevice: (input: { oldDeviceId: string | number; name: string; platform?: string; setThisAsReplacement?: boolean }) => Promise<any>;
+  businessRoles: () => Promise<any[]>;
+  businessCan: (key: string) => Promise<{ allowed: boolean }>;
+  businessListPeople: () => Promise<any[]>;
+  businessSetPersonRole: (employeeId: number, roleKey: string) => Promise<any>;
+
+  // §15 — Manager PIN approval
+  onApprovalPrompt: (callback: (payload: {
+    requestId: string;
+    title?: string;
+    message?: string;
+    approverName?: string;
+    context: string;
+  }) => void) => void;
+  onApprovalPinInvalid: (callback: (payload: { requestId: string }) => void) => void;
+  approveWithPin: (requestId: string, pin: string) => Promise<boolean>;
+  cancelApproval: (requestId: string) => Promise<boolean>;
 }
 
 export type UpdateStatus = 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';

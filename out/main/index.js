@@ -28,6 +28,650 @@ function _interopNamespaceDefault(e) {
 }
 const fs__namespace = /* @__PURE__ */ _interopNamespaceDefault(fs);
 const path__namespace = /* @__PURE__ */ _interopNamespaceDefault(path);
+const DEFAULT_DISCOUNT_CAPS = {
+  owner: null,
+  manager: null,
+  cashier: 10,
+  inventory: 10,
+  accountant: 10,
+  reports: 10,
+  warehouse: 10
+};
+function getDiscountCap(role) {
+  if (!role) return DEFAULT_DISCOUNT_CAPS.cashier;
+  const cap = DEFAULT_DISCOUNT_CAPS[role];
+  return cap === void 0 ? DEFAULT_DISCOUNT_CAPS.cashier : cap;
+}
+const PERMISSION_CATALOG = [
+  // ---- Sales / POS ----
+  { key: "sales.create", label: "Make sales", description: "Record and complete sales transactions", scope: "sales" },
+  { key: "sales.scan", label: "Scan products", description: "Scan barcodes into the sale", scope: "sales" },
+  { key: "sales.search", label: "Search products", description: "Search the product catalog during checkout", scope: "sales" },
+  { key: "sales.checkout", label: "Checkout", description: "Complete checkout and payment", scope: "sales" },
+  { key: "sales.printReceipt", label: "Print receipts", description: "Print a thermal/PDF receipt", scope: "sales" },
+  { key: "sales.hold", label: "Hold sales", description: "Place sales on hold for later", scope: "sales" },
+  { key: "sales.viewOwn", label: "View own sales", description: "View sales recorded by yourself", scope: "sales" },
+  { key: "sales.viewAll", label: "View all sales", description: "View every sale in the business", scope: "sales" },
+  { key: "sales.refund", label: "Refunds", description: "Process refunds", scope: "sales" },
+  { key: "sales.discount.unlimited", label: "Unlimited discounts", description: "Apply discounts up to 100%", scope: "sales" },
+  { key: "sales.discount.limited", label: "Limited discounts", description: "Apply small discounts within threshold", scope: "sales" },
+  { key: "sales.void", label: "Void / cancel sale", description: "Void or cancel a sale after the fact", scope: "sales" },
+  { key: "sales.priceOverride", label: "Price override", description: "Override a product selling price at checkout", scope: "sales" },
+  // ---- Products / Catalog ----
+  { key: "products.view", label: "View products", description: "View the product catalog", scope: "products" },
+  { key: "products.viewStock", label: "View product stock", description: "See live stock levels", scope: "products" },
+  { key: "products.create", label: "Create products", description: "Add new products to the catalog", scope: "products" },
+  { key: "products.edit", label: "Edit products", description: "Edit product details", scope: "products" },
+  { key: "products.delete", label: "Delete products", description: "Delete products from the catalog", scope: "products" },
+  { key: "products.changePrice", label: "Change selling price", description: "Change a product selling price", scope: "products" },
+  { key: "products.scanBarcode", label: "Scan barcodes", description: "Scan/register product barcodes", scope: "products" },
+  // ---- Inventory / Stock ----
+  { key: "inventory.receive", label: "Receive stock", description: "Add stock / receive purchase", scope: "inventory" },
+  { key: "inventory.adjust", label: "Stock adjustment", description: "Adjust stock (count, damaged, corrections)", scope: "inventory" },
+  { key: "inventory.count", label: "Stock count", description: "Perform physical stock counts", scope: "inventory" },
+  { key: "inventory.transfer", label: "Stock transfer", description: "Transfer stock between registers/warehouses", scope: "inventory" },
+  { key: "inventory.suppliers", label: "Suppliers", description: "Manage suppliers and purchase orders", scope: "inventory" },
+  // ---- Customers ----
+  { key: "customers.view", label: "View customers", description: "View the customer directory", scope: "customers" },
+  { key: "customers.manage", label: "Manage customers", description: "Create and edit customers", scope: "customers" },
+  // ---- Payments / Finance ----
+  { key: "payments.process", label: "Process payments", description: "Take payments (cash, digital, card)", scope: "payments" },
+  { key: "payments.manageExpenses", label: "Manage expenses", description: "Record and manage expenses", scope: "payments" },
+  { key: "payments.cashDrawer", label: "Cash drawer", description: "Open/close and audit the cash drawer", scope: "payments" },
+  // ---- Registers ----
+  { key: "registers.view", label: "View registers", description: "View registers and assignment", scope: "registers" },
+  { key: "registers.manage", label: "Manage registers", description: "Create and configure registers", scope: "registers" },
+  { key: "registers.openShift", label: "Open shift", description: "Open and close shifts on a register", scope: "registers" },
+  // ---- Reports ----
+  { key: "reports.viewOwn", label: "View own reports", description: "View reports scoped to yourself", scope: "reports" },
+  { key: "reports.viewAll", label: "View all reports", description: "View full business reports", scope: "reports" },
+  { key: "reports.export", label: "Export reports", description: "Export PDF/CSV reports", scope: "reports" },
+  // ---- Team / Staff ----
+  { key: "team.view", label: "View team", description: "View staff members", scope: "team" },
+  { key: "team.manage", label: "Manage team", description: "Add, edit and remove staff", scope: "team" },
+  { key: "team.assignRoles", label: "Assign roles", description: "Assign roles and permissions to staff", scope: "team" },
+  // ---- Devices ----
+  { key: "devices.view", label: "View devices", description: "View the business device list", scope: "devices" },
+  { key: "devices.manage", label: "Manage devices", description: "Add, pair, lock, disable and remove devices", scope: "devices" },
+  // ---- Settings ----
+  { key: "settings.view", label: "View settings", description: "View business settings", scope: "settings" },
+  { key: "settings.manage", label: "Manage settings", description: "Change business settings", scope: "settings" },
+  // ---- Tax ----
+  { key: "tax.view", label: "View tax config", description: "View tax configuration", scope: "tax" },
+  { key: "tax.configure", label: "Configure tax", description: "Change tax rates and configuration", scope: "tax" },
+  // ---- Subscription ----
+  { key: "subscription.view", label: "View subscription", description: "View subscription and device plan", scope: "subscription" },
+  { key: "subscription.manage", label: "Manage subscription", description: "Change plan, renew and manage payment", scope: "subscription" },
+  // ---- Ownership (Owner only, server-verified) ----
+  { key: "ownership.transfer", label: "Transfer ownership", description: "Transfer business ownership (strong confirmation)", scope: "ownership" },
+  { key: "ownership.deleteBusiness", label: "Delete business", description: "Delete the entire business", scope: "ownership" }
+];
+Object.fromEntries(
+  PERMISSION_CATALOG.map((p) => [p.key, p])
+);
+function unpack(value) {
+  if (value === true) return { allowed: true };
+  if (value === "approval") return { allowed: false, reason: "approval-required" };
+  if (value === "limited") return { allowed: false, reason: "limited" };
+  return { allowed: false, reason: "denied" };
+}
+function checkPermission(ctx, key) {
+  const result = unpack(ctx.permissions[key]);
+  if (!result.allowed && result.reason === "approval-required" && ctx.canApprove) {
+    return { allowed: true };
+  }
+  return result;
+}
+function can(ctx, key) {
+  return checkPermission(ctx, key).allowed;
+}
+const ROLE_ORDER = [
+  "owner",
+  "manager",
+  "cashier",
+  "inventory",
+  "accountant",
+  "reports",
+  "warehouse"
+];
+const DEFAULT_ROLE_SETS = {
+  // ðŸ‘‘ Owner â€” full control over everything.
+  owner: {
+    "sales.create": true,
+    "sales.scan": true,
+    "sales.search": true,
+    "sales.checkout": true,
+    "sales.printReceipt": true,
+    "sales.hold": true,
+    "sales.viewOwn": true,
+    "sales.viewAll": true,
+    "sales.refund": true,
+    "sales.discount.unlimited": true,
+    "sales.discount.limited": true,
+    "sales.void": true,
+    "sales.priceOverride": true,
+    "products.view": true,
+    "products.viewStock": true,
+    "products.create": true,
+    "products.edit": true,
+    "products.delete": true,
+    "products.changePrice": true,
+    "products.scanBarcode": true,
+    "inventory.receive": true,
+    "inventory.adjust": true,
+    "inventory.count": true,
+    "inventory.transfer": true,
+    "inventory.suppliers": true,
+    "customers.view": true,
+    "customers.manage": true,
+    "payments.process": true,
+    "payments.manageExpenses": true,
+    "payments.cashDrawer": true,
+    "registers.view": true,
+    "registers.manage": true,
+    "registers.openShift": true,
+    "reports.viewOwn": true,
+    "reports.viewAll": true,
+    "reports.export": true,
+    "team.view": true,
+    "team.manage": true,
+    "team.assignRoles": true,
+    "devices.view": true,
+    "devices.manage": true,
+    "settings.view": true,
+    "settings.manage": true,
+    "tax.view": true,
+    "tax.configure": true,
+    "subscription.view": true,
+    "subscription.manage": true,
+    "ownership.transfer": true,
+    "ownership.deleteBusiness": true
+  },
+  // ðŸ§‘â€ðŸ’¼ Manager â€” operations only, no ownership/subscription control unless granted.
+  manager: {
+    "sales.create": true,
+    "sales.scan": true,
+    "sales.search": true,
+    "sales.checkout": true,
+    "sales.printReceipt": true,
+    "sales.hold": true,
+    "sales.viewOwn": true,
+    "sales.viewAll": true,
+    "sales.refund": "approval",
+    "sales.discount.unlimited": "approval",
+    "sales.discount.limited": true,
+    "sales.void": "approval",
+    "sales.priceOverride": "approval",
+    "products.view": true,
+    "products.viewStock": true,
+    "products.create": true,
+    "products.edit": true,
+    "products.delete": "approval",
+    "products.changePrice": "approval",
+    "products.scanBarcode": true,
+    "inventory.receive": true,
+    "inventory.adjust": "approval",
+    "inventory.count": true,
+    "inventory.transfer": true,
+    "inventory.suppliers": true,
+    "customers.view": true,
+    "customers.manage": true,
+    "payments.process": true,
+    "payments.manageExpenses": true,
+    "payments.cashDrawer": "approval",
+    "registers.view": true,
+    "registers.manage": true,
+    "registers.openShift": true,
+    "reports.viewOwn": true,
+    "reports.viewAll": true,
+    "reports.export": true,
+    "team.view": true,
+    "team.manage": true,
+    "team.assignRoles": false,
+    "devices.view": true,
+    "devices.manage": false,
+    "settings.view": true,
+    "settings.manage": false,
+    "tax.view": true,
+    "tax.configure": "approval",
+    "subscription.view": false,
+    "subscription.manage": false,
+    "ownership.transfer": false,
+    "ownership.deleteBusiness": false
+  },
+  // ðŸ’° Cashier â€” POS and payment operations (spec section 11).
+  cashier: {
+    "sales.create": true,
+    "sales.scan": true,
+    "sales.search": true,
+    "sales.checkout": true,
+    "sales.printReceipt": true,
+    "sales.hold": true,
+    "sales.viewOwn": true,
+    "sales.viewAll": false,
+    "sales.refund": "approval",
+    "sales.discount.unlimited": "approval",
+    "sales.discount.limited": true,
+    "sales.void": false,
+    "sales.priceOverride": false,
+    "products.view": true,
+    "products.viewStock": true,
+    "products.create": false,
+    "products.edit": false,
+    "products.delete": false,
+    "products.changePrice": false,
+    "products.scanBarcode": false,
+    "inventory.receive": false,
+    "inventory.adjust": false,
+    "inventory.count": false,
+    "inventory.transfer": false,
+    "inventory.suppliers": false,
+    "customers.view": true,
+    "customers.manage": false,
+    "payments.process": true,
+    "payments.manageExpenses": false,
+    "payments.cashDrawer": false,
+    "registers.view": false,
+    "registers.manage": false,
+    "registers.openShift": true,
+    "reports.viewOwn": true,
+    "reports.viewAll": false,
+    "reports.export": false,
+    "team.view": false,
+    "team.manage": false,
+    "team.assignRoles": false,
+    "devices.view": false,
+    "devices.manage": false,
+    "settings.view": false,
+    "settings.manage": false,
+    "tax.view": false,
+    "tax.configure": false,
+    "subscription.view": false,
+    "subscription.manage": false,
+    "ownership.transfer": false,
+    "ownership.deleteBusiness": false
+  },
+  // ðŸ“¦ Inventory â€” products & stock operations (spec section 12).
+  inventory: {
+    "sales.create": false,
+    "sales.scan": false,
+    "sales.search": false,
+    "sales.checkout": false,
+    "products.view": true,
+    "products.viewStock": true,
+    "products.create": true,
+    "products.edit": true,
+    "products.delete": false,
+    "products.changePrice": false,
+    "products.scanBarcode": true,
+    "inventory.receive": true,
+    "inventory.adjust": "approval",
+    "inventory.count": true,
+    "inventory.transfer": true,
+    "inventory.suppliers": true,
+    "customers.view": false,
+    "customers.manage": false,
+    "payments.process": false,
+    "payments.manageExpenses": false,
+    "payments.cashDrawer": false,
+    "registers.view": false,
+    "registers.manage": false,
+    "registers.openShift": false,
+    "reports.viewOwn": false,
+    "reports.viewAll": false,
+    "reports.export": false,
+    "team.view": false,
+    "team.manage": false,
+    "team.assignRoles": false,
+    "devices.view": false,
+    "devices.manage": false,
+    "settings.view": false,
+    "settings.manage": false,
+    "tax.view": false,
+    "tax.configure": false,
+    "subscription.view": false,
+    "subscription.manage": false,
+    "ownership.transfer": false,
+    "ownership.deleteBusiness": false
+  },
+  // ðŸ“Š Accountant / Finance â€” expenses, payments, financial reports.
+  accountant: {
+    "sales.viewAll": true,
+    "sales.viewOwn": true,
+    "sales.printReceipt": true,
+    "sales.refund": "approval",
+    "products.view": true,
+    "products.viewStock": true,
+    "inventory.receive": false,
+    "inventory.adjust": false,
+    "customers.view": true,
+    "customers.manage": true,
+    "payments.process": false,
+    "payments.manageExpenses": true,
+    "payments.cashDrawer": "approval",
+    "registers.view": true,
+    "registers.manage": false,
+    "reports.viewOwn": true,
+    "reports.viewAll": true,
+    "reports.export": true,
+    "team.view": false,
+    "devices.view": false,
+    "settings.view": false,
+    "tax.view": true,
+    "tax.configure": "approval",
+    "subscription.view": false,
+    "ownership.transfer": false,
+    "ownership.deleteBusiness": false
+  },
+  // ðŸ“ˆ Reports â€” read-only reporting.
+  reports: {
+    "sales.viewAll": true,
+    "sales.viewOwn": true,
+    "sales.printReceipt": true,
+    "products.view": true,
+    "products.viewStock": true,
+    "customers.view": true,
+    "reports.viewOwn": true,
+    "reports.viewAll": true,
+    "reports.export": true,
+    "registers.view": true,
+    "tax.view": true,
+    "devices.view": false,
+    "settings.view": false
+  },
+  // ðŸšš Warehouse â€” warehouse & stock operations.
+  warehouse: {
+    "products.view": true,
+    "products.viewStock": true,
+    "products.scanBarcode": true,
+    "inventory.receive": true,
+    "inventory.adjust": "approval",
+    "inventory.count": true,
+    "inventory.transfer": true,
+    "inventory.suppliers": true,
+    "reports.viewOwn": true,
+    "customers.view": false,
+    "sales.create": false
+  }
+};
+const ROLE_NAME = {
+  owner: "Owner",
+  manager: "Manager",
+  cashier: "Cashier",
+  inventory: "Inventory",
+  accountant: "Accountant / Finance",
+  reports: "Reports",
+  warehouse: "Warehouse"
+};
+const ROLE_DESCRIPTION = {
+  owner: "Full control over the business, including ownership, subscription and devices.",
+  manager: "Runs business operations. No ownership/subscription control unless granted.",
+  cashier: "POS and payment operations only.",
+  inventory: "Products, stock receiving, counts and transfers.",
+  accountant: "Expenses, payments and financial reports.",
+  reports: "Read-only reporting access.",
+  warehouse: "Warehouse and stock operations."
+};
+const BUILTIN_ROLES = ROLE_ORDER.map((key) => ({
+  key,
+  name: ROLE_NAME[key],
+  description: ROLE_DESCRIPTION[key],
+  isSystem: true,
+  builtinKey: key,
+  permissions: DEFAULT_ROLE_SETS[key]
+}));
+function getBuiltinRole(key) {
+  return BUILTIN_ROLES.find((r) => r.builtinKey === key);
+}
+const BUSINESS_ADAPTER_ENTITIES = ["businesses", "locations", "registers", "business_roles", "users", "devices"];
+const businesses = {
+  mobileToDesktop: {
+    name: "businessName",
+    currency: "currency",
+    address: "address",
+    is_default: "isDefault",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at",
+    updated_at: "updated_at"
+  },
+  desktopToMobile: {
+    businessName: "name",
+    currency: "currency",
+    address: "address",
+    isDefault: "is_default",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at",
+    updated_at: "updated_at"
+  },
+  mobileFk: [],
+  desktopFk: []
+};
+const locations = {
+  mobileToDesktop: {
+    business_id: "businessId",
+    name: "name",
+    address: "address",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at"
+  },
+  desktopToMobile: {
+    businessId: "business_id",
+    name: "name",
+    address: "address",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at"
+  },
+  mobileFk: [{ mobileField: "business_id", desktopColumn: "businessId", lookupEntity: "businesses" }],
+  desktopFk: [{ desktopColumn: "businessId", mobileField: "business_id", lookupEntity: "businesses" }]
+};
+const registers = {
+  mobileToDesktop: {
+    business_id: "businessId",
+    location_id: "locationId",
+    name: "name",
+    device_id: "deviceId",
+    printer_name: "printerName",
+    has_drawer: "hasDrawer",
+    is_active: "isActive",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at"
+  },
+  desktopToMobile: {
+    businessId: "business_id",
+    locationId: "location_id",
+    name: "name",
+    deviceId: "device_id",
+    printerName: "printer_name",
+    hasDrawer: "has_drawer",
+    isActive: "is_active",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at"
+  },
+  mobileFk: [
+    { mobileField: "location_id", desktopColumn: "locationId", lookupEntity: "locations" },
+    { mobileField: "device_id", desktopColumn: "deviceId", lookupEntity: "devices" }
+  ],
+  desktopFk: [
+    { desktopColumn: "locationId", mobileField: "location_id", lookupEntity: "locations" },
+    { desktopColumn: "deviceId", mobileField: "device_id", lookupEntity: "devices" }
+  ]
+};
+const business_roles = {
+  mobileToDesktop: {
+    business_id: "businessId",
+    name: "name",
+    description: "description",
+    permissions: "permissions",
+    is_system: "isSystem",
+    builtin_key: "builtinKey",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at"
+  },
+  desktopToMobile: {
+    businessId: "business_id",
+    name: "name",
+    description: "description",
+    permissions: "permissions",
+    isSystem: "is_system",
+    builtinKey: "builtin_key",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at"
+  },
+  mobileFk: [{ mobileField: "business_id", desktopColumn: "businessId", lookupEntity: "businesses" }],
+  desktopFk: [{ desktopColumn: "businessId", mobileField: "business_id", lookupEntity: "businesses" }]
+};
+const users = {
+  mobileToDesktop: {
+    business_id: "businessId",
+    name: "name",
+    phone: "phone",
+    email: "email",
+    role: "role",
+    role_name: "roleName",
+    permissions: "permissions",
+    is_active: "isActive",
+    is_owner: "isOwner",
+    pin_hash: "pinHash",
+    pin_salt: "pinSalt",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at",
+    updated_at: "updated_at"
+  },
+  desktopToMobile: {
+    businessId: "business_id",
+    name: "name",
+    phone: "phone",
+    email: "email",
+    role: "role",
+    roleName: "role_name",
+    permissions: "permissions",
+    isActive: "is_active",
+    isOwner: "is_owner",
+    pinHash: "pin_hash",
+    pinSalt: "pin_salt",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at",
+    updated_at: "updated_at"
+  },
+  mobileFk: [{ mobileField: "business_id", desktopColumn: "businessId", lookupEntity: "businesses" }],
+  desktopFk: [{ desktopColumn: "businessId", mobileField: "business_id", lookupEntity: "businesses" }]
+};
+const devices = {
+  desktopTable: "roster_devices",
+  mobileToDesktop: {
+    business_id: "businessId",
+    user_id: "userId",
+    name: "name",
+    model: "model",
+    platform: "platform",
+    register_id: "registerId",
+    role: "role",
+    status: "status",
+    pairing_code: "pairingCode",
+    pairing_expires_at: "pairingExpiresAt",
+    last_seen_at: "lastSeenAt",
+    last_sync_at: "lastSyncAt",
+    app_version: "appVersion",
+    is_primary: "isPrimary",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at",
+    updated_at: "updated_at"
+  },
+  desktopToMobile: {
+    businessId: "business_id",
+    userId: "user_id",
+    name: "name",
+    model: "model",
+    platform: "platform",
+    registerId: "register_id",
+    role: "role",
+    status: "status",
+    pairingCode: "pairing_code",
+    pairingExpiresAt: "pairing_expires_at",
+    lastSeenAt: "last_seen_at",
+    lastSyncAt: "last_sync_at",
+    appVersion: "app_version",
+    isPrimary: "is_primary",
+    uuid: "uuid",
+    row_version: "row_version",
+    is_deleted: "is_deleted",
+    is_synced: "is_synced",
+    created_at: "created_at",
+    updated_at: "updated_at"
+  },
+  mobileFk: [
+    { mobileField: "business_id", desktopColumn: "businessId", lookupEntity: "businesses" },
+    { mobileField: "user_id", desktopColumn: "userId", lookupEntity: "users" },
+    { mobileField: "register_id", desktopColumn: "registerId", lookupEntity: "registers" }
+  ],
+  desktopFk: [
+    { desktopColumn: "businessId", mobileField: "business_id", lookupEntity: "businesses" },
+    { desktopColumn: "userId", mobileField: "user_id", lookupEntity: "users" },
+    { desktopColumn: "registerId", mobileField: "register_id", lookupEntity: "registers" }
+  ]
+};
+const FIELD_MAPS = {
+  businesses,
+  locations,
+  registers,
+  business_roles,
+  users,
+  devices
+};
+function desktopTableName(entity) {
+  return FIELD_MAPS[entity]?.desktopTable ?? entity;
+}
+function mobileToDesktopPayload(entity, payload) {
+  const map = FIELD_MAPS[entity];
+  const out = {};
+  for (const mobile of Object.keys(payload)) {
+    const desktop = map.mobileToDesktop[mobile];
+    if (desktop) out[desktop] = payload[mobile];
+  }
+  return out;
+}
+function desktopToMobilePayload(entity, row) {
+  const map = FIELD_MAPS[entity];
+  const out = {};
+  for (const desktop of Object.keys(row)) {
+    const mobile = map.desktopToMobile[desktop];
+    if (mobile) out[mobile] = row[desktop];
+  }
+  return out;
+}
 const isDev$1 = !electron.app.isPackaged;
 const dbDir = isDev$1 ? path.join(process.cwd(), "db") : path.join(electron.app.getPath("userData"), "db");
 if (!fs.existsSync(dbDir)) {
@@ -418,6 +1062,13 @@ function initDB() {
       subCategory TEXT,
       notes TEXT,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1,
       FOREIGN KEY (businessId) REFERENCES businesses(id)
     );
 
@@ -509,7 +1160,106 @@ function initDB() {
       snoozedUntil TEXT,
       relatedEntityType TEXT,
       relatedEntityId INTEGER,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1
+    );
+
+    // Budget categories (mirrors mobile's budget_categories table)
+    CREATE TABLE IF NOT EXISTS budget_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      budgetId INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      plannedAmount REAL NOT NULL DEFAULT 0,
+      notes TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1,
+      FOREIGN KEY (budgetId) REFERENCES budgets(id) ON DELETE CASCADE
+    );
+
+    // Subscription payments (mirrors mobile's subscription_payments table)
+    CREATE TABLE IF NOT EXISTS subscription_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subscriptionId INTEGER,
+      transactionId TEXT,
+      businessName TEXT,
+      phoneNumber TEXT,
+      planName TEXT,
+      amount REAL,
+      currency TEXT DEFAULT 'ETB',
+      paymentDate TEXT,
+      notes TEXT,
+      status TEXT DEFAULT 'pending_verification',
+      verifiedAt TEXT,
+      verifiedBy TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1,
+      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
+    );
+
+    // Subscription renewals (mirrors mobile's subscription_renewals table)
+    CREATE TABLE IF NOT EXISTS subscription_renewals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subscriptionId INTEGER,
+      previousExpiry TEXT,
+      newExpiry TEXT,
+      plan TEXT,
+      durationMonths INTEGER,
+      amount REAL,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1,
+      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
+    );
+
+    // Scheduled reminders (mirrors mobile's scheduled_reminders table)
+    CREATE TABLE IF NOT EXISTS scheduled_reminders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER,
+      notificationId TEXT,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT,
+      category TEXT,
+      priority TEXT DEFAULT 'normal',
+      triggerDate TEXT,
+      repeatInterval TEXT,
+      status TEXT DEFAULT 'scheduled',
+      lastTriggeredAt TEXT,
+      completedAt TEXT,
+      snoozedUntil TEXT,
+      relatedEntityType TEXT,
+      relatedEntityId INTEGER,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS settings (
@@ -597,7 +1347,14 @@ function initDB() {
       permissions TEXT DEFAULT '[]',
       isSystem INTEGER DEFAULT 0,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
+      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS employees (
@@ -620,7 +1377,14 @@ function initDB() {
       hireDate TEXT,
       notes TEXT,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
+      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS employee_accounts (
@@ -635,7 +1399,14 @@ function initDB() {
       lastPasswordChange TEXT,
       lastLogin TEXT,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
+      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS audit_logs (
@@ -938,7 +1709,8 @@ function initDB() {
     if (!budgetColNames.includes("referenceName")) db.exec("ALTER TABLE budgets ADD COLUMN referenceName TEXT");
     if (!budgetColNames.includes("isRecurring")) db.exec("ALTER TABLE budgets ADD COLUMN isRecurring INTEGER DEFAULT 0");
     if (!budgetColNames.includes("notes")) db.exec("ALTER TABLE budgets ADD COLUMN notes TEXT");
-    if (!budgetColNames.includes("updatedAt")) db.exec("ALTER TABLE budgets ADD COLUMN updatedAt TEXT DEFAULT CURRENT_TIMESTAMP");
+    if (!budgetColNames.includes("updatedAt")) db.exec("ALTER TABLE budgets ADD COLUMN updatedAt TEXT");
+    db.exec("UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NULL");
     version = 2;
     db.pragma(`user_version = ${version}`);
   }
@@ -1088,17 +1860,18 @@ function initDB() {
     db.pragma(`user_version = ${version}`);
   }
   if (version < 17) {
-    const syncTables2 = ["categories", "items", "item_packs", "sales", "debt_payments", "returns", "expenses", "adjustments", "customers"];
-    for (const tbl of syncTables2) {
-      const cols = db.prepare(`PRAGMA table_info(${tbl})`).all();
+    const syncTables2 = ["categories", "items", "item_packs", "sales", "debt_payments", "returns", "expenses", "adjustments", "customers", "contacts", "suppliers", "orders", "order_items", "shipments", "shipment_items", "employee_roles", "employees", "employee_accounts", "subscriptions", "notification_reminders", "budgets"];
+    for (const tbl2 of syncTables2) {
+      const cols = db.prepare(`PRAGMA table_info(${tbl2})`).all();
       const names = cols.map((c) => c.name);
-      if (!names.includes("uuid")) db.exec(`ALTER TABLE ${tbl} ADD COLUMN uuid TEXT`);
-      if (!names.includes("device_id")) db.exec(`ALTER TABLE ${tbl} ADD COLUMN device_id TEXT`);
-      if (!names.includes("row_version")) db.exec(`ALTER TABLE ${tbl} ADD COLUMN row_version INTEGER DEFAULT 1`);
-      if (!names.includes("updated_at")) db.exec(`ALTER TABLE ${tbl} ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP`);
-      if (!names.includes("is_deleted")) db.exec(`ALTER TABLE ${tbl} ADD COLUMN is_deleted INTEGER DEFAULT 0`);
-      if (!names.includes("deleted_at")) db.exec(`ALTER TABLE ${tbl} ADD COLUMN deleted_at TEXT`);
-      if (!names.includes("is_synced")) db.exec(`ALTER TABLE ${tbl} ADD COLUMN is_synced INTEGER DEFAULT 1`);
+      if (!names.includes("uuid")) db.exec(`ALTER TABLE ${tbl2} ADD COLUMN uuid TEXT`);
+      if (!names.includes("device_id")) db.exec(`ALTER TABLE ${tbl2} ADD COLUMN device_id TEXT`);
+      if (!names.includes("row_version")) db.exec(`ALTER TABLE ${tbl2} ADD COLUMN row_version INTEGER DEFAULT 1`);
+      if (!names.includes("updated_at")) db.exec(`ALTER TABLE ${tbl2} ADD COLUMN updated_at TEXT`);
+      db.exec(`UPDATE ${tbl2} SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL`);
+      if (!names.includes("is_deleted")) db.exec(`ALTER TABLE ${tbl2} ADD COLUMN is_deleted INTEGER DEFAULT 0`);
+      if (!names.includes("deleted_at")) db.exec(`ALTER TABLE ${tbl2} ADD COLUMN deleted_at TEXT`);
+      if (!names.includes("is_synced")) db.exec(`ALTER TABLE ${tbl2} ADD COLUMN is_synced INTEGER DEFAULT 1`);
     }
     const backfill = `
       UPDATE categories SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;
@@ -1205,37 +1978,440 @@ function initDB() {
     version = 21;
     db.pragma(`user_version = ${version}`);
   }
+  if (version < 22) {
+    const devCols = db.prepare("PRAGMA table_info(devices)").all().map((c) => c.name);
+    const addDev = (col, def) => {
+      if (!devCols.includes(col)) db.exec(`ALTER TABLE devices ADD COLUMN ${col} ${def}`);
+    };
+    addDev("platform", "TEXT NOT NULL DEFAULT 'desktop'");
+    addDev("role", "TEXT");
+    addDev("status", "TEXT NOT NULL DEFAULT 'active'");
+    addDev("userId", "INTEGER");
+    addDev("registerId", "INTEGER");
+    addDev("appVersion", "TEXT");
+    addDev("isPrimary", "INTEGER DEFAULT 0");
+    addDev("uuid", "TEXT");
+    addDev("row_version", "INTEGER DEFAULT 1");
+    addDev("updated_at", "TEXT");
+    addDev("is_deleted", "INTEGER DEFAULT 0");
+    addDev("is_synced", "INTEGER DEFAULT 1");
+    const empCols = db.prepare("PRAGMA table_info(employees)").all().map((c) => c.name);
+    if (!empCols.includes("role_key")) db.exec("ALTER TABLE employees ADD COLUMN role_key TEXT");
+    if (!empCols.includes("permissions_json")) db.exec("ALTER TABLE employees ADD COLUMN permissions_json TEXT");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS locations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER,
+        name TEXT NOT NULL,
+        address TEXT,
+        uuid TEXT,
+        row_version INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        is_deleted INTEGER DEFAULT 0,
+        is_synced INTEGER DEFAULT 1,
+        FOREIGN KEY (businessId) REFERENCES businesses(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS registers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER,
+        locationId INTEGER,
+        name TEXT NOT NULL,
+        deviceId INTEGER,
+        printerName TEXT,
+        hasDrawer INTEGER DEFAULT 0,
+        isActive INTEGER DEFAULT 1,
+        uuid TEXT,
+        row_version INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        is_deleted INTEGER DEFAULT 0,
+        is_synced INTEGER DEFAULT 1,
+        FOREIGN KEY (businessId) REFERENCES businesses(id),
+        FOREIGN KEY (locationId) REFERENCES locations(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS business_roles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER,
+        name TEXT NOT NULL,
+        description TEXT,
+        permissions TEXT DEFAULT '{}',
+        isSystem INTEGER DEFAULT 0,
+        builtinKey TEXT,
+        uuid TEXT,
+        row_version INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        is_deleted INTEGER DEFAULT 0,
+        is_synced INTEGER DEFAULT 1
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_registers_business ON registers(businessId);
+      CREATE INDEX IF NOT EXISTS idx_devices_business ON devices(businessId);
+      CREATE INDEX IF NOT EXISTS idx_business_roles_business ON business_roles(businessId);
+    `);
+    const seed = db.prepare("INSERT OR IGNORE INTO business_roles (name, description, permissions, isSystem, builtinKey) VALUES (?, ?, ?, 1, ?)");
+    for (const r of BUILTIN_ROLES) {
+      seed.run(r.name, r.description ?? "", JSON.stringify(r.permissions), r.builtinKey ?? r.key);
+    }
+    version = 22;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 23) {
+    const addSyncCols = (table, cols) => {
+      const have = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+      for (const c of cols) {
+        if (have.includes(c)) continue;
+        if (c === "device_id") db.exec(`ALTER TABLE ${table} ADD COLUMN device_id TEXT`);
+        else if (c === "updated_at") db.exec(`ALTER TABLE ${table} ADD COLUMN updated_at TEXT`);
+        else if (c === "deleted_at") db.exec(`ALTER TABLE ${table} ADD COLUMN deleted_at TEXT`);
+      }
+      db.exec(`UPDATE ${table} SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL`);
+    };
+    addSyncCols("locations", ["device_id", "updated_at", "deleted_at"]);
+    addSyncCols("registers", ["device_id", "updated_at", "deleted_at"]);
+    addSyncCols("business_roles", ["device_id", "updated_at", "deleted_at"]);
+    version = 23;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 24) {
+    const bizCols = db.prepare("PRAGMA table_info(businesses)").all().map((c) => c.name);
+    const addBiz = (col, def) => {
+      if (!bizCols.includes(col)) db.exec(`ALTER TABLE businesses ADD COLUMN ${col} ${def}`);
+    };
+    addBiz("uuid", "TEXT");
+    addBiz("device_id", "TEXT");
+    addBiz("row_version", "INTEGER DEFAULT 1");
+    addBiz("updated_at", "TEXT");
+    db.exec("UPDATE businesses SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL");
+    addBiz("is_deleted", "INTEGER DEFAULT 0");
+    addBiz("deleted_at", "TEXT");
+    addBiz("is_synced", "INTEGER DEFAULT 1");
+    const genUuid2 = "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))";
+    db.exec(`UPDATE businesses SET uuid = ${genUuid2} WHERE uuid IS NULL;`);
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_businesses_uuid ON businesses(uuid);");
+    version = 24;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 25) {
+    const devCols = db.prepare("PRAGMA table_info(devices)").all().map((c) => c.name);
+    if (!devCols.includes("uuid")) db.exec("ALTER TABLE devices ADD COLUMN uuid TEXT");
+    db.exec("UPDATE devices SET uuid = device_id WHERE uuid IS NULL;");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_uuid ON devices(uuid);");
+    version = 25;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 26) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS device_requests (
+        id TEXT PRIMARY KEY,
+        business_id TEXT NOT NULL,
+        code TEXT,
+        joiner_device_id TEXT NOT NULL,
+        joiner_name TEXT,
+        joiner_model TEXT,
+        joiner_user TEXT,
+        role TEXT,
+        platform TEXT DEFAULT 'mobile',
+        status TEXT DEFAULT 'pending',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        decided_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_device_requests_biz ON device_requests(business_id, status);
+      CREATE TABLE IF NOT EXISTS invitations (
+        id TEXT PRIMARY KEY,
+        business_id TEXT NOT NULL,
+        code TEXT UNIQUE NOT NULL,
+        name TEXT,
+        role TEXT,
+        platform TEXT DEFAULT 'mobile',
+        created_by TEXT,
+        expires_at TEXT,
+        status TEXT DEFAULT 'open',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_invitations_status ON invitations(code, status);
+    `);
+    version = 26;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 27) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER,
+        name TEXT NOT NULL,
+        phone TEXT,
+        email TEXT,
+        role TEXT,
+        roleName TEXT,
+        permissions TEXT DEFAULT '{}',
+        isActive INTEGER DEFAULT 1,
+        isOwner INTEGER DEFAULT 0,
+        pinHash TEXT,
+        pinSalt TEXT,
+        uuid TEXT,
+        device_id TEXT,
+        row_version INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        is_deleted INTEGER DEFAULT 0,
+        deleted_at TEXT,
+        is_synced INTEGER DEFAULT 1,
+        FOREIGN KEY (businessId) REFERENCES businesses(id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_uuid ON users(uuid);
+
+      CREATE TABLE IF NOT EXISTS roster_devices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER,
+        userId INTEGER,
+        name TEXT NOT NULL,
+        model TEXT,
+        platform TEXT DEFAULT 'mobile',
+        registerId INTEGER,
+        role TEXT,
+        status TEXT DEFAULT 'pending',
+        pairingCode TEXT,
+        pairingExpiresAt TEXT,
+        lastSeenAt TEXT,
+        lastSyncAt TEXT,
+        appVersion TEXT,
+        isPrimary INTEGER DEFAULT 0,
+        uuid TEXT,
+        device_id TEXT,
+        row_version INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        is_deleted INTEGER DEFAULT 0,
+        deleted_at TEXT,
+        is_synced INTEGER DEFAULT 1,
+        FOREIGN KEY (businessId) REFERENCES businesses(id),
+        FOREIGN KEY (userId) REFERENCES users(id),
+        FOREIGN KEY (registerId) REFERENCES registers(id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_roster_devices_uuid ON roster_devices(uuid);
+      CREATE INDEX IF NOT EXISTS idx_roster_devices_business ON roster_devices(businessId);
+    `);
+    version = 27;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 28) {
+    const cols = db.prepare("PRAGMA table_info(stock_movements)").all();
+    const names = cols.map((c) => c.name);
+    if (!names.includes("uuid")) db.exec("ALTER TABLE stock_movements ADD COLUMN uuid TEXT");
+    if (!names.includes("device_id")) db.exec("ALTER TABLE stock_movements ADD COLUMN device_id TEXT");
+    if (!names.includes("businessId")) db.exec("ALTER TABLE stock_movements ADD COLUMN businessId INTEGER REFERENCES businesses(id)");
+    if (!names.includes("row_version")) db.exec("ALTER TABLE stock_movements ADD COLUMN row_version INTEGER DEFAULT 1");
+    if (!names.includes("updated_at")) db.exec("ALTER TABLE stock_movements ADD COLUMN updated_at TEXT");
+    db.exec("UPDATE stock_movements SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL");
+    if (!names.includes("is_deleted")) db.exec("ALTER TABLE stock_movements ADD COLUMN is_deleted INTEGER DEFAULT 0");
+    if (!names.includes("deleted_at")) db.exec("ALTER TABLE stock_movements ADD COLUMN deleted_at TEXT");
+    if (!names.includes("is_synced")) db.exec("ALTER TABLE stock_movements ADD COLUMN is_synced INTEGER DEFAULT 1");
+    db.exec(`UPDATE stock_movements SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;`);
+    const auditCols = db.prepare("PRAGMA table_info(audit_logs)").all();
+    const auditNames = auditCols.map((c) => c.name);
+    if (!auditNames.includes("uuid")) db.exec("ALTER TABLE audit_logs ADD COLUMN uuid TEXT");
+    if (!auditNames.includes("source_device")) db.exec("ALTER TABLE audit_logs ADD COLUMN source_device TEXT");
+    db.exec(`UPDATE audit_logs SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))) WHERE uuid IS NULL;`);
+    version = 28;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 29) {
+    const aCols = db.prepare("PRAGMA table_info(audit_logs)").all().map((c) => c.name);
+    const addA = (col, def) => {
+      if (!aCols.includes(col)) db.exec(`ALTER TABLE audit_logs ADD COLUMN ${col} ${def}`);
+    };
+    addA("device_id", "TEXT");
+    addA("row_version", "INTEGER DEFAULT 1");
+    addA("updated_at", "TEXT");
+    addA("is_deleted", "INTEGER DEFAULT 0");
+    addA("deleted_at", "TEXT");
+    addA("is_synced", "INTEGER DEFAULT 1");
+    db.exec("UPDATE audit_logs SET updated_at = COALESCE(updated_at, createdAt, CURRENT_TIMESTAMP) WHERE updated_at IS NULL");
+    version = 29;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 30) {
+    const opTables = ["budgets", "suppliers", "contacts", "orders", "order_items", "order_history", "shipments", "shipment_items", "shipment_history", "employees", "employee_accounts", "employee_roles", "attendance", "employee_performance", "subscriptions", "notification_reminders"];
+    for (const tbl2 of opTables) {
+      let names = [];
+      try {
+        names = db.prepare(`PRAGMA table_info(${tbl2})`).all().map((c) => c.name);
+      } catch {
+        continue;
+      }
+      const add = (col, def) => {
+        if (!names.includes(col)) {
+          try {
+            db.exec(`ALTER TABLE ${tbl2} ADD COLUMN ${col} ${def}`);
+          } catch {
+          }
+        }
+      };
+      add("uuid", "TEXT");
+      add("device_id", "TEXT");
+      add("row_version", "INTEGER DEFAULT 1");
+      add("updated_at", "TEXT");
+      add("deleted_at", "TEXT");
+      add("is_deleted", "INTEGER DEFAULT 0");
+      add("is_synced", "INTEGER DEFAULT 1");
+      try {
+        db.exec(`UPDATE ${tbl2} SET updated_at = COALESCE(updated_at, createdAt, CURRENT_TIMESTAMP) WHERE updated_at IS NULL`);
+      } catch {
+      }
+      try {
+        db.exec(`UPDATE ${tbl2} SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL;`);
+      } catch {
+      }
+      try {
+        db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_${tbl2}_uuid ON ${tbl2}(uuid);`);
+      } catch {
+      }
+    }
+    let supN = [];
+    try {
+      supN = db.prepare("PRAGMA table_info(suppliers)").all().map((c) => c.name);
+    } catch {
+    }
+    if (!supN.includes("contact_id")) {
+      try {
+        db.exec("ALTER TABLE suppliers ADD COLUMN contact_id INTEGER REFERENCES contacts(id)");
+      } catch {
+      }
+    }
+    version = 30;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 31) {
+    const cols = db.prepare("PRAGMA table_info(sales)").all().map((c) => c.name);
+    if (!cols.includes("overrideBy")) db.exec("ALTER TABLE sales ADD COLUMN overrideBy TEXT");
+    if (!cols.includes("overrideReason")) db.exec("ALTER TABLE sales ADD COLUMN overrideReason TEXT");
+    version = 31;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 32) {
+    const fallbackBiz = db.prepare("SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1").get()?.id || 1;
+    const scopeCandidates = [
+      "employees",
+      "employee_roles",
+      "categories",
+      "items",
+      "item_packs",
+      "item_barcodes",
+      "quick_products",
+      "sales",
+      "debt_payments",
+      "expenses",
+      "adjustments",
+      "customers",
+      "warehouses",
+      "returns",
+      "gift_cards",
+      "gift_card_transactions",
+      "attendance",
+      "employee_performance",
+      "stock_movements",
+      "suppliers",
+      "supplier_purchases",
+      "supplier_payments",
+      "orders",
+      "order_items",
+      "shipments",
+      "shipment_items",
+      "budgets",
+      "contacts"
+    ];
+    for (const t of scopeCandidates) {
+      try {
+        const cols = db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
+        if (!cols.includes("businessId")) continue;
+        db.exec(`UPDATE ${t} SET businessId = ${Number(fallbackBiz)} WHERE businessId IS NULL`);
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_${t}_businessId ON ${t}(businessId)`);
+      } catch (e) {
+      }
+    }
+    version = 32;
+    db.pragma(`user_version = ${version}`);
+  }
   const syncTables = [
+    { table: "businesses", id: "id", columns: ["id", "businessName", "storeName", "logo", "address", "phone", "email", "currency", "isDefault", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "categories", id: "id", columns: ["id", "businessId", "name", "icon", "isCustom", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "items", id: "id", columns: ["id", "businessId", "name", "categoryId", "sku", "barcode", "companyName", "purchaseUnit", "baseUnit", "unitsPerPack", "totalPackQuantity", "totalBaseQuantity", "packPurchasePrice", "basePurchasePrice", "baseSellingPrice", "packSellingPrice", "allowSellByBaseUnit", "allowSellByPackUnit", "expiryDate", "qualityGrade", "notes", "isCredit", "supplierPhone", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "item_packs", id: "id", columns: ["id", "itemId", "packNumber", "initialQuantity", "currentQuantity", "unit", "status", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
-    { table: "sales", id: "id", columns: ["id", "businessId", "itemId", "quantity", "unit", "unitType", "discount", "vat", "totalPrice", "paymentMethod", "paymentStatus", "status", "customerName", "customerPhone", "packId", "dueDate", "paidAmount", "createdBy", "createdAt", "fiscal_number", "fiscal_signature", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "sales", id: "id", columns: ["id", "businessId", "itemId", "quantity", "unit", "unitType", "discount", "vat", "totalPrice", "paymentMethod", "paymentStatus", "status", "customerName", "customerPhone", "packId", "dueDate", "paidAmount", "createdBy", "createdAt", "fiscal_number", "fiscal_signature", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced", "overrideBy", "overrideReason", "voidReason", "voidedBy", "voidedAt"] },
     { table: "debt_payments", id: "id", columns: ["id", "saleId", "customerName", "customerPhone", "amount", "type", "note", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "returns", id: "id", columns: ["id", "businessId", "saleId", "itemId", "quantity", "unit", "unitType", "refundAmount", "reason", "status", "createdBy", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "expenses", id: "id", columns: ["id", "businessId", "name", "amount", "category", "date", "isRecurring", "frequency", "nextBillingDate", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "adjustments", id: "id", columns: ["id", "businessId", "itemId", "type", "oldValue", "newValue", "quantity", "unitType", "reason", "date", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
-    { table: "customers", id: "id", columns: ["id", "businessId", "customerName", "phone", "secondaryPhone", "email", "address", "city", "company", "taxNumber", "groupName", "creditLimit", "notes", "isActive", "createdAt", "updatedAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] }
+    { table: "customers", id: "id", columns: ["id", "businessId", "customerName", "phone", "secondaryPhone", "email", "address", "city", "company", "taxNumber", "groupName", "creditLimit", "notes", "isActive", "createdAt", "updatedAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "locations", id: "id", columns: ["id", "businessId", "name", "address", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "registers", id: "id", columns: ["id", "businessId", "locationId", "name", "deviceId", "printerName", "hasDrawer", "isActive", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "business_roles", id: "id", columns: ["id", "businessId", "name", "description", "permissions", "isSystem", "builtinKey", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "users", relay: "users", id: "id", columns: ["id", "businessId", "name", "phone", "email", "role", "roleName", "permissions", "isActive", "isOwner", "pinHash", "pinSalt", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "roster_devices", relay: "devices", id: "id", columns: ["id", "businessId", "userId", "name", "model", "platform", "registerId", "role", "status", "pairingCode", "pairingExpiresAt", "lastSeenAt", "lastSyncAt", "appVersion", "isPrimary", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "budgets", id: "id", columns: ["id", "businessId", "category", "amount", "period", "month", "year", "budgetType", "referenceName", "isRecurring", "notes", "updatedAt", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "suppliers", id: "id", columns: ["id", "businessId", "supplierCode", "supplierName", "companyName", "contactPerson", "phone", "secondaryPhone", "email", "address", "city", "country", "taxNumber", "paymentTerms", "creditLimit", "notes", "status", "isActive", "createdAt", "updatedAt", "contact_id", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "contacts", id: "id", columns: ["id", "businessId", "name", "phone", "category", "subCategory", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "orders", id: "id", columns: ["id", "businessId", "orderNumber", "customerName", "customerPhone", "notes", "status", "totalAmount", "createdBy", "createdByName", "createdAt", "convertedAt", "convertedBy", "cancelledAt", "cancelledBy", "cancelReason", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "order_items", id: "id", columns: ["id", "orderId", "itemId", "itemName", "quantity", "unit", "unitType", "unitPrice", "totalPrice", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "shipments", id: "id", columns: ["id", "businessId", "origin", "destination", "driverName", "driverPhone", "vehicleInfo", "status", "notes", "scheduledDate", "deliveredAt", "createdAt", "updatedAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "shipment_items", id: "id", columns: ["id", "shipmentId", "itemId", "itemName", "quantity", "unit", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "employees", id: "id", columns: ["id", "businessId", "employeeCode", "firstName", "lastName", "phone", "email", "address", "emergencyContact", "gender", "dateOfBirth", "roleId", "department", "warehouseId", "isActive", "employmentStatus", "avatar", "hireDate", "notes", "createdAt", "updatedAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "employee_roles", id: "id", columns: ["id", "businessId", "name", "description", "permissions", "isSystem", "createdAt", "updatedAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "employee_accounts", id: "id", columns: ["id", "employeeId", "username", "pin", "isActive", "forcePasswordChange", "failedLoginAttempts", "lockedUntil", "lastPasswordChange", "lastLogin", "createdAt", "updatedAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "notification_reminders", id: "id", columns: ["id", "businessId", "title", "message", "category", "triggerDate", "repeatInterval", "status", "lastTriggeredAt", "completedAt", "snoozedUntil", "relatedEntityType", "relatedEntityId", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "subscriptions", id: "id", columns: ["id", "businessId", "planId", "tier", "status", "startedAt", "expiresAt", "trialStartedAt", "trialEndsAt", "isTrial", "autoRenew", "createdAt", "updatedAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "attendance", id: "id", columns: ["id", "employeeId", "date", "clockIn", "clockOut", "status", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "employee_performance", id: "id", columns: ["id", "employeeId", "period", "salesAmount", "ordersProcessed", "attendanceScore", "tasksCompleted", "rating", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "order_history", id: "id", columns: ["id", "orderId", "status", "changedBy", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "shipment_history", id: "id", columns: ["id", "shipmentId", "status", "changedBy", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "budget_categories", id: "id", columns: ["id", "budgetId", "category", "plannedAmount", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "budget_adjustments", id: "id", columns: ["id", "budgetId", "businessId", "previousAmount", "newAmount", "reason", "status", "requestedBy", "approvedBy", "approvedAt", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "subscription_payments", id: "id", columns: ["id", "subscriptionId", "transactionId", "businessName", "phoneNumber", "planName", "amount", "currency", "paymentDate", "notes", "status", "verifiedAt", "verifiedBy", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "subscription_renewals", id: "id", columns: ["id", "subscriptionId", "previousExpiry", "newExpiry", "plan", "durationMonths", "amount", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "notifications", id: "id", columns: ["id", "type", "title", "message", "category", "priority", "isRead", "groupKey", "actionUrl", "actionLabel", "expiresAt", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] }
   ];
   const genUuid = "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))";
   for (const t of syncTables) {
+    const relayName = t.relay ?? t.table;
     const newArgs = t.columns.map((c) => `'${c}', ${c}`).join(", ");
     const oldArgs = t.columns.map((c) => `'${c}', OLD.${c}`).join(", ");
     db.exec(`
       CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ai AFTER INSERT ON ${t.table} BEGIN
         UPDATE ${t.table} SET uuid = ${genUuid} WHERE ${t.id} = NEW.${t.id} AND uuid IS NULL;
         INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-        SELECT '${t.table}', uuid, 'INSERT', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
+        SELECT '${relayName}', uuid, 'INSERT', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
       END;
       CREATE TRIGGER IF NOT EXISTS trg_${t.table}_au AFTER UPDATE ON ${t.table} WHEN OLD.uuid IS NOT NULL AND NEW.uuid IS NOT NULL BEGIN
         INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-        SELECT '${t.table}', uuid, 'UPDATE', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
+        SELECT '${relayName}', uuid, 'UPDATE', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
       END;
       CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ad AFTER DELETE ON ${t.table} BEGIN
         INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-        VALUES ('${t.table}', OLD.uuid, 'DELETE', json_object(${oldArgs}), OLD.device_id);
+        VALUES ('${relayName}', OLD.uuid, 'DELETE', json_object(${oldArgs}), OLD.device_id);
       END;
     `);
   }
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_stock_movements_ai AFTER INSERT ON stock_movements
+    WHEN NEW.type = 'restock_in' BEGIN
+      UPDATE stock_movements SET uuid = ${genUuid} WHERE rowid = NEW.rowid AND (uuid IS NULL OR uuid = '');
+      INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+      SELECT 'stock_movements', uuid, 'INSERT',
+        json_object('id', id, 'businessId', businessId, 'warehouseId', warehouseId, 'itemId', itemId, 'type', type, 'quantity', quantity, 'referenceId', referenceId, 'referenceType', referenceType, 'notes', notes, 'createdAt', createdAt, 'uuid', uuid, 'device_id', device_id, 'row_version', row_version, 'updated_at', updated_at, 'is_deleted', is_deleted, 'deleted_at', deleted_at, 'is_synced', is_synced),
+        device_id
+      FROM stock_movements WHERE rowid = NEW.rowid;
+    END;
+  `);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_audit_logs_ai AFTER INSERT ON audit_logs BEGIN
+      INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+      SELECT 'audit_logs', uuid, 'INSERT',
+        json_object('businessId', businessId, 'action', action, 'entityType', entityType, 'entityId', entityId, 'fieldName', fieldName, 'oldValue', oldValue, 'newValue', newValue, 'changedBy', changedBy, 'changedById', changedById, 'description', description, 'createdAt', createdAt, 'uuid', uuid, 'source_device', source_device),
+        NEW.device_id
+      FROM audit_logs WHERE id = NEW.id AND uuid IS NOT NULL;
+    END;
+  `);
   db.exec(`
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1311,6 +2487,13 @@ function initDB() {
       autoRenew INTEGER DEFAULT 0,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
       updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1,
       FOREIGN KEY (businessId) REFERENCES businesses(id),
       FOREIGN KEY (planId) REFERENCES subscription_plans(id)
     );
@@ -1715,14 +2898,20 @@ function auditHash(prev, r) {
   );
   return c.digest("hex");
 }
-function insertAudit(db2, entry) {
+function insertAudit(db2, entry, opts) {
   const insert = db2.prepare(
-    `INSERT INTO audit_logs (businessId, action, entityType, entityId, fieldName, oldValue, newValue, changedBy, changedById, description, createdAt)
-     VALUES (@businessId, @action, @entityType, @entityId, @fieldName, @oldValue, @newValue, @changedBy, @changedById, @description, @createdAt)`
+    `INSERT INTO audit_logs (businessId, action, entityType, entityId, fieldName, oldValue, newValue, changedBy, changedById, description, createdAt, uuid, source_device)
+     VALUES (@businessId, @action, @entityType, @entityId, @fieldName, @oldValue, @newValue, @changedBy, @changedById, @description, @createdAt, @uuid, @source_device)`
   );
   const tx = db2.transaction(() => {
     const prev = db2.prepare("SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1").get()?.hash ?? AUDIT_GENESIS;
-    const info = insert.run({ ...entry, createdAt: entry.createdAt ?? (/* @__PURE__ */ new Date()).toISOString() });
+    const uuid = opts?.uuid || crypto$1.randomUUID();
+    const info = insert.run({
+      ...entry,
+      createdAt: entry.createdAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+      uuid,
+      source_device: opts?.sourceDevice ?? null
+    });
     const id = Number(info.lastInsertRowid);
     const row = db2.prepare("SELECT * FROM audit_logs WHERE id = ?").get(id);
     const h = auditHash(prev, row);
@@ -2210,18 +3399,18 @@ function getPrinterConfig() {
     return { transport: "os-dialog", host: "127.0.0.1", port: 9100, drawerPin: 2, autoOpenDrawer: true, enabled: true };
   }
 }
-function savePrinterConfig(cfg) {
-  const merged = { ...getPrinterConfig(), ...cfg };
+function savePrinterConfig(cfg2) {
+  const merged = { ...getPrinterConfig(), ...cfg2 };
   dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(SETTING_KEY, JSON.stringify(merged));
   return merged;
 }
 let lastError = null;
 let lastPrintAt = null;
 function sendTcp(data) {
-  const cfg = getPrinterConfig();
+  const cfg2 = getPrinterConfig();
   return new Promise((resolve, reject) => {
     let done = false;
-    const sock = net.connect({ host: cfg.host, port: cfg.port }, () => {
+    const sock = net.connect({ host: cfg2.host, port: cfg2.port }, () => {
       sock.write(Buffer.from(data));
       sock.end();
     });
@@ -2229,12 +3418,12 @@ function sendTcp(data) {
       if (done) return;
       done = true;
       sock.destroy();
-      reject(new Error(`Printer timeout: ${cfg.host}:${cfg.port}`));
+      reject(new Error(`Printer timeout: ${cfg2.host}:${cfg2.port}`));
     });
     sock.on("error", (e) => {
       if (done) return;
       done = true;
-      reject(new Error(`Printer connection failed (${cfg.host}:${cfg.port}): ${e.message}`));
+      reject(new Error(`Printer connection failed (${cfg2.host}:${cfg2.port}): ${e.message}`));
     });
     sock.on("close", () => {
       if (done) return;
@@ -2244,11 +3433,11 @@ function sendTcp(data) {
   });
 }
 function probePrinter(timeoutMs = 3e3) {
-  const cfg = getPrinterConfig();
-  if (cfg.transport === "os-dialog") return Promise.resolve(true);
+  const cfg2 = getPrinterConfig();
+  if (cfg2.transport === "os-dialog") return Promise.resolve(true);
   return new Promise((resolve) => {
     let done = false;
-    const sock = net.connect({ host: cfg.host, port: cfg.port }, () => {
+    const sock = net.connect({ host: cfg2.host, port: cfg2.port }, () => {
       if (done) return;
       done = true;
       sock.destroy();
@@ -2268,15 +3457,15 @@ function probePrinter(timeoutMs = 3e3) {
   });
 }
 function getPrintStatus() {
-  const cfg = getPrinterConfig();
+  const cfg2 = getPrinterConfig();
   return {
-    enabled: cfg.enabled,
-    transport: cfg.transport,
-    host: cfg.host,
-    port: cfg.port,
-    drawerPin: cfg.drawerPin,
-    autoOpenDrawer: cfg.autoOpenDrawer,
-    online: cfg.enabled && cfg.transport === "network",
+    enabled: cfg2.enabled,
+    transport: cfg2.transport,
+    host: cfg2.host,
+    port: cfg2.port,
+    drawerPin: cfg2.drawerPin,
+    autoOpenDrawer: cfg2.autoOpenDrawer,
+    online: cfg2.enabled && cfg2.transport === "network",
     lastError,
     lastPrintAt
   };
@@ -2289,9 +3478,9 @@ function enqueue(fn) {
   return run;
 }
 async function printRaw(data) {
-  const cfg = getPrinterConfig();
-  if (!cfg.enabled) throw new Error("Printer is disabled in Settings");
-  if (cfg.transport === "os-dialog") throw new Error("Raw ESC/POS requires the network printer transport");
+  const cfg2 = getPrinterConfig();
+  if (!cfg2.enabled) throw new Error("Printer is disabled in Settings");
+  if (cfg2.transport === "os-dialog") throw new Error("Raw ESC/POS requires the network printer transport");
   await enqueue(async () => {
     try {
       await sendTcp(data);
@@ -2304,8 +3493,8 @@ async function printRaw(data) {
   });
 }
 async function openDrawer() {
-  const cfg = getPrinterConfig();
-  const w = new EscposWriter().init().openDrawer(cfg.drawerPin);
+  const cfg2 = getPrinterConfig();
+  const w = new EscposWriter().init().openDrawer(cfg2.drawerPin);
   await printRaw(w.toUint8Array());
   lastPrintAt = (/* @__PURE__ */ new Date()).toISOString();
 }
@@ -2495,18 +3684,53 @@ const SHARED_TABLES = [
   "returns",
   "expenses",
   "adjustments",
-  "customers"
+  "customers",
+  "contacts",
+  "suppliers",
+  "budgets",
+  "budget_categories",
+  "budget_adjustments",
+  "orders",
+  "order_items",
+  "order_history",
+  "shipments",
+  "shipment_items",
+  "shipment_history",
+  "employees",
+  "employee_roles",
+  "employee_accounts",
+  "attendance",
+  "employee_performance",
+  "subscriptions",
+  "subscription_payments",
+  "subscription_renewals",
+  "scheduled_reminders",
+  "notification_reminders",
+  "notifications",
+  "businesses",
+  "locations",
+  "registers",
+  "business_roles",
+  "users",
+  "devices",
+  "stock_movements",
+  "audit_logs"
 ];
+function tbl(entity) {
+  if (entity === "scheduled_reminders") return "notification_reminders";
+  return desktopTableName(entity);
+}
 function changeChecksum(change) {
   const canonical = `${change.entity}|${change.entity_uuid}|${change.op}|${JSON.stringify(change.payload)}`;
   return crypto$1.createHash("sha256").update(canonical).digest("hex");
 }
 let columnCache = {};
 function columnsOf(entity) {
-  if (!columnCache[entity]) {
-    columnCache[entity] = dbProxy.prepare(`PRAGMA table_info(${entity})`).all().map((c) => c.name);
+  const table = tbl(entity);
+  if (!columnCache[table]) {
+    columnCache[table] = dbProxy.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
   }
-  return columnCache[entity];
+  return columnCache[table];
 }
 function ensureHubDeviceId() {
   const row = dbProxy.prepare("SELECT device_id, pairing_token FROM sync_meta WHERE id = 1").get();
@@ -2549,10 +3773,11 @@ function registerDevice(deviceId, name) {
     dbProxy.prepare("UPDATE devices SET last_seen_at = ? WHERE device_id = ?").run((/* @__PURE__ */ new Date()).toISOString(), deviceId);
     return;
   }
-  dbProxy.prepare("INSERT INTO devices (device_id, name, last_seen_at) VALUES (?, ?, ?)").run(
+  dbProxy.prepare("INSERT INTO devices (device_id, name, last_seen_at, uuid) VALUES (?, ?, ?, ?)").run(
     deviceId,
     name || deviceId.slice(0, 8),
-    (/* @__PURE__ */ new Date()).toISOString()
+    (/* @__PURE__ */ new Date()).toISOString(),
+    deviceId
   );
 }
 function logSync(deviceId, entity, entityUuid, op, detail) {
@@ -2616,7 +3841,100 @@ function recordRef(deviceId, entity, payload) {
   );
 }
 function existingByUuid(entity, uuid) {
-  return dbProxy.prepare(`SELECT * FROM ${entity} WHERE uuid = ?`).get(uuid);
+  return dbProxy.prepare(`SELECT * FROM ${tbl(entity)} WHERE uuid = ?`).get(uuid);
+}
+function isAdapterEntity(entity) {
+  return BUSINESS_ADAPTER_ENTITIES.includes(entity);
+}
+function looksLikeMobile(entity, payload) {
+  if (!isAdapterEntity(entity)) return false;
+  if (entity === "businesses") return "name" in payload && !("businessName" in payload);
+  return "business_id" in payload;
+}
+function mobileFkToDesktopInt(fk, uuid) {
+  if (uuid == null || uuid === "") return null;
+  try {
+    const row = dbProxy.prepare(`SELECT id FROM ${fk.lookupEntity} WHERE uuid = ?`).get(String(uuid));
+    return row?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+function desktopFkToMobileUuid(fk, desktopId) {
+  if (desktopId == null) return null;
+  try {
+    const row = dbProxy.prepare(`SELECT uuid FROM ${fk.lookupEntity} WHERE id = ?`).get(Number(desktopId));
+    return row?.uuid ?? null;
+  } catch {
+    return null;
+  }
+}
+const CORE_BUSINESS_SCOPED_ENTITIES = [
+  "categories",
+  "items",
+  "item_packs",
+  "item_barcodes",
+  "quick_products",
+  "sales",
+  "debt_payments",
+  "expenses",
+  "adjustments",
+  "customers",
+  "warehouses",
+  "returns",
+  "gift_cards",
+  "gift_card_transactions",
+  "employee_roles",
+  "employees",
+  "employee_accounts",
+  "attendance",
+  "employee_performance"
+];
+function businessIntToUuid(int) {
+  if (int == null) return null;
+  try {
+    const row = dbProxy.prepare("SELECT uuid FROM businesses WHERE id = ?").get(Number(int));
+    return row?.uuid ?? null;
+  } catch {
+    return null;
+  }
+}
+function businessUuidToInt(uuid) {
+  if (uuid == null || uuid === "") return null;
+  try {
+    const row = dbProxy.prepare("SELECT id FROM businesses WHERE uuid = ?").get(String(uuid));
+    return row?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+function emitEntityPayload(entity, row) {
+  if (isAdapterEntity(entity)) return toMobilePayload(entity, row);
+  if (CORE_BUSINESS_SCOPED_ENTITIES.includes(entity) && row.businessId != null) {
+    const next = { ...row };
+    const asStr = String(row.businessId);
+    if (/^[0-9]+$/.test(asStr)) {
+      next.businessId = businessIntToUuid(Number(row.businessId)) ?? `biz-${asStr}`;
+    }
+    return next;
+  }
+  return row;
+}
+function toDesktopPayload(entity, payload) {
+  const out = mobileToDesktopPayload(entity, payload);
+  const map = FIELD_MAPS[entity];
+  for (const fk of map.mobileFk) {
+    out[fk.desktopColumn] = mobileFkToDesktopInt(fk, out[fk.desktopColumn]);
+  }
+  return out;
+}
+function toMobilePayload(entity, payload) {
+  const out = desktopToMobilePayload(entity, payload);
+  const map = FIELD_MAPS[entity];
+  for (const fk of map.desktopFk) {
+    out[fk.mobileField] = desktopFkToMobileUuid(fk, payload[fk.desktopColumn]);
+  }
+  return out;
 }
 function applyChange(deviceId, change) {
   const { entity, entity_uuid, op, payload } = change;
@@ -2624,11 +3942,22 @@ function applyChange(deviceId, change) {
     logSync(deviceId, entity, entity_uuid, op, "skipped unknown entity");
     return "skipped";
   }
-  const data = cleanPayload(entity, payload);
+  const adapterData = isAdapterEntity(entity) && looksLikeMobile(entity, payload) ? toDesktopPayload(entity, payload) : payload;
+  const data = cleanPayload(entity, adapterData);
+  if (CORE_BUSINESS_SCOPED_ENTITIES.includes(entity) && data.businessId != null) {
+    const asStr = String(data.businessId);
+    if (!/^[0-9]+$/.test(asStr)) {
+      data.businessId = businessUuidToInt(asStr) ?? null;
+    }
+  }
+  if (entity === "audit_logs") {
+    if (op === "DELETE") return "skipped";
+    return applyAuditChange(deviceId, change) ? "applied" : "skipped";
+  }
   if (op === "DELETE") {
     const existing2 = existingByUuid(entity, entity_uuid);
     if (existing2) {
-      dbProxy.prepare(`UPDATE ${entity} SET is_deleted = 1, deleted_at = COALESCE(?, deleted_at) WHERE uuid = ?`).run(
+      dbProxy.prepare(`UPDATE ${tbl(entity)} SET is_deleted = 1, deleted_at = COALESCE(?, deleted_at) WHERE uuid = ?`).run(
         payload.deleted_at ?? (/* @__PURE__ */ new Date()).toISOString(),
         entity_uuid
       );
@@ -2641,14 +3970,14 @@ function applyChange(deviceId, change) {
     insertData.uuid = entity_uuid;
     insertData.device_id = deviceId;
     insertData.updated_at = insertData.updated_at ?? (/* @__PURE__ */ new Date()).toISOString();
-    let pending = false;
-    if ((entity === "sales" || entity === "returns") && insertData.itemId != null) {
+    let pending2 = false;
+    if ((entity === "sales" || entity === "returns" || entity === "stock_movements") && insertData.itemId != null) {
       const hubItemId = resolveFk(deviceId, "items", insertData.itemId);
       if (hubItemId != null) {
         insertData.itemId = hubItemId;
       } else {
         insertData.itemId = null;
-        pending = true;
+        pending2 = true;
         logSync(deviceId, entity, entity_uuid, op, "pending_item itemId not resolvable");
       }
     }
@@ -2659,9 +3988,9 @@ function applyChange(deviceId, change) {
     const cols = columnsOf(entity).filter((c) => c in insertData);
     const placeholders = cols.map(() => "?").join(", ");
     const values = cols.map((c) => insertData[c]);
-    dbProxy.prepare(`INSERT INTO ${entity} (${cols.join(", ")}) VALUES (${placeholders})`).run(...values);
+    dbProxy.prepare(`INSERT INTO ${tbl(entity)} (${cols.join(", ")}) VALUES (${placeholders})`).run(...values);
     recordRef(deviceId, entity, insertData);
-    return pending ? "pending" : "applied";
+    return pending2 ? "pending" : "applied";
   }
   const incoming = { ...data, uuid: entity_uuid, updated_at: data.updated_at ?? (/* @__PURE__ */ new Date()).toISOString() };
   if (lwwWins(incoming, existing)) {
@@ -2672,13 +4001,43 @@ function applyChange(deviceId, change) {
     if (cols.length) {
       const sets = cols.map((c) => `${c} = ?`).join(", ");
       const values = cols.map((c) => updateData[c]);
-      dbProxy.prepare(`UPDATE ${entity} SET ${sets} WHERE uuid = ?`).run(...values, entity_uuid);
+      dbProxy.prepare(`UPDATE ${tbl(entity)} SET ${sets} WHERE uuid = ?`).run(...values, entity_uuid);
     }
     recordRef(deviceId, entity, data);
     return "applied";
   }
   logSync(deviceId, entity, entity_uuid, op, "conflict_rejected");
   return "conflict";
+}
+function applyAuditChange(deviceId, change) {
+  const payload = change.payload ?? {};
+  const uuid = String(payload.uuid ?? change.entity_uuid ?? "");
+  if (!uuid) return false;
+  const duplicate = dbProxy.prepare("SELECT id FROM audit_logs WHERE uuid = ?").get(uuid);
+  if (duplicate) return true;
+  const businessId = payload.business_id ? mobileFkToDesktopInt({ desktopColumn: "businessId", lookupEntity: "businesses" }, String(payload.business_id)) : null;
+  try {
+    insertAudit(dbProxy, {
+      businessId,
+      action: String(payload.action ?? ""),
+      entityType: String(payload.entity ?? payload.entityType ?? ""),
+      entityId: payload.entity_id != null ? Number(payload.entity_id) : payload.entityId != null ? Number(payload.entityId) : null,
+      fieldName: payload.field_name != null ? String(payload.field_name) : payload.fieldName ?? null,
+      oldValue: payload.old_value != null ? String(payload.old_value) : payload.oldValue ?? null,
+      newValue: payload.new_value != null ? String(payload.new_value) : payload.newValue ?? null,
+      changedBy: payload.changed_by ? String(payload.changed_by) : payload.changedBy ?? null,
+      changedById: payload.changed_by_id != null ? Number(payload.changed_by_id) : payload.changedById ?? null,
+      description: payload.description ? String(payload.description) : null,
+      createdAt: String(payload.created_at ?? payload.createdAt ?? (/* @__PURE__ */ new Date()).toISOString())
+    }, {
+      uuid,
+      sourceDevice: String(payload.source_device ?? payload.device_id ?? deviceId)
+    });
+    return true;
+  } catch (e) {
+    logSync(deviceId, "audit_logs", uuid, change.op, "audit_merge_failed");
+    return false;
+  }
 }
 function applyPush(deviceId, changes) {
   const result = { applied: 0, conflicts: 0, skipped: 0, pending: 0 };
@@ -2722,9 +4081,15 @@ function snapshotSince(since) {
   if (since <= 0) {
     const changes2 = [];
     for (const entity of SHARED_TABLES) {
-      const rows2 = dbProxy.prepare(`SELECT * FROM ${entity} WHERE is_deleted = 0`).all();
+      const rows2 = dbProxy.prepare(`SELECT * FROM ${tbl(entity)} WHERE is_deleted = 0`).all();
       for (const r of rows2) {
-        changes2.push({ entity, entity_uuid: r.uuid, op: "INSERT", payload: r, device_id: r.device_id });
+        changes2.push({
+          entity,
+          entity_uuid: r.uuid,
+          op: "INSERT",
+          payload: emitEntityPayload(entity, r),
+          device_id: r.device_id
+        });
       }
     }
     return { changes: changes2, lastSeq: seq, snapshot: true };
@@ -2736,6 +4101,7 @@ function snapshotSince(since) {
       payload = JSON.parse(r.payload);
     } catch {
     }
+    payload = emitEntityPayload(r.entity, payload);
     return { entity: r.entity, entity_uuid: r.entity_uuid, op: r.op, payload, device_id: r.device_id, seq: r.seq };
   });
   return { changes, lastSeq: seq, snapshot: false };
@@ -2744,10 +4110,11 @@ function buildCloudChanges() {
   const out = [];
   const hubId = ensureHubDeviceId();
   for (const entity of SHARED_TABLES) {
-    const rows = dbProxy.prepare(`SELECT * FROM ${entity} WHERE is_deleted = 0`).all();
+    const rows = dbProxy.prepare(`SELECT * FROM ${tbl(entity)} WHERE is_deleted = 0`).all();
     for (const r of rows) {
-      const payload = {};
+      let payload = {};
       for (const k of Object.keys(r)) payload[k] = r[k];
+      payload = emitEntityPayload(entity, payload);
       const change = { entity, entity_uuid: r.uuid, op: "INSERT", payload, device_id: hubId };
       change.checksum = changeChecksum(change);
       out.push(change);
@@ -2761,7 +4128,7 @@ function applyRemoteChanges(deviceId, changes) {
 function verifyChecksums() {
   const out = {};
   for (const entity of SHARED_TABLES) {
-    const rows = dbProxy.prepare(`SELECT uuid, updated_at, row_version, is_deleted FROM ${entity} WHERE is_deleted = 0`).all();
+    const rows = dbProxy.prepare(`SELECT uuid, updated_at, row_version, is_deleted FROM ${tbl(entity)} WHERE is_deleted = 0`).all();
     const h = crypto$1.createHash("sha256");
     const sorted = rows.slice().sort((a, b) => a.uuid < b.uuid ? -1 : 1);
     for (const r of sorted) {
@@ -4514,10 +5881,10 @@ function getCloudConfig() {
   return { url: url.replace(/\/+$/, ""), key };
 }
 function getCloudStatus() {
-  const cfg = getCloudConfig();
+  const cfg2 = getCloudConfig();
   return {
     enabled: getSetting("cloud_sync_enabled") === "true",
-    configured: !!cfg,
+    configured: !!cfg2,
     lastError: getSetting("cloud_sync_last_error"),
     lastAt: getSetting("cloud_sync_last_at")
   };
@@ -4534,24 +5901,24 @@ async function httpJson(url, init) {
   return body;
 }
 async function syncToCloud() {
-  const cfg = getCloudConfig();
-  if (!cfg) throw new Error("Cloud relay not configured (set cloud_sync_url + cloud_sync_device_key)");
+  const cfg2 = getCloudConfig();
+  if (!cfg2) throw new Error("Cloud relay not configured (set cloud_sync_url + cloud_sync_device_key)");
   const hubId = ensureHubDeviceId();
   const idempotentKey = `${hubId}@${dbProxy.prepare("SELECT COALESCE(MAX(seq),0) AS m FROM sync_outbox").get().m}`;
   const pushed = buildCloudChanges();
   let result = { pushed: pushed.length, pulled: 0, conflicts: 0 };
   try {
-    const res = await httpJson(`${cfg.url}/api/sync/push`, {
+    const res = await httpJson(`${cfg2.url}/api/sync/push`, {
       method: "POST",
-      headers: { "X-Device-Key": cfg.key, "X-Idempotency-Key": idempotentKey },
+      headers: { "X-Device-Key": cfg2.key, "X-Idempotency-Key": idempotentKey },
       body: JSON.stringify({ device_id: hubId, changes: pushed })
     });
     result.pushed = Number(res?.accepted ?? pushed.length);
     const cursor = dbProxy.prepare("SELECT value FROM settings WHERE key = 'cloud_sync_cursor'").get()?.value;
     const since = Number(cursor ?? 0);
-    const pulled = await httpJson(`${cfg.url}/api/sync/pull?device=${encodeURIComponent(hubId)}&since=${since}`, {
+    const pulled = await httpJson(`${cfg2.url}/api/sync/pull?device=${encodeURIComponent(hubId)}&since=${since}`, {
       method: "GET",
-      headers: { "X-Device-Key": cfg.key }
+      headers: { "X-Device-Key": cfg2.key }
     });
     const incoming = pulled?.changes ?? [];
     if (incoming.length > 0) {
@@ -4575,6 +5942,299 @@ async function syncToCloud() {
     throw e;
   }
   return result;
+}
+async function refreshCloudStatus() {
+  const cfg2 = getCloudConfig();
+  if (!cfg2) return null;
+  const hubId = ensureHubDeviceId();
+  try {
+    const res = await httpJson(`${cfg2.url}/api/sync/status/?device=${encodeURIComponent(hubId)}`, {
+      method: "GET",
+      headers: { "X-Device-Key": cfg2.key }
+    });
+    const status = res?.status ?? null;
+    const blocked = !!res?.blocked;
+    setSetting("cloud_device_status", String(status ?? ""));
+    setSetting("cloud_device_blocked", String(blocked));
+    return { status, blocked, lastError: null };
+  } catch (e) {
+    return { status: null, blocked: false, lastError: e?.message || String(e) };
+  }
+}
+let timer = null;
+const CLOUD_PERIOD_MS = 60 * 1e3;
+function startCloudSyncTimer() {
+  if (timer) return;
+  timer = setInterval(async () => {
+    const enabled = getSetting("cloud_sync_enabled") === "true";
+    if (!enabled) return;
+    const cfg2 = getCloudConfig();
+    if (!cfg2) return;
+    try {
+      await syncToCloud();
+      await refreshCloudStatus();
+    } catch (e) {
+    }
+  }, CLOUD_PERIOD_MS);
+  timer.unref?.();
+}
+let cfg = null;
+function countUnsyncedForDevice(deviceId) {
+  const row = dbProxy.prepare("SELECT COUNT(*) AS c FROM sync_outbox WHERE device_id = ?").get(String(deviceId));
+  return row?.c ?? 0;
+}
+function registerBusinessDomainHandlers(config) {
+  cfg = config;
+  const bizId = () => config.getActiveBusinessId();
+  electron.ipcMain.handle("business:list-registers", () => {
+    return dbProxy.prepare("SELECT * FROM registers WHERE businessId = ? AND is_deleted = 0 ORDER BY created_at").all(bizId());
+  });
+  electron.ipcMain.handle("business:add-register", (_e, name, locationId) => {
+    if (!name?.trim()) throw new Error("Register name is required");
+    const r = dbProxy.prepare("INSERT INTO registers (businessId, locationId, name, hasDrawer, isActive, created_at) VALUES (?, ?, ?, 1, 1, ?)").run(bizId(), locationId ?? null, name.trim(), (/* @__PURE__ */ new Date()).toISOString());
+    config.audit("register.added", "register", r.lastInsertRowid, `Added register ${name}`);
+    return dbProxy.prepare("SELECT * FROM registers WHERE id = ?").get(r.lastInsertRowid);
+  });
+  electron.ipcMain.handle("business:update-register", (_e, id, patch) => {
+    const cur = dbProxy.prepare("SELECT * FROM registers WHERE id = ?").get(id);
+    if (!cur) throw new Error("Register not found");
+    dbProxy.prepare(
+      "UPDATE registers SET name = ?, locationId = ?, printerName = ?, hasDrawer = ?, isActive = ?, deviceId = ?, updated_at = ? WHERE id = ?"
+    ).run(
+      patch.name ?? cur.name,
+      patch.locationId ?? cur.locationId,
+      patch.printerName ?? cur.printerName,
+      patch.hasDrawer !== void 0 ? patch.hasDrawer ? 1 : 0 : cur.hasDrawer,
+      patch.isActive !== void 0 ? patch.isActive ? 1 : 0 : cur.isActive,
+      patch.deviceId ?? cur.deviceId,
+      (/* @__PURE__ */ new Date()).toISOString(),
+      id
+    );
+    return dbProxy.prepare("SELECT * FROM registers WHERE id = ?").get(id);
+  });
+  electron.ipcMain.handle("business:delete-register", (_e, id) => {
+    dbProxy.prepare("UPDATE registers SET is_deleted = 1, updated_at = ? WHERE id = ?").run((/* @__PURE__ */ new Date()).toISOString(), id);
+    config.audit("register.removed", "register", id, "Removed register");
+    return { ok: true };
+  });
+  electron.ipcMain.handle("business:list-locations", () => {
+    return dbProxy.prepare("SELECT * FROM locations WHERE businessId = ? AND is_deleted = 0 ORDER BY created_at").all(bizId());
+  });
+  electron.ipcMain.handle("business:add-location", (_e, name, address) => {
+    const r = dbProxy.prepare("INSERT INTO locations (businessId, name, address, created_at) VALUES (?, ?, ?, ?)").run(bizId(), name.trim(), address ?? null, (/* @__PURE__ */ new Date()).toISOString());
+    return dbProxy.prepare("SELECT * FROM locations WHERE id = ?").get(r.lastInsertRowid);
+  });
+  electron.ipcMain.handle("business:list-devices", () => {
+    return dbProxy.prepare("SELECT * FROM devices WHERE businessId = ? OR businessId IS NULL ORDER BY created_at").all(bizId());
+  });
+  electron.ipcMain.handle("business:set-device-status", (_e, deviceId, status) => {
+    if (status === "disabled" || status === "removed") {
+      const unsynced = countUnsyncedForDevice(deviceId);
+      if (unsynced > 0) {
+        throw new Error(
+          `Cannot ${status === "disabled" ? "disable" : "remove"} this device — it still has ${unsynced} unsynced record${unsynced === 1 ? "" : "s"}. Sync first.`
+        );
+      }
+    }
+    dbProxy.prepare("UPDATE devices SET status = ?, updated_at = ? WHERE device_id = ? OR id = ?").run(status, (/* @__PURE__ */ new Date()).toISOString(), deviceId, deviceId);
+    config.audit("device.changed", "device", null, `Device ${deviceId} -> ${status}`);
+    return { ok: true };
+  });
+  electron.ipcMain.handle("business:rename-device", (_e, deviceId, name) => {
+    dbProxy.prepare("UPDATE devices SET name = ?, updated_at = ? WHERE device_id = ? OR id = ?").run(name.trim(), (/* @__PURE__ */ new Date()).toISOString(), deviceId, deviceId);
+    return { ok: true };
+  });
+  electron.ipcMain.handle("business:replace-device", (_e, input) => {
+    if (!input?.name?.trim()) throw new Error("Replacement device name is required");
+    const old = dbProxy.prepare("SELECT * FROM devices WHERE (device_id = ? OR id = ?) AND is_deleted = 0").get(input.oldDeviceId, input.oldDeviceId);
+    if (!old) throw new Error("Original device not found or already removed");
+    const unsynced = countUnsyncedForDevice(input.oldDeviceId);
+    if (unsynced > 0) {
+      throw new Error(
+        `Cannot replace this device — it still has ${unsynced} unsynced record${unsynced === 1 ? "" : "s"}. Sync before replacing.`
+      );
+    }
+    const bid = bizId();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const newDeviceId = crypto$1.randomUUID();
+    const wasPrimary = !!old.isPrimary;
+    const isThis = input.setThisAsReplacement === true;
+    const status = isThis ? "active" : "active";
+    const colon = dbProxy.prepare(
+      `INSERT INTO devices (device_id, name, businessId, platform, role, userId, registerId, status, isPrimary, uuid, row_version, created_at, updated_at, is_deleted, is_synced)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, 1)`
+    ).run(
+      newDeviceId,
+      input.name.trim(),
+      bid,
+      input.platform ?? old.platform ?? "desktop",
+      old.role ?? null,
+      old.userId ?? null,
+      old.registerId ?? null,
+      status,
+      wasPrimary ? 1 : 0,
+      crypto$1.randomUUID(),
+      now,
+      now
+    );
+    const newId = Number(colon.lastInsertRowid);
+    dbProxy.prepare("UPDATE devices SET status = 'removed', is_deleted = 1, updated_at = ? WHERE id = ?").run(now, old.id);
+    cfg?.audit(
+      "device.replace",
+      "device",
+      newId,
+      `Replaced device ${input.oldDeviceId} -> ${newDeviceId}`
+    );
+    return { ok: true, id: newId, device_id: newDeviceId };
+  });
+  electron.ipcMain.handle("business:self-device-status", () => {
+    const deviceId = ensureHubDeviceId();
+    const row = dbProxy.prepare(
+      `SELECT id, uuid, device_id, name, platform, status, isPrimary, updated_at
+         FROM roster_devices
+         WHERE (uuid = ? OR device_id = ?) AND is_deleted = 0
+         LIMIT 1`
+    ).get(deviceId, deviceId);
+    if (!row) return { found: false, deviceId, status: null, name: null };
+    return { found: true, deviceId, status: row.status, name: row.name };
+  });
+  electron.ipcMain.handle("business:roles", () => {
+    return {
+      builtin: BUILTIN_ROLES.map((r) => ({ key: r.key, name: r.name, description: r.description, isSystem: true })),
+      order: ROLE_ORDER,
+      custom: dbProxy.prepare("SELECT * FROM business_roles WHERE isSystem = 0 AND is_deleted = 0 ORDER BY created_at").all(bizId())
+    };
+  });
+  electron.ipcMain.handle("business:can", (_e, key) => {
+    const r = can(config.buildPermissionContext(), key);
+    return { allowed: r };
+  });
+  electron.ipcMain.handle("business:list-people", () => {
+    const rows = dbProxy.prepare("SELECT * FROM employees WHERE isActive = 1 ORDER BY createdAt").all();
+    return rows.map((e) => ({
+      id: e.id,
+      name: `${e.firstName} ${e.lastName || ""}`.trim(),
+      phone: e.phone,
+      email: e.email,
+      roleKey: e.role_key || "cashier",
+      permissions: e.permissions_json ? JSON.parse(e.permissions_json) : void 0
+    }));
+  });
+  electron.ipcMain.handle("business:set-person-role", (_e, employeeId, roleKey) => {
+    const r = getBuiltinRole(roleKey);
+    dbProxy.prepare("UPDATE employees SET role_key = ? WHERE id = ?").run(roleKey, employeeId);
+    config.audit("role.changed", "employee", employeeId, `Role -> ${r?.name ?? roleKey}`);
+    return { ok: true };
+  });
+  electron.ipcMain.handle("business:get-user", () => {
+    return { role: "admin", isOwner: config.isOwnerOrSuper() };
+  });
+}
+const APPROVER_ROLES = /* @__PURE__ */ new Set(["Owner", "Administrator", "Manager", "super_admin", "admin"]);
+function isApproverRole(role) {
+  return !!role && APPROVER_ROLES.has(role);
+}
+function verifyStoredPin(pin, stored) {
+  const parts = stored.split(":");
+  if (parts.length !== 2) {
+    const legacy = crypto$1.createHash("sha256").update(pin).digest("hex");
+    return legacy === stored;
+  }
+  const [salt, key] = parts;
+  const check = crypto$1.scryptSync(pin, salt, 64).toString("hex");
+  return check === key;
+}
+function resolveApprover(businessId) {
+  const admins = dbProxy.prepare(
+    `SELECT id, name, role, pin FROM admins
+       WHERE (businessId IS NULL OR businessId = ?) AND isActive = 1`
+  ).all(businessId);
+  const employees = dbProxy.prepare(
+    `SELECT ea.id, e.firstName, e.lastName, r.name AS role, ea.pin
+       FROM employee_accounts ea
+       JOIN employees e ON ea.employeeId = e.id
+       JOIN employee_roles r ON e.roleId = r.id
+       WHERE ea.isActive = 1`
+  ).all();
+  const candidates = [
+    ...admins.map((a) => ({
+      source: "admin",
+      id: a.id,
+      name: a.name || "Admin",
+      role: a.role || "admin",
+      pin: a.pin ?? null
+    })),
+    ...employees.map((s) => ({
+      source: "employee",
+      id: s.id,
+      name: `${s.firstName || ""} ${s.lastName || ""}`.trim() || "Employee",
+      role: s.role || "employee",
+      pin: s.pin ?? null
+    }))
+  ].filter((c) => isApproverRole(c.role));
+  const ranking = ["Owner", "super_admin", "Administrator", "Manager", "admin"];
+  const byRank = (a, b) => {
+    const ad = ranking.indexOf(a.role);
+    const bd = ranking.indexOf(b.role);
+    return (ad === -1 ? 99 : ad) - (bd === -1 ? 99 : bd);
+  };
+  const withPin = candidates.filter((c) => c.pin).sort(byRank);
+  return withPin[0] ?? candidates.sort(byRank)[0];
+}
+const pending = /* @__PURE__ */ new Map();
+const PROMPT_TIMEOUT_MS = 2 * 60 * 1e3;
+function registerApprovalResolvers() {
+  const { ipcMain } = require("electron");
+  ipcMain.handle("approval:resolve", (e, payload) => {
+    const p = pending.get(payload?.requestId);
+    if (!p) return false;
+    const pin = String(payload.pin ?? "");
+    if (!p.approver?.pin || pin.length === 0) {
+      pending.delete(payload.requestId);
+      clearTimeout(p.timer);
+      p.resolveGate("denied");
+      return false;
+    }
+    if (p.verifier(pin, p.approver.pin)) {
+      pending.delete(payload.requestId);
+      clearTimeout(p.timer);
+      p.resolveGate("approved");
+      return true;
+    }
+    try {
+      e.sender.send("approval:pin-invalid", { requestId: payload.requestId });
+    } catch {
+    }
+    return false;
+  });
+  ipcMain.handle("approval:cancel", (_e, requestId) => {
+    const p = pending.get(requestId);
+    if (!p) return false;
+    pending.delete(requestId);
+    clearTimeout(p.timer);
+    p.resolveGate("cancelled");
+    return true;
+  });
+}
+function promptForPin(webContents, ctx, approver, verifier = verifyStoredPin) {
+  const requestId = crypto$1.randomUUID();
+  return new Promise((resolveGate) => {
+    const timer2 = setTimeout(() => {
+      if (pending.has(requestId)) {
+        pending.delete(requestId);
+        resolveGate("cancelled");
+      }
+    }, PROMPT_TIMEOUT_MS);
+    pending.set(requestId, { resolveGate, approver, verifier, timer: timer2 });
+    const payload = { ...ctx, requestId };
+    try {
+      webContents.send("approval:prompt", payload);
+    } catch {
+      clearTimeout(timer2);
+      pending.delete(requestId);
+      resolveGate("denied");
+    }
+  });
 }
 function getActiveBusinessId$1() {
   const row = dbProxy.prepare("SELECT value FROM settings WHERE key = 'active_business_id'").get();
@@ -5328,11 +6988,58 @@ function importData(module2, rows) {
   }
   return result;
 }
+async function gateSensitiveAction(webContents, ctx) {
+  if (isApproverRole(currentUserRole)) return true;
+  const approver = resolveApprover(getActiveBusinessId());
+  if (!approver) return false;
+  if (!approver.pin) return false;
+  const result = await promptForPin(
+    webContents,
+    {
+      context: ctx.context,
+      title: ctx.title ?? "Manager approval required",
+      message: ctx.message ?? "This action requires manager approval. Enter the manager PIN.",
+      approverName: approver.name
+    },
+    approver,
+    verifyStoredPin
+  );
+  if (result === "approved") {
+    insertAuditLog("manager_approval", "approval", null, null, null, null, `${ctx.context} approved by approver ${approver.name}`);
+  }
+  return result === "approved";
+}
+async function gateDiscountOverrides(webContents, sales, message) {
+  let maxPct = 0;
+  let hasDiscount = false;
+  for (const s of sales) {
+    const discount = s.discount || 0;
+    if (discount <= 0) continue;
+    hasDiscount = true;
+    const item = dbProxy.prepare("SELECT baseSellingPrice FROM items WHERE id = ?").get(s.itemId);
+    const subtotal = item?.baseSellingPrice ? s.quantity * item.baseSellingPrice : (s.totalPrice || 0) + discount;
+    const pct = subtotal > 0 ? discount / subtotal * 100 : 0;
+    if (pct > maxPct) maxPct = pct;
+  }
+  const role = (currentUserRole || "").toLowerCase();
+  const cap = getDiscountCap(role);
+  if (!hasDiscount || isApproverRole(currentUserRole) || cap === null || maxPct <= cap) {
+    return { requiresOverride: false, approved: true, overrideReason: "" };
+  }
+  const overrideReason = sales.map((s) => s.overrideReason).find((r) => r) || "Over-limit discount";
+  const ok = await gateSensitiveAction(webContents, {
+    context: `Discount ${Math.round(maxPct)}% exceeds your ${cap}% limit`,
+    title: "Price override approval required",
+    message: `This discount is above your ${cap}% role limit. Manager approval is required. Enter the manager PIN to proceed.`
+  });
+  return { requiresOverride: true, approved: ok, overrideReason };
+}
 let activeBusinessId = null;
 let currentAdminId = null;
 let currentUserName = null;
 let currentUserRole = null;
 let currentUserPermissions = [];
+let currentUserBusinessId = null;
 const PERMISSION_MODULE = {
   dashboard: "dashboard",
   inventory: "inventory",
@@ -5383,15 +7090,28 @@ function verifyPin(pin, stored) {
   return check === key;
 }
 function getActiveBusinessId() {
-  if (activeBusinessId) return activeBusinessId;
-  const row = dbProxy.prepare("SELECT value FROM settings WHERE key = 'active_business_id'").get();
-  if (row) {
-    activeBusinessId = parseInt(row.value);
-    return activeBusinessId;
+  if (!activeBusinessId) {
+    const row = dbProxy.prepare("SELECT value FROM settings WHERE key = 'active_business_id'").get();
+    if (row) {
+      activeBusinessId = parseInt(row.value);
+    } else {
+      const defaultBiz = dbProxy.prepare("SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1").get();
+      activeBusinessId = defaultBiz?.id || 1;
+    }
   }
-  const defaultBiz = dbProxy.prepare("SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1").get();
-  activeBusinessId = defaultBiz?.id || 1;
+  const live = dbProxy.prepare("SELECT id FROM businesses WHERE id = ? AND is_deleted = 0").get(activeBusinessId);
+  if (!live) {
+    const first = dbProxy.prepare("SELECT id FROM businesses WHERE is_deleted = 0 ORDER BY CASE WHEN isDefault = 1 THEN 0 ELSE 1 END, id LIMIT 1").get();
+    activeBusinessId = first?.id || activeBusinessId;
+  }
   return activeBusinessId;
+}
+function setActiveBusinessId(id) {
+  activeBusinessId = id;
+  dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('active_business_id', ?)").run(String(id));
+}
+function clearActiveBusinessCache() {
+  activeBusinessId = null;
 }
 const DEFAULT_LIST_LIMIT = 200;
 function getDefaultWarehouseId() {
@@ -5434,6 +7154,7 @@ function insertAuditLog(action, entityType, entityId, fieldName, oldValue, newVa
 }
 function registerIPCHandlers() {
   console.log("[Handlers] registerIPCHandlers called");
+  registerApprovalResolvers();
   electron.ipcMain.handle("get-active-business", () => {
     const id = getActiveBusinessId();
     return dbProxy.prepare("SELECT * FROM businesses WHERE id = ?").get(id);
@@ -5443,6 +7164,80 @@ function registerIPCHandlers() {
     if (!biz.businessName?.trim()) throw new Error("Business name is required");
     const stmt = dbProxy.prepare("UPDATE businesses SET businessName = ?, storeName = ?, logo = ?, address = ?, phone = ?, email = ?, currency = ? WHERE id = ?");
     return stmt.run(biz.businessName, biz.storeName, biz.logo, biz.address, biz.phone, biz.email, biz.currency, id);
+  });
+  electron.ipcMain.handle("business:list", () => {
+    requirePermission("settings");
+    const totalBiz = dbProxy.prepare("SELECT COUNT(*) c FROM businesses WHERE is_deleted = 0").get().c;
+    return dbProxy.prepare(`
+      SELECT b.*,
+        (SELECT COUNT(*) FROM employees e WHERE e.businessId = b.id AND e.isActive = 1 AND e.is_deleted = 0) as employeeCount,
+        (SELECT COUNT(*) FROM roster_devices r WHERE r.businessId = b.id AND r.is_deleted = 0) as deviceCount,
+        (SELECT COUNT(*) FROM registers r WHERE r.businessId = b.id AND r.is_deleted = 0) as registerCount,
+        (SELECT COUNT(*) FROM locations l WHERE l.businessId = b.id AND l.is_deleted = 0) as locationCount
+      FROM businesses b
+      WHERE b.is_deleted = 0
+      ORDER BY CASE WHEN b.isDefault = 1 THEN 0 ELSE 1 END, b.createdAt
+    `).all().map((b) => ({ ...b, totalBusinesses: totalBiz }));
+  });
+  electron.ipcMain.handle("business:create", (_, data) => {
+    if (!data?.businessName?.trim()) throw new Error("Business name is required");
+    const isFirst = dbProxy.prepare("SELECT COUNT(*) c FROM businesses WHERE is_deleted = 0").get().c === 0;
+    const result = dbProxy.prepare("INSERT INTO businesses (businessName, storeName, logo, address, phone, email, currency, isDefault) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(data.businessName.trim(), data.storeName?.trim() || data.businessName.trim(), data.logo || null, data.address || null, data.phone || null, data.email || null, data.currency || "ETB", 0);
+    const bizId = result.lastInsertRowid;
+    const whRes = dbProxy.prepare("INSERT INTO warehouses (businessId, name, location, managerName) VALUES (?, ?, ?, ?)").run(bizId, "Main Warehouse", data.address || "Headquarters", "Operations Manager");
+    const locRes = dbProxy.prepare("INSERT INTO locations (businessId, name, address) VALUES (?, ?, ?)").run(bizId, "Main Location", data.address || null);
+    dbProxy.prepare("INSERT INTO registers (businessId, locationId, name, isActive) VALUES (?, ?, ?, 1)").run(bizId, locRes.lastInsertRowid, "Main Register");
+    if (isFirst) {
+      dbProxy.prepare("UPDATE businesses SET isDefault = 1 WHERE id = ?").run(bizId);
+    }
+    if (isFirst || !currentUserBusinessId) setActiveBusinessId(bizId);
+    insertAuditLog("business_created", "business", bizId, "businessName", null, data.businessName.trim(), `Business "${data.businessName.trim()}" created by ${currentUserName || "unknown"} (wh #${whRes.lastInsertRowid})`);
+    return dbProxy.prepare("SELECT * FROM businesses WHERE id = ?").get(bizId);
+  });
+  electron.ipcMain.handle("business:switch", (_, id) => {
+    if (!Number.isInteger(+id)) throw new Error("Invalid business id");
+    if (currentUserBusinessId && currentUserBusinessId !== +id) {
+      throw new Error("You are signed in as an employee of another business and cannot switch businesses.");
+    }
+    const biz = dbProxy.prepare("SELECT * FROM businesses WHERE id = ? AND is_deleted = 0").get(+id);
+    if (!biz) throw new Error("Business not found");
+    setActiveBusinessId(+id);
+    return biz;
+  });
+  electron.ipcMain.handle("business:set-default", (_, id) => {
+    requirePermission("settings");
+    if (currentUserRole !== "super_admin" && currentUserRole !== "admin") throw new Error("Only platform administrators can set the default business");
+    const biz = dbProxy.prepare("SELECT id FROM businesses WHERE id = ? AND is_deleted = 0").get(+id);
+    if (!biz) throw new Error("Business not found");
+    dbProxy.prepare("UPDATE businesses SET isDefault = 0").run();
+    dbProxy.prepare("UPDATE businesses SET isDefault = 1 WHERE id = ?").run(+id);
+    insertAuditLog("business_set_default", "business", +id, "isDefault", null, "1", `Business #${id} set as default by ${currentUserName || "unknown"}`);
+    return { success: true };
+  });
+  electron.ipcMain.handle("business:archive", (_, id) => {
+    requirePermission("settings");
+    const bizId = +id;
+    const biz = dbProxy.prepare("SELECT * FROM businesses WHERE id = ? AND is_deleted = 0").get(bizId);
+    if (!biz) throw new Error("Business not found");
+    const active = getActiveBusinessId();
+    if (active === bizId) throw new Error("Cannot archive the currently active business. Switch to another business first.");
+    const remaining = dbProxy.prepare("SELECT COUNT(*) c FROM businesses WHERE is_deleted = 0 AND id != ?").get(bizId).c;
+    if (remaining === 0) throw new Error("Cannot archive the last business.");
+    if (currentUserBusinessId === bizId) throw new Error("You cannot archive the business you are signed into.");
+    dbProxy.prepare("UPDATE businesses SET is_deleted = 1, is_synced = 0, row_version = row_version + 1, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(bizId);
+    insertAuditLog("business_archived", "business", bizId, "is_deleted", "0", "1", `Business "${biz.businessName}" archived by ${currentUserName || "unknown"}`);
+    return { success: true };
+  });
+  electron.ipcMain.handle("business:leave", (_, id) => {
+    if (currentUserBusinessId) throw new Error("Employees cannot leave a business. Contact a platform administrator.");
+    if (!currentAdminId) throw new Error("Not signed in");
+    const bizId = +id;
+    if (getActiveBusinessId() === bizId) throw new Error("Switch to another business before leaving this one.");
+    const remaining = dbProxy.prepare("SELECT COUNT(*) c FROM businesses WHERE is_deleted = 0 AND id != ?").get(bizId).c;
+    if (remaining === 0) throw new Error("Cannot leave the last business.");
+    dbProxy.prepare("UPDATE businesses SET is_deleted = 1, is_synced = 0, row_version = row_version + 1, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(bizId);
+    insertAuditLog("business_left", "business", bizId, "is_deleted", "0", "1", `Admin left business "${bizId}"`);
+    return { success: true };
   });
   electron.ipcMain.handle("get-categories", () => {
     const bizId = getActiveBusinessId();
@@ -5793,8 +7588,13 @@ function registerIPCHandlers() {
     requirePermission("sales.view");
     return dbProxy.prepare("SELECT sales.*, items.name as itemName FROM sales LEFT JOIN items ON sales.itemId = items.id WHERE sales.id = ?").get(id);
   });
-  electron.ipcMain.handle("insert-sales-batch", (_, sales) => {
+  electron.ipcMain.handle("insert-sales-batch", async (event, sales) => {
     requirePermission("sales.create");
+    const overrideReason = (sales || []).map((s) => s?.overrideReason).find((r) => !!r);
+    const gate = await gateDiscountOverrides(event.sender, sales || []);
+    if (gate.requiresOverride && !gate.approved) {
+      throw new Error("Manager approval required — discount over your limit was not approved");
+    }
     sales = validate(saleBatchSchema, sales, "sales batch");
     const bizId = getActiveBusinessId();
     const transaction = dbProxy.transaction(() => {
@@ -5807,8 +7607,9 @@ function registerIPCHandlers() {
         const stmt = dbProxy.prepare(`
           INSERT INTO sales (
             businessId, itemId, quantity, unit, unitType, discount, vat, totalPrice, 
-            paymentMethod, paymentStatus, customerName, customerPhone, packId, dueDate, paidAmount
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            paymentMethod, paymentStatus, customerName, customerPhone, packId, dueDate, paidAmount,
+            overrideBy, overrideReason
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         const result = stmt.run(
           bizId,
@@ -5825,7 +7626,9 @@ function registerIPCHandlers() {
           sale.customerPhone,
           sale.packId || null,
           sale.dueDate || null,
-          sale.paidAmount || 0
+          sale.paidAmount || 0,
+          gate.requiresOverride && gate.approved ? currentUserName || "unknown" : null,
+          gate.requiresOverride && gate.approved ? gate.overrideReason || overrideReason : null
         );
         const cName = sale.customerName?.trim();
         if (cName && sale.paymentStatus === "Debt") {
@@ -6042,8 +7845,13 @@ function registerIPCHandlers() {
     transaction();
     return { success: true };
   });
-  electron.ipcMain.handle("create-return", (_, data) => {
+  electron.ipcMain.handle("create-return", async (event, data) => {
     requirePermission("sales.returns");
+    const reason = (data?.reason || "").trim();
+    if (!reason) return { success: false, error: "A reason is required to process a return" };
+    if (!await gateSensitiveAction(event.sender, { context: `Process return for sale #${data?.saleId ?? ""}` })) {
+      return { success: false, error: "Manager approval required — action not executed" };
+    }
     const bizId = getActiveBusinessId();
     const sale = dbProxy.prepare("SELECT * FROM sales WHERE id = ?").get(data.saleId);
     if (!sale) return { success: false, error: "Sale not found" };
@@ -6254,8 +8062,11 @@ function registerIPCHandlers() {
     params.push(listLimit, offset);
     return dbProxy.prepare(query).all(...params);
   });
-  electron.ipcMain.handle("insert-adjustment", (_, adjustment) => {
+  electron.ipcMain.handle("insert-adjustment", async (event, adjustment) => {
     requirePermission("inventory.adjust");
+    if (!await gateSensitiveAction(event.sender, { context: `Stock/price adjustment (${adjustment?.type ?? "unknown"})` })) {
+      throw new Error("Manager approval required — action not executed");
+    }
     const validTypes = ["damage", "loss", "add_stock", "price_increase", "price_decrease"];
     if (!validTypes.includes(adjustment.type)) throw new Error(`Invalid adjustment type: ${adjustment.type}`);
     if (["damage", "loss", "add_stock"].includes(adjustment.type)) {
@@ -7576,6 +9387,14 @@ function registerIPCHandlers() {
     } finally {
       dbProxy.pragma("foreign_keys = ON");
     }
+    if (mode === "factory") {
+      clearActiveBusinessCache();
+      currentUserBusinessId = null;
+      currentAdminId = null;
+      currentUserName = null;
+      currentUserRole = null;
+      currentUserPermissions = [];
+    }
     return { success: true, mode, message: mode === "factory" ? "Factory reset complete. This will log you out." : void 0 };
   });
   electron.ipcMain.handle("login", (_, username, pin) => {
@@ -7602,6 +9421,7 @@ function registerIPCHandlers() {
       currentUserName = admin.name;
       currentUserRole = admin.role || "admin";
       currentUserPermissions = admin.permissions ? JSON.parse(admin.permissions) : ["*"];
+      currentUserBusinessId = null;
       return {
         success: true,
         admin: {
@@ -7612,6 +9432,7 @@ function registerIPCHandlers() {
     }
     const account = dbProxy.prepare(`
       SELECT ea.*, e.id as employeeId, e.firstName, e.lastName,
+        e.businessId as employeeBusinessId,
         r.name as roleName, r.permissions as rolePermissions
       FROM employee_accounts ea
       LEFT JOIN employees e ON ea.employeeId = e.id
@@ -7649,6 +9470,8 @@ function registerIPCHandlers() {
     currentUserRole = account.roleName || "employee";
     const rolePerms = account.rolePermissions ? JSON.parse(account.rolePermissions) : [];
     currentUserPermissions = rolePerms.length > 0 ? rolePerms : ["*"];
+    currentUserBusinessId = account.employeeBusinessId ?? null;
+    if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
     return {
       success: true,
       admin: {
@@ -7783,8 +9606,11 @@ function registerIPCHandlers() {
     dbProxy.prepare("DELETE FROM admins WHERE id = ?").run(id);
     return { success: true };
   });
-  electron.ipcMain.handle("insert-bulk-adjustments", (_, adjustments) => {
+  electron.ipcMain.handle("insert-bulk-adjustments", async (event, adjustments) => {
     requirePermission("inventory.adjust");
+    if (!await gateSensitiveAction(event.sender, { context: `Bulk stock/price adjustments (${Array.isArray(adjustments) ? adjustments.length : 0})` })) {
+      throw new Error("Manager approval required — action not executed");
+    }
     const bizId = getActiveBusinessId();
     const transaction = dbProxy.transaction(() => {
       let count = 0;
@@ -8019,36 +9845,38 @@ function registerIPCHandlers() {
     return { inventory, totalItems, totalValue, lowStock, recentMovements };
   });
   electron.ipcMain.handle("get-employee-roles", () => {
-    return dbProxy.prepare("SELECT * FROM employee_roles ORDER BY name").all();
+    const bizId = getActiveBusinessId();
+    return dbProxy.prepare("SELECT * FROM employee_roles WHERE businessId = ? ORDER BY name").all(bizId);
   });
   electron.ipcMain.handle("get-employee-role", (_, id) => {
-    return dbProxy.prepare("SELECT * FROM employee_roles WHERE id = ?").get(id);
+    return dbProxy.prepare("SELECT * FROM employee_roles WHERE id = ? AND businessId = ?").get(id, getActiveBusinessId());
   });
   electron.ipcMain.handle("insert-employee-role", (_, data) => {
     requirePermission("settings.roles");
     const permissions = JSON.stringify(data.permissions || []);
-    const result = dbProxy.prepare("INSERT INTO employee_roles (name, description, permissions, isSystem) VALUES (?, ?, ?, ?)").run(data.name, data.description || "", permissions, 0);
+    const result = dbProxy.prepare("INSERT INTO employee_roles (businessId, name, description, permissions, isSystem) VALUES (?, ?, ?, ?, ?)").run(getActiveBusinessId(), data.name, data.description || "", permissions, 0);
     return result.lastInsertRowid;
   });
   electron.ipcMain.handle("update-employee-role", (_, id, data) => {
     requirePermission("settings.roles");
     const permissions = JSON.stringify(data.permissions || []);
-    const result = dbProxy.prepare("UPDATE employee_roles SET name = ?, description = ?, permissions = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(data.name, data.description || "", permissions, id);
+    const result = dbProxy.prepare("UPDATE employee_roles SET name = ?, description = ?, permissions = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(data.name, data.description || "", permissions, id, getActiveBusinessId());
     return result;
   });
   electron.ipcMain.handle("duplicate-employee-role", (_, id) => {
     requirePermission("settings.roles");
-    const original = dbProxy.prepare("SELECT * FROM employee_roles WHERE id = ?").get(id);
+    const original = dbProxy.prepare("SELECT * FROM employee_roles WHERE id = ? AND businessId = ?").get(id, getActiveBusinessId());
     if (!original) throw new Error("Role not found");
-    const result = dbProxy.prepare("INSERT INTO employee_roles (name, description, permissions, isSystem) VALUES (?, ?, ?, 0)").run(`${original.name} (Copy)`, original.description, original.permissions);
+    const result = dbProxy.prepare("INSERT INTO employee_roles (businessId, name, description, permissions, isSystem) VALUES (?, ?, ?, ?, 0)").run(getActiveBusinessId(), `${original.name} (Copy)`, original.description, original.permissions);
     return result.lastInsertRowid;
   });
   electron.ipcMain.handle("delete-employee-role", (_, id) => {
     requirePermission("settings.roles");
-    const role = dbProxy.prepare("SELECT name, isSystem FROM employee_roles WHERE id = ?").get(id);
+    const bizId = getActiveBusinessId();
+    const role = dbProxy.prepare("SELECT name, isSystem FROM employee_roles WHERE id = ? AND businessId = ?").get(id, bizId);
     if (role?.isSystem) throw new Error("Cannot delete system role");
-    dbProxy.prepare("UPDATE employees SET roleId = NULL WHERE roleId = ?").run(id);
-    dbProxy.prepare("DELETE FROM employee_roles WHERE id = ?").run(id);
+    dbProxy.prepare("UPDATE employees SET roleId = NULL WHERE roleId = ? AND businessId = ?").run(id, bizId);
+    dbProxy.prepare("DELETE FROM employee_roles WHERE id = ? AND businessId = ?").run(id, bizId);
   });
   electron.ipcMain.handle("get-employees", (_, options) => {
     requirePermission("employees.view");
@@ -8062,8 +9890,8 @@ function registerIPCHandlers() {
       LEFT JOIN employee_accounts a ON e.id = a.employeeId
       LEFT JOIN warehouses w ON e.warehouseId = w.id
     `;
-    const conditions = [];
-    const params = [];
+    const conditions = ["e.businessId = ?"];
+    const params = [getActiveBusinessId()];
     if (options?.search) {
       conditions.push("(LOWER(e.firstName) LIKE LOWER(?) OR LOWER(e.lastName) LIKE LOWER(?) OR LOWER(e.phone) LIKE LOWER(?) OR LOWER(e.email) LIKE LOWER(?) OR LOWER(e.employeeCode) LIKE LOWER(?))");
       const s = `%${options.search}%`;
@@ -8108,16 +9936,17 @@ function registerIPCHandlers() {
       FROM employees e
       LEFT JOIN employee_roles r ON e.roleId = r.id
       LEFT JOIN warehouses w ON e.warehouseId = w.id
-      WHERE e.id = ?
-    `).get(id);
+      WHERE e.id = ? AND e.businessId = ?
+    `).get(id, getActiveBusinessId());
   });
   electron.ipcMain.handle("insert-employee", (_, data) => {
     requirePermission("employees.add");
     const result = dbProxy.prepare(`
-      INSERT INTO employees (employeeCode, firstName, lastName, phone, email, address, emergencyContact,
+      INSERT INTO employees (businessId, employeeCode, firstName, lastName, phone, email, address, emergencyContact,
         gender, dateOfBirth, roleId, department, warehouseId, isActive, employmentStatus, avatar, hireDate, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
+      getActiveBusinessId(),
       data.employeeCode || null,
       data.firstName,
       data.lastName,
@@ -8147,7 +9976,7 @@ function registerIPCHandlers() {
         roleId = ?, department = ?, warehouseId = ?, isActive = ?,
         employmentStatus = ?, avatar = ?, hireDate = ?, notes = ?,
         updatedAt = CURRENT_TIMESTAMP
-      WHERE id = ?
+      WHERE id = ? AND businessId = ?
     `).run(
       data.employeeCode || null,
       data.firstName,
@@ -8166,23 +9995,23 @@ function registerIPCHandlers() {
       data.avatar || null,
       data.hireDate || null,
       data.notes || null,
-      id
+      id,
+      getActiveBusinessId()
     );
     return result;
   });
   electron.ipcMain.handle("delete-employee", (_, id) => {
     requirePermission("employees.delete");
-    dbProxy.prepare("SELECT firstName, lastName FROM employees WHERE id = ?").get(id);
-    dbProxy.prepare("DELETE FROM employees WHERE id = ?").run(id);
+    dbProxy.prepare("DELETE FROM employees WHERE id = ? AND businessId = ?").run(id, getActiveBusinessId());
   });
   electron.ipcMain.handle("archive-employee", (_, id) => {
     requirePermission("employees.delete");
-    const result = dbProxy.prepare("UPDATE employees SET employmentStatus = 'inactive', isActive = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+    const result = dbProxy.prepare("UPDATE employees SET employmentStatus = 'inactive', isActive = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(id, getActiveBusinessId());
     return result;
   });
   electron.ipcMain.handle("reactivate-employee", (_, id) => {
     requirePermission("employees.delete");
-    const result = dbProxy.prepare("UPDATE employees SET employmentStatus = 'active', isActive = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+    const result = dbProxy.prepare("UPDATE employees SET employmentStatus = 'active', isActive = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(id, getActiveBusinessId());
     return result;
   });
   electron.ipcMain.handle("get-employee-accounts", () => {
@@ -8192,19 +10021,24 @@ function registerIPCHandlers() {
       FROM employee_accounts ea
       LEFT JOIN employees e ON ea.employeeId = e.id
       LEFT JOIN employee_roles r ON e.roleId = r.id
+      WHERE e.businessId = ?
       ORDER BY e.firstName, e.lastName
-    `).all();
+    `).all(getActiveBusinessId());
   });
   electron.ipcMain.handle("insert-employee-account", (_, data) => {
     requirePermission("settings.users");
     if (!data.username || !data.username.trim()) throw new Error("Username is required");
     if (!data.pin || data.pin.length < 4) throw new Error("PIN must be at least 4 characters");
+    const empBiz = dbProxy.prepare("SELECT businessId FROM employees WHERE id = ?").get(data.employeeId);
+    if (!empBiz || empBiz.businessId !== getActiveBusinessId()) throw new Error("Employee not found in this business");
     const hash = hashPin(data.pin);
     const result = dbProxy.prepare("INSERT INTO employee_accounts (employeeId, username, pin, forcePasswordChange) VALUES (?, ?, ?, ?)").run(data.employeeId, data.username, hash, data.forcePasswordChange ? 1 : 0);
     return result.lastInsertRowid;
   });
   electron.ipcMain.handle("update-employee-account", (_, id, data) => {
     requirePermission("settings.users");
+    const acctBiz = dbProxy.prepare("SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id);
+    if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error("Account not found in this business");
     if (data.pin) {
       const hash = hashPin(data.pin);
       dbProxy.prepare("UPDATE employee_accounts SET username = ?, pin = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(data.username, hash, data.isActive !== void 0 ? data.isActive ? 1 : 0 : 1, data.forcePasswordChange ? 1 : 0, id);
@@ -8214,21 +10048,26 @@ function registerIPCHandlers() {
   });
   electron.ipcMain.handle("delete-employee-account", (_, id) => {
     requirePermission("settings.users");
-    dbProxy.prepare("SELECT username FROM employee_accounts WHERE id = ?").get(id);
+    const acctBiz = dbProxy.prepare("SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id);
+    if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error("Account not found in this business");
     dbProxy.prepare("DELETE FROM employee_accounts WHERE id = ?").run(id);
   });
   electron.ipcMain.handle("lock-employee-account", (_, id) => {
     requirePermission("settings.users");
+    const acctBiz = dbProxy.prepare("SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id);
+    if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error("Account not found in this business");
     const lockUntil = new Date(Date.now() + 30 * 60 * 1e3).toISOString();
     dbProxy.prepare("UPDATE employee_accounts SET isActive = 0, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(lockUntil, id);
   });
   electron.ipcMain.handle("unlock-employee-account", (_, id) => {
     requirePermission("settings.users");
+    const acctBiz = dbProxy.prepare("SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id);
+    if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error("Account not found in this business");
     dbProxy.prepare("UPDATE employee_accounts SET isActive = 1, lockedUntil = NULL, failedLoginAttempts = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
   });
   electron.ipcMain.handle("reset-employee-password", (_, id, newPin) => {
     requirePermission("settings.users");
-    const acct = dbProxy.prepare("SELECT ea.id, ea.employeeId, e.roleId, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ?").get(id);
+    const acct = dbProxy.prepare("SELECT ea.id, ea.employeeId, e.roleId, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ? AND e.businessId = ?").get(id, getActiveBusinessId());
     if (!acct) return { success: false, error: "Account not found" };
     if (acct.roleName === "Owner") return { success: false, error: "Cannot reset PIN for Owner role" };
     const hash = hashPin(newPin);
@@ -8239,6 +10078,10 @@ function registerIPCHandlers() {
   });
   electron.ipcMain.handle("generate-recovery-key", (_, entityType, entityId) => {
     requirePermission("settings.users");
+    if (entityType === "employee") {
+      const empBiz = dbProxy.prepare("SELECT businessId FROM employees WHERE id = ?").get(entityId);
+      if (!empBiz || empBiz.businessId !== getActiveBusinessId()) throw new Error("Employee not found in this business");
+    }
     const recoveryKey = crypto$1.randomBytes(32).toString("hex");
     const hint = recoveryKey.slice(0, 8) + "..." + recoveryKey.slice(-4);
     const hash = hashPin(recoveryKey);
@@ -8361,6 +10204,7 @@ function registerIPCHandlers() {
   electron.ipcMain.handle("login-employee", (_, username, pin) => {
     const account = dbProxy.prepare(`
       SELECT ea.*, e.firstName, e.lastName, e.id as employeeId, e.roleId,
+        e.businessId as employeeBusinessId,
         r.name as roleName, r.permissions as rolePermissions
       FROM employee_accounts ea
       LEFT JOIN employees e ON ea.employeeId = e.id
@@ -8397,12 +10241,15 @@ function registerIPCHandlers() {
     currentUserRole = account.roleName || "employee";
     const rolePerms = account.rolePermissions ? JSON.parse(account.rolePermissions) : [];
     currentUserPermissions = rolePerms.length > 0 ? rolePerms : ["*"];
+    currentUserBusinessId = account.employeeBusinessId ?? null;
+    if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
     return {
       id: account.employeeId,
       accountId: account.id,
       username: account.username,
       firstName: account.firstName,
       lastName: account.lastName,
+      businessId: account.employeeBusinessId ?? null,
       roleName: account.roleName,
       roleId: account.roleId,
       permissions: account.rolePermissions ? JSON.parse(account.rolePermissions) : [],
@@ -9600,8 +11447,8 @@ function registerIPCHandlers() {
   }
   electron.ipcMain.handle("print-receipt", async (_e, sale) => {
     try {
-      const cfg = getPrinterConfig();
-      if (cfg.transport === "network") {
+      const cfg2 = getPrinterConfig();
+      if (cfg2.transport === "network") {
         const bizId = getActiveBusinessId();
         const biz = dbProxy.prepare("SELECT businessName, address FROM businesses WHERE id = ?").get(bizId);
         const tinRow = dbProxy.prepare("SELECT value FROM settings WHERE key = 'tin'").get();
@@ -9630,7 +11477,7 @@ function registerIPCHandlers() {
           }
         });
         await printRaw(commands);
-        if (cfg.autoOpenDrawer && sale.paymentMethod === "Cash" && sale.paymentStatus !== "Debt") {
+        if (cfg2.autoOpenDrawer && sale.paymentMethod === "Cash" && sale.paymentStatus !== "Debt") {
           await openDrawer();
         }
         return { success: true, transport: "network" };
@@ -9720,8 +11567,8 @@ function registerIPCHandlers() {
     if (status.enabled && status.transport === "network") status.online = await probePrinter();
     return status;
   });
-  electron.ipcMain.handle("set-printer-config", (_e, cfg) => {
-    return savePrinterConfig(cfg);
+  electron.ipcMain.handle("set-printer-config", (_e, cfg2) => {
+    return savePrinterConfig(cfg2);
   });
   electron.ipcMain.handle("parse-scale-reading", (_e, line, config) => {
     return parseWeightLine(line);
@@ -9768,13 +11615,37 @@ function registerIPCHandlers() {
     return syncToCloud();
   });
   electron.ipcMain.handle("cloud:save-config", (_e, url, key) => {
-    dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_url', ?)").run((url || "").trim());
-    dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_device_key', ?)").run((key || "").trim());
-    return { ok: true, configured: !!((url || "").trim() && (key || "").trim()) };
+    const urlStr = typeof url === "string" ? url.trim() : "";
+    const keyStr = typeof key === "string" ? key.trim() : "";
+    let parsed;
+    try {
+      parsed = new URL(urlStr);
+    } catch {
+      return { ok: false, error: "invalid cloud URL", configured: false };
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return { ok: false, error: "cloud URL must be http(s)", configured: false };
+    }
+    if (urlStr.length > 512 || keyStr.length > 256) {
+      return { ok: false, error: "cloud config too long", configured: false };
+    }
+    if (!keyStr) {
+      return { ok: false, error: "device key is required", configured: false };
+    }
+    dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_url', ?)").run(urlStr);
+    dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_device_key', ?)").run(keyStr);
+    return { ok: true, configured: true };
   });
   electron.ipcMain.handle("cloud:set-enabled", (_e, enabled) => {
+    if (typeof enabled !== "boolean") return { ok: false, error: "expected boolean" };
     dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_enabled', ?)").run(String(enabled));
     return { ok: true, enabled };
+  });
+  electron.ipcMain.handle("cloud:self-status", async () => {
+    await refreshCloudStatus();
+    const status = dbProxy.prepare("SELECT value FROM settings WHERE key = 'cloud_device_status'").get()?.value ?? null;
+    const blocked = dbProxy.prepare("SELECT value FROM settings WHERE key = 'cloud_device_blocked'").get()?.value === "true";
+    return { status, blocked };
   });
   const isDevBackup = !electron.app.isPackaged;
   const dbDir2 = isDevBackup ? path.join(process.cwd(), "db") : path.join(electron.app.getPath("userData"), "db");
@@ -9973,8 +11844,13 @@ function registerIPCHandlers() {
       LIMIT 20
     `).all(bizId);
   });
-  electron.ipcMain.handle("void-sale", (_, data) => {
+  electron.ipcMain.handle("void-sale", async (event, data) => {
     requirePermission("sales.void");
+    const reason = (data?.reason || "").trim();
+    if (!reason) throw new Error("A reason is required to void a sale");
+    if (!await gateSensitiveAction(event.sender, { context: `Void sale #${data.saleId}` })) {
+      throw new Error("Manager approval required — action not executed");
+    }
     const sale = dbProxy.prepare("SELECT * FROM sales WHERE id = ?").get(data.saleId);
     if (!sale) throw new Error("Sale not found");
     if (sale.status === "Voided") throw new Error("Sale is already voided");
@@ -10008,8 +11884,11 @@ function registerIPCHandlers() {
     insertAuditLog("void_sale", "sale", data.saleId, "status", "Active", "Voided", `Sale #${data.saleId} voided by ${currentUserName || "unknown"}. Reason: ${data.reason}`);
     return dbProxy.prepare("SELECT * FROM sales WHERE id = ?").get(data.saleId);
   });
-  electron.ipcMain.handle("reverse-debt-payment", (_, data) => {
+  electron.ipcMain.handle("reverse-debt-payment", async (event, data) => {
     requirePermission("payments.reverse");
+    if (!await gateSensitiveAction(event.sender, { context: `Reverse debt payment #${data.paymentId}` })) {
+      throw new Error("Manager approval required — action not executed");
+    }
     const payment = dbProxy.prepare("SELECT * FROM debt_payments WHERE id = ?").get(data.paymentId);
     if (!payment) throw new Error("Payment not found");
     if (payment.reversalId) throw new Error("Payment has already been reversed");
@@ -10021,8 +11900,11 @@ function registerIPCHandlers() {
     insertAuditLog("reverse_debt_payment", "debt_payment", data.paymentId, "reversalId", null, String(data.paymentId), `Debt payment #${data.paymentId} reversed by ${currentUserName || "unknown"}. Reason: ${data.reason}`);
     return { success: true };
   });
-  electron.ipcMain.handle("reverse-supplier-payment", (_, data) => {
+  electron.ipcMain.handle("reverse-supplier-payment", async (event, data) => {
     requirePermission("payments.reverse");
+    if (!await gateSensitiveAction(event.sender, { context: `Reverse supplier payment #${data.paymentId}` })) {
+      throw new Error("Manager approval required — action not executed");
+    }
     const payment = dbProxy.prepare("SELECT * FROM supplier_payments WHERE id = ?").get(data.paymentId);
     if (!payment) throw new Error("Payment not found");
     if (payment.reversalId) throw new Error("Payment has already been reversed");
@@ -10036,8 +11918,11 @@ function registerIPCHandlers() {
     insertAuditLog("reverse_supplier_payment", "supplier_payment", data.paymentId, "reversalId", null, String(data.paymentId), `Supplier payment #${data.paymentId} reversed by ${currentUserName || "unknown"}. Reason: ${data.reason}`);
     return { success: true };
   });
-  electron.ipcMain.handle("reverse-adjustment", (_, data) => {
+  electron.ipcMain.handle("reverse-adjustment", async (event, data) => {
     requirePermission("adjustments.reverse");
+    if (!await gateSensitiveAction(event.sender, { context: `Reverse adjustment #${data.adjustmentId}` })) {
+      throw new Error("Manager approval required — action not executed");
+    }
     const adjustment = dbProxy.prepare("SELECT * FROM adjustments WHERE id = ?").get(data.adjustmentId);
     if (!adjustment) throw new Error("Adjustment not found");
     if (adjustment.reversalId) throw new Error("Adjustment has already been reversed");
@@ -11563,6 +13448,16 @@ function registerIPCHandlers() {
   electron.ipcMain.handle("etax:export-all", (_, options) => {
     return exportEtaxCsv(options);
   });
+  registerBusinessDomainHandlers({
+    getActiveBusinessId,
+    isOwnerOrSuper: () => currentUserRole === "super_admin" || currentUserRole === "owner",
+    buildPermissionContext: () => {
+      const permissions = {};
+      for (const r of BUILTIN_ROLES) for (const [k, v] of Object.entries(r.permissions)) permissions[k] = v;
+      return { permissions, canApprove: currentUserRole === "super_admin" || (currentUserPermissions ?? []).includes("*") };
+    },
+    audit: (action, entityType, entityId, description) => insertAuditLog(action, entityType, entityId, null, null, null, description)
+  });
   console.log("[Handlers] All IPC handlers registered successfully");
 }
 function checkStockConsistency(bizId) {
@@ -11606,7 +13501,9 @@ function createWindow() {
       preload: path.join(__dirname, "../preload/index.js"),
       sandbox: true,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false
     }
   });
   mainWindow.on("resize", () => {
@@ -11634,12 +13531,33 @@ function createWindow() {
   mainWindow.webContents.on("console-message", (event, level, message, line, sourceId) => {
     console.log(`[Renderer Console]: ${message} (Line ${line} in ${sourceId})`);
   });
+  mainWindow.webContents.on("preload-error", (_e, path2, error) => {
+    logger.error("preload-error", { path: path2, error: String(error) });
+    console.error("[Preload Error]", path2, error);
+  });
+  mainWindow.webContents.on("did-fail-load", (_e, code, desc, url, isMain) => {
+    if (isMain) {
+      logger.error("did-fail-load", { code, desc, url });
+      console.error("[Did Fail Load]", code, desc, url);
+    }
+  });
+  mainWindow.webContents.on("render-process-gone", (_e, details) => {
+    logger.fatal("render-process-gone", { details });
+    console.error("[Renderer Gone]", details);
+  });
 }
 electron.app.whenReady().then(() => {
-  initDB();
-  registerIPCHandlers();
-  syncHub.start(SYNC_PORT);
-  createWindow();
+  try {
+    initDB();
+    registerIPCHandlers();
+    syncHub.start(SYNC_PORT);
+    startCloudSyncTimer();
+    createWindow();
+  } catch (err) {
+    logger.fatal("startup-failed", { error: String(err), stack: err?.stack });
+    electron.dialog.showErrorBox("Startup failed", String(err));
+    electron.app.quit();
+  }
   const wins = electron.BrowserWindow.getAllWindows();
   if (wins.length > 0) {
     appUpdater.init(wins[0]);

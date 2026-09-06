@@ -11,8 +11,12 @@
     "lib": ["ESNext"],
     "types": ["node"],
     "outDir": "out/main",
+    "rootDir": "..",
     "skipLibCheck": true,
-    "composite": true
+    "composite": true,
+    "paths": {
+      "@shega/shared": ["../shega-shared/src/index.ts"]
+    }
   },
-  "include": ["src/main/**/*"]
+  "include": ["src/main/**/*", "../shega-shared/src/**/*"]
 }

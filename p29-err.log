@@ -1,0 +1,12 @@
+npm warn Unknown user config "python". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+DevTools listening on ws://127.0.0.1:9337/devtools/browser/e7c13e62-0d53-4c3c-a5ac-a3c4b42e768e
+[18760:0905/231034.786:ERROR:net\disk_cache\cache_util_win.cc:25] Unable to move the cache: Access is denied. (0x5)
+[18760:0905/231034.793:ERROR:net\disk_cache\disk_cache.cc:284] Unable to create cache
+[18760:0905/231034.793:ERROR:gpu\ipc\host\gpu_disk_cache.cc:725] Gpu Cache Creation failed: -2
+[18760:0905/231034.831:ERROR:net\disk_cache\cache_util_win.cc:25] Unable to move the cache: Access is denied. (0x5)
+[18760:0905/231034.831:ERROR:net\disk_cache\disk_cache.cc:284] Unable to create cache
+[18760:0905/231034.831:ERROR:gpu\ipc\host\gpu_disk_cache.cc:725] Gpu Cache Creation failed: -2
+[18760:0905/231034.831:ERROR:net\disk_cache\cache_util_win.cc:25] Unable to move the cache: Access is denied. (0x5)
+[18760:0905/231034.836:ERROR:net\disk_cache\disk_cache.cc:284] Unable to create cache
+[18760:0905/231034.836:ERROR:gpu\ipc\host\gpu_disk_cache.cc:725] Gpu Cache Creation failed: -2

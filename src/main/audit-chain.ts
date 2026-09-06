@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import type Database from 'better-sqlite3';
 
 export const AUDIT_GENESIS = 'GENESIS';
@@ -18,6 +18,8 @@ export interface AuditEntry {
   createdAt: string | null;
   prev_hash: string | null;
   hash: string | null;
+  uuid?: string | null;
+  source_device?: string | null;
 }
 
 export function auditHash(prev: string, r: AuditEntry): string {
@@ -30,16 +32,23 @@ export function auditHash(prev: string, r: AuditEntry): string {
 
 /**
  * Insert an audit entry with a chained hash. Runs inside a transaction so the
- * previous-hash read and the insert are atomic.
+ * previous-hash read and the insert are atomic. `uuid` is the stable cross-device
+ * identity (dedup key, §32); `sourceDevice` records which chain the row came from.
  */
-export function insertAudit(db: InstanceType<typeof Database>, entry: Omit<AuditEntry, 'id' | 'prev_hash' | 'hash'>): number {
+export function insertAudit(db: InstanceType<typeof Database>, entry: Omit<AuditEntry, 'id' | 'prev_hash' | 'hash'>, opts?: { uuid?: string; sourceDevice?: string }): number {
   const insert = db.prepare(
-    `INSERT INTO audit_logs (businessId, action, entityType, entityId, fieldName, oldValue, newValue, changedBy, changedById, description, createdAt)
-     VALUES (@businessId, @action, @entityType, @entityId, @fieldName, @oldValue, @newValue, @changedBy, @changedById, @description, @createdAt)`
+    `INSERT INTO audit_logs (businessId, action, entityType, entityId, fieldName, oldValue, newValue, changedBy, changedById, description, createdAt, uuid, source_device)
+     VALUES (@businessId, @action, @entityType, @entityId, @fieldName, @oldValue, @newValue, @changedBy, @changedById, @description, @createdAt, @uuid, @source_device)`
   );
   const tx = db.transaction(() => {
     const prev = (db.prepare('SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1').get() as any)?.hash ?? AUDIT_GENESIS;
-    const info = insert.run({ ...entry, createdAt: entry.createdAt ?? new Date().toISOString() });
+    const uuid = opts?.uuid || randomUUID();
+    const info = insert.run({
+      ...entry,
+      createdAt: entry.createdAt ?? new Date().toISOString(),
+      uuid,
+      source_device: opts?.sourceDevice ?? null,
+    });
     const id = Number(info.lastInsertRowid);
     const row = db.prepare('SELECT * FROM audit_logs WHERE id = ?').get(id) as AuditEntry;
     const h = auditHash(prev, row);

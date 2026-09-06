@@ -29,6 +29,9 @@ interface SettingsContextType {
   setTheme: (theme: Theme) => void;
   currentBusiness: any | null;
   refreshBusiness: () => Promise<void>;
+  businesses: any[];
+  refreshBusinesses: () => Promise<void>;
+  switchBusiness: (id: number) => Promise<boolean>;
   t: (key: string, fallbackOrParams?: string | Record<string, any>, params?: Record<string, any>) => string;
   formatDate: (date: Date | string | number, options?: Intl.DateTimeFormatOptions) => string;
   formatTime: (date: Date | string | number) => string;
@@ -48,6 +51,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [timeSystem, setTimeSystem] = useState<TimeSystem>('device');
   const [theme, setTheme] = useState<Theme>('dark');
   const [currentBusiness, setCurrentBusiness] = useState<any | null>(null);
+  const [businesses, setBusinesses] = useState<any[]>([]);
   const [enabledModules, setEnabledModulesState] = useState<string[]>([...ALL_MODULES]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
 
@@ -59,6 +63,26 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       console.error('Failed to fetch business:', err);
     }
   };
+
+  const refreshBusinesses = async () => {
+    try {
+      const list = await window.api.businessList();
+      setBusinesses(list || []);
+    } catch (err) {
+      console.error('Failed to fetch businesses:', err);
+    }
+  };
+
+  const switchBusiness = useCallback(async (id: number): Promise<boolean> => {
+    try {
+      await window.api.businessSwitch(id);
+      await Promise.all([refreshBusiness(), refreshBusinesses()]);
+      return true;
+    } catch (err: any) {
+      console.error('Failed to switch business:', err);
+      return false;
+    }
+  }, []);
 
   const setEnabledModules = useCallback((modules: string[]) => {
     setEnabledModulesState(modules);
@@ -90,6 +114,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setSettingsLoaded(true);
     });
     refreshBusiness();
+    refreshBusinesses();
   }, []);
 
   // Save settings when they change
@@ -208,7 +233,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       calendarType, setCalendarType,
       timeSystem, setTimeSystem,
       theme, setTheme,
-      currentBusiness, refreshBusiness,
+      currentBusiness, refreshBusiness, businesses, refreshBusinesses, switchBusiness,
       t, formatDate, formatTime, formatDateTime,
       enabledModules, setEnabledModules, isModuleEnabled, settingsLoaded,
       currency: currentBusiness?.currency || 'ETB'

@@ -3,6 +3,15 @@ import { createHash, randomUUID, randomBytes } from 'crypto';
 import { networkInterfaces } from 'os';
 import db from './database';
 import { logger } from './logger';
+import { insertAudit } from './audit-chain';
+import {
+  BUSINESS_ADAPTER_ENTITIES,
+  FIELD_MAPS,
+  mobileToDesktopPayload,
+  desktopToMobilePayload,
+  desktopTableName,
+  AdapterEntity
+} from '@shega/shared';
 
 export const SYNC_PORT = 5757;
 
@@ -15,10 +24,57 @@ export const SHARED_TABLES = [
   'returns',
   'expenses',
   'adjustments',
-  'customers'
+  'customers',
+  'contacts',
+  'suppliers',
+  'budgets',
+  'budget_categories',
+  'budget_adjustments',
+  'orders',
+  'order_items',
+  'order_history',
+  'shipments',
+  'shipment_items',
+  'shipment_history',
+  'employees',
+  'employee_roles',
+  'employee_accounts',
+  'attendance',
+  'employee_performance',
+  'subscriptions',
+  'subscription_payments',
+  'subscription_renewals',
+  'scheduled_reminders',
+  'notification_reminders',
+  'notifications',
+  'businesses',
+  'locations',
+  'registers',
+  'business_roles',
+  'users',
+  'devices',
+  'stock_movements',
+  'audit_logs'
 ] as const;
 
 export type SyncEntity = (typeof SHARED_TABLES)[number];
+
+/**
+ * Map a relay entity name to the physical desktop table. Most entities share
+ * their relay name, but roster `devices` are persisted under `roster_devices`
+ * (the legacy `devices` table is the LAN pairing registry, not the roster).
+ * Mobile's `scheduled_reminders` maps to desktop's `notification_reminders`.
+ */
+function tbl(entity: string): string {
+  if (entity === 'scheduled_reminders') return 'notification_reminders';
+  return desktopTableName(entity as AdapterEntity);
+}
+
+/** Inverse of tbl(): the relay entity name for a physical desktop table. */
+function relayName(table: string): string {
+  if (table === 'notification_reminders') return 'scheduled_reminders';
+  return table;
+}
 
 interface Change {
   entity: SyncEntity;
@@ -43,10 +99,11 @@ export function changeChecksum(change: {
 
 let columnCache: Record<string, string[]> = {};
 function columnsOf(entity: string): string[] {
-  if (!columnCache[entity]) {
-    columnCache[entity] = (db.prepare(`PRAGMA table_info(${entity})`).all() as any[]).map((c: any) => c.name);
+  const table = tbl(entity);
+  if (!columnCache[table]) {
+    columnCache[table] = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map((c: any) => c.name);
   }
-  return columnCache[entity];
+  return columnCache[table];
 }
 
 export function ensureHubDeviceId(): string {
@@ -96,10 +153,11 @@ function registerDevice(deviceId: string, name?: string): void {
     db.prepare('UPDATE devices SET last_seen_at = ? WHERE device_id = ?').run(new Date().toISOString(), deviceId);
     return;
   }
-  db.prepare('INSERT INTO devices (device_id, name, last_seen_at) VALUES (?, ?, ?)').run(
+  db.prepare('INSERT INTO devices (device_id, name, last_seen_at, uuid) VALUES (?, ?, ?, ?)').run(
     deviceId,
     name || deviceId.slice(0, 8),
-    new Date().toISOString()
+    new Date().toISOString(),
+    deviceId
   );
 }
 
@@ -182,7 +240,113 @@ function recordRef(deviceId: string, entity: string, payload: Record<string, any
 }
 
 function existingByUuid(entity: string, uuid: string): any {
-  return db.prepare(`SELECT * FROM ${entity} WHERE uuid = ?`).get(uuid) as any;
+  return db.prepare(`SELECT * FROM ${tbl(entity)} WHERE uuid = ?`).get(uuid) as any;
+}
+
+// ===== Business-model adapter: Mobile (snake_case, uuid) <-> Desktop (camelCase, integer id) =====
+function isAdapterEntity(entity: string): entity is AdapterEntity {
+  return (BUSINESS_ADAPTER_ENTITIES as readonly string[]).includes(entity);
+}
+
+/** A mobile-canonical payload carries the canonical schema; detect it per-entity. */
+function looksLikeMobile(entity: string, payload: Record<string, any>): boolean {
+  if (!isAdapterEntity(entity)) return false;
+  if (entity === 'businesses') return 'name' in payload && !('businessName' in payload);
+  return 'business_id' in payload;
+}
+
+/** Translate a Mobile FK uuid to the Desktop table's INTEGER id (best-effort). */
+function mobileFkToDesktopInt(fk: { desktopColumn: string; lookupEntity: string }, uuid: string | null | undefined): number | null {
+  if (uuid == null || uuid === '') return null;
+  try {
+    const row = db.prepare(`SELECT id FROM ${fk.lookupEntity} WHERE uuid = ?`).get(String(uuid)) as any;
+    return row?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Translate a Desktop INTEGER FK id to the Mobile uuid (best-effort). */
+function desktopFkToMobileUuid(fk: { mobileField: string; lookupEntity: string }, desktopId: number | null | undefined): string | null {
+  if (desktopId == null) return null;
+  try {
+    const row = db.prepare(`SELECT uuid FROM ${fk.lookupEntity} WHERE id = ?`).get(Number(desktopId)) as any;
+    return row?.uuid ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ===== Multi-business: core POS tables use the business UUID on the wire =====
+// Adapter entities already bridge business_id (uuid) <-> businessId (int). The
+// core POS tables store the desktop INTEGER business id internally, but mobile
+// peers operate by the business UUID, so payloads are normalized on the way out
+// (int -> uuid) and on the way in (uuid -> int). Peers that predate this send
+// the desktop int or nothing; ints pass through untouched on the wire and nulls
+// are left alone (mobile backfills those to its operating business).
+const CORE_BUSINESS_SCOPED_ENTITIES: readonly string[] = [
+  'categories', 'items', 'item_packs', 'item_barcodes', 'quick_products',
+  'sales', 'debt_payments', 'expenses', 'adjustments', 'customers',
+  'warehouses', 'returns', 'gift_cards', 'gift_card_transactions',
+  'employee_roles', 'employees', 'employee_accounts', 'attendance', 'employee_performance'
+];
+
+function businessIntToUuid(int: number | null | undefined): string | null {
+  if (int == null) return null;
+  try {
+    const row = db.prepare('SELECT uuid FROM businesses WHERE id = ?').get(Number(int)) as any;
+    return row?.uuid ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function businessUuidToInt(uuid: string | null | undefined): number | null {
+  if (uuid == null || uuid === '') return null;
+  try {
+    const row = db.prepare('SELECT id FROM businesses WHERE uuid = ?').get(String(uuid)) as any;
+    return row?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the cross-wire payload for a desktop relay row. Adapter entities use
+ * their field map; core POS tables carry the business UUID instead of the
+ * desktop INTEGER id (`biz-<id>` sentinel when the business has no uuid yet).
+ */
+function emitEntityPayload(entity: string, row: Record<string, any>): Record<string, any> {
+  if (isAdapterEntity(entity)) return toMobilePayload(entity, row);
+  if (CORE_BUSINESS_SCOPED_ENTITIES.includes(entity) && row.businessId != null) {
+    const next = { ...row };
+    const asStr = String(row.businessId);
+    if (/^[0-9]+$/.test(asStr)) {
+      next.businessId = businessIntToUuid(Number(row.businessId)) ?? `biz-${asStr}`;
+    }
+    return next;
+  }
+  return row;
+}
+
+/** Convert an incoming Mobile payload to Desktop schema, resolving FKs to local INTEGER ids. */
+function toDesktopPayload(entity: AdapterEntity, payload: Record<string, any>): Record<string, any> {
+  const out = mobileToDesktopPayload(entity, payload);
+  const map = FIELD_MAPS[entity];
+  for (const fk of map.mobileFk) {
+    out[fk.desktopColumn] = mobileFkToDesktopInt(fk, out[fk.desktopColumn]);
+  }
+  return out;
+}
+
+/** Convert a Desktop row (or desktop-schema payload) to the Mobile schema, resolving FKs back to uuids. */
+function toMobilePayload(entity: AdapterEntity, payload: Record<string, any>): Record<string, any> {
+  const out = desktopToMobilePayload(entity, payload);
+  const map = FIELD_MAPS[entity];
+  for (const fk of map.desktopFk) {
+    out[fk.mobileField] = desktopFkToMobileUuid(fk, payload[fk.desktopColumn]);
+  }
+  return out;
 }
 
 export interface ApplyResult {
@@ -202,12 +366,34 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
     logSync(deviceId, entity, entity_uuid, op, 'skipped unknown entity');
     return 'skipped';
   }
-  const data = cleanPayload(entity, payload);
+  const adapterData = isAdapterEntity(entity) && looksLikeMobile(entity, payload)
+    ? toDesktopPayload(entity, payload)
+    : payload;
+  const data = cleanPayload(entity, adapterData);
+
+  // Normalize the cross-wire business key for core tables: peers send the
+  // business UUID (mobile) or the desktop id; store the desktop INTEGER id so
+  // business-scoped reads keep working. A uuid with no local business row is
+  // stored as-is (NULL on the INT column won't match any filter — isolated).
+  if (CORE_BUSINESS_SCOPED_ENTITIES.includes(entity) && data.businessId != null) {
+    const asStr = String(data.businessId);
+    if (!/^[0-9]+$/.test(asStr)) {
+      data.businessId = businessUuidToInt(asStr) ?? null;
+    }
+  }
+
+  // §32: audit events are append-only — never LWW-updated. Incoming changes are
+  // deduped by stable `uuid` and re-chained into the hub's tamper-evident log
+  // via insertAudit() so the merged ledger remains one verifiable chain.
+  if (entity === 'audit_logs') {
+    if (op === 'DELETE') return 'skipped'; // audit rows are immutable
+    return applyAuditChange(deviceId, change) ? 'applied' : 'skipped';
+  }
 
   if (op === 'DELETE') {
     const existing = existingByUuid(entity, entity_uuid);
     if (existing) {
-      db.prepare(`UPDATE ${entity} SET is_deleted = 1, deleted_at = COALESCE(?, deleted_at) WHERE uuid = ?`).run(
+      db.prepare(`UPDATE ${tbl(entity)} SET is_deleted = 1, deleted_at = COALESCE(?, deleted_at) WHERE uuid = ?`).run(
         payload.deleted_at ?? new Date().toISOString(),
         entity_uuid
       );
@@ -222,7 +408,7 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
     insertData.device_id = deviceId;
     insertData.updated_at = insertData.updated_at ?? new Date().toISOString();
     let pending = false;
-    if ((entity === 'sales' || entity === 'returns') && insertData.itemId != null) {
+    if ((entity === 'sales' || entity === 'returns' || entity === 'stock_movements') && insertData.itemId != null) {
       const hubItemId = resolveFk(deviceId, 'items', insertData.itemId);
       if (hubItemId != null) {
         insertData.itemId = hubItemId;
@@ -239,7 +425,7 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
     const cols = columnsOf(entity).filter((c) => c in insertData);
     const placeholders = cols.map(() => '?').join(', ');
     const values = cols.map((c) => insertData[c]);
-    db.prepare(`INSERT INTO ${entity} (${cols.join(', ')}) VALUES (${placeholders})`).run(...values);
+    db.prepare(`INSERT INTO ${tbl(entity)} (${cols.join(', ')}) VALUES (${placeholders})`).run(...values);
     recordRef(deviceId, entity, insertData);
     return pending ? 'pending' : 'applied';
   }
@@ -254,13 +440,54 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
     if (cols.length) {
       const sets = cols.map((c) => `${c} = ?`).join(', ');
       const values = cols.map((c) => updateData[c]);
-      db.prepare(`UPDATE ${entity} SET ${sets} WHERE uuid = ?`).run(...values, entity_uuid);
+      db.prepare(`UPDATE ${tbl(entity)} SET ${sets} WHERE uuid = ?`).run(...values, entity_uuid);
     }
     recordRef(deviceId, entity, data);
     return 'applied';
   }
   logSync(deviceId, entity, entity_uuid, op, 'conflict_rejected');
   return 'conflict';
+}
+
+/**
+ * §32 — append-only merge of a remote audit event into the hub's authoritative,
+ * tamper-evident chain. Dedupes by the stable `uuid` (the auditId); on new rows
+ * it maps the mobile snake_case payload to the desktop schema and re-chains via
+ * insertAudit() so `verifyAuditChain()` keeps passing after every merge.
+ */
+function applyAuditChange(deviceId: string, change: Change): boolean {
+  const payload = change.payload ?? {};
+  const uuid = String(payload.uuid ?? change.entity_uuid ?? '');
+  if (!uuid) return false;
+  const duplicate = (db.prepare('SELECT id FROM audit_logs WHERE uuid = ?').get(uuid) as any);
+  if (duplicate) return true; // at-least-once delivery — already merged
+
+  const businessId = payload.business_id
+    ? mobileFkToDesktopInt({ desktopColumn: 'businessId', lookupEntity: 'businesses' }, String(payload.business_id))
+    : null;
+
+  try {
+    insertAudit(db, {
+      businessId,
+      action: String(payload.action ?? ''),
+      entityType: String(payload.entity ?? payload.entityType ?? ''),
+      entityId: payload.entity_id != null ? Number(payload.entity_id) : (payload.entityId != null ? Number(payload.entityId) : null),
+      fieldName: payload.field_name != null ? String(payload.field_name) : (payload.fieldName ?? null),
+      oldValue: payload.old_value != null ? String(payload.old_value) : (payload.oldValue ?? null),
+      newValue: payload.new_value != null ? String(payload.new_value) : (payload.newValue ?? null),
+      changedBy: payload.changed_by ? String(payload.changed_by) : (payload.changedBy ?? null),
+      changedById: payload.changed_by_id != null ? Number(payload.changed_by_id) : (payload.changedById ?? null),
+      description: payload.description ? String(payload.description) : null,
+      createdAt: String(payload.created_at ?? payload.createdAt ?? new Date().toISOString()),
+    }, {
+      uuid,
+      sourceDevice: String(payload.source_device ?? payload.device_id ?? deviceId),
+    });
+    return true;
+  } catch (e) {
+    logSync(deviceId, 'audit_logs', uuid, change.op, 'audit_merge_failed');
+    return false;
+  }
 }
 
 function applyPush(deviceId: string, changes: Change[]): ApplyResult {
@@ -310,9 +537,15 @@ export function snapshotSince(since: number) {
   if (since <= 0) {
     const changes: any[] = [];
     for (const entity of SHARED_TABLES) {
-      const rows = db.prepare(`SELECT * FROM ${entity} WHERE is_deleted = 0`).all() as any[];
+      const rows = db.prepare(`SELECT * FROM ${tbl(entity)} WHERE is_deleted = 0`).all() as any[];
       for (const r of rows) {
-        changes.push({ entity, entity_uuid: r.uuid, op: 'INSERT', payload: r, device_id: r.device_id });
+        changes.push({
+          entity,
+          entity_uuid: r.uuid,
+          op: 'INSERT',
+          payload: emitEntityPayload(entity, r),
+          device_id: r.device_id
+        });
       }
     }
     return { changes, lastSeq: seq, snapshot: true };
@@ -321,10 +554,11 @@ export function snapshotSince(since: number) {
     .prepare('SELECT * FROM sync_outbox WHERE seq > ? ORDER BY seq ASC LIMIT 1000')
     .all(since) as any[];
   const changes = rows.map((r) => {
-    let payload = {};
+    let payload: any = {};
     try {
       payload = JSON.parse(r.payload);
     } catch {}
+    payload = emitEntityPayload(r.entity, payload);
     return { entity: r.entity, entity_uuid: r.entity_uuid, op: r.op, payload, device_id: r.device_id, seq: r.seq };
   });
   return { changes, lastSeq: seq, snapshot: false };
@@ -339,10 +573,11 @@ export function buildCloudChanges(): Change[] {
   const out: Change[] = [];
   const hubId = ensureHubDeviceId();
   for (const entity of SHARED_TABLES) {
-    const rows = db.prepare(`SELECT * FROM ${entity} WHERE is_deleted = 0`).all() as any[];
+    const rows = db.prepare(`SELECT * FROM ${tbl(entity)} WHERE is_deleted = 0`).all() as any[];
     for (const r of rows) {
-      const payload: Record<string, any> = {};
+      let payload: Record<string, any> = {};
       for (const k of Object.keys(r)) payload[k] = r[k];
+      payload = emitEntityPayload(entity, payload);
       const change: Change = { entity, entity_uuid: r.uuid, op: 'INSERT', payload, device_id: hubId };
       change.checksum = changeChecksum(change);
       out.push(change);
@@ -361,7 +596,7 @@ export function verifyChecksums() {
   const out: Record<string, { count: number; checksum: string }> = {};
   for (const entity of SHARED_TABLES) {
     const rows = db
-      .prepare(`SELECT uuid, updated_at, row_version, is_deleted FROM ${entity} WHERE is_deleted = 0`)
+      .prepare(`SELECT uuid, updated_at, row_version, is_deleted FROM ${tbl(entity)} WHERE is_deleted = 0`)
       .all() as any[];
     const h = createHash('sha256');
     const sorted = rows.slice().sort((a, b) => (a.uuid < b.uuid ? -1 : 1));

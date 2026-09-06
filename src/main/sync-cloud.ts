@@ -94,3 +94,60 @@ export async function syncToCloud(): Promise<{ pushed: number; pulled: number; c
   }
   return result;
 }
+
+export interface CloudSelfStatus { status: string | null; blocked: boolean; lastError: string | null; }
+
+/**
+ * Fetch THIS device's roster status from the cloud (spec §17/§18 receive side).
+ * Lets the desktop lock overlay observe a remote disable even when the LAN hub
+ * is not the active transport. No-op when cloud is not configured.
+ */
+export async function refreshCloudStatus(): Promise<CloudSelfStatus | null> {
+  const cfg = getCloudConfig();
+  if (!cfg) return null;
+  const hubId = ensureHubDeviceId();
+  try {
+    const res = await httpJson(`${cfg.url}/api/sync/status/?device=${encodeURIComponent(hubId)}`, {
+      method: 'GET',
+      headers: { 'X-Device-Key': cfg.key }
+    });
+    const status = res?.status ?? null;
+    const blocked = !!res?.blocked;
+    setSetting('cloud_device_status', String(status ?? ''));
+    setSetting('cloud_device_blocked', String(blocked));
+    return { status, blocked, lastError: null };
+  } catch (e: any) {
+    return { status: null, blocked: false, lastError: e?.message || String(e) };
+  }
+}
+
+// --- Periodic cloud timer ---------------------------------------------------
+// Runs cloud sync on an interval (mirrors the LAN hub scheduler) whenever cloud
+// sync is enabled and configured. Errors are recorded (and suppressed) so a
+// transient offline cloud never crashes the hub.
+let timer: NodeJS.Timeout | null = null;
+const CLOUD_PERIOD_MS = 60 * 1000;
+
+export function startCloudSyncTimer(): void {
+  if (timer) return;
+  timer = setInterval(async () => {
+    const enabled = getSetting('cloud_sync_enabled') === 'true';
+    if (!enabled) return;
+    const cfg = getCloudConfig();
+    if (!cfg) return;
+    try {
+      await syncToCloud();
+      await refreshCloudStatus();
+    } catch (e: any) {
+      // handled / recorded inside the internals
+    }
+  }, CLOUD_PERIOD_MS);
+  timer.unref?.();
+}
+
+export function stopCloudSyncTimer(): void {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+}

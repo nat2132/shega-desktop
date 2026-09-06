@@ -86,6 +86,7 @@ export const ROUTE_MODULE: Record<string, string> = {
   '/warehouses': 'warehouses',
   '/employees': 'employees',
   '/users': 'employees',
+  '/business': 'business',
   '/shipments': 'shipments',
   '/suppliers': 'suppliers',
   '/debt-management': 'customers',

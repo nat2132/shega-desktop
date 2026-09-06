@@ -1,0 +1,7 @@
+
+[2026-09-05T19:40:13.593Z] [UPDATER] Development mode - update checking disabled by default
+[Handlers] registerIPCHandlers called
+[Handlers] Registered global-search
+[Handlers] Registered get-business-insights
+[Handlers] All IPC handlers registered successfully
+[2026-09-05T19:40:13.977Z] [UPDATER] Updater initialized
