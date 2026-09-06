@@ -3,22 +3,14 @@ import { createHash, randomBytes } from 'crypto';
 import { EventEmitter } from 'events';
 import db from '../database';
 import {
-  SHARED_TABLES,
-  SyncEntity,
   applyPush,
   snapshotSince,
-  lwwWins,
   verifyChecksums,
   getPairingToken,
   ensureHubDeviceId,
   registerDevice,
-  logSync,
   requestDeviceResync,
-  buildCloudChanges,
-  applyRemoteChanges,
-  changeChecksum,
-  type Change,
-} from './sync-hub';
+} from '../sync-hub';
 import { logger } from '../logger';
 import {
   submitDeviceJoinRequest,
@@ -44,6 +36,7 @@ export interface WsMessage {
   type: string;
   payload?: any;
   requestId?: string;
+  timestamp?: number;
 }
 
 type SyncEventMap = {
@@ -293,7 +286,11 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
         },
       });
 
-      this.emit('syncCompleted', this.clients.get(clientId)!, result);
+      this.emit('syncCompleted', this.clients.get(clientId)!, {
+        pushed: result.applied,
+        pulled: 0,
+        conflicts: result.conflicts,
+      });
     } catch (e: any) {
       logger.error('[WS] Sync push failed:', e);
       this.sendError(ws, 'SYNC_PUSH_FAILED', e.message);

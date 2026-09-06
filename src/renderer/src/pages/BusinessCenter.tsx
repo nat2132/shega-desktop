@@ -3,7 +3,8 @@ import {
   Store as RegisterIcon, MapPin, Smartphone, Plus, Edit2, Trash2,
   Lock, Unlock, Pencil, LayoutDashboard, CircleDollarSign, Coins,
   PackageSearch, Users, RefreshCw, CheckCircle2, Wallet, ShoppingCart,
-  TrendingUp, Building2, Check, Star, Archive
+  TrendingUp, Building2, Check, Star, Archive, QrCode, Link2, UserPlus,
+  KeyRound, Ban, Power, Clock
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -18,7 +19,7 @@ import { BusinessHealthScore } from '../components/BusinessHealthScore';
 import { BusinessAssistant } from '../components/BusinessAssistant';
 import { useSettings } from '../context/SettingsContext';
 
-type Tab = 'overview' | 'registers' | 'locations' | 'devices' | 'businesses';
+type Tab = 'overview' | 'registers' | 'locations' | 'devices' | 'team' | 'businesses';
 
 const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   active: { label: 'Active', cls: 'bg-green-500/15 text-green-600' },
@@ -70,7 +71,23 @@ const BusinessCenter: React.FC = () => {
   const [replacementPlatform, setReplacementPlatform] = useState('desktop');
   const [replacingBusy, setReplacingBusy] = useState(false);
 
+  // ── Team / employee QR pairing ──
+  const [pairingInfo, setPairingInfo] = useState<{ linked: boolean; email: string | null; businessName: string | null }>({ linked: false, email: null, businessName: null });
+  const [invites, setInvites] = useState<any[]>([]);
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [linkForm, setLinkForm] = useState({ email: '', password: '' });
+  const [linking, setLinking] = useState(false);
+  const [showPairModal, setShowPairModal] = useState(false);
+  const [pairForm, setPairForm] = useState({ employeeName: '', role: 'cashier', register: '', location: '' });
+  const [pairing, setPairing] = useState(false);
+  const [qrInvite, setQrInvite] = useState<any>(null);
+  const [now, setNow] = useState(Date.now());
+  const [deciding, setDeciding] = useState<number | null>(null);
+  const [personBusy, setPersonBusy] = useState<number | null>(null);
+
   const isOwner = access['*'] === true || access['business.manage'] === true;
+  const isTeamManager = isOwner || access['team.manage'] === true;
+  const pairingRoles = useMemo(() => (roles.builtin || []).filter((r) => r.key !== 'owner'), [roles]);
 
   const load = async () => {
     setLoading(true);
@@ -118,6 +135,148 @@ const BusinessCenter: React.FC = () => {
     }
   };
 
+  const loadPairing = async () => {
+    try {
+      const info = await window.api.pairingStatus();
+      setPairingInfo(info);
+      if (info.linked) void refreshInvites();
+    } catch { /* best-effort */ }
+  };
+
+  const refreshInvites = async () => {
+    try {
+      const list = await window.api.pairingList();
+      setInvites(list || []);
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to load pairing requests');
+      setPairingInfo((p) => ({ ...p, linked: false }));
+    }
+  };
+
+  const linkAccount = async () => {
+    if (!linkForm.email.trim() || !linkForm.password) return toast.error('Email and password are required');
+    setLinking(true);
+    try {
+      const info = await window.api.pairingLinkAccount(linkForm.email, linkForm.password);
+      setPairingInfo((p) => ({ ...p, linked: true, email: info.email, businessName: info.businessName }));
+      setShowLinkModal(false);
+      setLinkForm({ email: '', password: '' });
+      toast.success('Shega account linked for pairing');
+      void refreshInvites();
+    } catch (e: any) {
+      toast.error(e?.message || 'Link failed — check email and password');
+    } finally {
+      setLinking(false);
+    }
+  };
+
+  const unlinkAccount = async () => {
+    await window.api.pairingUnlink();
+    setPairingInfo((p) => ({ ...p, linked: false, email: null, businessName: null }));
+    setInvites([]);
+    toast.success('Pairing account unlinked');
+  };
+
+  const openPairModal = (person?: any) => {
+    setPairForm({ employeeName: person?.name ?? '', role: person?.roleKey ?? 'cashier', register: '', location: '' });
+    setShowPairModal(true);
+  };
+
+  const issueQr = async () => {
+    if (!pairForm.employeeName.trim()) return toast.error('Employee name is required');
+    setPairing(true);
+    try {
+      const res = await window.api.pairingInvite({
+        employeeName: pairForm.employeeName.trim(),
+        role: pairForm.role,
+        register: pairForm.register || undefined,
+        location: pairForm.location || undefined,
+      });
+      const qr = await window.api.pairingQrCode(res.qr_uri ?? `shega://join?t=${res.token}`);
+      setQrInvite({ id: res.id, code: res.code, expiresAt: res.expires_at, qr, form: { ...pairForm } });
+      setShowPairModal(false);
+      setPairForm({ employeeName: '', role: 'cashier', register: '', location: '' });
+      void refreshInvites();
+    } catch (e: any) {
+      toast.error(e?.message || 'Issue failed — is the Shega account linked?');
+    } finally {
+      setPairing(false);
+    }
+  };
+
+  const regenerateQr = async () => {
+    if (!qrInvite) return;
+    setPairing(true);
+    try {
+      await window.api.pairingRevoke(qrInvite.id).catch(() => {});
+      const res = await window.api.pairingInvite({
+        employeeName: qrInvite.form.employeeName,
+        role: qrInvite.form.role,
+        register: qrInvite.form.register || undefined,
+        location: qrInvite.form.location || undefined,
+      });
+      const qr = await window.api.pairingQrCode(res.qr_uri ?? `shega://join?t=${res.token}`);
+      setQrInvite({ id: res.id, code: res.code, expiresAt: res.expires_at, qr, form: qrInvite.form });
+      void refreshInvites();
+      toast.success('New invitation issued');
+    } catch (e: any) {
+      toast.error(e?.message || 'Regenerate failed');
+    } finally {
+      setPairing(false);
+    }
+  };
+
+  const revokeQr = async () => {
+    if (!qrInvite) return;
+    try {
+      await window.api.pairingRevoke(qrInvite.id);
+      toast.success('Invitation revoked');
+      setQrInvite(null);
+      void refreshInvites();
+    } catch (e: any) {
+      toast.error(e?.message || 'Revoke failed');
+    }
+  };
+
+  const decide = async (id: number, decision: 'approve' | 'reject') => {
+    setDeciding(id);
+    try {
+      await window.api.pairingDecide(id, decision);
+      toast.success(decision === 'approve' ? 'Employee approved' : 'Request rejected');
+      void refreshInvites();
+    } catch (e: any) {
+      toast.error(e?.message || `Failed to ${decision} request`);
+    } finally {
+      setDeciding(null);
+    }
+  };
+
+  const changeRole = async (p: any, roleKey: string) => {
+    setPersonBusy(p.id);
+    try {
+      await window.api.businessSetPersonRole(p.id, roleKey);
+      toast.success(`${p.name}'s role updated`);
+      await load();
+    } catch (e: any) {
+      toast.error(e?.message || 'Role update failed');
+    } finally {
+      setPersonBusy(null);
+    }
+  };
+
+  const deactivatePerson = async (p: any) => {
+    setPersonBusy(p.id);
+    try {
+      await window.api.businessSetPersonActive(p.id, false);
+      toast.success(`${p.name} deactivated`);
+      await load();
+    } catch (e: any) {
+      toast.error(e?.message || 'Deactivate failed');
+    } finally {
+      setPersonBusy(null);
+    }
+  };
+
   const approveDevice = async (d: any) => {
     try {
       await window.api.businessSetDeviceStatus(d.device_id ?? d.id, 'active');
@@ -133,7 +292,19 @@ const BusinessCenter: React.FC = () => {
     loadOverview();
     (window.api.businessCan('*').then((r) => setAccess((a) => ({ ...a, '*': r.allowed }))).catch(() => {}));
     (window.api.businessCan('business.manage').then((r) => setAccess((a) => ({ ...a, 'business.manage': r.allowed }))).catch(() => {}));
+    (window.api.businessCan('team.manage').then((r) => setAccess((a) => ({ ...a, 'team.manage': r.allowed }))).catch(() => {}));
+    loadPairing();
   }, []);
+
+  useEffect(() => {
+    if (!qrInvite) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [qrInvite]);
+
+  const qrRemaining = qrInvite ? Math.max(0, new Date(qrInvite.expiresAt).getTime() - now) : 0;
+  const qrMins = Math.floor(qrRemaining / 60000);
+  const qrSecs = Math.floor((qrRemaining % 60000) / 1000);
 
   const kpi = useMemo(() => {
     const activeRegs = registers.filter((r) => r.isActive).length;
@@ -308,6 +479,7 @@ const BusinessCenter: React.FC = () => {
               <TabsTrigger value="registers" className="gap-2"><RegisterIcon className="h-4 w-4" /> Registers</TabsTrigger>
               <TabsTrigger value="locations" className="gap-2"><MapPin className="h-4 w-4" /> Locations</TabsTrigger>
               <TabsTrigger value="devices" className="gap-2"><Smartphone className="h-4 w-4" /> Devices</TabsTrigger>
+              <TabsTrigger value="team" className="gap-2"><Users className="h-4 w-4" /> Team</TabsTrigger>
               <TabsTrigger value="businesses" className="gap-2"><Building2 className="h-4 w-4" /> Businesses</TabsTrigger>
             </TabsList>
 
@@ -560,6 +732,172 @@ const BusinessCenter: React.FC = () => {
               </div>
             </TabsContent>
 
+            <TabsContent value="team" className="space-y-4 mt-4">
+              <div className="flex justify-between items-center">
+                <p className="text-sm text-muted-foreground">
+                  {people.length} people on the roster
+                  {pairingInfo.linked && <span className="ml-2 text-muted-foreground/70">· pairing linked as {pairingInfo.email}</span>}
+                </p>
+                {isTeamManager && pairingInfo.linked && (
+                  <div className="flex gap-2">
+                    <Button onClick={() => openPairModal()}><QrCode className="h-4 w-4 mr-2" /> Pair Employee</Button>
+                    <Button variant="outline" onClick={() => refreshInvites()}><RefreshCw className="h-4 w-4 mr-2" /> Refresh</Button>
+                  </div>
+                )}
+              </div>
+
+              {/* Link account callout */}
+              {!pairingInfo.linked && isTeamManager && (
+                <Card className="border-dashed">
+                  <CardContent className="p-5 flex items-center gap-3">
+                    <KeyRound className="h-5 w-5 text-primary shrink-0" />
+                    <div className="flex-1 text-sm">
+                      <p className="font-medium">Link your Shega account to manage employee pairing</p>
+                      <p className="text-xs text-muted-foreground">
+                        Employee QR invitations and join approvals are managed from your Shega business account.
+                        Link it once here to invite employees by QR and approve their join requests.
+                      </p>
+                    </div>
+                    <Button onClick={() => setShowLinkModal(true)}><Link2 className="h-4 w-4 mr-2" /> Link account</Button>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Pending pairing approvals */}
+              {(() => {
+                const pending = invites.filter((i) => i.status === 'used' && i.device_status === 'pending');
+                if (pending.length === 0) return null;
+                return (
+                  <Card className="border-amber-500/40">
+                    <CardContent className="p-5 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <Users className="h-4 w-4 text-amber-500" />
+                        <h3 className="font-semibold">{pending.length} pairing request{pending.length > 1 ? 's' : ''} awaiting approval</h3>
+                      </div>
+                      {pending.map((inv) => (
+                        <div key={inv.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                          <div className="text-sm">
+                            <p className="font-medium">{inv.employee_name || 'New employee'}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {inv.role}
+                              {inv.register ? ` · ${inv.register}` : ''}
+                              {inv.location ? ` · ${inv.location}` : ''}
+                              {inv.device_id ? ` · ${inv.device_id}` : ''}
+                              {inv.device_status ? ` · device ${inv.device_status}` : ''}
+                            </p>
+                          </div>
+                          {isTeamManager && (
+                            <div className="flex gap-2">
+                              <Button size="sm" disabled={deciding === inv.id} onClick={() => decide(inv.id, 'approve')}>
+                                <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Approve
+                              </Button>
+                              <Button size="sm" variant="outline" className="text-red-500 hover:text-red-600" disabled={deciding === inv.id} onClick={() => decide(inv.id, 'reject')}>
+                                <Ban className="h-3.5 w-3.5 mr-1" /> Reject
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                );
+              })()}
+
+              {/* Issued invitations waiting to be scanned */}
+              {(() => {
+                const issued = invites.filter((i) => i.status === 'pending');
+                if (issued.length === 0) return null;
+                return (
+                  <Card>
+                    <CardContent className="p-5 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <Clock className="h-4 w-4 text-muted-foreground" />
+                        <h3 className="font-semibold">{issued.length} invitation{issued.length > 1 ? 's' : ''} waiting to be scanned</h3>
+                      </div>
+                      {issued.map((inv) => (
+                        <div key={inv.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                          <div className="text-sm">
+                            <p className="font-medium">{inv.employee_name || 'Unnamed employee'}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {inv.role}{inv.register ? ` · ${inv.register}` : ''}{inv.location ? ` · ${inv.location}` : ''}
+                              {` · expires ${new Date(inv.expires_at).toLocaleTimeString()}`}
+                            </p>
+                          </div>
+                          {isTeamManager && (
+                            <Button size="sm" variant="outline" disabled={deciding === inv.id} onClick={() => decide(inv.id, 'reject')}>
+                              <Ban className="h-3.5 w-3.5 mr-1" /> Revoke
+                            </Button>
+                          )}
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                );
+              })()}
+
+              {/* Handled requests (approved / rejected) */}
+              {(() => {
+                const handled = invites.filter((i) => i.status === 'used' && i.device_status !== 'pending');
+                if (handled.length === 0) return null;
+                return (
+                  <Card>
+                    <CardContent className="p-5 space-y-2">
+                      <h3 className="text-sm font-semibold">Recently handled</h3>
+                      {handled.map((inv) => (
+                        <div key={inv.id} className="flex items-center justify-between gap-3 rounded-lg border p-2.5 text-sm">
+                          <span className="font-medium truncate">{inv.employee_name || 'Employee'}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {inv.device_status === 'active' ? 'Approved' : 'Rejected'}
+                            {inv.accepted_by ? ` by ${inv.accepted_by}` : ''}
+                          </span>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                );
+              })()}
+
+              {/* Roster */}
+              <Card>
+                <CardHeader className="flex-row items-center justify-between">
+                  <CardTitle className="text-sm font-semibold flex items-center gap-2"><Users className="h-4 w-4" /> Team roster</CardTitle>
+                  <Badge variant="secondary">{people.length} active</Badge>
+                </CardHeader>
+                <CardContent className="p-0">
+                  {people.length === 0 ? (
+                    <p className="text-sm text-muted-foreground px-5 py-4">No people on the roster yet.</p>
+                  ) : (
+                    <div className="divide-y">
+                      {people.map((p) => (
+                        <div key={p.id} className="flex items-center gap-3 px-5 py-3">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">{p.name}</p>
+                            <p className="text-xs text-muted-foreground truncate">{p.phone || p.email || '—'}</p>
+                          </div>
+                          {isTeamManager && (
+                            <>
+                              <Select value={p.roleKey} onValueChange={(v) => changeRole(p, v)} disabled={personBusy === p.id}>
+                                <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  {roles.builtin.map((r) => <SelectItem key={r.key} value={r.key}>{r.name}</SelectItem>)}
+                                </SelectContent>
+                              </Select>
+                              <Button size="sm" variant="outline" disabled={personBusy === p.id || !pairingInfo.linked} onClick={() => openPairModal(p)}>
+                                <QrCode className="h-3.5 w-3.5 mr-1" /> QR Pair
+                              </Button>
+                              <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-600" disabled={personBusy === p.id} onClick={() => deactivatePerson(p)}>
+                                <Power className="h-3.5 w-3.5 mr-1" /> Deactivate
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
             <TabsContent value="businesses" className="space-y-4 mt-4">
               <div className="flex justify-between items-center">
                 <p className="text-sm text-muted-foreground">{businesses.length} business{businesses.length === 1 ? '' : 'es'} on this installation</p>
@@ -744,6 +1082,100 @@ const BusinessCenter: React.FC = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Link Shega account modal */}
+      <Modal isOpen={showLinkModal} onClose={() => setShowLinkModal(false)} title="Link Shega account">
+        <div className="space-y-4">
+          <p className="text-xs text-muted-foreground">
+            Sign in with the Shega account that owns or manages this business. The credentials are used only to
+            obtain a pairing token, stored locally on this computer.
+          </p>
+          <div>
+            <label className="text-sm font-medium">Email</label>
+            <Input value={linkForm.email} onChange={(e) => setLinkForm({ ...linkForm, email: e.target.value })} placeholder="owner@example.com" autoFocus />
+          </div>
+          <div>
+            <label className="text-sm font-medium">Password</label>
+            <Input type="password" value={linkForm.password} onChange={(e) => setLinkForm({ ...linkForm, password: e.target.value })} placeholder="Account password" />
+          </div>
+          <Button className="w-full" disabled={linking} onClick={linkAccount}>
+            {linking ? 'Linking…' : 'Link account'}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Pair employee modal */}
+      <Modal isOpen={showPairModal} onClose={() => setShowPairModal(false)} title="Pair employee (QR invite)">
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm font-medium">Employee name</label>
+            <Input value={pairForm.employeeName} onChange={(e) => setPairForm({ ...pairForm, employeeName: e.target.value })} placeholder="e.g. Sara Tadesse" autoFocus />
+          </div>
+          <div>
+            <label className="text-sm font-medium">Role</label>
+            <Select value={pairForm.role} onValueChange={(v) => setPairForm({ ...pairForm, role: v })}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {pairingRoles.map((r) => <SelectItem key={r.key} value={r.key}>{r.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm font-medium">Register</label>
+              <Select value={pairForm.register} onValueChange={(v) => setPairForm({ ...pairForm, register: v })}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="Optional" /></SelectTrigger>
+                <SelectContent>
+                  {registers.map((r) => <SelectItem key={r.id} value={r.name}>{r.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-sm font-medium">Location</label>
+              <Select value={pairForm.location} onValueChange={(v) => setPairForm({ ...pairForm, location: v })}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="Optional" /></SelectTrigger>
+                <SelectContent>
+                  {locations.map((l) => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <Button className="w-full" disabled={pairing} onClick={issueQr}>
+            {pairing ? 'Issuing…' : 'Generate QR'}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* QR pairing display */}
+      <Modal isOpen={!!qrInvite} onClose={() => setQrInvite(null)} title={qrInvite ? `Pair ${(qrInvite.form?.employeeName || 'employee')} via QR` : 'QR invite'}>
+        {qrInvite && (
+          <div className="space-y-4 text-center">
+            <div className="mx-auto w-fit rounded-lg border bg-white p-3">
+              {qrInvite.qr
+                ? <img src={qrInvite.qr} alt="Pairing QR code" className="h-56 w-56" />
+                : <div className="h-56 w-56 grid place-items-center text-xs text-muted-foreground">Rendering…</div>}
+            </div>
+            <div>
+              <p className="text-2xl font-mono font-bold tracking-[0.3em]">{qrInvite.code}</p>
+              <p className="text-xs text-muted-foreground mt-1">or enter the code manually</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              The employee scans this from Shega Mobile (Scan QR & Join) to accept the pairing.
+              Single use — {qrRemaining === 0
+                ? 'expired, regenerate to issue a new code.'
+                : `expires in ${qrMins}m ${qrSecs}s`}
+            </p>
+            <div className="flex gap-2">
+              <Button className="flex-1" disabled={pairing} onClick={regenerateQr}>
+                <RefreshCw className="h-4 w-4 mr-2" /> Regenerate
+              </Button>
+              <Button className="flex-1" variant="outline" disabled={pairing} onClick={revokeQr}>
+                <Ban className="h-4 w-4 mr-2" /> Revoke
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };

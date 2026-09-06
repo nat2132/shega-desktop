@@ -347,7 +347,7 @@ electron.contextBridge.exposeInMainWorld("api", {
     electron.ipcRenderer.removeAllListeners("update:progress");
     electron.ipcRenderer.removeAllListeners("update:error");
   },
-  // �?U�? Shared Business Model (registers, devices, roles, people)
+  // Shared Business Model (registers, devices, roles, people)
   businessListRegisters: () => electron.ipcRenderer.invoke("business:list-registers"),
   businessAddRegister: (name, locationId) => electron.ipcRenderer.invoke("business:add-register", name, locationId),
   businessUpdateRegister: (id, patch) => electron.ipcRenderer.invoke("business:update-register", id, patch),
@@ -363,6 +363,16 @@ electron.contextBridge.exposeInMainWorld("api", {
   businessCan: (key) => electron.ipcRenderer.invoke("business:can", key),
   businessListPeople: () => electron.ipcRenderer.invoke("business:list-people"),
   businessSetPersonRole: (employeeId, roleKey) => electron.ipcRenderer.invoke("business:set-person-role", employeeId, roleKey),
+  businessSetPersonActive: (employeeId, isActive) => electron.ipcRenderer.invoke("business:set-person-active", employeeId, isActive),
+  // Employee QR pairing (cloud)
+  pairingStatus: () => electron.ipcRenderer.invoke("pairing:status"),
+  pairingLinkAccount: (email, password) => electron.ipcRenderer.invoke("pairing:link-account", email, password),
+  pairingUnlink: () => electron.ipcRenderer.invoke("pairing:unlink"),
+  pairingList: () => electron.ipcRenderer.invoke("pairing:list"),
+  pairingInvite: (input) => electron.ipcRenderer.invoke("pairing:invite", input),
+  pairingRevoke: (id) => electron.ipcRenderer.invoke("pairing:revoke", id),
+  pairingDecide: (id, decision) => electron.ipcRenderer.invoke("pairing:decide", id, decision),
+  pairingQrCode: (text) => electron.ipcRenderer.invoke("pairing:qr-code", text),
   // §15 — Manager PIN approval prompt (main → renderer event + renderer → main)
   onApprovalPrompt: (callback) => {
     electron.ipcRenderer.on("approval:prompt", (_event, payload) => callback(payload));

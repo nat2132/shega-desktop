@@ -10,6 +10,10 @@ const zod = require("zod");
 const net = require("net");
 const http = require("http");
 const os = require("os");
+const bonjourService = require("bonjour-service");
+const events = require("events");
+const ws = require("ws");
+const QRCode = require("qrcode");
 function _interopNamespaceDefault(e) {
   const n = Object.create(null, { [Symbol.toStringTag]: { value: "Module" } });
   if (e) {
@@ -106,7 +110,7 @@ const PERMISSION_CATALOG = [
   { key: "ownership.transfer", label: "Transfer ownership", description: "Transfer business ownership (strong confirmation)", scope: "ownership" },
   { key: "ownership.deleteBusiness", label: "Delete business", description: "Delete the entire business", scope: "ownership" }
 ];
-Object.fromEntries(
+const PERMISSION_BY_KEY = Object.fromEntries(
   PERMISSION_CATALOG.map((p) => [p.key, p])
 );
 function unpack(value) {
@@ -124,6 +128,13 @@ function checkPermission(ctx, key) {
 }
 function can(ctx, key) {
   return checkPermission(ctx, key).allowed;
+}
+function mergePermissionSets(base, overrides) {
+  const out = {};
+  for (const key of Object.keys(PERMISSION_BY_KEY)) {
+    out[key] = overrides[key] !== void 0 ? overrides[key] : base[key] ?? false;
+  }
+  return out;
 }
 const ROLE_ORDER = [
   "owner",
@@ -553,6 +564,8 @@ const users = {
     role: "role",
     role_name: "roleName",
     permissions: "permissions",
+    assigned_register_id: "assignedRegisterId",
+    assigned_location_id: "assignedLocationId",
     is_active: "isActive",
     is_owner: "isOwner",
     pin_hash: "pinHash",
@@ -572,6 +585,8 @@ const users = {
     role: "role",
     roleName: "role_name",
     permissions: "permissions",
+    assignedRegisterId: "assigned_register_id",
+    assignedLocationId: "assigned_location_id",
     isActive: "is_active",
     isOwner: "is_owner",
     pinHash: "pin_hash",
@@ -583,8 +598,16 @@ const users = {
     created_at: "created_at",
     updated_at: "updated_at"
   },
-  mobileFk: [{ mobileField: "business_id", desktopColumn: "businessId", lookupEntity: "businesses" }],
-  desktopFk: [{ desktopColumn: "businessId", mobileField: "business_id", lookupEntity: "businesses" }]
+  mobileFk: [
+    { mobileField: "business_id", desktopColumn: "businessId", lookupEntity: "businesses" },
+    { mobileField: "assigned_register_id", desktopColumn: "assignedRegisterId", lookupEntity: "registers" },
+    { mobileField: "assigned_location_id", desktopColumn: "assignedLocationId", lookupEntity: "locations" }
+  ],
+  desktopFk: [
+    { desktopColumn: "businessId", mobileField: "business_id", lookupEntity: "businesses" },
+    { desktopColumn: "assignedRegisterId", mobileField: "assigned_register_id", lookupEntity: "registers" },
+    { desktopColumn: "assignedLocationId", mobileField: "assigned_location_id", lookupEntity: "locations" }
+  ]
 };
 const devices = {
   desktopTable: "roster_devices",
@@ -672,6 +695,17 @@ function desktopToMobilePayload(entity, row) {
   }
   return out;
 }
+const DEVICE_JOIN_MSG = {
+  SUBMIT: "DEVICE_JOIN_SUBMIT",
+  LIST: "DEVICE_JOIN_LIST",
+  DECIDE: "DEVICE_JOIN_DECIDE",
+  PUBLISH: "INVITE_PUBLISH",
+  RESOLVE: "INVITE_RESOLVE",
+  /** joiner polls for the decision on its request */
+  STATUS: "DEVICE_JOIN_STATUS",
+  RESPONSE: "DEVICE_JOIN_RESPONSE",
+  ACK: "DEVICE_JOIN_ACK"
+};
 const isDev$1 = !electron.app.isPackaged;
 const dbDir = isDev$1 ? path.join(process.cwd(), "db") : path.join(electron.app.getPath("userData"), "db");
 if (!fs.existsSync(dbDir)) {
@@ -1170,7 +1204,7 @@ function initDB() {
       is_synced INTEGER DEFAULT 1
     );
 
-    // Budget categories (mirrors mobile's budget_categories table)
+    -- Budget categories (mirrors mobile's budget_categories table)
     CREATE TABLE IF NOT EXISTS budget_categories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       budgetId INTEGER NOT NULL,
@@ -1188,7 +1222,7 @@ function initDB() {
       FOREIGN KEY (budgetId) REFERENCES budgets(id) ON DELETE CASCADE
     );
 
-    // Subscription payments (mirrors mobile's subscription_payments table)
+    -- Subscription payments (mirrors mobile's subscription_payments table)
     CREATE TABLE IF NOT EXISTS subscription_payments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       subscriptionId INTEGER,
@@ -1214,7 +1248,7 @@ function initDB() {
       FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
     );
 
-    // Subscription renewals (mirrors mobile's subscription_renewals table)
+    -- Subscription renewals (mirrors mobile's subscription_renewals table)
     CREATE TABLE IF NOT EXISTS subscription_renewals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       subscriptionId INTEGER,
@@ -1234,7 +1268,7 @@ function initDB() {
       FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
     );
 
-    // Scheduled reminders (mirrors mobile's scheduled_reminders table)
+    -- Scheduled reminders (mirrors mobile's scheduled_reminders table)
     CREATE TABLE IF NOT EXISTS scheduled_reminders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       businessId INTEGER,
@@ -2333,6 +2367,13 @@ function initDB() {
     version = 32;
     db.pragma(`user_version = ${version}`);
   }
+  if (version < 33) {
+    const uCols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+    if (!uCols.includes("assignedRegisterId")) db.exec("ALTER TABLE users ADD COLUMN assignedRegisterId INTEGER REFERENCES registers(id)");
+    if (!uCols.includes("assignedLocationId")) db.exec("ALTER TABLE users ADD COLUMN assignedLocationId INTEGER REFERENCES locations(id)");
+    version = 33;
+    db.pragma(`user_version = ${version}`);
+  }
   const syncTables = [
     { table: "businesses", id: "id", columns: ["id", "businessName", "storeName", "logo", "address", "phone", "email", "currency", "isDefault", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "categories", id: "id", columns: ["id", "businessId", "name", "icon", "isCustom", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
@@ -2547,12 +2588,12 @@ function initDB() {
   for (const biz of bizList) {
     const existing = db.prepare("SELECT id FROM subscriptions WHERE businessId = ?").get(biz.id);
     if (!existing) {
-      const now = /* @__PURE__ */ new Date();
-      const trialEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1e3);
+      const now2 = /* @__PURE__ */ new Date();
+      const trialEnd = new Date(now2.getTime() + 7 * 24 * 60 * 60 * 1e3);
       db.prepare(`
         INSERT INTO subscriptions (businessId, tier, status, isTrial, trialStartedAt, trialEndsAt, startedAt, expiresAt)
         VALUES (?, 'trial', 'active', 1, ?, ?, ?, ?)
-      `).run(biz.id, now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString());
+      `).run(biz.id, now2.toISOString(), trialEnd.toISOString(), now2.toISOString(), trialEnd.toISOString());
     }
   }
   db.exec(`
@@ -4268,6 +4309,24 @@ class SyncHub {
     return this.deviceId || ensureHubDeviceId();
   }
 }
+const syncHub$1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  SHARED_TABLES,
+  SYNC_PORT,
+  SyncHub,
+  applyPush,
+  applyRemoteChanges,
+  buildCloudChanges,
+  changeChecksum,
+  ensureHubDeviceId,
+  getLanAddress,
+  getPairingToken,
+  lwwWins,
+  registerDevice,
+  requestDeviceResync,
+  snapshotSince,
+  verifyChecksums
+}, Symbol.toStringTag, { value: "Module" }));
 function openShift(businessId, registerId, cashierId, openingFloat, notes) {
   const existing = dbProxy.prepare(`
     SELECT id FROM shifts 
@@ -4276,11 +4335,11 @@ function openShift(businessId, registerId, cashierId, openingFloat, notes) {
   if (existing) {
     throw new Error("Register already has an open shift");
   }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = dbProxy.prepare(`
     INSERT INTO shifts (businessId, registerId, cashierId, openingFloat, expectedCash, status, openedAt, notes, createdAt, updatedAt)
     VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
-  `).run(businessId, registerId, cashierId, openingFloat, openingFloat, now, notes || "", now, now);
+  `).run(businessId, registerId, cashierId, openingFloat, openingFloat, now2, notes || "", now2, now2);
   const shiftId = result.lastInsertRowid;
   dbProxy.prepare(`
     INSERT INTO shift_transactions (shiftId, saleId, paymentMethod, amount, createdAt)
@@ -4303,7 +4362,7 @@ function recordMidShiftAudit(shiftId, countedCash, notes) {
   const shift = getShiftById$1(shiftId);
   if (!shift) throw new Error("Shift not found");
   if (shift.status !== "open") throw new Error("Shift is not open");
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const variance = countedCash - shift.expectedCash;
   dbProxy.prepare(`
     UPDATE shifts 
@@ -4314,7 +4373,7 @@ function recordMidShiftAudit(shiftId, countedCash, notes) {
         notes = COALESCE(notes || '; ', '') || ?,
         updatedAt = ?
     WHERE id = ?
-  `).run(countedCash, variance, now, notes || "", now, shiftId);
+  `).run(countedCash, variance, now2, notes || "", now2, shiftId);
   logger.info(`[Shift] Mid-shift audit for shift ${shiftId}: counted ${countedCash}, variance ${variance}`);
 }
 function recordBlindCount(shiftId, countedCash, notes) {
@@ -4323,7 +4382,7 @@ function recordBlindCount(shiftId, countedCash, notes) {
   if (shift.status !== "open" && shift.status !== "mid_audit") {
     throw new Error("Shift must be open or in mid-audit for blind count");
   }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const variance = countedCash - shift.expectedCash;
   dbProxy.prepare(`
     UPDATE shifts 
@@ -4334,14 +4393,14 @@ function recordBlindCount(shiftId, countedCash, notes) {
         notes = COALESCE(notes || '; ', '') || ?,
         updatedAt = ?
     WHERE id = ?
-  `).run(countedCash, variance, now, notes || "", now, shiftId);
+  `).run(countedCash, variance, now2, notes || "", now2, shiftId);
   logger.info(`[Shift] Blind count for shift ${shiftId}: counted ${countedCash}, variance ${variance}`);
 }
 function closeShift$1(shiftId, countedCash, cashDrawerCounts, notes) {
   const shift = getShiftById$1(shiftId);
   if (!shift) throw new Error("Shift not found");
   if (shift.status === "closed") throw new Error("Shift already closed");
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const variance = countedCash - shift.expectedCash;
   calculateShiftTotals(shiftId);
   dbProxy.prepare(`
@@ -4354,7 +4413,7 @@ function closeShift$1(shiftId, countedCash, cashDrawerCounts, notes) {
         notes = COALESCE(notes || '; ', '') || ?,
         updatedAt = ?
     WHERE id = ?
-  `).run(countedCash, variance, now, shift.expectedCash, notes || "", now, shiftId);
+  `).run(countedCash, variance, now2, shift.expectedCash, notes || "", now2, shiftId);
   for (const count of cashDrawerCounts) {
     dbProxy.prepare(`
       INSERT INTO shift_cash_counts (shiftId, denomination, count, total, createdAt)
@@ -5361,11 +5420,11 @@ function checkMATCompliance(context) {
   return { passed: true, message: "MAT check passed", code: "MAT_OK", severity: "warning" };
 }
 function checkAdvanceTaxCompliance(context) {
-  const now = /* @__PURE__ */ new Date();
-  Math.floor(now.getMonth() / 3) + 1;
+  const now2 = /* @__PURE__ */ new Date();
+  Math.floor(now2.getMonth() / 3) + 1;
   const quarterEndMonths = [3, 6, 9, 12];
-  const isQuarterEnd = quarterEndMonths.includes(now.getMonth() + 1);
-  if (isQuarterEnd && now.getDate() > 25) {
+  const isQuarterEnd = quarterEndMonths.includes(now2.getMonth() + 1);
+  if (isQuarterEnd && now2.getDate() > 25) {
     return {
       passed: true,
       message: "Quarterly advance tax (25% of estimated annual tax) due this month",
@@ -5867,26 +5926,26 @@ function validateEtaxCsv(csv, type) {
   }
   return { valid: errors.length === 0, errors };
 }
-function getSetting(key) {
+function getSetting$1(key) {
   const row = dbProxy.prepare("SELECT value FROM settings WHERE key = ?").get(key);
   return row?.value ?? null;
 }
-function setSetting(key, value) {
+function setSetting$1(key, value) {
   dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
 }
 function getCloudConfig() {
-  const url = (getSetting("cloud_sync_url") || "").toString().trim();
-  const key = (getSetting("cloud_sync_device_key") || "").toString().trim();
+  const url = (getSetting$1("cloud_sync_url") || "").toString().trim();
+  const key = (getSetting$1("cloud_sync_device_key") || "").toString().trim();
   if (!url || !key) return null;
   return { url: url.replace(/\/+$/, ""), key };
 }
 function getCloudStatus() {
   const cfg2 = getCloudConfig();
   return {
-    enabled: getSetting("cloud_sync_enabled") === "true",
+    enabled: getSetting$1("cloud_sync_enabled") === "true",
     configured: !!cfg2,
-    lastError: getSetting("cloud_sync_last_error"),
-    lastAt: getSetting("cloud_sync_last_at")
+    lastError: getSetting$1("cloud_sync_last_error"),
+    lastAt: getSetting$1("cloud_sync_last_at")
   };
 }
 async function httpJson(url, init) {
@@ -5934,11 +5993,11 @@ async function syncToCloud() {
     }
     result.pulled = incoming.length;
     const newSeq = Number(pulled?.lastSeq ?? since);
-    setSetting("cloud_sync_cursor", String(newSeq));
-    setSetting("cloud_sync_last_error", "");
-    setSetting("cloud_sync_last_at", (/* @__PURE__ */ new Date()).toISOString());
+    setSetting$1("cloud_sync_cursor", String(newSeq));
+    setSetting$1("cloud_sync_last_error", "");
+    setSetting$1("cloud_sync_last_at", (/* @__PURE__ */ new Date()).toISOString());
   } catch (e) {
-    setSetting("cloud_sync_last_error", e?.message || String(e));
+    setSetting$1("cloud_sync_last_error", e?.message || String(e));
     throw e;
   }
   return result;
@@ -5954,8 +6013,8 @@ async function refreshCloudStatus() {
     });
     const status = res?.status ?? null;
     const blocked = !!res?.blocked;
-    setSetting("cloud_device_status", String(status ?? ""));
-    setSetting("cloud_device_blocked", String(blocked));
+    setSetting$1("cloud_device_status", String(status ?? ""));
+    setSetting$1("cloud_device_blocked", String(blocked));
     return { status, blocked, lastError: null };
   } catch (e) {
     return { status: null, blocked: false, lastError: e?.message || String(e) };
@@ -5966,7 +6025,7 @@ const CLOUD_PERIOD_MS = 60 * 1e3;
 function startCloudSyncTimer() {
   if (timer) return;
   timer = setInterval(async () => {
-    const enabled = getSetting("cloud_sync_enabled") === "true";
+    const enabled = getSetting$1("cloud_sync_enabled") === "true";
     if (!enabled) return;
     const cfg2 = getCloudConfig();
     if (!cfg2) return;
@@ -5986,6 +6045,7 @@ function countUnsyncedForDevice(deviceId) {
 function registerBusinessDomainHandlers(config) {
   cfg = config;
   const bizId = () => config.getActiveBusinessId();
+  const canManageTeam = () => config.isOwnerOrSuper() || can(config.buildPermissionContext(), "team.manage");
   electron.ipcMain.handle("business:list-registers", () => {
     return dbProxy.prepare("SELECT * FROM registers WHERE businessId = ? AND is_deleted = 0 ORDER BY created_at").all(bizId());
   });
@@ -6055,7 +6115,7 @@ function registerBusinessDomainHandlers(config) {
       );
     }
     const bid = bizId();
-    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
     const newDeviceId = crypto$1.randomUUID();
     const wasPrimary = !!old.isPrimary;
     const isThis = input.setThisAsReplacement === true;
@@ -6074,11 +6134,11 @@ function registerBusinessDomainHandlers(config) {
       status,
       wasPrimary ? 1 : 0,
       crypto$1.randomUUID(),
-      now,
-      now
+      now2,
+      now2
     );
     const newId = Number(colon.lastInsertRowid);
-    dbProxy.prepare("UPDATE devices SET status = 'removed', is_deleted = 1, updated_at = ? WHERE id = ?").run(now, old.id);
+    dbProxy.prepare("UPDATE devices SET status = 'removed', is_deleted = 1, updated_at = ? WHERE id = ?").run(now2, old.id);
     cfg?.audit(
       "device.replace",
       "device",
@@ -6110,7 +6170,7 @@ function registerBusinessDomainHandlers(config) {
     return { allowed: r };
   });
   electron.ipcMain.handle("business:list-people", () => {
-    const rows = dbProxy.prepare("SELECT * FROM employees WHERE isActive = 1 ORDER BY createdAt").all();
+    const rows = dbProxy.prepare("SELECT * FROM employees WHERE businessId = ? AND isActive = 1 ORDER BY createdAt").all(bizId());
     return rows.map((e) => ({
       id: e.id,
       name: `${e.firstName} ${e.lastName || ""}`.trim(),
@@ -6121,9 +6181,16 @@ function registerBusinessDomainHandlers(config) {
     }));
   });
   electron.ipcMain.handle("business:set-person-role", (_e, employeeId, roleKey) => {
+    if (!canManageTeam()) throw new Error("You do not have permission to manage team roles");
     const r = getBuiltinRole(roleKey);
-    dbProxy.prepare("UPDATE employees SET role_key = ? WHERE id = ?").run(roleKey, employeeId);
+    dbProxy.prepare("UPDATE employees SET role_key = ? WHERE id = ? AND businessId = ?").run(roleKey, employeeId, bizId());
     config.audit("role.changed", "employee", employeeId, `Role -> ${r?.name ?? roleKey}`);
+    return { ok: true };
+  });
+  electron.ipcMain.handle("business:set-person-active", (_e, employeeId, isActive) => {
+    if (!canManageTeam()) throw new Error("You do not have permission to manage team members");
+    dbProxy.prepare("UPDATE employees SET isActive = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(isActive ? 1 : 0, employeeId, bizId());
+    config.audit("employee.changed", "employee", employeeId, `Set active = ${isActive}`);
     return { ok: true };
   });
   electron.ipcMain.handle("business:get-user", () => {
@@ -7040,6 +7107,7 @@ let currentUserName = null;
 let currentUserRole = null;
 let currentUserPermissions = [];
 let currentUserBusinessId = null;
+let currentUserSharedPerms = null;
 const PERMISSION_MODULE = {
   dashboard: "dashboard",
   inventory: "inventory",
@@ -7057,12 +7125,26 @@ const PERMISSION_MODULE = {
   settings: "settings",
   notifications: "settings",
   employees: "employees",
+  team: "employees",
   shipments: "shipments",
   suppliers: "suppliers",
   warehouses: "warehouses",
   audit: "audit",
   records: "audit"
 };
+function resolveSharedPermissions(roleKey, permissionsJson) {
+  const base = getBuiltinRole(roleKey || "cashier");
+  if (!base) return null;
+  let overrides = {};
+  if (permissionsJson) {
+    try {
+      overrides = JSON.parse(permissionsJson);
+    } catch (e) {
+      overrides = {};
+    }
+  }
+  return mergePermissionSets(base.permissions, overrides);
+}
 function requirePermission(perm) {
   if (currentUserRole === "super_admin") return;
   if (currentUserPermissions.includes(perm) || currentUserPermissions.includes("*")) return;
@@ -8462,8 +8544,8 @@ function registerIPCHandlers() {
   });
   electron.ipcMain.handle("run-reminder-engine", () => {
     const bizId = getActiveBusinessId();
-    const now = /* @__PURE__ */ new Date();
-    const nowIso = now.toISOString();
+    const now2 = /* @__PURE__ */ new Date();
+    const nowIso = now2.toISOString();
     const allPending = dbProxy.prepare(`
       SELECT * FROM notification_reminders
       WHERE businessId = ? AND status = 'pending'
@@ -8472,7 +8554,7 @@ function registerIPCHandlers() {
     const dueReminders = allPending.filter((r) => {
       if (!r.triggerDate) return false;
       const trigger = new Date(r.triggerDate);
-      return !isNaN(trigger.getTime()) && trigger <= now;
+      return !isNaN(trigger.getTime()) && trigger <= now2;
     });
     let fired = 0;
     const insertNotif = dbProxy.prepare(`
@@ -8808,24 +8890,24 @@ function registerIPCHandlers() {
   });
   electron.ipcMain.handle("get-analytics", (_, period, dateRange) => {
     const bizId = getActiveBusinessId();
-    const now = /* @__PURE__ */ new Date();
+    const now2 = /* @__PURE__ */ new Date();
     let startDate;
     let endDate = null;
     if (dateRange?.start && dateRange?.end) {
       startDate = dateRange.start;
       endDate = dateRange.end;
     } else if (period === "today") {
-      startDate = now.toISOString().split("T")[0];
+      startDate = now2.toISOString().split("T")[0];
     } else if (period === "week") {
-      const d = new Date(now);
+      const d = new Date(now2);
       d.setDate(d.getDate() - 7);
       startDate = d.toISOString().split("T")[0];
     } else if (period === "month") {
-      const d = new Date(now);
+      const d = new Date(now2);
       d.setMonth(d.getMonth() - 1);
       startDate = d.toISOString().split("T")[0];
     } else {
-      const d = new Date(now);
+      const d = new Date(now2);
       d.setFullYear(d.getFullYear() - 1);
       startDate = d.toISOString().split("T")[0];
     }
@@ -8878,14 +8960,14 @@ function registerIPCHandlers() {
     const bizId = getActiveBusinessId();
     let startDate;
     let endDate;
-    const now = /* @__PURE__ */ new Date();
+    const now2 = /* @__PURE__ */ new Date();
     if (dateRange?.start && dateRange?.end) {
       startDate = dateRange.start;
       endDate = dateRange.end;
     } else {
-      const d = new Date(now.getFullYear(), now.getMonth(), 1);
+      const d = new Date(now2.getFullYear(), now2.getMonth(), 1);
       startDate = d.toISOString().split("T")[0];
-      endDate = now.toISOString().split("T")[0];
+      endDate = now2.toISOString().split("T")[0];
     }
     const rows = dbProxy.prepare(`
       SELECT id, quantity, unit, unitType, discount, vat, totalPrice, paymentMethod, paymentStatus, status, customerName, customerPhone, createdAt,
@@ -8933,14 +9015,14 @@ function registerIPCHandlers() {
     const bizId = getActiveBusinessId();
     let startDate;
     let endDate;
-    const now = /* @__PURE__ */ new Date();
+    const now2 = /* @__PURE__ */ new Date();
     if (dateRange?.start && dateRange?.end) {
       startDate = dateRange.start;
       endDate = dateRange.end;
     } else {
-      const d = new Date(now.getFullYear(), now.getMonth(), 1);
+      const d = new Date(now2.getFullYear(), now2.getMonth(), 1);
       startDate = d.toISOString().split("T")[0];
-      endDate = now.toISOString().split("T")[0];
+      endDate = now2.toISOString().split("T")[0];
     }
     const salesWhere = "s.businessId = ? AND DATE(s.createdAt) >= ? AND DATE(s.createdAt) <= ? AND (s.is_deleted = 0 OR s.is_deleted IS NULL)";
     const salesParams = [bizId, startDate, endDate];
@@ -9024,9 +9106,9 @@ function registerIPCHandlers() {
   electron.ipcMain.handle("get-gl-journal", (_, dateRange) => {
     requirePermission("reports.view");
     const bizId = getActiveBusinessId();
-    const now = /* @__PURE__ */ new Date();
-    const startDate = dateRange?.start || new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
-    const endDate = dateRange?.end || now.toISOString().split("T")[0];
+    const now2 = /* @__PURE__ */ new Date();
+    const startDate = dateRange?.start || new Date(now2.getFullYear(), now2.getMonth(), 1).toISOString().split("T")[0];
+    const endDate = dateRange?.end || now2.toISOString().split("T")[0];
     const lines = [];
     const sales = dbProxy.prepare(`
       SELECT s.id, s.totalPrice, s.vat, s.discount, s.paymentMethod, s.paymentStatus, s.customerName, s.createdAt, i.name AS itemName
@@ -9394,6 +9476,7 @@ function registerIPCHandlers() {
       currentUserName = null;
       currentUserRole = null;
       currentUserPermissions = [];
+      currentUserSharedPerms = null;
     }
     return { success: true, mode, message: mode === "factory" ? "Factory reset complete. This will log you out." : void 0 };
   });
@@ -9422,6 +9505,7 @@ function registerIPCHandlers() {
       currentUserRole = admin.role || "admin";
       currentUserPermissions = admin.permissions ? JSON.parse(admin.permissions) : ["*"];
       currentUserBusinessId = null;
+      currentUserSharedPerms = null;
       return {
         success: true,
         admin: {
@@ -9433,6 +9517,7 @@ function registerIPCHandlers() {
     const account = dbProxy.prepare(`
       SELECT ea.*, e.id as employeeId, e.firstName, e.lastName,
         e.businessId as employeeBusinessId,
+        e.role_key as roleKey, e.permissions_json as permissionsJson,
         r.name as roleName, r.permissions as rolePermissions
       FROM employee_accounts ea
       LEFT JOIN employees e ON ea.employeeId = e.id
@@ -9471,6 +9556,7 @@ function registerIPCHandlers() {
     const rolePerms = account.rolePermissions ? JSON.parse(account.rolePermissions) : [];
     currentUserPermissions = rolePerms.length > 0 ? rolePerms : ["*"];
     currentUserBusinessId = account.employeeBusinessId ?? null;
+    currentUserSharedPerms = resolveSharedPermissions(account.roleKey, account.permissionsJson);
     if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
     return {
       success: true,
@@ -9482,7 +9568,9 @@ function registerIPCHandlers() {
         permissions: account.rolePermissions ? JSON.parse(account.rolePermissions) : [],
         isActive: account.isActive,
         avatar: void 0,
-        isEmployee: true
+        isEmployee: true,
+        roleKey: account.roleKey || null,
+        sharedPermissions: currentUserSharedPerms
       }
     };
   });
@@ -10205,6 +10293,7 @@ function registerIPCHandlers() {
     const account = dbProxy.prepare(`
       SELECT ea.*, e.firstName, e.lastName, e.id as employeeId, e.roleId,
         e.businessId as employeeBusinessId,
+        e.role_key as roleKey, e.permissions_json as permissionsJson,
         r.name as roleName, r.permissions as rolePermissions
       FROM employee_accounts ea
       LEFT JOIN employees e ON ea.employeeId = e.id
@@ -10242,6 +10331,7 @@ function registerIPCHandlers() {
     const rolePerms = account.rolePermissions ? JSON.parse(account.rolePermissions) : [];
     currentUserPermissions = rolePerms.length > 0 ? rolePerms : ["*"];
     currentUserBusinessId = account.employeeBusinessId ?? null;
+    currentUserSharedPerms = resolveSharedPermissions(account.roleKey, account.permissionsJson);
     if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
     return {
       id: account.employeeId,
@@ -10253,6 +10343,8 @@ function registerIPCHandlers() {
       roleName: account.roleName,
       roleId: account.roleId,
       permissions: account.rolePermissions ? JSON.parse(account.rolePermissions) : [],
+      roleKey: account.roleKey || null,
+      sharedPermissions: currentUserSharedPerms,
       forcePasswordChange: account.forcePasswordChange
     };
   });
@@ -10291,23 +10383,23 @@ function registerIPCHandlers() {
   });
   electron.ipcMain.handle("clock-in", (_, employeeId, notes) => {
     const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
     const existing = dbProxy.prepare("SELECT id FROM attendance WHERE employeeId = ? AND date = ?").get(employeeId, today);
     if (existing) throw new Error("Already clocked in today");
-    const result = dbProxy.prepare("INSERT INTO attendance (employeeId, date, clockIn, status, notes) VALUES (?, ?, ?, ?, ?)").run(employeeId, today, now, "present", notes || null);
+    const result = dbProxy.prepare("INSERT INTO attendance (employeeId, date, clockIn, status, notes) VALUES (?, ?, ?, ?, ?)").run(employeeId, today, now2, "present", notes || null);
     return result.lastInsertRowid;
   });
   electron.ipcMain.handle("clock-out", (_, employeeId, notes) => {
     const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
     const existing = dbProxy.prepare("SELECT id, clockIn FROM attendance WHERE employeeId = ? AND date = ?").get(employeeId, today);
     if (!existing) throw new Error("Not clocked in today");
     if (existing.clockOut) throw new Error("Already clocked out today");
     const clockIn = new Date(existing.clockIn);
-    const clockOut = new Date(now);
+    const clockOut = new Date(now2);
     const hoursWorked = (clockOut.getTime() - clockIn.getTime()) / (1e3 * 60 * 60);
     const status = hoursWorked >= 8 ? "present" : hoursWorked >= 4 ? "partial" : "short";
-    dbProxy.prepare("UPDATE attendance SET clockOut = ?, status = ?, notes = ? WHERE id = ?").run(now, status, notes || null, existing.id);
+    dbProxy.prepare("UPDATE attendance SET clockOut = ?, status = ?, notes = ? WHERE id = ?").run(now2, status, notes || null, existing.id);
   });
   electron.ipcMain.handle("get-attendance", (_, options) => {
     let query = `
@@ -11367,15 +11459,15 @@ function registerIPCHandlers() {
   electron.ipcMain.handle("get-budget-forecast", (_, options) => {
     const bizId = getActiveBusinessId();
     const months = options?.months || 3;
-    const now = /* @__PURE__ */ new Date();
+    const now2 = /* @__PURE__ */ new Date();
     const forecasts = [];
-    const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, 1).toISOString().split("T")[0];
+    const sixMonthsAgo = new Date(now2.getFullYear(), now2.getMonth() - 6, 1).toISOString().split("T")[0];
     const avgSpending = dbProxy.prepare(
       "SELECT category, AVG(monthly) as avgMonthly FROM (SELECT category, strftime('%Y-%m', date) as ym, SUM(amount) as monthly FROM expenses WHERE businessId = ? AND date >= ? AND is_deleted = 0 GROUP BY category, ym) GROUP BY category"
     ).all(bizId, sixMonthsAgo);
     for (let i = 1; i <= months; i++) {
-      const forecastMonth = now.getMonth() + i;
-      const forecastYear = now.getFullYear() + Math.floor(forecastMonth / 12);
+      const forecastMonth = now2.getMonth() + i;
+      const forecastYear = now2.getFullYear() + Math.floor(forecastMonth / 12);
       const m = String(forecastMonth % 12 + 1).padStart(2, "0");
       const y = String(forecastYear);
       const budgets = dbProxy.prepare("SELECT SUM(amount) as total FROM budgets WHERE businessId = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)").get(bizId, m, y);
@@ -11574,7 +11666,7 @@ function registerIPCHandlers() {
     return parseWeightLine(line);
   });
   electron.ipcMain.handle("sync:status", () => {
-    const now = Date.now();
+    const now2 = Date.now();
     const peers = dbProxy.prepare("SELECT device_id, name, last_seen_at, created_at FROM devices ORDER BY created_at").all().map((p) => {
       const cursor = dbProxy.prepare("SELECT last_seq, updated_at FROM sync_cursor WHERE device_id = ?").get(p.device_id);
       return {
@@ -11583,7 +11675,7 @@ function registerIPCHandlers() {
         lastSeenAt: p.last_seen_at,
         cursorSeq: cursor?.last_seq ?? 0,
         lastSyncAt: cursor?.updated_at ?? null,
-        stale: p.last_seen_at ? now - new Date(p.last_seen_at).getTime() > 24 * 3600 * 1e3 : true
+        stale: p.last_seen_at ? now2 - new Date(p.last_seen_at).getTime() > 24 * 3600 * 1e3 : true
       };
     });
     return {
@@ -12530,12 +12622,12 @@ function registerIPCHandlers() {
   });
   electron.ipcMain.handle("get-business-health-score", () => {
     const bizId = getActiveBusinessId();
-    const now = /* @__PURE__ */ new Date();
-    const today = now.toISOString().split("T")[0];
-    const thirtyDaysAgo = new Date(now.getTime() - 30 * 864e5).toISOString().split("T")[0];
-    const sixtyDaysAgo = new Date(now.getTime() - 60 * 864e5).toISOString().split("T")[0];
-    const ninetyDaysAgo = new Date(now.getTime() - 90 * 864e5).toISOString().split("T")[0];
-    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    const now2 = /* @__PURE__ */ new Date();
+    const today = now2.toISOString().split("T")[0];
+    const thirtyDaysAgo = new Date(now2.getTime() - 30 * 864e5).toISOString().split("T")[0];
+    const sixtyDaysAgo = new Date(now2.getTime() - 60 * 864e5).toISOString().split("T")[0];
+    const ninetyDaysAgo = new Date(now2.getTime() - 90 * 864e5).toISOString().split("T")[0];
+    const monthStart = `${now2.getFullYear()}-${String(now2.getMonth() + 1).padStart(2, "0")}-01`;
     const factors = [];
     const recommendations = [];
     try {
@@ -12649,7 +12741,7 @@ function registerIPCHandlers() {
       console.error("[Search]", e);
     }
     try {
-      const budgets = dbProxy.prepare("SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total FROM budgets WHERE businessId = ? AND year = ? AND (month = ? OR month IS NULL)").get(bizId, String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"));
+      const budgets = dbProxy.prepare("SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total FROM budgets WHERE businessId = ? AND year = ? AND (month = ? OR month IS NULL)").get(bizId, String(now2.getFullYear()), String(now2.getMonth() + 1).padStart(2, "0"));
       if (budgets.count > 0) {
         const expenses = dbProxy.prepare(
           "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE businessId = ? AND date >= ? AND date <= ?"
@@ -12725,13 +12817,13 @@ function registerIPCHandlers() {
     const bizId = getActiveBusinessId();
     console.log("[Insights] Called with bizId:", bizId);
     console.log("[Insights] items:", dbProxy.prepare("SELECT COUNT(*) as c FROM items WHERE businessId = ?").get(bizId)?.c);
-    const now = /* @__PURE__ */ new Date();
-    const today = now.toISOString().split("T")[0];
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 864e5).toISOString().split("T")[0];
-    const thirtyDaysAgo = new Date(now.getTime() - 30 * 864e5).toISOString().split("T")[0];
-    const ninetyDaysAgo = new Date(now.getTime() - 90 * 864e5).toISOString().split("T")[0];
-    const sixtyDaysAgo = new Date(now.getTime() - 60 * 864e5).toISOString().split("T")[0];
-    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    const now2 = /* @__PURE__ */ new Date();
+    const today = now2.toISOString().split("T")[0];
+    const sevenDaysAgo = new Date(now2.getTime() - 7 * 864e5).toISOString().split("T")[0];
+    const thirtyDaysAgo = new Date(now2.getTime() - 30 * 864e5).toISOString().split("T")[0];
+    const ninetyDaysAgo = new Date(now2.getTime() - 90 * 864e5).toISOString().split("T")[0];
+    const sixtyDaysAgo = new Date(now2.getTime() - 60 * 864e5).toISOString().split("T")[0];
+    const monthStart = `${now2.getFullYear()}-${String(now2.getMonth() + 1).padStart(2, "0")}-01`;
     const insights = [];
     try {
       const lowItems = dbProxy.prepare(`
@@ -12877,7 +12969,7 @@ function registerIPCHandlers() {
         WHERE b.businessId = ? AND b.month = ? AND b.year = ?
           AND COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) > b.amount
         ORDER BY (COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) - b.amount) DESC LIMIT 3
-      `).all(bizId, monthStart, today, bizId, String(now.getMonth() + 1).padStart(2, "0"), String(now.getFullYear()), bizId, monthStart, today, bizId, monthStart, today);
+      `).all(bizId, monthStart, today, bizId, String(now2.getMonth() + 1).padStart(2, "0"), String(now2.getFullYear()), bizId, monthStart, today, bizId, monthStart, today);
       if (overrunBudgets.length > 0) {
         insights.push({
           type: "budget_overrun",
@@ -13053,8 +13145,8 @@ function registerIPCHandlers() {
         SELECT COALESCE(SUM(totalPrice), 0) as revenue FROM sales
         WHERE DATE(createdAt) >= ? AND DATE(createdAt) < ? AND businessId = ?
       `).get(
-        new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().split("T")[0],
-        new Date(now.getFullYear() - 1, now.getMonth(), now.getDate() + 30).toISOString().split("T")[0],
+        new Date(now2.getFullYear() - 1, now2.getMonth(), now2.getDate()).toISOString().split("T")[0],
+        new Date(now2.getFullYear() - 1, now2.getMonth(), now2.getDate() + 30).toISOString().split("T")[0],
         bizId
       );
       if (lastYearPeriod.revenue > 0) {
@@ -13083,21 +13175,21 @@ function registerIPCHandlers() {
     const bizId = getActiveBusinessId();
     const sub = dbProxy.prepare("SELECT * FROM subscriptions WHERE businessId = ?").get(bizId);
     if (!sub) return null;
-    const now = /* @__PURE__ */ new Date();
-    if (sub.isTrial && sub.trialEndsAt && new Date(sub.trialEndsAt) < now && sub.status === "active") {
+    const now2 = /* @__PURE__ */ new Date();
+    if (sub.isTrial && sub.trialEndsAt && new Date(sub.trialEndsAt) < now2 && sub.status === "active") {
       sub.tier = "basic";
       sub.status = "active";
       sub.isTrial = 0;
-      dbProxy.prepare("UPDATE subscriptions SET tier = ?, isTrial = 0, updatedAt = ? WHERE id = ?").run("basic", now.toISOString(), sub.id);
+      dbProxy.prepare("UPDATE subscriptions SET tier = ?, isTrial = 0, updatedAt = ? WHERE id = ?").run("basic", now2.toISOString(), sub.id);
       dbProxy.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)").run(sub.id, bizId, "trial_expired", "trial", "basic", "Trial period ended, auto-downgraded to Basic", "system");
       sub.tier = "basic";
       sub.isTrial = 0;
     }
-    if (sub.expiresAt && new Date(sub.expiresAt) < now && sub.status === "active" && !sub.isTrial) {
+    if (sub.expiresAt && new Date(sub.expiresAt) < now2 && sub.status === "active" && !sub.isTrial) {
       const oldTier = sub.tier;
       sub.tier = "basic";
       sub.status = "expired";
-      dbProxy.prepare("UPDATE subscriptions SET status = ?, updatedAt = ? WHERE id = ?").run("expired", now.toISOString(), sub.id);
+      dbProxy.prepare("UPDATE subscriptions SET status = ?, updatedAt = ? WHERE id = ?").run("expired", now2.toISOString(), sub.id);
       dbProxy.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, oldStatus, newStatus, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(sub.id, bizId, "subscription_expired", oldTier, "basic", "active", "expired", "Subscription period ended", "system");
       sub.status = "expired";
       sub.tier = "basic";
@@ -13107,17 +13199,17 @@ function registerIPCHandlers() {
   });
   electron.ipcMain.handle("start-trial", () => {
     const bizId = getActiveBusinessId();
-    const now = /* @__PURE__ */ new Date();
-    const trialEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1e3);
+    const now2 = /* @__PURE__ */ new Date();
+    const trialEnd = new Date(now2.getTime() + 7 * 24 * 60 * 60 * 1e3);
     const existing = dbProxy.prepare("SELECT id, isTrial, status FROM subscriptions WHERE businessId = ?").get(bizId);
     if (existing) {
       if (existing.isTrial) return { success: true, message: "Trial already active" };
       if (!existing.isTrial && existing.status !== "expired") {
         return { success: false, error: "Subscription already active" };
       }
-      dbProxy.prepare("UPDATE subscriptions SET tier = ?, status = ?, isTrial = 1, trialStartedAt = ?, trialEndsAt = ?, startedAt = ?, expiresAt = ?, updatedAt = ? WHERE id = ?").run("trial", "active", now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString(), now.toISOString(), existing.id);
+      dbProxy.prepare("UPDATE subscriptions SET tier = ?, status = ?, isTrial = 1, trialStartedAt = ?, trialEndsAt = ?, startedAt = ?, expiresAt = ?, updatedAt = ? WHERE id = ?").run("trial", "active", now2.toISOString(), trialEnd.toISOString(), now2.toISOString(), trialEnd.toISOString(), now2.toISOString(), existing.id);
     } else {
-      dbProxy.prepare("INSERT INTO subscriptions (businessId, tier, status, isTrial, trialStartedAt, trialEndsAt, startedAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(bizId, "trial", "active", 1, now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString());
+      dbProxy.prepare("INSERT INTO subscriptions (businessId, tier, status, isTrial, trialStartedAt, trialEndsAt, startedAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(bizId, "trial", "active", 1, now2.toISOString(), trialEnd.toISOString(), now2.toISOString(), trialEnd.toISOString());
     }
     dbProxy.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)").run(existing?.id || dbProxy.prepare("SELECT id FROM subscriptions WHERE businessId = ?").get(bizId)?.id, bizId, "trial_started", existing?.tier || "none", "trial", "7-day premium trial started", currentUserName || "system");
     return { success: true };
@@ -13160,23 +13252,23 @@ function registerIPCHandlers() {
     if (!tx) return { success: false, error: "Transaction not found" };
     const plan = dbProxy.prepare("SELECT * FROM subscription_plans WHERE name = ?").get(tx.selectedPlan);
     if (!plan) return { success: false, error: "Plan not found" };
-    const now = /* @__PURE__ */ new Date();
-    const expiresAt = new Date(now.getTime() + plan.durationMonths * 30 * 24 * 60 * 60 * 1e3);
+    const now2 = /* @__PURE__ */ new Date();
+    const expiresAt = new Date(now2.getTime() + plan.durationMonths * 30 * 24 * 60 * 60 * 1e3);
     const existingSub = dbProxy.prepare("SELECT id, tier FROM subscriptions WHERE businessId = ?").get(tx.businessId);
     const oldTier = existingSub?.tier || "basic";
     if (existingSub) {
       dbProxy.prepare(`
         UPDATE subscriptions SET planId = ?, tier = ?, status = 'active', isTrial = 0, startedAt = ?, expiresAt = ?, updatedAt = ?
         WHERE id = ?
-      `).run(plan.id, plan.tier, now.toISOString(), expiresAt.toISOString(), now.toISOString(), existingSub.id);
+      `).run(plan.id, plan.tier, now2.toISOString(), expiresAt.toISOString(), now2.toISOString(), existingSub.id);
     } else {
       const r = dbProxy.prepare(`
         INSERT INTO subscriptions (businessId, planId, tier, status, startedAt, expiresAt)
         VALUES (?, ?, ?, 'active', ?, ?)
-      `).run(tx.businessId, plan.id, plan.tier, now.toISOString(), expiresAt.toISOString());
+      `).run(tx.businessId, plan.id, plan.tier, now2.toISOString(), expiresAt.toISOString());
       data.subscriptionId = r.lastInsertRowid;
     }
-    dbProxy.prepare("UPDATE payment_transactions SET status = ?, verifiedBy = ?, verifiedAt = ?, subscriptionId = ? WHERE id = ?").run("approved", currentAdminId, now.toISOString(), existingSub?.id || data.subscriptionId, data.transactionId);
+    dbProxy.prepare("UPDATE payment_transactions SET status = ?, verifiedBy = ?, verifiedAt = ?, subscriptionId = ? WHERE id = ?").run("approved", currentAdminId, now2.toISOString(), existingSub?.id || data.subscriptionId, data.transactionId);
     dbProxy.prepare("INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)").run(existingSub?.id || data.subscriptionId, tx.businessId, "payment_approved", oldTier, plan.tier, `Payment #${tx.id} approved. Plan: ${tx.selectedPlan}`, currentUserName || "system");
     return { success: true };
   });
@@ -13196,9 +13288,9 @@ function registerIPCHandlers() {
     const bizId = getActiveBusinessId();
     const sub = dbProxy.prepare("SELECT * FROM subscriptions WHERE businessId = ?").get(bizId);
     if (!sub || !sub.expiresAt) return null;
-    const now = /* @__PURE__ */ new Date();
+    const now2 = /* @__PURE__ */ new Date();
     const expiry = new Date(sub.expiresAt);
-    const daysRemaining = Math.ceil((expiry.getTime() - now.getTime()) / (1e3 * 60 * 60 * 24));
+    const daysRemaining = Math.ceil((expiry.getTime() - now2.getTime()) / (1e3 * 60 * 60 * 24));
     return {
       daysRemaining: Math.max(0, daysRemaining),
       expiresAt: sub.expiresAt,
@@ -13452,9 +13544,13 @@ function registerIPCHandlers() {
     getActiveBusinessId,
     isOwnerOrSuper: () => currentUserRole === "super_admin" || currentUserRole === "owner",
     buildPermissionContext: () => {
+      const canApprove = currentUserRole === "super_admin" || currentUserRole === "owner" || (currentUserPermissions ?? []).includes("*");
+      if (currentUserSharedPerms) {
+        return { permissions: currentUserSharedPerms, canApprove };
+      }
       const permissions = {};
       for (const r of BUILTIN_ROLES) for (const [k, v] of Object.entries(r.permissions)) permissions[k] = v;
-      return { permissions, canApprove: currentUserRole === "super_admin" || (currentUserPermissions ?? []).includes("*") };
+      return { permissions: { ...permissions, business: true, settings: true }, canApprove };
     },
     audit: (action, entityType, entityId, description) => insertAuditLog(action, entityType, entityId, null, null, null, description)
   });
@@ -13472,6 +13568,775 @@ function checkStockConsistency(bizId) {
     }
   }
   return { inconsistent, checked: items.length };
+}
+class MdnsDiscovery extends events.EventEmitter {
+  bonjour = null;
+  isPublishing = false;
+  isBrowsing = false;
+  discoveredServices = /* @__PURE__ */ new Map();
+  constructor() {
+    super();
+  }
+  start() {
+    if (this.bonjour) return;
+    this.bonjour = new bonjourService.Bonjour();
+    this.bonjour.on("error", (err) => {
+      console.error("[mDNS] Bonjour error:", err);
+      this.emit("error", err);
+    });
+    this.startPublishing();
+    this.startBrowsing();
+  }
+  startPublishing() {
+    if (!this.bonjour || this.isPublishing) return;
+    const deviceId = ensureHubDeviceId();
+    const pairingToken = getPairingToken();
+    const port = SYNC_PORT;
+    let businessId = "";
+    try {
+      const row = require("../database").default.prepare(
+        "SELECT uuid FROM businesses WHERE isDefault = 1 OR id = 1 LIMIT 1"
+      ).get();
+      businessId = row?.uuid ?? "";
+    } catch {
+    }
+    const txtRecord = {
+      device_id: deviceId,
+      pairing_token: pairingToken,
+      schema_version: "21",
+      port: String(port),
+      platform: "desktop",
+      business_id: businessId,
+      capabilities: "lan,sync,cloud,desktop"
+    };
+    this.bonjour.publish({
+      name: `Shega POS Hub (${deviceId.slice(0, 8)})`,
+      type: "shega-pos",
+      protocol: "tcp",
+      port,
+      txt: txtRecord
+    });
+    this.isPublishing = true;
+    console.log(`[mDNS] Publishing service: Shega POS Hub on port ${port}`);
+  }
+  startBrowsing() {
+    if (!this.bonjour || this.isBrowsing) return;
+    const browser = this.bonjour.find({ type: "shega-pos", protocol: "tcp" });
+    browser.on("up", (service) => {
+      const deviceId = service.txt?.device_id;
+      if (!deviceId) return;
+      const hubId = ensureHubDeviceId();
+      if (deviceId === hubId) return;
+      const discovered = {
+        deviceId,
+        pairingToken: service.txt?.pairing_token || "",
+        schemaVersion: parseInt(service.txt?.schema_version || "0", 10),
+        port: service.port,
+        hostname: service.host,
+        addresses: service.addresses || [],
+        capabilities: (service.txt?.capabilities || "").split(",").filter(Boolean),
+        discoveredAt: Date.now(),
+        host: service.addresses?.[0] || service.host,
+        platform: service.txt?.platform || "desktop",
+        businessId: service.txt?.business_id || void 0
+      };
+      this.discoveredServices.set(deviceId, discovered);
+      console.log(`[mDNS] Discovered hub: ${deviceId} at ${discovered.host}:${service.port}`);
+      this.emit("up", discovered);
+    });
+    browser.on("down", (service) => {
+      const deviceId = service.txt?.device_id;
+      if (!deviceId) return;
+      const existing = this.discoveredServices.get(deviceId);
+      if (existing) {
+        this.discoveredServices.delete(deviceId);
+        console.log(`[mDNS] Hub went down: ${deviceId}`);
+        this.emit("down", existing);
+      }
+    });
+    browser.on("error", (err) => {
+      console.error("[mDNS] Browser error:", err);
+      this.emit("error", err);
+    });
+    this.isBrowsing = true;
+    console.log("[mDNS] Browsing for Shega POS hubs...");
+  }
+  getDiscoveredServices() {
+    return Array.from(this.discoveredServices.values());
+  }
+  getService(deviceId) {
+    return this.discoveredServices.get(deviceId);
+  }
+  stop() {
+    if (this.bonjour) {
+      this.bonjour.destroy();
+      this.bonjour = null;
+    }
+    this.isPublishing = false;
+    this.isBrowsing = false;
+    this.discoveredServices.clear();
+    console.log("[mDNS] Stopped");
+  }
+}
+const mdnsDiscovery = new MdnsDiscovery();
+const now = () => (/* @__PURE__ */ new Date()).toISOString();
+function rowToRecord(row) {
+  return {
+    requestId: row.id,
+    businessId: row.business_id,
+    code: row.code,
+    joinerDeviceId: row.joiner_device_id,
+    joinerName: row.joiner_name,
+    joinerModel: row.joiner_model,
+    joinerUser: row.joiner_user,
+    role: row.role,
+    platform: row.platform,
+    status: row.status,
+    createdAt: row.created_at,
+    decidedAt: row.decided_at
+  };
+}
+function submitDeviceJoinRequest(req) {
+  const existing = dbProxy.prepare("SELECT * FROM device_requests WHERE business_id = ? AND joiner_device_id = ? AND status = ?").get(req.businessId, req.joinerDeviceId, "pending");
+  if (existing) return rowToRecord(existing);
+  const id = crypto$1.randomBytes(12).toString("hex");
+  dbProxy.prepare(
+    `INSERT INTO device_requests
+       (id, business_id, code, joiner_device_id, joiner_name, joiner_model, joiner_user, role, platform, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+  ).run(
+    id,
+    req.businessId,
+    req.code ?? null,
+    req.joinerDeviceId,
+    req.joinerName ?? null,
+    req.joinerModel ?? null,
+    req.joinerUser,
+    req.role ?? "cashier",
+    req.platform ?? "mobile",
+    now()
+  );
+  return rowToRecord(dbProxy.prepare("SELECT * FROM device_requests WHERE id = ?").get(id));
+}
+function listDeviceJoinRequests(businessId, limit = 100) {
+  const rows = dbProxy.prepare(
+    `SELECT * FROM device_requests WHERE business_id = ?
+     ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC LIMIT ?`
+  ).all(businessId, limit);
+  return rows.map(rowToRecord);
+}
+function decideDeviceJoinRequest(decision) {
+  const row = dbProxy.prepare("SELECT * FROM device_requests WHERE id = ?").get(decision.requestId);
+  if (!row) return null;
+  dbProxy.prepare("UPDATE device_requests SET status = ?, decided_at = ? WHERE id = ?").run(
+    decision.decision,
+    now(),
+    decision.requestId
+  );
+  return rowToRecord(dbProxy.prepare("SELECT * FROM device_requests WHERE id = ?").get(decision.requestId));
+}
+function getDeviceJoinRequestBy(code, joinerDeviceId) {
+  const row = dbProxy.prepare(
+    `SELECT * FROM device_requests WHERE code = ? AND joiner_device_id = ?
+     ORDER BY created_at DESC LIMIT 1`
+  ).get(code, joinerDeviceId);
+  return row ? rowToRecord(row) : null;
+}
+function publishInvitation(inv) {
+  dbProxy.prepare(
+    `INSERT OR REPLACE INTO invitations (id, business_id, code, name, role, platform, created_by, expires_at, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'open', ?)`
+  ).run(
+    inv.id,
+    inv.businessId,
+    inv.code,
+    inv.name ?? null,
+    inv.role ?? null,
+    inv.platform ?? "mobile",
+    inv.expiresAt ?? null,
+    now()
+  );
+}
+function resolveInvitation(code) {
+  const row = dbProxy.prepare(
+    `SELECT * FROM invitations WHERE code = ? AND status = 'open'`
+  ).get(code);
+  if (!row) return null;
+  if (row.expires_at && row.expires_at < now()) {
+    dbProxy.prepare(`UPDATE invitations SET status = 'expired' WHERE id = ?`).run(row.id);
+    return null;
+  }
+  return {
+    id: row.id,
+    businessId: row.business_id,
+    code: row.code,
+    name: row.name,
+    role: row.role,
+    platform: row.platform,
+    expiresAt: row.expires_at
+  };
+}
+const WS_SYNC_PORT = 5758;
+class WsSyncServer extends events.EventEmitter {
+  wss = null;
+  clients = /* @__PURE__ */ new Map();
+  heartbeatInterval = null;
+  start() {
+    if (this.wss) return;
+    this.wss = new ws.WebSocketServer({ port: WS_SYNC_PORT });
+    this.wss.on("connection", (ws2, req) => {
+      this.handleConnection(ws2, req);
+    });
+    this.wss.on("error", (err) => {
+      logger.error("[WS] Server error:", err);
+      this.emit("error", err);
+    });
+    this.heartbeatInterval = setInterval(() => this.sendHeartbeats(), 3e4);
+    logger.info(`[WS] Sync server listening on port ${WS_SYNC_PORT}`);
+  }
+  handleConnection(ws2, req) {
+    const clientId = crypto$1.randomBytes(8).toString("hex");
+    const client = {
+      ws: ws2,
+      deviceId: "",
+      paired: false,
+      lastHeartbeat: Date.now(),
+      lastSeq: 0
+    };
+    this.clients.set(clientId, client);
+    logger.info(`[WS] Client connected: ${clientId}`);
+    ws2.on("message", (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        this.handleMessage(clientId, client, msg);
+      } catch (e) {
+        logger.warn("[WS] Invalid message:", e);
+        this.sendError(ws2, "INVALID_MESSAGE", "Malformed JSON");
+      }
+    });
+    ws2.on("close", () => {
+      this.handleDisconnect(clientId, client);
+    });
+    ws2.on("error", (err) => {
+      logger.warn("[WS] Client error:", err);
+    });
+  }
+  handleMessage(clientId, client, msg) {
+    const ws$1 = client.ws;
+    if (ws$1.readyState !== ws.WebSocket.OPEN) return;
+    switch (msg.type) {
+      case "HEARTBEAT":
+        client.lastHeartbeat = Date.now();
+        this.send(ws$1, { type: "HEARTBEAT_ACK", timestamp: Date.now() });
+        break;
+      case "PAIR_REQUEST":
+        this.handlePairRequest(clientId, client, msg);
+        break;
+      case "SYNC_PUSH":
+        this.handleSyncPush(clientId, client, msg);
+        break;
+      case "SYNC_PULL":
+        this.handleSyncPull(clientId, client, msg);
+        break;
+      case "SYNC_VERIFY":
+        this.handleSyncVerify(clientId, client, msg);
+        break;
+      case "RESYNC_REQUEST":
+        this.handleResyncRequest(clientId, client, msg);
+        break;
+      case DEVICE_JOIN_MSG.SUBMIT:
+        this.handleDeviceJoinSubmit(clientId, client, msg);
+        break;
+      case DEVICE_JOIN_MSG.LIST:
+        this.handleDeviceJoinList(clientId, client, msg);
+        break;
+      case DEVICE_JOIN_MSG.DECIDE:
+        this.handleDeviceJoinDecide(clientId, client, msg);
+        break;
+      case DEVICE_JOIN_MSG.PUBLISH:
+        this.handleInvitePublish(clientId, client, msg);
+        break;
+      case DEVICE_JOIN_MSG.RESOLVE:
+        this.handleInviteResolve(clientId, client, msg);
+        break;
+      case DEVICE_JOIN_MSG.STATUS:
+        this.handleDeviceJoinStatus(clientId, client, msg);
+        break;
+      default:
+        this.sendError(ws$1, "UNKNOWN_TYPE", `Unknown message type: ${msg.type}`);
+    }
+  }
+  handlePairRequest(clientId, client, msg) {
+    const ws2 = client.ws;
+    const { device_id, name, token } = msg.payload || {};
+    if (!device_id) {
+      this.sendError(ws2, "PAIR_FAILED", "device_id required");
+      return;
+    }
+    const hubToken = getPairingToken();
+    if (token && token.trim().toUpperCase() !== hubToken) {
+      this.sendError(ws2, "PAIR_FAILED", "Invalid pairing token");
+      return;
+    }
+    registerDevice(device_id, name);
+    client.deviceId = device_id;
+    client.paired = true;
+    this.send(ws2, {
+      type: "PAIR_RESPONSE",
+      requestId: msg.requestId,
+      payload: {
+        success: true,
+        hubId: ensureHubDeviceId(),
+        pairingToken: hubToken,
+        schemaVersion: 21
+      }
+    });
+    logger.info(`[WS] Device paired: ${device_id} (${name || "unknown"})`);
+    this.emit("clientConnected", this.clients.get(clientId));
+  }
+  handleDeviceJoinSubmit(clientId, client, msg) {
+    const ws2 = client.ws;
+    if (!client.paired) {
+      this.sendError(ws2, "NOT_PAIRED", "Device not paired");
+      return;
+    }
+    const payload = msg.payload || {};
+    if (!payload.businessId || !payload.joinerDeviceId) {
+      this.sendError(ws2, "DEVICE_JOIN_FAILED", "businessId and joinerDeviceId required");
+      return;
+    }
+    const rec = submitDeviceJoinRequest(payload);
+    this.send(ws2, { type: DEVICE_JOIN_MSG.ACK, requestId: msg.requestId, payload: { requestId: rec.requestId, status: rec.status } });
+    logger.info(`[WS] Device join request staged: ${rec.joinerDeviceId} -> ${rec.businessId}`);
+  }
+  handleDeviceJoinList(clientId, client, msg) {
+    const ws2 = client.ws;
+    if (!client.paired) {
+      this.sendError(ws2, "NOT_PAIRED", "Device not paired");
+      return;
+    }
+    const { businessId } = msg.payload || {};
+    if (!businessId) {
+      this.sendError(ws2, "DEVICE_JOIN_FAILED", "businessId required");
+      return;
+    }
+    const requests = listDeviceJoinRequests(businessId);
+    this.send(ws2, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload: { requests } });
+  }
+  handleDeviceJoinDecide(clientId, client, msg) {
+    const ws2 = client.ws;
+    if (!client.paired) {
+      this.sendError(ws2, "NOT_PAIRED", "Device not paired");
+      return;
+    }
+    const payload = msg.payload || {};
+    if (!payload.requestId || !payload.decision) {
+      this.sendError(ws2, "DEVICE_JOIN_FAILED", "requestId and decision required");
+      return;
+    }
+    const rec = decideDeviceJoinRequest(payload);
+    if (!rec) {
+      this.sendError(ws2, "DEVICE_JOIN_FAILED", "request not found");
+      return;
+    }
+    this.send(ws2, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload: { record: rec } });
+    logger.info(`[WS] Device join ${payload.decision}: ${rec.joinerDeviceId}`);
+  }
+  handleInvitePublish(clientId, client, msg) {
+    const ws2 = client.ws;
+    if (!client.paired) {
+      this.sendError(ws2, "NOT_PAIRED", "Device not paired");
+      return;
+    }
+    const p = msg.payload || {};
+    if (!p.id || !p.businessId || !p.code) {
+      this.sendError(ws2, "INVITE_FAILED", "id, businessId, code required");
+      return;
+    }
+    publishInvitation(p);
+    this.send(ws2, { type: DEVICE_JOIN_MSG.ACK, requestId: msg.requestId, payload: { published: true } });
+  }
+  handleInviteResolve(clientId, client, msg) {
+    const ws2 = client.ws;
+    const { code } = msg.payload || {};
+    if (!code) {
+      this.sendError(ws2, "INVITE_FAILED", "code required");
+      return;
+    }
+    const inv = resolveInvitation(code);
+    if (!inv) {
+      this.sendError(ws2, "INVITE_INVALID", "Invitation not found or expired");
+      return;
+    }
+    this.send(ws2, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload: { invitation: inv } });
+  }
+  handleDeviceJoinStatus(clientId, client, msg) {
+    const ws2 = client.ws;
+    const { code, joinerDeviceId } = msg.payload || {};
+    if (!code || !joinerDeviceId) {
+      this.sendError(ws2, "DEVICE_JOIN_FAILED", "code and joinerDeviceId required");
+      return;
+    }
+    const rec = getDeviceJoinRequestBy(code, joinerDeviceId);
+    this.send(ws2, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload: { record: rec } });
+  }
+  async handleSyncPush(clientId, client, msg) {
+    const ws2 = client.ws;
+    if (!client.paired) {
+      this.sendError(ws2, "NOT_PAIRED", "Device not paired");
+      return;
+    }
+    const { changes, client_seq } = msg.payload || {};
+    if (!Array.isArray(changes)) {
+      this.sendError(ws2, "INVALID_PAYLOAD", "changes must be array");
+      return;
+    }
+    try {
+      const result = applyPush(client.deviceId, changes);
+      client.lastSeq = Math.max(client.lastSeq, client_seq || 0);
+      this.send(ws2, {
+        type: "SYNC_ACK",
+        requestId: msg.requestId,
+        payload: {
+          applied: result.applied,
+          conflicts: result.conflicts,
+          skipped: result.skipped,
+          pending: result.pending,
+          serverSeq: this.getMaxSeq()
+        }
+      });
+      this.emit("syncCompleted", this.clients.get(clientId), {
+        pushed: result.applied,
+        pulled: 0,
+        conflicts: result.conflicts
+      });
+    } catch (e) {
+      logger.error("[WS] Sync push failed:", e);
+      this.sendError(ws2, "SYNC_PUSH_FAILED", e.message);
+    }
+  }
+  async handleSyncPull(clientId, client, msg) {
+    const ws2 = client.ws;
+    if (!client.paired) {
+      this.sendError(ws2, "NOT_PAIRED", "Device not paired");
+      return;
+    }
+    const { since, force } = msg.payload || {};
+    const sinceSeq = typeof since === "number" ? since : client.lastSeq;
+    try {
+      let result;
+      if (force) {
+        requestDeviceResync(client.deviceId);
+      }
+      result = snapshotSince(sinceSeq);
+      client.lastSeq = result.lastSeq;
+      this.send(ws2, {
+        type: "SYNC_CHANGES",
+        requestId: msg.requestId,
+        payload: {
+          changes: result.changes,
+          lastSeq: result.lastSeq,
+          snapshot: result.snapshot
+        }
+      });
+      this.emit("syncCompleted", this.clients.get(clientId), {
+        pushed: 0,
+        pulled: result.changes.length,
+        conflicts: 0
+      });
+    } catch (e) {
+      logger.error("[WS] Sync pull failed:", e);
+      this.sendError(ws2, "SYNC_PULL_FAILED", e.message);
+    }
+  }
+  handleSyncVerify(clientId, client, msg) {
+    const ws2 = client.ws;
+    if (!client.paired) {
+      this.sendError(ws2, "NOT_PAIRED", "Device not paired");
+      return;
+    }
+    try {
+      const checksums = verifyChecksums();
+      this.send(ws2, {
+        type: "SYNC_VERIFY_RESPONSE",
+        requestId: msg.requestId,
+        payload: { checksums }
+      });
+    } catch (e) {
+      logger.error("[WS] Verify failed:", e);
+      this.sendError(ws2, "VERIFY_FAILED", e.message);
+    }
+  }
+  handleResyncRequest(clientId, client, msg) {
+    const ws2 = client.ws;
+    if (!client.paired) {
+      this.sendError(ws2, "NOT_PAIRED", "Device not paired");
+      return;
+    }
+    requestDeviceResync(client.deviceId);
+    this.send(ws2, {
+      type: "RESYNC_RESPONSE",
+      requestId: msg.requestId,
+      payload: { success: true }
+    });
+  }
+  handleDisconnect(clientId, client) {
+    this.clients.delete(clientId);
+    logger.info(`[WS] Client disconnected: ${clientId} (${client.deviceId || "unpaired"})`);
+    this.emit("clientDisconnected", client);
+  }
+  sendHeartbeats() {
+    const now2 = Date.now();
+    for (const [clientId, client] of this.clients) {
+      if (now2 - client.lastHeartbeat > 9e4) {
+        logger.warn(`[WS] Client timeout: ${clientId}`);
+        client.ws.close();
+        this.clients.delete(clientId);
+        this.emit("clientDisconnected", client);
+      } else if (client.ws.readyState === ws.WebSocket.OPEN) {
+        this.send(client.ws, { type: "HEARTBEAT", timestamp: now2 });
+      }
+    }
+  }
+  getMaxSeq() {
+    const r = dbProxy.prepare("SELECT COALESCE(MAX(seq),0) AS m FROM sync_outbox").get();
+    return r?.m ?? 0;
+  }
+  send(ws$1, msg) {
+    if (ws$1.readyState === ws.WebSocket.OPEN) {
+      ws$1.send(JSON.stringify(msg));
+    }
+  }
+  sendError(ws2, code, message) {
+    this.send(ws2, { type: "ERROR", payload: { code, message } });
+  }
+  stop() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    if (this.wss) {
+      this.wss.close();
+      this.wss = null;
+    }
+    this.clients.clear();
+    logger.info("[WS] Server stopped");
+  }
+  getConnectedClients() {
+    return Array.from(this.clients.values());
+  }
+  getClientCount() {
+    return this.clients.size;
+  }
+}
+const wsSyncServer = new WsSyncServer();
+function startWsSyncServer() {
+  wsSyncServer.start();
+}
+function verifyPeerMembership(peerBusinessId, peerDeviceId) {
+  if (!peerBusinessId) {
+    const existing = dbProxy.prepare(
+      "SELECT device_id, name FROM devices WHERE device_id = ?"
+    ).get(peerDeviceId);
+    if (existing) return { allowed: true };
+    return { allowed: false, reason: "unknown_device_no_business" };
+  }
+  const hubBusinessId = getCurrentBusinessId();
+  if (!hubBusinessId) {
+    return { allowed: false, reason: "hub_has_no_business" };
+  }
+  if (peerBusinessId !== hubBusinessId) {
+    logger.warn("Business mismatch", { peer: peerBusinessId, hub: hubBusinessId });
+    return { allowed: false, reason: "business_mismatch" };
+  }
+  return { allowed: true };
+}
+function getCurrentBusinessId() {
+  const row = dbProxy.prepare(
+    "SELECT uuid FROM businesses WHERE isDefault = 1 OR id = 1 LIMIT 1"
+  ).get();
+  return row?.uuid ?? null;
+}
+let syncInterval = null;
+const LAN_SYNC_INTERVAL_MS = 3e4;
+function startPeerSync() {
+  const hubId = ensureHubDeviceId();
+  const platform = process.platform === "darwin" ? "desktop" : "desktop";
+  mdnsDiscovery.start();
+  startWsSyncServer();
+  startCloudSyncTimer();
+  if (syncInterval) clearInterval(syncInterval);
+  syncInterval = setInterval(async () => {
+    try {
+      await performLanSync();
+    } catch (e) {
+      logger.error("LAN sync cycle failed", { error: e?.message });
+    }
+  }, LAN_SYNC_INTERVAL_MS);
+  logger.info("Peer sync started", { hubId, platform });
+}
+async function performLanSync() {
+  const discovered = mdnsDiscovery.getDiscoveredServices();
+  if (discovered.length === 0) return;
+  for (const peer of discovered) {
+    try {
+      await syncWithPeerHub(peer);
+    } catch (e) {
+      logger.warn("Sync with peer hub failed", { peerId: peer.deviceId, error: e?.message });
+    }
+  }
+}
+async function syncWithPeerHub(peer) {
+  const hubId = ensureHubDeviceId();
+  const token = getPairingToken();
+  const peerUrl = `http://${peer.host}:${peer.port}`;
+  try {
+    const infoRes = await fetch(`${peerUrl}/sync/info`);
+    const info = await infoRes.json();
+    if (!info.ok) return;
+    const verification = verifyPeerMembership(info.businessId, peer.deviceId);
+    if (!verification.allowed) {
+      logger.warn("Peer auth failed", { peerId: peer.deviceId, reason: verification.reason });
+      return;
+    }
+  } catch {
+    return;
+  }
+  const pullUrl = `${peerUrl}/sync/pull?device=${encodeURIComponent(hubId)}&since=0&token=${encodeURIComponent(token)}`;
+  try {
+    const pullRes = await fetch(pullUrl);
+    const pullData = await pullRes.json();
+    const changes = pullData.changes;
+    if (pullData.ok && changes && changes.length > 0) {
+      const { applyRemoteChanges: applyRemoteChanges2 } = await Promise.resolve().then(() => syncHub$1);
+      const result = applyRemoteChanges2(hubId, changes);
+      logger.info("Peer sync pull", {
+        peerId: peer.deviceId,
+        pulled: changes.length,
+        applied: result.applied,
+        conflicts: result.conflicts
+      });
+    }
+  } catch (e) {
+    logger.warn("Peer pull failed", { peerId: peer.deviceId, error: e?.message });
+  }
+}
+const DEFAULT_BASE = "https://shega-api-dah3.onrender.com";
+function getSetting(key) {
+  const row = dbProxy.prepare("SELECT value FROM settings WHERE key = ?").get(key);
+  return row?.value ?? null;
+}
+function setSetting(key, value) {
+  dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
+}
+function getBaseUrl() {
+  return (getSetting("cloud_sync_url") || process.env.SHEGA_API_URL || DEFAULT_BASE).replace(/\/+$/, "");
+}
+let authPromise = null;
+async function doAuthRequest(path2, body, {
+  method = "GET",
+  auth = false,
+  retried = false
+} = {}) {
+  const headers = { Accept: "application/json", "Content-Type": "application/json" };
+  let token = auth ? getSetting("pairing_access_token") : null;
+  if (auth && token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${getBaseUrl()}${path2}`, {
+    method,
+    headers,
+    body: body !== void 0 ? JSON.stringify(body) : void 0
+  });
+  let data = null;
+  const text = await res.text();
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+  if (res.status === 401 && auth && !retried) {
+    const refreshed = await refreshPairingToken();
+    if (refreshed) return doAuthRequest(path2, body, { method, auth, retried: true });
+  }
+  if (!res.ok) {
+    const msg = data?.detail ?? data?.error ?? (typeof data === "string" ? data : `HTTP ${res.status}`);
+    const err = new Error(typeof msg === "object" ? msg.detail ?? JSON.stringify(msg) : String(msg));
+    err.status = res.status;
+    err.detail = data?.detail ?? null;
+    throw err;
+  }
+  return data;
+}
+async function refreshPairingToken() {
+  if (authPromise) return authPromise;
+  authPromise = (async () => {
+    try {
+      const refresh = getSetting("pairing_refresh_token");
+      if (!refresh) return false;
+      const res = await fetch(`${getBaseUrl()}/api/auth/refresh/`, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh })
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (!data?.access) return false;
+      setSetting("pairing_access_token", data.access);
+      if (data.refresh) setSetting("pairing_refresh_token", data.refresh);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      authPromise = null;
+    }
+  })();
+  return authPromise;
+}
+function registerPairingCloudHandlers() {
+  electron.ipcMain.handle("pairing:status", () => {
+    const linked = !!getSetting("pairing_access_token");
+    return {
+      linked,
+      email: getSetting("pairing_account_email") ?? null,
+      businessName: getSetting("pairing_business_name") ?? null
+    };
+  });
+  electron.ipcMain.handle("pairing:link-account", async (_e, email, password) => {
+    if (!email?.trim() || !password) throw new Error("Email and password are required");
+    const data = await doAuthRequest("/api/auth/login/", { email: email.trim().toLowerCase(), password }, { method: "POST" });
+    const access = data?.access ?? data?.token;
+    if (!access) throw new Error("Could not obtain an access token");
+    setSetting("pairing_access_token", access);
+    if (data?.refresh) setSetting("pairing_refresh_token", data.refresh);
+    setSetting("pairing_account_email", email.trim().toLowerCase());
+    setSetting("pairing_business_name", String(data?.user?.business_name ?? ""));
+    setSetting("pairing_last_error", "");
+    return { linked: true, email: email.trim().toLowerCase(), businessName: String(data?.user?.business_name ?? "") };
+  });
+  electron.ipcMain.handle("pairing:unlink", () => {
+    dbProxy.prepare("DELETE FROM settings WHERE key LIKE 'pairing_%'").run();
+    return { linked: false };
+  });
+  electron.ipcMain.handle("pairing:list", async () => {
+    const res = await doAuthRequest("/api/sync/pairing/", {}, { auth: true });
+    return res?.invitations ?? [];
+  });
+  electron.ipcMain.handle("pairing:invite", async (_e, input) => {
+    const body = { role: input?.role ?? "cashier" };
+    if (input?.employeeName) body.employee_name = input.employeeName;
+    if (input?.register) body.register = input.register;
+    if (input?.location) body.location = input.location;
+    return doAuthRequest("/api/sync/pairing/invite/", body, { method: "POST", auth: true });
+  });
+  electron.ipcMain.handle("pairing:revoke", async (_e, id) => {
+    return doAuthRequest(`/api/sync/pairing/${id}/revoke/`, {}, { method: "POST", auth: true });
+  });
+  electron.ipcMain.handle("pairing:decide", async (_e, id, decision) => {
+    return doAuthRequest(`/api/sync/pairing/${id}/${decision}/`, {}, { method: "POST", auth: true });
+  });
+  electron.ipcMain.handle("pairing:qr-code", async (_e, text) => {
+    if (!text?.trim()) throw new Error("Nothing to encode");
+    return QRCode.toDataURL(text, { width: 340, margin: 2, errorCorrectionLevel: "M" });
+  });
 }
 const syncHub = new SyncHub();
 process.on("uncaughtException", (error) => {
@@ -13550,8 +14415,9 @@ electron.app.whenReady().then(() => {
   try {
     initDB();
     registerIPCHandlers();
+    registerPairingCloudHandlers();
     syncHub.start(SYNC_PORT);
-    startCloudSyncTimer();
+    startPeerSync();
     createWindow();
   } catch (err) {
     logger.fatal("startup-failed", { error: String(err), stack: err?.stack });

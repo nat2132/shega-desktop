@@ -5,7 +5,8 @@ import { initDB } from './database';
 import { registerIPCHandlers } from './ipc-handlers';
 import { appUpdater } from './updater';
 import { SyncHub, SYNC_PORT } from './sync-hub';
-import { startCloudSyncTimer } from './sync-cloud';
+import { startPeerSync, stopPeerSync, getUnifiedSyncStatus } from './peer-sync';
+import { registerPairingCloudHandlers } from './pairing-cloud';
 import { logger } from './logger';
 
 export const syncHub = new SyncHub();
@@ -91,8 +92,9 @@ app.whenReady().then(() => {
   try {
     initDB();
   registerIPCHandlers();
+  registerPairingCloudHandlers();
   syncHub.start(SYNC_PORT);
-  startCloudSyncTimer();
+  startPeerSync();
   createWindow();
 
   } catch (err) {

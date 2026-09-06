@@ -538,7 +538,7 @@ export function initDB() {
       is_synced INTEGER DEFAULT 1
     );
 
-    // Budget categories (mirrors mobile's budget_categories table)
+    -- Budget categories (mirrors mobile's budget_categories table)
     CREATE TABLE IF NOT EXISTS budget_categories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       budgetId INTEGER NOT NULL,
@@ -556,7 +556,7 @@ export function initDB() {
       FOREIGN KEY (budgetId) REFERENCES budgets(id) ON DELETE CASCADE
     );
 
-    // Subscription payments (mirrors mobile's subscription_payments table)
+    -- Subscription payments (mirrors mobile's subscription_payments table)
     CREATE TABLE IF NOT EXISTS subscription_payments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       subscriptionId INTEGER,
@@ -582,7 +582,7 @@ export function initDB() {
       FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
     );
 
-    // Subscription renewals (mirrors mobile's subscription_renewals table)
+    -- Subscription renewals (mirrors mobile's subscription_renewals table)
     CREATE TABLE IF NOT EXISTS subscription_renewals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       subscriptionId INTEGER,
@@ -602,7 +602,7 @@ export function initDB() {
       FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
     );
 
-    // Scheduled reminders (mirrors mobile's scheduled_reminders table)
+    -- Scheduled reminders (mirrors mobile's scheduled_reminders table)
     CREATE TABLE IF NOT EXISTS scheduled_reminders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       businessId INTEGER,

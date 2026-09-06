@@ -365,6 +365,17 @@ export interface ElectronAPI {
   businessCan: (key: string) => Promise<{ allowed: boolean }>;
   businessListPeople: () => Promise<any[]>;
   businessSetPersonRole: (employeeId: number, roleKey: string) => Promise<any>;
+  businessSetPersonActive: (employeeId: number, isActive: boolean) => Promise<any>;
+
+  // Employee QR pairing (cloud)
+  pairingStatus: () => Promise<{ linked: boolean; email: string | null; businessName: string | null }>;
+  pairingLinkAccount: (email: string, password: string) => Promise<{ linked: boolean; email: string; businessName: string }>;
+  pairingUnlink: () => Promise<{ linked: boolean }>;
+  pairingList: () => Promise<any[]>;
+  pairingInvite: (input: { employeeName?: string; role?: string; register?: string; location?: string }) => Promise<any>;
+  pairingRevoke: (id: number) => Promise<any>;
+  pairingDecide: (id: number, decision: 'approve' | 'reject') => Promise<any>;
+  pairingQrCode: (text: string) => Promise<string>;
 
   // §15 — Manager PIN approval
   onApprovalPrompt: (callback: (payload: {

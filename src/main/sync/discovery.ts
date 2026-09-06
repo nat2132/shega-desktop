@@ -1,6 +1,6 @@
 import { Bonjour } from 'bonjour-service';
 import { EventEmitter } from 'events';
-import { ensureHubDeviceId, getPairingToken, SYNC_PORT } from './sync-hub';
+import { ensureHubDeviceId, getPairingToken, SYNC_PORT } from '../sync-hub';
 
 export interface ServiceInfo {
   deviceId: string;
@@ -11,6 +11,8 @@ export interface ServiceInfo {
   addresses: string[];
   capabilities: string[];
   discoveredAt: number;
+  platform?: string;
+  businessId?: string;
 }
 
 export interface DiscoveredService extends ServiceInfo {
@@ -53,12 +55,23 @@ export class MdnsDiscovery extends EventEmitter<DiscoveryEventMap> {
     const pairingToken = getPairingToken();
     const port = SYNC_PORT;
 
+    // Get business ID for peer verification
+    let businessId = '';
+    try {
+      const row = require('../database').default.prepare(
+        "SELECT uuid FROM businesses WHERE isDefault = 1 OR id = 1 LIMIT 1"
+      ).get() as any;
+      businessId = row?.uuid ?? '';
+    } catch {}
+
     const txtRecord = {
       device_id: deviceId,
       pairing_token: pairingToken,
       schema_version: '21',
       port: String(port),
-      capabilities: 'lan,sync,cloud',
+      platform: 'desktop',
+      business_id: businessId,
+      capabilities: 'lan,sync,cloud,desktop',
     };
 
     this.bonjour.publish({
@@ -96,6 +109,8 @@ export class MdnsDiscovery extends EventEmitter<DiscoveryEventMap> {
         capabilities: (service.txt?.capabilities || '').split(',').filter(Boolean),
         discoveredAt: Date.now(),
         host: service.addresses?.[0] || service.host,
+        platform: service.txt?.platform || 'desktop',
+        businessId: service.txt?.business_id || undefined,
       };
 
       this.discoveredServices.set(deviceId, discovered);

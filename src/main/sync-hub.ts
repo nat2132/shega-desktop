@@ -147,7 +147,7 @@ export function getLanAddress(port = SYNC_PORT): string | null {
   return null;
 }
 
-function registerDevice(deviceId: string, name?: string): void {
+export function registerDevice(deviceId: string, name?: string): void {
   const existing = db.prepare('SELECT id FROM devices WHERE device_id = ?').get(deviceId) as any;
   if (existing) {
     db.prepare('UPDATE devices SET last_seen_at = ? WHERE device_id = ?').run(new Date().toISOString(), deviceId);
@@ -490,7 +490,7 @@ function applyAuditChange(deviceId: string, change: Change): boolean {
   }
 }
 
-function applyPush(deviceId: string, changes: Change[]): ApplyResult {
+export function applyPush(deviceId: string, changes: Change[]): ApplyResult {
   const result: ApplyResult = { applied: 0, conflicts: 0, skipped: 0, pending: 0 };
   const doApply = db.transaction((list: Change[]) => {
     for (const change of list) {

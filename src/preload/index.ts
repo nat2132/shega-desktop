@@ -405,7 +405,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.removeAllListeners('update:error');
   },
 
-  // �?U�? Shared Business Model (registers, devices, roles, people)
+  // Shared Business Model (registers, devices, roles, people)
   businessListRegisters: () => ipcRenderer.invoke('business:list-registers'),
   businessAddRegister: (name: string, locationId?: number) => ipcRenderer.invoke('business:add-register', name, locationId),
   businessUpdateRegister: (id: number, patch: any) => ipcRenderer.invoke('business:update-register', id, patch),
@@ -421,6 +421,17 @@ contextBridge.exposeInMainWorld('api', {
   businessCan: (key: string) => ipcRenderer.invoke('business:can', key),
   businessListPeople: () => ipcRenderer.invoke('business:list-people'),
   businessSetPersonRole: (employeeId: number, roleKey: string) => ipcRenderer.invoke('business:set-person-role', employeeId, roleKey),
+  businessSetPersonActive: (employeeId: number, isActive: boolean) => ipcRenderer.invoke('business:set-person-active', employeeId, isActive),
+
+  // Employee QR pairing (cloud)
+  pairingStatus: () => ipcRenderer.invoke('pairing:status'),
+  pairingLinkAccount: (email: string, password: string) => ipcRenderer.invoke('pairing:link-account', email, password),
+  pairingUnlink: () => ipcRenderer.invoke('pairing:unlink'),
+  pairingList: () => ipcRenderer.invoke('pairing:list'),
+  pairingInvite: (input: { employeeName?: string; role?: string; register?: string; location?: string }) => ipcRenderer.invoke('pairing:invite', input),
+  pairingRevoke: (id: number) => ipcRenderer.invoke('pairing:revoke', id),
+  pairingDecide: (id: number, decision: 'approve' | 'reject') => ipcRenderer.invoke('pairing:decide', id, decision),
+  pairingQrCode: (text: string) => ipcRenderer.invoke('pairing:qr-code', text),
 
   // §15 — Manager PIN approval prompt (main → renderer event + renderer → main)
   onApprovalPrompt: (callback: (payload: any) => void) => {
