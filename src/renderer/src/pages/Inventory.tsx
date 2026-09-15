@@ -1,15 +1,16 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { 
   Plus, Package, 
-  ShieldAlert, TrendingUp, Trash2, Eye,
+  ShieldAlert, Trash2, Eye,
   FileText, Download, ShoppingCart, Filter, X, RotateCcw,
-  Boxes, DollarSign, Truck
+  Boxes, DollarSign, Truck, Camera, Warehouse, Smartphone, Printer as PrinterIcon
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { ColumnDef } from '@tanstack/react-table';
 
 import { useSettings } from '../context/SettingsContext';
+import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
 import { playSound } from '../utils/sound';
 import { toast } from 'sonner';
 import { SectionCards, SectionCardData } from '../components/section-cards';
@@ -24,7 +25,6 @@ import { computeTrend } from '../lib/trend-utils';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Switch } from '../components/ui/switch';
 import { Label } from '../components/ui/label';
-import { Textarea } from '../components/ui/textarea';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,7 +56,9 @@ interface Item {
   allowSellByBaseUnit: number;
   allowSellByPackUnit: number;
   expiryDate: string;
-  qualityGrade: string;
+  qualityGrade?: string;
+  taxType?: string;
+  taxTreatment?: string;
   notes: string;
   isCredit: number;
   supplierPhone: string;
@@ -70,10 +72,11 @@ interface Item {
   totalPurchasedQuantity?: number;
   lastPurchaseOrderRef?: string;
   lastPurchaseOrderDate?: string;
+  image?: string; sku?: string; barcode?: string; wholesaleSellingPrice?: number; minWholesaleQty?: number; transportCost?: number; importCost?: number; packagingCost?: number; handlingCost?: number; otherCost?: number; targetMargin?: number; supplierAccount?: string; supplierCallEnabled?: number; warehouseId?: number; isActive?: number; quickProduct?: number;
 }
 
 const Inventory: React.FC = () => {
-  const { t, formatDate, currentBusiness } = useSettings();
+  const { t, formatDate, currentBusiness, isModuleEnabled } = useSettings();
   const [items, setItems] = useState<Item[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
@@ -98,33 +101,40 @@ const Inventory: React.FC = () => {
   const [restockItem, setRestockItem] = useState<Item | null>(null);
   const [restockQty, setRestockQty] = useState('');
   const [expiryEnabled, setExpiryEnabled] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const [barcodes, setBarcodes] = useState<any[]>([]);
+  const [newBarcode, setNewBarcode] = useState('');
+  const [warehouses, setWarehouses] = useState<any[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [phoneCaptureBusy, setPhoneCaptureBusy] = useState(false);
 
   const [isNewCategory, setIsNewCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
 
   const [formData, setFormData] = useState({
-    name: '', categoryId: 'none', companyName: '', purchaseUnit: t('inventory.box'), baseUnit: t('inventory.piece'),
-    unitsPerPack: '1', totalPackQuantity: '0', totalBaseQuantity: '0',
-    packPurchasePrice: '0', basePurchasePrice: '0', baseSellingPrice: '', packSellingPrice: '0',
-    allowSellByBaseUnit: true, allowSellByPackUnit: false,
-    expiryDate: '', qualityGrade: '', notes: '', isCredit: false,
+    name: '', categoryId: 'none', companyName: '', baseUnit: t('inventory.piece'),
+    totalPackQuantity: '0', totalBaseQuantity: '0',
+    basePurchasePrice: '0', baseSellingPrice: '',
+    allowSellByBaseUnit: true,
+    expiryDate: '', taxType: 'VAT', taxTreatment: 'inclusive', notes: '', isCredit: false,
     supplierPhone: '', supplierId: '',
-    reorderPoint: '10', reorderQty: '0', autoReorder: false
+    sku: '', barcode: '', image: '', transportCost: '0', importCost: '0', packagingCost: '0', handlingCost: '0', otherCost: '0', targetMargin: '', supplierAccount: '', supplierCallEnabled: false, warehouseId: '', isActive: true, quickProduct: false
   });
 
   useEffect(() => {
     loadData();
   }, [searchQuery, filterCategory, filterStartDate, filterEndDate]);
 
-  // Sync Base Quantity based on Pack Quantity and Units per Pack
+  // Live sync: re-query when P2P/Yjs sync lands new data in SQLite.
+  useDataChangedRefresh(() => { loadData(); });
+
+  // Keep pack quantity mirrored to base quantity — pack is no longer user-facing.
   useEffect(() => {
-    const packs = parseFloat(formData.totalPackQuantity) || 0;
-    const upp = parseFloat(formData.unitsPerPack) || 1;
     setFormData(prev => ({
       ...prev,
-      totalBaseQuantity: String(packs * upp)
+      totalPackQuantity: prev.totalBaseQuantity
     }));
-  }, [formData.totalPackQuantity, formData.unitsPerPack]);
+  }, [formData.totalBaseQuantity]);
 
   const loadData = async () => {
     const [itemsData, catsData, suppData] = await Promise.all([
@@ -135,6 +145,7 @@ const Inventory: React.FC = () => {
     setItems(Array.isArray(itemsData) ? itemsData : []);
     setCategories(Array.isArray(catsData) ? catsData : []);
     setSuppliers(suppData?.rows || []);
+    window.api?.getWarehouses().then(w => setWarehouses(Array.isArray(w) ? w : []));
   };
 
   const kpiCards: SectionCardData[] = useMemo(() => {
@@ -189,9 +200,13 @@ const Inventory: React.FC = () => {
       header: t('inventory.product_details'),
       cell: ({ row }) => (
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted">
-            <Package className="h-5 w-5 text-muted-foreground" />
-          </div>
+          {row.original.image ? (
+            <img src={row.original.image} className="h-8 w-8 rounded-md object-cover shrink-0" />
+          ) : (
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted shrink-0">
+              <Package className="h-5 w-5 text-muted-foreground" />
+            </div>
+          )}
           <div className="flex flex-col">
             <span className="font-bold">{row.original.name}</span>
             <span className="text-xs text-muted-foreground uppercase font-bold tracking-widest">
@@ -206,14 +221,13 @@ const Inventory: React.FC = () => {
       header: t('inventory.stock_ledger'),
       cell: ({ row }) => {
         const baseQty = row.original.totalBaseQuantity;
-        const packQty = row.original.totalPackQuantity;
         const fmt = (n: number | null | undefined) => n == null ? '0' : parseFloat(n.toFixed(2)).toString();
         const statusKey = baseQty <= 0 ? 'inventory.depleted' : baseQty < 10 ? 'inventory.low' : 'inventory.healthy';
         const status = t(statusKey);
         return (
           <div className="flex flex-col gap-1 w-40">
             <div className="flex justify-between text-xs font-bold uppercase tracking-widest">
-              <span>{fmt(baseQty)} {row.original.baseUnit} / {fmt(packQty)} {row.original.purchaseUnit}</span>
+              <span>{fmt(baseQty)} {row.original.baseUnit}</span>
               <span className={statusKey === 'inventory.depleted' ? 'text-destructive' : statusKey === 'inventory.low' ? 'text-yellow-500' : 'text-green-500'}>
                 {status}
               </span>
@@ -280,17 +294,20 @@ const Inventory: React.FC = () => {
 
   const resetForm = () => {
     setFormData({
-      name: '', categoryId: 'none', companyName: '', purchaseUnit: t('inventory.box'), baseUnit: t('inventory.piece'),
-      unitsPerPack: '1', totalPackQuantity: '0', totalBaseQuantity: '0',
-      packPurchasePrice: '0', basePurchasePrice: '0', baseSellingPrice: '', packSellingPrice: '0',
-      allowSellByBaseUnit: true, allowSellByPackUnit: false,
-      expiryDate: '', qualityGrade: '', notes: '', isCredit: false,
+      name: '', categoryId: 'none', companyName: '', baseUnit: t('inventory.piece'),
+      totalPackQuantity: '0', totalBaseQuantity: '0',
+      basePurchasePrice: '0', baseSellingPrice: '',
+      allowSellByBaseUnit: true,
+      expiryDate: '', taxType: 'VAT', taxTreatment: 'inclusive', notes: '', isCredit: false,
       supplierPhone: '', supplierId: '',
-      reorderPoint: '10', reorderQty: '0', autoReorder: false
+      sku: '', barcode: '', image: '', transportCost: '0', importCost: '0', packagingCost: '0', handlingCost: '0', otherCost: '0', targetMargin: '', supplierAccount: '', supplierCallEnabled: false, warehouseId: '', isActive: true, quickProduct: false
     });
     setIsNewCategory(false);
     setNewCategoryName('');
     setExpiryEnabled(false);
+    setBarcodes([]);
+    setNewBarcode('');
+    setImageError(false);
   };
 
   const openEdit = (item: Item) => {
@@ -299,28 +316,24 @@ const Inventory: React.FC = () => {
       name: item.name,
       categoryId: item.categoryId ? String(item.categoryId) : 'none',
       companyName: item.companyName || '',
-      purchaseUnit: item.purchaseUnit || t('inventory.box'),
       baseUnit: item.baseUnit || t('inventory.piece'),
-      unitsPerPack: String(item.unitsPerPack || 1),
-      totalPackQuantity: String(item.totalPackQuantity || 0),
+      totalPackQuantity: String(item.totalBaseQuantity || 0),
       totalBaseQuantity: String(item.totalBaseQuantity || 0),
-      packPurchasePrice: String(item.packPurchasePrice || 0),
       basePurchasePrice: String(item.basePurchasePrice || 0),
       baseSellingPrice: String(item.baseSellingPrice || 0),
-      packSellingPrice: String(item.packSellingPrice || 0),
-      allowSellByBaseUnit: !!item.allowSellByBaseUnit,
-      allowSellByPackUnit: !!item.allowSellByPackUnit,
+      allowSellByBaseUnit: true,
       expiryDate: item.expiryDate || '',
-      qualityGrade: item.qualityGrade || '',
+      taxType: item.taxType || 'VAT',
+      taxTreatment: item.taxTreatment || 'inclusive',
       notes: item.notes || '',
       isCredit: !!item.isCredit,
       supplierPhone: item.supplierPhone || '',
       supplierId: item.supplierId ? String(item.supplierId) : '',
-      reorderPoint: String(item.reorderPoint ?? 10),
-      reorderQty: String(item.reorderQty ?? 0),
-      autoReorder: !!item.autoReorder
+      sku: item.sku || '', barcode: item.barcode || '', image: item.image || '', transportCost: String(item.transportCost ?? 0), importCost: String(item.importCost ?? 0), packagingCost: String(item.packagingCost ?? 0), handlingCost: String(item.handlingCost ?? 0), otherCost: String(item.otherCost ?? 0), targetMargin: String(item.targetMargin ?? ''), supplierAccount: item.supplierAccount || '', supplierCallEnabled: !!item.supplierCallEnabled, warehouseId: item.warehouseId ? String(item.warehouseId) : '', isActive: item.isActive !== 0, quickProduct: !!item.quickProduct
     });
     setExpiryEnabled(!!item.expiryDate);
+    setImageError(false);
+    window.api?.itemBarcodesList(item.id).then(res => setBarcodes(Array.isArray(res) ? res : []));
     setShowModal(true);
   };
 
@@ -328,10 +341,8 @@ const Inventory: React.FC = () => {
     e.preventDefault();
     if (!formData.name.trim()) { toast.error(t('inventory.product_name_required', 'Product name is required')); return; }
     const basePrice = parseFloat(formData.baseSellingPrice) || 0;
-    if (basePrice <= 0 && parseFloat(formData.packSellingPrice) <= 0) { toast.error(t('inventory.selling_price_required', 'At least one selling price is required')); return; }
+    if (basePrice <= 0) { toast.error(t('inventory.selling_price_required', 'At least one selling price is required')); return; }
     const baseCost = parseFloat(formData.basePurchasePrice) || 0;
-    const packPrice = parseFloat(formData.packSellingPrice) || 0;
-    const packCost = parseFloat(formData.packPurchasePrice) || 0;
 
     let finalCategoryId = (formData.categoryId && formData.categoryId !== 'none' && !isNaN(parseInt(formData.categoryId))) ? parseInt(formData.categoryId) : null;
 
@@ -345,18 +356,47 @@ const Inventory: React.FC = () => {
     const item = {
       ...formData,
       categoryId: finalCategoryId,
-      unitsPerPack: parseFloat(formData.unitsPerPack) || 1,
-      totalPackQuantity: parseFloat(formData.totalPackQuantity) || 0,
+      unitsPerPack: 1,
+      purchaseUnit: formData.baseUnit,
+      totalPackQuantity: parseFloat(formData.totalBaseQuantity) || 0,
       totalBaseQuantity: parseFloat(formData.totalBaseQuantity) || 0,
-      packPurchasePrice: packCost,
+      packPurchasePrice: baseCost,
       basePurchasePrice: baseCost,
       baseSellingPrice: basePrice,
-      packSellingPrice: packPrice,
-      allowSellByBaseUnit: formData.allowSellByBaseUnit ? 1 : 0,
-      allowSellByPackUnit: formData.allowSellByPackUnit ? 1 : 0,
+      packSellingPrice: basePrice,
+      allowSellByBaseUnit: 1,
+      allowSellByPackUnit: 0,
       isCredit: formData.isCredit ? 1 : 0,
-      supplierId: formData.supplierId ? parseInt(formData.supplierId) : null
+      supplierId: formData.supplierId ? parseInt(formData.supplierId) : null,
+      warehouseId: formData.warehouseId ? parseInt(formData.warehouseId) : null,
+      supplierCallEnabled: formData.supplierCallEnabled ? 1 : 0,
+      isActive: formData.isActive ? 1 : 0,
+      quickProduct: formData.quickProduct ? 1 : 0,
+      image: formData.image || null,
+      qualityGrade: editingItem?.qualityGrade ?? null,
+      reorderPoint: editingItem?.reorderPoint ?? null,
+      reorderQty: editingItem?.reorderQty ?? null,
+      autoReorder: editingItem?.autoReorder ?? null,
+      wholesaleSellingPrice: editingItem?.wholesaleSellingPrice ?? null,
+      minWholesaleQty: editingItem?.minWholesaleQty ?? null,
+      transportCost: parseFloat(formData.transportCost) || 0,
+      importCost: parseFloat(formData.importCost) || 0,
+      packagingCost: parseFloat(formData.packagingCost) || 0,
+      handlingCost: parseFloat(formData.handlingCost) || 0,
+      otherCost: parseFloat(formData.otherCost) || 0,
+      targetMargin: formData.targetMargin ? parseFloat(formData.targetMargin) : null
     };
+
+    if (!editingItem) {
+      const dup = (items || []).find(i =>
+        i.name.trim().toLowerCase() === item.name.trim().toLowerCase() &&
+        (i.categoryId ?? 0) === (finalCategoryId ?? 0)
+      );
+      if (dup) {
+        const proceed = window.confirm(t('inventory.duplicate_item_message', 'An item named \'{name}\' already exists in this category. Do you want to continue?', { name: item.name }));
+        if (!proceed) return;
+      }
+    }
 
     if (editingItem) {
       await window.api?.updateItem(editingItem.id, item);
@@ -387,20 +427,76 @@ const Inventory: React.FC = () => {
     loadData();
   };
 
+  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setImageError(false);
+      setFormData({ ...formData, image: String(reader.result || '') });
+    };
+    reader.readAsDataURL(file);
+    if (e.currentTarget) e.currentTarget.value = '';
+  };
+
+  const generateBarcode = async () => {
+    const code = await window.api?.generateShegaCode();
+    if (code) {
+      setFormData({ ...formData, barcode: code });
+      toast.success('Code generated');
+    }
+  };
+
+  const printBarcodeLabel = async (name: string, sku?: string | null, barcode?: string | null, price?: number, copies = 1) => {
+    const code = (barcode || sku || '').trim();
+    if (!code) {
+      toast.error('This product has no barcode — add one first');
+      return;
+    }
+    const res = await window.api?.printLabel?.({ name, sku: sku || undefined, barcode: code, price: price || 0, copies });
+    if (res?.success) toast.success(copies > 1 ? `${copies} labels sent to printer` : 'Label sent to printer');
+    else toast.error(res?.error || 'Label print failed');
+  };
+
+  const downloadBarcode = async (value: string) => {
+    const res = await window.api?.barcodePng?.(value);
+    if (res?.success) toast.success('Barcode image saved');
+    else if (!res?.canceled) toast.error(res?.error || 'Download failed');
+  };
+
+  const reloadBarcodes = async (itemId: number) => {
+    const rows = await window.api?.itemBarcodesList(itemId);
+    setBarcodes(Array.isArray(rows) ? rows : []);
+  };
+
+  const addBarcode = async () => {
+    if (!editingItem || !newBarcode.trim()) return;
+    await window.api?.itemBarcodesAdd(editingItem.id, newBarcode.trim());
+    setNewBarcode('');
+    reloadBarcodes(editingItem.id);
+  };
+
+  const removeBarcode = async (barcodeId: number) => {
+    if (!editingItem) return;
+    await window.api?.itemBarcodesRemove(barcodeId);
+    reloadBarcodes(editingItem.id);
+  };
+
+  const setBarcodePrimary = async (barcodeId: number) => {
+    if (!editingItem) return;
+    await window.api?.itemBarcodesSetPrimary(barcodeId);
+    reloadBarcodes(editingItem.id);
+  };
+
   const baseProfit = (parseFloat(formData.baseSellingPrice) || 0) - (parseFloat(formData.basePurchasePrice) || 0);
-  const packProfit = (parseFloat(formData.packSellingPrice) || 0) - (parseFloat(formData.packPurchasePrice) || 0);
   const baseMargin = (parseFloat(formData.baseSellingPrice) || 0) > 0 
     ? ((baseProfit / parseFloat(formData.baseSellingPrice)) * 100).toFixed(1) 
     : '0';
-  const packMargin = (parseFloat(formData.packSellingPrice) || 0) > 0 
-    ? ((packProfit / parseFloat(formData.packSellingPrice)) * 100).toFixed(1) 
-    : '0';
- 
   const openPOCreator = () => {
     const lowStockItems = items.filter(i => i.totalBaseQuantity < 10);
     setPOItems(lowStockItems.map(i => ({
       ...i,
-      orderQty: i.unitsPerPack * 5
+      orderQty: 5
     })));
     setPoSearchQuery('');
     setShowPOModal(true);
@@ -409,7 +505,7 @@ const Inventory: React.FC = () => {
   const addToPO = (item: Item) => {
     setPOItems(prev => {
       if (prev.find(p => p.id === item.id)) return prev;
-      return [...prev, { ...item, orderQty: item.unitsPerPack * 5 }];
+      return [...prev, { ...item, orderQty: 5 }];
     });
   };
 
@@ -425,7 +521,7 @@ const Inventory: React.FC = () => {
       categoryId: 0,
       categoryName: '',
       companyName: customItemBrand.trim(),
-      purchaseUnit: 'pack',
+      purchaseUnit: 'unit',
       baseUnit: 'unit',
       unitsPerPack: 1,
       totalPackQuantity: 0,
@@ -535,7 +631,7 @@ const Inventory: React.FC = () => {
 
   return (
     <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 fade-in">
-      <SectionCards cards={kpiCards} />
+      <SectionCards cards={kpiCards} storageKey="inventory" />
 
       <div className="px-4 lg:px-6">
         <div className="flex items-center justify-between mb-6">
@@ -646,7 +742,7 @@ const Inventory: React.FC = () => {
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={editingItem ? t('inventory.refine_ledger') : t('inventory.register_new')} size="xl">
         <form onSubmit={handleSubmit} className="space-y-8">
           {/* Section 1: Primary Identity */}
-          <div className="space-y-5">
+          <div className="space-y-5 rounded-2xl border border-border/60 bg-card/40 p-5 shadow-sm">
             <div className="flex items-center gap-2.5 pb-2.5 border-b border-border/50">
               <Package className="h-4 w-4 text-primary" />
               <h3 className="text-xs font-black uppercase tracking-[0.2em] text-primary">{t('inventory.primary_identity')}</h3>
@@ -659,105 +755,212 @@ const Inventory: React.FC = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('common.category')}</label>
+                {isNewCategory ? (
+                  <div className="flex gap-3">
+                    <Input autoFocus value={newCategoryName} onChange={e => setNewCategoryName(e.target.value)} placeholder={t('inventory.placeholder_category')} className="h-11 text-sm rounded-xl flex-1" />
+                    <Button type="button" variant="ghost" size="icon" className="h-11 w-11 shrink-0 rounded-xl" onClick={() => { setIsNewCategory(false); setNewCategoryName(''); }}>
+                      <X className="h-5 w-5" />
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex gap-3">
+                    <div className="flex-1">
+                      <Select value={formData.categoryId} onValueChange={val => setFormData({...formData, categoryId: val})}>
+                        <SelectTrigger className="h-11 text-sm rounded-xl w-full">
+                          <SelectValue placeholder={t('inventory.classification')} />
+                        </SelectTrigger>
+                        <SelectContent className="rounded-xl">
+                          <SelectItem value="none">{t('inventory.uncategorized')}</SelectItem>
+                          {categories.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Button type="button" variant="outline" size="icon" onClick={() => setIsNewCategory(true)} title={t('common.add')} className="h-11 w-11 shrink-0 rounded-xl">
+                      <Plus className="h-5 w-5 text-muted-foreground" />
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
                 <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.brand')}</label>
                 <Input value={formData.companyName} onChange={e => setFormData({...formData, companyName: e.target.value})} placeholder={t('inventory.placeholder_brand')} className="h-11 text-sm rounded-xl" />
               </div>
-              <div className="space-y-2">
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.quality')}</label>
-                <Input value={formData.qualityGrade} onChange={e => setFormData({...formData, qualityGrade: e.target.value})} placeholder={t('inventory.placeholder_quality')} className="h-11 text-sm rounded-xl" />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="space-y-2">
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.reorder_point')}</label>
-                <Input type="number" min="0" value={formData.reorderPoint} onChange={e => setFormData({...formData, reorderPoint: e.target.value})} className="h-11 text-sm rounded-xl" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.reorder_qty')}</label>
-                <Input type="number" min="0" value={formData.reorderQty} onChange={e => setFormData({...formData, reorderQty: e.target.value})} className="h-11 text-sm rounded-xl" />
-              </div>
-              <div className="space-y-2 flex items-end pb-1">
-                <label className="flex items-center gap-2 text-sm font-semibold cursor-pointer">
-                  <input type="checkbox" checked={formData.autoReorder} onChange={e => setFormData({...formData, autoReorder: e.target.checked})} className="h-4 w-4 rounded border-input" />
-                  {t('inventory.auto_reorder')}
-                </label>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('common.category')}</label>
-              {isNewCategory ? (
-                <div className="flex gap-3">
-                  <Input autoFocus value={newCategoryName} onChange={e => setNewCategoryName(e.target.value)} placeholder={t('inventory.placeholder_category')} className="h-11 text-sm rounded-xl flex-1" />
-                  <Button type="button" variant="ghost" size="icon" className="h-11 w-11 shrink-0 rounded-xl" onClick={() => { setIsNewCategory(false); setNewCategoryName(''); }}>
-                    <X className="h-5 w-5" />
-                  </Button>
-                </div>
-              ) : (
-                <div className="flex gap-3">
-                  <div className="flex-1">
-                    <Select value={formData.categoryId} onValueChange={val => setFormData({...formData, categoryId: val})}>
-                      <SelectTrigger className="h-11 text-sm rounded-xl w-full">
-                        <SelectValue placeholder={t('inventory.classification')} />
-                      </SelectTrigger>
-                      <SelectContent className="rounded-xl">
-                        <SelectItem value="none">{t('inventory.uncategorized')}</SelectItem>
-                        {categories.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <Button type="button" variant="outline" size="icon" onClick={() => setIsNewCategory(true)} title={t('common.add')} className="h-11 w-11 shrink-0 rounded-xl">
-                    <Plus className="h-5 w-5 text-muted-foreground" />
-                  </Button>
-                </div>
-              )}
             </div>
           </div>
 
-          {/* Section 2: Logistics & Unit Packaging */}
-          <div className="space-y-5 pt-2">
+          <div className="space-y-5 rounded-2xl border border-border/60 bg-card/40 p-5 shadow-sm">
+            <div className="flex items-center gap-2.5 pb-2.5 border-b border-border/50">
+              <Camera className="h-4 w-4 text-primary" />
+              <h3 className="text-xs font-black uppercase tracking-[0.2em] text-primary">Photo & Barcode</h3>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {/* Photo upload tile */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.photo', 'Photo')}</label>
+                <div className="flex items-center gap-4 p-3 rounded-xl border border-dashed border-border/60 bg-muted/20">
+                  <input type="file" accept="image/*" className="hidden" ref={fileInputRef} onChange={handlePhotoChange} />
+                  {formData.image && !imageError ? (
+                    <img src={formData.image} className="h-20 w-20 shrink-0 object-cover rounded-lg border border-border/50" onError={() => setImageError(true)} />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="h-20 w-20 shrink-0 rounded-lg bg-muted/50 border border-border/50 flex flex-col items-center justify-center gap-1 hover:border-primary/50 hover:bg-primary/5 transition-colors"
+                    >
+                      <Camera className="h-6 w-6 text-muted-foreground/60" />
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">Add</span>
+                    </button>
+                  )}
+                  <div className="flex flex-col gap-2 min-w-0">
+                    <p className="text-xs text-muted-foreground leading-snug">PNG or JPG, up to a few MB.</p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="outline" type="button" size="sm" className="h-8 px-3 text-xs font-bold rounded-lg" onClick={() => fileInputRef.current?.click()}>
+                        <Camera className="mr-1.5 h-3.5 w-3.5" /> Upload
+                      </Button>
+                      <Button
+                        variant="outline"
+                        type="button"
+                        size="sm"
+                        className="h-8 px-3 text-xs font-bold rounded-lg text-primary border-primary/40 hover:bg-primary/10"
+                        disabled={phoneCaptureBusy}
+                        onClick={async () => {
+                          try {
+                            const phones = (await window.api?.peripheralPhones?.()) || [];
+                            if (!phones.length) {
+                              toast.error('No phone connected. Open Shega on your phone first.');
+                              return;
+                            }
+                            setPhoneCaptureBusy(true);
+                            toast.info('Waiting for the phone — approve the camera request there.');
+                            const res = await window.api!.peripheralCapture(phones[0].deviceId, 'photo');
+                            if (res.dataUrl) {
+                              setImageError(false);
+                              setFormData((f: any) => ({ ...f, image: res.dataUrl! }));
+                              toast.success('Photo attached from phone');
+                            } else {
+                              toast.info('Photo cancelled on the phone.');
+                            }
+                          } catch (err: any) {
+                            if (err?.message !== 'cancelled') toast.error(err?.message || 'Phone capture failed — check the phone connection.');
+                          } finally {
+                            setPhoneCaptureBusy(false);
+                          }
+                        }}
+                      >
+                        <Smartphone className="mr-1.5 h-3.5 w-3.5" />
+                        {phoneCaptureBusy ? 'Waiting for phone… approve there' : 'Use Mobile Camera'}
+                      </Button>
+                      {formData.image && (
+                        <Button variant="ghost" type="button" size="sm" className="h-8 px-3 text-xs font-bold rounded-lg text-destructive hover:bg-destructive/10" onClick={() => { setImageError(false); setFormData({...formData, image: ''}); }}>
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* SKU + Barcode */}
+              <div className="grid grid-cols-1 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.sku', 'SKU')}</label>
+                  <Input value={formData.sku} onChange={e => setFormData({...formData, sku: e.target.value})} placeholder="SKU-0001" className="h-11 text-sm rounded-xl font-mono" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.barcode', 'Barcode')}</label>
+                  <div className="flex gap-2">
+                    <Input value={formData.barcode} onChange={e => setFormData({...formData, barcode: e.target.value})} placeholder="Barcode" className="h-11 text-sm rounded-xl font-mono flex-1 min-w-0" />
+                    <Button variant="outline" type="button" onClick={generateBarcode} className="h-11 px-4 rounded-xl shrink-0 text-xs font-bold uppercase tracking-wider">
+                      Generate
+                    </Button>
+                    {formData.barcode.trim() && (
+                      <Button variant="outline" type="button" onClick={() => downloadBarcode(formData.barcode.trim())} className="h-11 px-4 rounded-xl shrink-0 text-xs font-bold uppercase tracking-wider">
+                        Download
+                      </Button>
+                    )}
+                    <Button variant="outline" type="button" onClick={() => printBarcodeLabel(formData.name || 'Product', formData.sku, formData.barcode.trim() || undefined, parseFloat(formData.baseSellingPrice) || 0, 1)} className="h-11 px-4 rounded-xl shrink-0 text-xs font-bold uppercase tracking-wider">
+                      Print Label
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {editingItem && (
+              <div className="p-4 rounded-xl border border-border/50 bg-muted/20 space-y-3">
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Additional Barcodes</span>
+                <div className="flex gap-2">
+                  <Input value={newBarcode} onChange={e => setNewBarcode(e.target.value)} placeholder="Add barcode..." className="h-10 text-sm rounded-xl flex-1 font-mono" />
+                  <Button variant="outline" type="button" size="sm" onClick={addBarcode} className="h-10 px-4 rounded-xl shrink-0 text-xs font-bold uppercase tracking-wider">Add</Button>
+                </div>
+                {barcodes.length > 0 && (
+                  <div className="space-y-1.5">
+                    {barcodes.map(row => (
+                      <div key={row.id} className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-background border border-border/50">
+                        <span className="text-sm font-mono truncate">{row.barcode}</span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {row.isPrimary ? (
+                            <Badge variant="outline" className="text-[10px]">Primary</Badge>
+                          ) : (
+                            <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" type="button" onClick={() => setBarcodePrimary(row.id)}>Set primary</Button>
+                          )}
+                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" type="button" title="Download barcode image" onClick={() => downloadBarcode(row.barcode)}>
+                            <Download className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" type="button" onClick={() => printBarcodeLabel(editingItem.name, editingItem.sku, row.barcode, editingItem.baseSellingPrice, 1)}>
+                            <PrinterIcon className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive" type="button" onClick={() => removeBarcode(row.id)}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Section 2: Unit & Stock */}
+          <div className="space-y-5 rounded-2xl border border-border/60 bg-card/40 p-5 shadow-sm">
             <div className="flex items-center gap-2.5 pb-2.5 border-b border-border/50">
               <Boxes className="h-4 w-4 text-primary" />
               <h3 className="text-xs font-black uppercase tracking-[0.2em] text-primary">{t('tabs.logistics')} & {t('inventory.stock_ledger')}</h3>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.base_unit')} (Individual)</label>
+                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.base_unit')}</label>
                 <Input value={formData.baseUnit} onChange={e => setFormData({...formData, baseUnit: e.target.value})} placeholder={t('inventory.placeholder_base_unit', 'Piece/Kg')} className="h-11 text-sm rounded-xl" />
               </div>
               <div className="space-y-2">
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.purchase_unit')} (Pack/Bulk)</label>
-                <Input value={formData.purchaseUnit} onChange={e => setFormData({...formData, purchaseUnit: e.target.value})} placeholder={t('inventory.placeholder_purchase_unit', 'Box/Crate')} className="h-11 text-sm rounded-xl" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.qty_per_pack')}</label>
-                <Input type="number" value={formData.unitsPerPack} onChange={e => setFormData({...formData, unitsPerPack: e.target.value})} className="h-11 text-sm font-bold rounded-xl" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.stock_packs')}</label>
-                <Input type="number" value={formData.totalPackQuantity} onChange={e => setFormData({...formData, totalPackQuantity: e.target.value})} className="h-11 text-sm font-bold rounded-xl" />
+                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.stock_ledger')}</label>
+                <Input
+                  type="number"
+                  value={formData.totalBaseQuantity}
+                  onChange={e => setFormData({ ...formData, totalBaseQuantity: e.target.value, totalPackQuantity: e.target.value })}
+                  className="h-11 text-sm font-bold rounded-xl"
+                />
               </div>
             </div>
           </div>
 
           {/* Section 3: Fiscal Configuration & Pricing */}
-          <div className="space-y-5 pt-2">
+          <div className="space-y-5 rounded-2xl border border-border/60 bg-card/40 p-5 shadow-sm">
             <div className="flex items-center gap-2.5 pb-2.5 border-b border-border/50">
               <DollarSign className="h-4 w-4 text-primary" />
               <h3 className="text-xs font-black uppercase tracking-[0.2em] text-primary">{t('inventory.fiscal_config')}</h3>
             </div>
 
             <div className="grid grid-cols-1 gap-6">
-              {/* Base Unit Pricing Block */}
+              {/* Pricing Block */}
               <div className="p-5 rounded-2xl bg-muted/20 border border-border/50 space-y-4">
                 <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                  <span className="text-xs font-black uppercase tracking-wider text-foreground">Base Unit ({formData.baseUnit || 'Unit'})</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-muted-foreground">Sell Base</span>
-                    <Switch checked={formData.allowSellByBaseUnit} onCheckedChange={c => setFormData({...formData, allowSellByBaseUnit: c})} />
-                  </div>
+                  <span className="text-xs font-black uppercase tracking-wider text-foreground">Pricing ({formData.baseUnit || 'Unit'})</span>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
@@ -775,35 +978,12 @@ const Inventory: React.FC = () => {
                 </div>
               </div>
 
-              {/* Pack Unit Pricing Block */}
-              <div className="p-5 rounded-2xl bg-muted/20 border border-border/50 space-y-4">
-                <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                  <span className="text-xs font-black uppercase tracking-wider text-foreground">Pack Unit ({formData.purchaseUnit || 'Pack'})</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-muted-foreground">Sell Pack</span>
-                    <Switch checked={formData.allowSellByPackUnit} onCheckedChange={c => setFormData({...formData, allowSellByPackUnit: c})} />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.pack_cost')}</label>
-                    <Input type="number" value={formData.packPurchasePrice} onChange={e => setFormData({...formData, packPurchasePrice: e.target.value})} disabled={!formData.allowSellByPackUnit} className="h-10 text-sm font-semibold rounded-xl bg-background disabled:opacity-50 disabled:cursor-not-allowed" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.pack_price')}</label>
-                    <Input type="number" value={formData.packSellingPrice} onChange={e => setFormData({...formData, packSellingPrice: e.target.value})} disabled={!formData.allowSellByPackUnit} className="h-10 text-sm font-semibold rounded-xl bg-background disabled:opacity-50 disabled:cursor-not-allowed" />
-                  </div>
-                </div>
-                <div className={`p-3 rounded-xl border flex justify-between items-center text-xs ${formData.allowSellByPackUnit ? 'bg-blue-500/10 border-blue-500/20' : 'bg-muted/30 border-border/40 opacity-50'}`}>
-                  <span className={`font-bold ${formData.allowSellByPackUnit ? 'text-blue-700 dark:text-blue-400' : 'text-muted-foreground'}`}>{t('inventory.pack_profit')}: {t('common.etb')} {packProfit.toLocaleString()}</span>
-                  <Badge variant="outline" className={`text-xs font-bold ${formData.allowSellByPackUnit ? 'bg-blue-500/20 border-blue-500/30 text-blue-700 dark:text-blue-400' : 'text-muted-foreground'}`}>{packMargin}%</Badge>
-                </div>
-              </div>
             </div>
+
           </div>
 
           {/* Section 4: Supplier & Expiry */}
-          <div className="space-y-5 pt-2">
+          <div className="space-y-5 rounded-2xl border border-border/60 bg-card/40 p-5 shadow-sm">
             <div className="flex items-center gap-2.5 pb-2.5 border-b border-border/50">
               <Truck className="h-4 w-4 text-primary" />
               <h3 className="text-xs font-black uppercase tracking-[0.2em] text-primary">{t('inventory.supplier_lifecycle')}</h3>
@@ -812,12 +992,19 @@ const Inventory: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('suppliers.field_name')}</label>
-                <Select value={formData.supplierId ? String(formData.supplierId) : ''} onValueChange={v => setFormData({...formData, supplierId: v})}>
-                  <SelectTrigger className="h-11 text-sm rounded-xl w-full"><SelectValue placeholder={t('suppliers.select_supplier')} /></SelectTrigger>
-                  <SelectContent className="rounded-xl">
-                    {suppliers.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.supplierName}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                {suppliers.length === 0 ? (
+                  <div className="flex items-center gap-2.5 p-3.5 rounded-xl border border-dashed border-border/60 bg-muted/30">
+                    <Truck className="h-4 w-4 shrink-0 text-muted-foreground/60" />
+                    <p className="text-xs text-muted-foreground leading-snug">{t('inventory.no_suppliers', 'No supplier set up yet — add one on the Suppliers page')}</p>
+                  </div>
+                ) : (
+                  <Select value={formData.supplierId ? String(formData.supplierId) : ''} onValueChange={v => setFormData({...formData, supplierId: v})}>
+                    <SelectTrigger className="h-11 text-sm rounded-xl w-full"><SelectValue placeholder={t('suppliers.select_supplier')} /></SelectTrigger>
+                    <SelectContent className="rounded-xl">
+                      {suppliers.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.supplierName}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -834,23 +1021,60 @@ const Inventory: React.FC = () => {
               </div>
             </div>
 
-            <div className="p-4 rounded-xl border border-border/50 bg-muted/20 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <ShieldAlert className="h-5 w-5 text-amber-500 shrink-0" />
+            <div className={`p-4 rounded-xl border flex items-center justify-between transition-colors ${suppliers.length === 0 ? 'border-border/40 bg-muted/10 opacity-50' : 'border-border/50 bg-muted/20'}`}>
+              <div className={`flex items-center gap-3 ${suppliers.length === 0 ? 'pointer-events-none' : ''}`}>
+                <ShieldAlert className={`h-5 w-5 shrink-0 ${suppliers.length === 0 ? 'text-muted-foreground/60' : 'text-amber-500'}`} />
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wider">{t('inventory.credit_purchase')}</p>
                   <p className="text-xs text-muted-foreground mt-0.5">Mark this product stock as acquired under supplier credit terms</p>
                 </div>
               </div>
-              <Switch checked={formData.isCredit} onCheckedChange={c => setFormData({...formData, isCredit: c})} />
+              <Switch checked={formData.isCredit} disabled={suppliers.length === 0} onCheckedChange={c => setFormData({...formData, isCredit: c})} />
             </div>
-          </div>
 
-          {/* Section 5: Operational Notes */}
-          <div className="space-y-2 pt-2">
-            <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('common.operational_notes')}</label>
-            <Textarea value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})} placeholder={t('common.notes_placeholder')} className="h-24 text-sm rounded-xl resize-none" />
-          </div>
+            </div>
+
+          {/* Section 5: Warehouse */}
+          {isModuleEnabled('warehouses') && warehouses.length > 1 && (
+            <div className="space-y-5 rounded-2xl border border-border/60 bg-card/40 p-5 shadow-sm">
+              <div className="flex items-center gap-2.5 pb-2.5 border-b border-border/50">
+                <Warehouse className="h-4 w-4 text-primary" />
+                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-primary">Warehouse</h3>
+              </div>
+
+              <div className="space-y-2">
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.warehouse', 'Warehouse')}</span>
+
+                {warehouses.length === 2 ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {warehouses.map(w => (
+                      <button
+                        key={w.id}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, warehouseId: formData.warehouseId === String(w.id) ? '' : String(w.id) })}
+                        className={`h-10 px-5 rounded-full text-sm font-bold transition-colors ${
+                          formData.warehouseId === String(w.id)
+                            ? 'bg-primary text-primary-foreground shadow-md shadow-primary/25'
+                            : 'bg-background text-muted-foreground border border-border/60 hover:border-primary/50 hover:text-foreground'
+                        }`}
+                      >
+                        {w.name}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <Select value={formData.warehouseId} onValueChange={val => setFormData({...formData, warehouseId: val})}>
+                    <SelectTrigger className="h-11 text-sm rounded-xl w-full">
+                      <SelectValue placeholder={t('inventory.warehouse_none', 'No warehouse')} />
+                    </SelectTrigger>
+                    <SelectContent className="rounded-xl">
+                      {warehouses.map(w => <SelectItem key={w.id} value={String(w.id)}>{w.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Action Buttons */}
           <div className="sticky bottom-0 -mx-6 -mb-6 p-6 bg-background/95 backdrop-blur-md border-t border-border/50 flex gap-4 z-20">
@@ -871,21 +1095,12 @@ const Inventory: React.FC = () => {
                 <h3 className="text-lg font-bold tracking-tight truncate">{viewingItem.name}</h3>
                 <p className="text-xs font-semibold uppercase tracking-[0.1em] text-muted-foreground truncate">{viewingItem.categoryName || t('inventory.general')} • {viewingItem.companyName || t('inventory.no_brand')}</p>
               </div>
-              <Badge variant="outline" className="py-0.5 px-2.5 rounded-full text-xs font-bold uppercase tracking-wider shrink-0">{viewingItem.qualityGrade || t('inventory.standard')}</Badge>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-2 gap-3">
               <div className="p-3.5 rounded-xl border border-border/40 bg-card/50">
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">{t('inventory.base_unit')}</p>
                 <p className="text-sm font-bold">{viewingItem.baseUnit}</p>
-              </div>
-              <div className="p-3.5 rounded-xl border border-border/40 bg-card/50">
-                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">{t('inventory.purchase_unit')}</p>
-                <p className="text-sm font-bold">{viewingItem.purchaseUnit}</p>
-              </div>
-              <div className="p-3.5 rounded-xl border border-border/40 bg-card/50">
-                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">{t('inventory.qty_per_pack')}</p>
-                <p className="text-sm font-bold">{viewingItem.unitsPerPack}</p>
               </div>
               <div className="p-3.5 rounded-xl border border-border/40 bg-card/50">
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">{t('inventory.expiry_date')}</p>
@@ -895,28 +1110,20 @@ const Inventory: React.FC = () => {
 
             <div className="space-y-3">
               <h4 className="text-xs font-bold uppercase tracking-widest text-muted-foreground border-b border-border/50 pb-1.5">{t('inventory.stock_inventory')}</h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-1 gap-3">
                 <div className="flex justify-between items-center p-3.5 rounded-xl bg-primary/5 border border-primary/10">
                   <span className="text-xs font-semibold uppercase tracking-wider">{t('inventory.individual_stock')}</span>
                   <span className="text-base font-bold">{viewingItem.totalBaseQuantity != null ? parseFloat(viewingItem.totalBaseQuantity.toFixed(2)) : 0} {viewingItem.baseUnit}</span>
-                </div>
-                <div className="flex justify-between items-center p-3.5 rounded-xl bg-muted/50 border border-border">
-                  <span className="text-xs font-semibold uppercase tracking-wider">{t('inventory.bulk_stock')}</span>
-                  <span className="text-base font-bold">{viewingItem.totalPackQuantity != null ? parseFloat(viewingItem.totalPackQuantity.toFixed(2)) : 0} {viewingItem.purchaseUnit}</span>
                 </div>
               </div>
             </div>
 
             <div className="space-y-3">
               <h4 className="text-xs font-bold uppercase tracking-widest text-muted-foreground border-b border-border/50 pb-1.5">{t('inventory.valuation')}</h4>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3">
                 <div className="space-y-1">
                   <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.individual_price')}</p>
                   <p className="text-lg font-bold text-primary">{t('common.etb')} {viewingItem.baseSellingPrice.toLocaleString()}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.bulk_price')}</p>
-                  <p className="text-lg font-bold text-primary">{t('common.etb')} {viewingItem.packSellingPrice.toLocaleString()}</p>
                 </div>
               </div>
             </div>
@@ -1214,11 +1421,11 @@ const Inventory: React.FC = () => {
               {restockItem ? `${restockItem.name} — ${t('inventory.restock_description') || 'Enter quantity to add to current stock'}` : ''}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="px-6">
+          <div className="px-6 space-y-4">
             <Input
               type="number"
               min="1"
-              placeholder={t('inventory.restock_quantity_placeholder') || 'Quantity'}
+              placeholder={`${t('inventory.restock_quantity_placeholder') || 'Quantity'}${restockItem?.baseUnit ? ` (${restockItem.baseUnit})` : ''}`}
               value={restockQty}
               onChange={(e) => setRestockQty(e.target.value)}
               className="text-lg font-bold h-12"

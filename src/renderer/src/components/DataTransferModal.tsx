@@ -31,7 +31,7 @@ interface DataTransferModalProps {
 }
 
 type ExportFormat = 'pdf' | 'csv';
-type DataType = 'sales' | 'inventory' | 'expenses' | 'customers' | 'suppliers' | 'shipments' | 'adjustments' | 'orders' | 'contacts' | 'employees' | 'warehouses' | 'supplier-purchases' | 'all';
+type DataType = 'sales' | 'inventory' | 'customers' | 'suppliers' | 'shipments' | 'employees' | 'warehouses' | 'supplier-purchases' | 'all';
 
 interface PreviewData {
   headers: string[];
@@ -42,13 +42,9 @@ interface PreviewData {
 const DATATYPE_OPTIONS: { value: DataType; labelKey: string }[] = [
   { value: 'sales', labelKey: 'data_transfer.sales' },
   { value: 'inventory', labelKey: 'data_transfer.inventory' },
-  { value: 'expenses', labelKey: 'data_transfer.expenses' },
   { value: 'customers', labelKey: 'data_transfer.customers' },
   { value: 'suppliers', labelKey: 'data_transfer.suppliers' },
   { value: 'shipments', labelKey: 'data_transfer.shipments' },
-  { value: 'adjustments', labelKey: 'data_transfer.adjustments' },
-  { value: 'orders', labelKey: 'data_transfer.orders' },
-  { value: 'contacts', labelKey: 'data_transfer.contacts' },
   { value: 'employees', labelKey: 'data_transfer.employees' },
   { value: 'warehouses', labelKey: 'data_transfer.warehouses' },
   { value: 'supplier-purchases', labelKey: 'data_transfer.supplier_purchases' },
@@ -56,7 +52,7 @@ const DATATYPE_OPTIONS: { value: DataType; labelKey: string }[] = [
 ];
 
 const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) => {
-  const { t, formatDate } = useSettings();
+  const { t, formatDate, isModuleEnabled } = useSettings();
   const [step, setStep] = useState<'export' | 'import'>('export');
   const [exportFormat, setExportFormat] = useState<ExportFormat>('csv');
   const [dataType, setDataType] = useState<DataType>('sales');
@@ -72,8 +68,14 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
 
-  const showDateRange = dataType === 'sales' || dataType === 'expenses';
+  const showDateRange = dataType === 'sales';
   const currentSchema = getSchema(importDataType === 'all' ? 'sales' : importDataType);
+  const availableDataTypes = DATATYPE_OPTIONS.filter(opt => {
+    if (opt.value === 'warehouses') return isModuleEnabled('warehouses');
+    if (opt.value === 'shipments') return isModuleEnabled('shipments');
+    if (opt.value === 'customers') return isModuleEnabled('customers');
+    return true;
+  });
 
   useEffect(() => {
     if (open && step === 'import') {
@@ -129,11 +131,14 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
   const handleDownloadTemplate = useCallback((module: string) => {
     const csv = generateCSVTemplate(module);
     if (!csv) return;
+    const storageKey = `template-download-count-${module}`;
+    const next = (parseInt(localStorage.getItem(storageKey) || '0', 10) || 0) + 1;
+    localStorage.setItem(storageKey, String(next));
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `shega-${module}-template.csv`;
+    a.download = `shega-${module}-template-${next}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     toast.success(`Template downloaded for ${module}`);
@@ -173,10 +178,6 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
           rows = await window.api?.getItems(params) || [];
           break;
         }
-        case 'expenses': {
-          rows = await window.api?.getExpenses(params) || [];
-          break;
-        }
         case 'customers': {
           rows = await window.api?.getCustomers() || [];
           break;
@@ -188,18 +189,6 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
         }
         case 'shipments': {
           rows = await window.api?.getShipments(params) || [];
-          break;
-        }
-        case 'adjustments': {
-          rows = await window.api?.getAdjustments(params) || [];
-          break;
-        }
-        case 'orders': {
-          rows = await window.api?.getOrders(params) || [];
-          break;
-        }
-        case 'contacts': {
-          rows = await window.api?.getContacts(params) || [];
           break;
         }
         case 'employees': {
@@ -362,7 +351,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                       <SelectValue placeholder={t('data_transfer.select_type')} />
                     </SelectTrigger>
                     <SelectContent>
-                      {DATATYPE_OPTIONS.map((opt) => (
+                      {availableDataTypes.map((opt) => (
                         <SelectItem key={opt.value} value={opt.value} className="text-xs">
                           {t(opt.labelKey)}
                         </SelectItem>
@@ -432,7 +421,7 @@ const DataTransferModal: React.FC<DataTransferModalProps> = ({ open, onClose }) 
                         <SelectValue placeholder={t('data_transfer.select_type')} />
                       </SelectTrigger>
                       <SelectContent>
-                        {DATATYPE_OPTIONS.filter(o => o.value !== 'all').map((opt) => (
+                        {availableDataTypes.filter(o => o.value !== 'all').map((opt) => (
                           <SelectItem key={opt.value} value={opt.value} className="text-xs">
                             {t(opt.labelKey)}
                           </SelectItem>

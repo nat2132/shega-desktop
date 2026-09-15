@@ -1,17 +1,17 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   Truck, Plus, Search, Phone, Mail, MapPin, Edit, Archive, RotateCcw,
-  Trash2, Eye, Download, Printer, CreditCard,
+  Trash2, Eye, CreditCard,
   Building2, ChevronRight,
   ChevronLeft, RefreshCw, DollarSign,
-  Calendar, TrendingUp, Users, CheckCircle,
-  Clock, Heart, Bell, Ban
+  TrendingUp, Users, CheckCircle,
+  Clock, Heart, Ban
 } from 'lucide-react';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
+import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
+import { MorStatusBadge, MorVerifyAction } from '../components/MorVerification';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel,
   AlertDialogContent, AlertDialogDescription,
@@ -25,8 +25,6 @@ import { Textarea } from '../components/ui/textarea';
 import { DatePicker } from '../components/DatePicker';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import Modal from '../components/Modal';
-import { addPdfHeader } from '../lib/export-utils';
-import { toast } from 'sonner';
 
 const PAYMENT_METHODS = ['cash', 'bank_transfer', 'mobile_money', 'check', 'other'];
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
@@ -67,20 +65,6 @@ interface SupplierActivity {
   entityId: number; createdBy: string; createdAt: string;
 }
 
-interface PriceCheck {
-  id: number;
-  supplierId: number;
-  supplierName: string;
-  itemId?: number;
-  itemName?: string;
-  frequency: string;
-  lastCheckedDate?: string;
-  nextCheckDate?: string;
-  notes?: string;
-  active: boolean;
-  createdAt?: string;
-}
-
 type ViewMode = 'list' | 'detail' | 'form' | 'analytics';
 
 const DEFAULT_FORM = {
@@ -90,7 +74,7 @@ const DEFAULT_FORM = {
 };
 
 const Suppliers: React.FC = () => {
-  const { t, formatDate, currency, currentBusiness } = useSettings();
+  const { t, formatDate, currency } = useSettings();
   const { hasPermission } = useAuth();
   const [view, setView] = useState<ViewMode>('list');
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -117,15 +101,18 @@ const Suppliers: React.FC = () => {
   const [supplierActivity, setSupplierActivity] = useState<SupplierActivity[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const [priceChecks, setPriceChecks] = useState<PriceCheck[]>([]);
-  const [showPriceCheckModal, setShowPriceCheckModal] = useState(false);
-  const [items, setItems] = useState<any[]>([]);
-  const [priceCheckForm, setPriceCheckForm] = useState({
-    supplierId: 0, itemId: '', frequency: 'weekly', notes: '', active: true,
-  });
   const cur = currency || 'ETB';
   const [reversePaymentTarget, setReversePaymentTarget] = useState<Payment | null>(null);
   const [reversePaymentReason, setReversePaymentReason] = useState('');
+  const [supplierVerification, setSupplierVerification] = useState<any>(null);
+
+  useEffect(() => {
+    if (view === 'detail' && selected?.taxNumber) {
+      window.api.morGet(selected.taxNumber).then(setSupplierVerification).catch(() => setSupplierVerification(null));
+    } else {
+      setSupplierVerification(null);
+    }
+  }, [view, selected]);
 
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToastState({ message, type });
@@ -162,21 +149,10 @@ const Suppliers: React.FC = () => {
     } catch (_) {}
   }, []);
 
-  const loadPriceChecks = useCallback(async (supplierId?: number) => {
-    try {
-      const data = await window.api.getSupplierPriceChecks(supplierId);
-      setPriceChecks(data || []);
-    } catch (_) {}
-  }, []);
-
-  const loadItems = useCallback(async () => {
-    try {
-      const data = await window.api.getItems({ limit: 10000 });
-      setItems(data || []);
-    } catch (_) {}
-  }, []);
-
   useEffect(() => { loadSuppliers(); loadDashboardStats(); }, [loadSuppliers, loadDashboardStats]);
+
+  // Live sync: re-query when P2P/Yjs sync lands new data in SQLite.
+  useDataChangedRefresh(() => { loadSuppliers(); loadDashboardStats(); });
   useEffect(() => { setPage(0); }, [search, statusFilter, balanceFilter, sortBy]);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -257,8 +233,6 @@ const Suppliers: React.FC = () => {
       setSelectedSupplierPayments(payments.rows || []);
       setSelectedProducts(products || []);
       setSupplierActivity(activity || []);
-      loadPriceChecks(s.id);
-      loadItems();
       setView('detail');
     } catch (e: any) { showToast(e.message, 'error'); }
   };
@@ -343,87 +317,6 @@ const Suppliers: React.FC = () => {
     } catch (e: any) { showToast(e.message, 'error'); }
   };
 
-  const handleSavePriceCheck = async () => {
-    try {
-      const payload: any = {
-        supplierId: priceCheckForm.supplierId,
-        frequency: priceCheckForm.frequency,
-        notes: priceCheckForm.notes,
-        active: priceCheckForm.active,
-      };
-      if (priceCheckForm.itemId) payload.itemId = Number(priceCheckForm.itemId);
-      const result = await window.api.saveSupplierPriceCheck(payload);
-      if (result.success) {
-        showToast(t('suppliers.toast_price_check_scheduled', 'Price check scheduled'));
-        setShowPriceCheckModal(false);
-        setPriceCheckForm({ supplierId: 0, itemId: '', frequency: 'weekly', notes: '', active: true });
-        if (selected) loadPriceChecks(selected.id);
-        else loadPriceChecks();
-      }
-    } catch (e: any) { showToast(e.message, 'error'); }
-  };
-
-  const handleDeletePriceCheck = async (id: number) => {
-    if (!window.confirm(t('suppliers.confirm_delete_price_check', 'Delete this price check reminder?'))) return;
-    try {
-      await window.api.deleteSupplierPriceCheck(id);
-      showToast(t('suppliers.toast_price_check_deleted', 'Price check deleted'));
-      if (selected) loadPriceChecks(selected.id);
-      else loadPriceChecks();
-    } catch (e: any) { showToast(e.message, 'error'); }
-  };
-
-  const handleTogglePriceCheckActive = async (pc: PriceCheck) => {
-    try {
-      await window.api.saveSupplierPriceCheck({ ...pc, active: !pc.active });
-      if (selected) loadPriceChecks(selected.id);
-      else loadPriceChecks();
-    } catch (e: any) { showToast(e.message, 'error'); }
-  };
-
-  const exportPDF = () => {
-    const doc = new jsPDF();
-    const y0 = addPdfHeader(doc, currentBusiness, 8);
-    let y = y0 + 4;
-    doc.setFontSize(14); doc.setFont('helvetica', 'bold'); doc.text(t('suppliers.pdf_title', 'Suppliers Report'), 14, y); y += 8;
-    doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.text(t('suppliers.pdf_generated', 'Generated') + ': ' + formatDate(new Date()), 14, y);
-    const headers = [[
-      t('suppliers.col_name', 'Name'), t('suppliers.col_company', 'Company'),
-      t('suppliers.col_phone', 'Phone'), t('suppliers.col_total', 'Total Purchases'),
-      t('suppliers.col_outstanding', 'Outstanding'), t('suppliers.col_status', 'Status')
-    ]];
-    const data = suppliers.map(s => [
-      s.supplierName, s.companyName || '-', s.phone || '-',
-      `${cur} ${(s.totalPurchases || 0).toLocaleString()}`,
-      `${cur} ${(s.outstandingBalance || 0).toLocaleString()}`,
-      s.isActive ? t('suppliers.status_active', 'Active') : t('suppliers.status_inactive', 'Inactive')
-    ]);
-    autoTable(doc, { head: headers, body: data, startY: y + 4, styles: { fontSize: 8 } });
-    doc.save('suppliers-report.pdf');
-    showToast(t('suppliers.toast_pdf_exported', 'PDF exported'));
-    toast.success(t('suppliers.toast_report_exported', 'Report exported successfully'));
-  };
-
-  const exportCSV = () => {
-    const headers = [
-      t('suppliers.col_name', 'Name'), t('suppliers.col_company', 'Company'),
-      t('suppliers.col_phone', 'Phone'), t('suppliers.col_email', 'Email'),
-      t('suppliers.col_total', 'Total Purchases'), t('suppliers.col_outstanding', 'Outstanding'),
-      t('suppliers.col_status', 'Status')
-    ];
-    const rows = suppliers.map(s => [
-      s.supplierName, s.companyName || '', s.phone || '', s.email || '',
-      s.totalPurchases || 0, s.outstandingBalance || 0,
-      s.isActive ? t('suppliers.status_active', 'Active') : t('suppliers.status_inactive', 'Inactive')
-    ]);
-    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'suppliers.csv'; a.click();
-    URL.revokeObjectURL(url);
-    showToast(t('suppliers.toast_csv_exported', 'CSV exported'));
-  };
-
   const toggleSelectAll = () => {
     if (selectedIds.length === paged.length) setSelectedIds([]);
     else setSelectedIds(paged.map(s => s.id));
@@ -455,15 +348,6 @@ const Suppliers: React.FC = () => {
             <p className="text-sm text-muted-foreground">{t('suppliers.subtitle')}</p>
           </div>
           <div className="flex gap-2 flex-wrap">
-            <Button variant="outline" size="sm" onClick={exportPDF}>
-              <Download className="h-4 w-4 mr-1" />{t('suppliers.export_pdf', 'PDF')}
-            </Button>
-            <Button variant="outline" size="sm" onClick={exportCSV}>
-              <Printer className="h-4 w-4 mr-1" />{t('suppliers.export_csv', 'CSV')}
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => { loadItems(); setPriceCheckForm({ supplierId: 0, itemId: '', frequency: 'weekly', notes: '', active: true }); setShowPriceCheckModal(true); }}>
-              <Bell className="h-4 w-4 mr-1" />{t('suppliers.price_checks', 'Price Checks')}
-            </Button>
             <Button size="sm" onClick={() => openForm()}>
               <Plus className="h-4 w-4 mr-1" />{t('suppliers.add_supplier')}
             </Button>
@@ -654,10 +538,6 @@ const Suppliers: React.FC = () => {
                 <Input value={form.companyName} onChange={e => setForm({ ...form, companyName: e.target.value })} />
               </div>
               <div>
-                <label className="text-sm font-medium">{t('suppliers.field_contact')}</label>
-                <Input value={form.contactPerson} onChange={e => setForm({ ...form, contactPerson: e.target.value })} />
-              </div>
-              <div>
                 <label className="text-sm font-medium">{t('suppliers.field_phone')} *</label>
                 <Input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder={t('suppliers.phone_placeholder', '+251...')} />
               </div>
@@ -669,21 +549,9 @@ const Suppliers: React.FC = () => {
                 <label className="text-sm font-medium">{t('suppliers.field_email')}</label>
                 <Input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} />
               </div>
-              <div>
-                <label className="text-sm font-medium">{t('suppliers.field_tax')}</label>
-                <Input value={form.taxNumber} onChange={e => setForm({ ...form, taxNumber: e.target.value })} />
-              </div>
-              <div>
-                <label className="text-sm font-medium">{t('suppliers.field_city')}</label>
-                <Input value={form.city} onChange={e => setForm({ ...form, city: e.target.value })} />
-              </div>
               <div className="md:col-span-2">
                 <label className="text-sm font-medium">{t('suppliers.field_address')}</label>
                 <textarea className="w-full border rounded px-3 py-2 bg-background min-h-[60px]" value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} />
-              </div>
-              <div className="md:col-span-2">
-                <label className="text-sm font-medium">{t('suppliers.field_notes')}</label>
-                <textarea className="w-full border rounded px-3 py-2 bg-background min-h-[60px]" value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} />
               </div>
             </div>
             <div className="flex gap-2 justify-end">
@@ -741,18 +609,30 @@ const Suppliers: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card className="p-4 space-y-2">
             <h3 className="font-semibold flex items-center gap-2"><Building2 className="h-4 w-4" />{t('suppliers.section_info')}</h3>
-            <div className="text-sm space-y-1.5">
-              <div><span className="text-muted-foreground">{t('suppliers.field_company')}:</span> {selected.companyName || '-'}</div>
-              <div><span className="text-muted-foreground">{t('suppliers.field_contact')}:</span> {selected.contactPerson || '-'}</div>
-              <div className="flex items-center gap-1"><Phone className="h-3 w-3 text-muted-foreground" /> {selected.phone || '-'}</div>
-              {selected.secondaryPhone && <div className="flex items-center gap-1"><Phone className="h-3 w-3 text-muted-foreground" /> {selected.secondaryPhone}</div>}
-              <div className="flex items-center gap-1"><Mail className="h-3 w-3 text-muted-foreground" /> {selected.email || '-'}</div>
-              <div className="flex items-start gap-1"><MapPin className="h-3 w-3 mt-0.5 text-muted-foreground" /> {[selected.address, selected.city, selected.country].filter(Boolean).join(', ') || '-'}</div>
-              <div><span className="text-muted-foreground">{t('suppliers.field_tax')}:</span> {selected.taxNumber || '-'}</div>
-              <div><span className="text-muted-foreground">{t('suppliers.field_terms')}:</span> {selected.paymentTerms || '-'}</div>
-              <div><span className="text-muted-foreground">{t('suppliers.field_credit')}:</span> {cur} {(selected.creditLimit || 0).toLocaleString()}</div>
-              {selected.notes && <div className="pt-2 border-t text-muted-foreground italic">{selected.notes}</div>}
-            </div>
+<div className="text-sm space-y-1.5">
+                <div><span className="text-muted-foreground">{t('suppliers.field_company')}:</span> {selected.companyName || '-'}</div>
+                <div><span className="text-muted-foreground">{t('suppliers.field_contact')}:</span> {selected.contactPerson || '-'}</div>
+                <div className="flex items-center gap-1"><Phone className="h-3 w-3 text-muted-foreground" /> {selected.phone || '-'}</div>
+                {selected.secondaryPhone && <div className="flex items-center gap-1"><Phone className="h-3 w-3 text-muted-foreground" /> {selected.secondaryPhone}</div>}
+                <div className="flex items-center gap-1"><Mail className="h-3 w-3 text-muted-foreground" /> {selected.email || '-'}</div>
+                <div className="flex items-start gap-1"><MapPin className="h-3 w-3 mt-0.5 text-muted-foreground" /> {[selected.address, selected.city, selected.country].filter(Boolean).join(', ') || '-'}</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-muted-foreground">{t('suppliers.field_tax')}:</span> {selected.taxNumber || '-'}
+                  {selected.taxNumber && (
+                    <>
+                      <MorStatusBadge verification={supplierVerification} />
+                      <MorVerifyAction
+                        tin={selected.taxNumber}
+                        onResult={(v) => setSupplierVerification(v)}
+                        label="Verify with MoR"
+                      />
+                    </>
+                  )}
+                </div>
+                <div><span className="text-muted-foreground">{t('suppliers.field_terms')}:</span> {selected.paymentTerms || '-'}</div>
+                <div><span className="text-muted-foreground">{t('suppliers.field_credit')}:</span> {cur} {(selected.creditLimit || 0).toLocaleString()}</div>
+                {selected.notes && <div className="pt-2 border-t text-muted-foreground italic">{selected.notes}</div>}
+              </div>
           </Card>
 
           <div className="lg:col-span-2 grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -973,55 +853,6 @@ const Suppliers: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* Price Checks */}
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm flex items-center gap-2"><Bell className="h-4 w-4" />{t('suppliers.price_checks', 'Price Checks')} ({priceChecks.length})</CardTitle>
-              <Button size="sm" onClick={() => { setPriceCheckForm({ supplierId: selected.id, itemId: '', frequency: 'weekly', notes: '', active: true }); setShowPriceCheckModal(true); }}>
-                <Plus className="h-4 w-4 mr-1" />{t('suppliers.schedule', 'Schedule')}
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {priceChecks.length === 0 ? (
-              <div className="text-sm text-muted-foreground py-4 text-center">{t('suppliers.no_price_checks', 'No price check reminders scheduled')}</div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {priceChecks.map(pc => (
-                  <div key={pc.id} className="rounded-3xl border border-border bg-card p-4 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-semibold text-sm">{pc.itemName || t('suppliers.label_all_items', 'All Items')}</h4>
-                      <button onClick={() => handleTogglePriceCheckActive(pc)} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${pc.active ? 'bg-green-600' : 'bg-muted'}`}>
-                        <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${pc.active ? 'translate-x-[18px]' : 'translate-x-[3px]'}`} />
-                      </button>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-widest">
-                      <Calendar className="h-3 w-3" />{pc.frequency}
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div>
-                        <span className="text-muted-foreground uppercase tracking-widest">{t('suppliers.label_last', 'Last')}</span>
-                        <p>{pc.lastCheckedDate ? formatDate(pc.lastCheckedDate) : t('suppliers.label_never', 'Never')}</p>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground uppercase tracking-widest">{t('suppliers.label_next', 'Next')}</span>
-                        <p>{pc.nextCheckDate ? formatDate(pc.nextCheckDate) : t('suppliers.label_na', 'N/A')}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between pt-1">
-                      <span className="text-xs text-muted-foreground">{pc.supplierName}</span>
-                      <Button size="sm" variant="ghost" onClick={() => handleDeletePriceCheck(pc.id)} className="h-7 w-7 p-0">
-                        <Trash2 className="h-3.5 w-3.5 text-red-500" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
         {/* Activity Timeline */}
         {supplierActivity.length > 0 && (
           <Card>
@@ -1094,65 +925,6 @@ const Suppliers: React.FC = () => {
               <div className="flex gap-2 justify-end">
                 <Button variant="outline" onClick={() => { setShowPaymentModal(false); setEditingPayment(null); }}>{t('common.cancel')}</Button>
                 <Button onClick={handleSavePayment}>{t('common.save')}</Button>
-              </div>
-            </div>
-          </Modal>
-        )}
-
-        {/* Price Check Schedule Modal */}
-        {showPriceCheckModal && (
-          <Modal isOpen={showPriceCheckModal} title={t('suppliers.price_check_title', 'Schedule Price Check')} onClose={() => setShowPriceCheckModal(false)}>
-            <div className="space-y-4 min-w-[420px]">
-              <div>
-                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">{t('suppliers.select_supplier', 'Supplier')}</label>
-                {selected ? (
-                  <div className="border rounded px-3 py-2 bg-background text-sm mt-1">{selected.supplierName}</div>
-                ) : (
-                  <select className="w-full border rounded px-2 py-1.5 bg-background text-sm mt-1"
-                    value={priceCheckForm.supplierId}
-                    onChange={e => setPriceCheckForm({ ...priceCheckForm, supplierId: Number(e.target.value) })}>
-                    <option value={0}>{t('suppliers.select_supplier', 'Select supplier')}</option>
-                    {suppliers.map(s => (
-                      <option key={s.id} value={s.id}>{s.supplierName}</option>
-                    ))}
-                  </select>
-                )}
-              </div>
-              <div>
-                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">{t('suppliers.item_optional', 'Item (optional)')}</label>
-                <select className="w-full border rounded px-2 py-1.5 bg-background text-sm mt-1"
-                  value={priceCheckForm.itemId}
-                  onChange={e => setPriceCheckForm({ ...priceCheckForm, itemId: e.target.value })}>
-                  <option value="">{t('suppliers.label_all_items', 'All items')}</option>
-                  {items.map((item: any) => (
-                    <option key={item.id} value={item.id}>{item.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">{t('suppliers.frequency', 'Frequency')}</label>
-                <select className="w-full border rounded px-2 py-1.5 bg-background text-sm mt-1"
-                  value={priceCheckForm.frequency}
-                  onChange={e => setPriceCheckForm({ ...priceCheckForm, frequency: e.target.value })}>
-                  <option value="weekly">{t('suppliers.weekly', 'Weekly')}</option>
-                  <option value="biweekly">{t('suppliers.biweekly', 'Bi-weekly')}</option>
-                  <option value="monthly">{t('suppliers.monthly', 'Monthly')}</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-sm font-medium uppercase tracking-widest text-muted-foreground">{t('suppliers.field_notes', 'Notes')}</label>
-                <textarea className="w-full border rounded px-2 py-1.5 bg-background min-h-[60px] text-sm mt-1"
-                  value={priceCheckForm.notes}
-                  onChange={e => setPriceCheckForm({ ...priceCheckForm, notes: e.target.value })} />
-              </div>
-              <div className="flex items-center gap-2">
-                <input type="checkbox" id="pc-active" checked={priceCheckForm.active}
-                  onChange={e => setPriceCheckForm({ ...priceCheckForm, active: e.target.checked })} />
-                <label htmlFor="pc-active" className="text-sm">{t('common.active', 'Active')}</label>
-              </div>
-              <div className="flex gap-2 justify-end">
-                <Button variant="outline" onClick={() => setShowPriceCheckModal(false)}>{t('common.cancel', 'Cancel')}</Button>
-                <Button onClick={handleSavePriceCheck}>{t('common.save', 'Save')}</Button>
               </div>
             </div>
           </Modal>

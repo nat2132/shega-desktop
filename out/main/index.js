@@ -1,4 +1,26 @@
 "use strict";
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from2, except, desc) => {
+  if (from2 && typeof from2 === "object" || typeof from2 === "function") {
+    for (let key of __getOwnPropNames(from2))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from2[key], enumerable: !(desc = __getOwnPropDesc(from2, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 const fs = require("fs");
 const electron = require("electron");
@@ -9,10 +31,11 @@ const electronUpdater = require("electron-updater");
 const zod = require("zod");
 const net = require("net");
 const http = require("http");
+const events = require("events");
 const os = require("os");
 const bonjourService = require("bonjour-service");
-const events = require("events");
 const ws = require("ws");
+const node_crypto = require("node:crypto");
 const QRCode = require("qrcode");
 function _interopNamespaceDefault(e) {
   const n = Object.create(null, { [Symbol.toStringTag]: { value: "Module" } });
@@ -32,6 +55,34 @@ function _interopNamespaceDefault(e) {
 }
 const fs__namespace = /* @__PURE__ */ _interopNamespaceDefault(fs);
 const path__namespace = /* @__PURE__ */ _interopNamespaceDefault(path);
+const VOID_REASONS = [
+  { value: "wrong_item", label: "Wrong item sold" },
+  { value: "wrong_quantity", label: "Wrong quantity" },
+  { value: "wrong_price", label: "Wrong price applied" },
+  { value: "duplicate_sale", label: "Duplicate / double-charge" },
+  { value: "customer_request", label: "Customer request" },
+  { value: "payment_error", label: "Payment error" },
+  { value: "fraud_suspected", label: "Fraud suspected" },
+  { value: "other", label: "Other" }
+];
+const RETURN_REASONS = [
+  { value: "defective", label: "Defective / damaged" },
+  { value: "wrong_item", label: "Wrong item received" },
+  { value: "wrong_qty", label: "Wrong quantity" },
+  { value: "exchange", label: "Exchange / swap" },
+  { value: "customer_request", label: "Customer request" },
+  { value: "expired", label: "Expired product" },
+  { value: "other", label: "Other" }
+];
+const OVERRIDE_REASONS = [
+  { value: "customer_discount", label: "Customer loyalty discount" },
+  { value: "damaged_discount", label: "Damaged / display item" },
+  { value: "price_match", label: "Price match" },
+  { value: "clearance", label: "Clearance / promotion" },
+  { value: "manager_decision", label: "Manager decision" },
+  { value: "error_correction", label: "Pricing error correction" },
+  { value: "other", label: "Other" }
+];
 const DEFAULT_DISCOUNT_CAPS = {
   owner: null,
   manager: null,
@@ -41,10 +92,17 @@ const DEFAULT_DISCOUNT_CAPS = {
   reports: 10,
   warehouse: 10
 };
+const DISCOUNT_OVERRIDE_CEILING = 100;
+const DISCOUNT_APPROVED_MAX_PERCENT = 100;
 function getDiscountCap(role) {
   if (!role) return DEFAULT_DISCOUNT_CAPS.cashier;
   const cap = DEFAULT_DISCOUNT_CAPS[role];
   return cap === void 0 ? DEFAULT_DISCOUNT_CAPS.cashier : cap;
+}
+function exceedsDiscountCap(role, discountPercent) {
+  const cap = getDiscountCap(role);
+  if (cap === null) return false;
+  return discountPercent > cap;
 }
 const PERMISSION_CATALOG = [
   // ---- Sales / POS ----
@@ -113,6 +171,27 @@ const PERMISSION_CATALOG = [
 const PERMISSION_BY_KEY = Object.fromEntries(
   PERMISSION_CATALOG.map((p) => [p.key, p])
 );
+const SCOPE_LABELS = {
+  sales: "Sales & POS",
+  products: "Products & Catalog",
+  inventory: "Inventory & Stock",
+  customers: "Customers",
+  payments: "Payments & Finance",
+  registers: "Registers",
+  reports: "Reports",
+  team: "Team & Staff",
+  devices: "Devices",
+  settings: "Settings",
+  tax: "Tax",
+  subscription: "Subscription",
+  ownership: "Ownership"
+};
+function getPermissionDef(key) {
+  return PERMISSION_BY_KEY[key];
+}
+function permissionsForScope(scope) {
+  return PERMISSION_CATALOG.filter((p) => p.scope === scope);
+}
 function unpack(value) {
   if (value === true) return { allowed: true };
   if (value === "approval") return { allowed: false, reason: "approval-required" };
@@ -128,6 +207,16 @@ function checkPermission(ctx, key) {
 }
 function can(ctx, key) {
   return checkPermission(ctx, key).allowed;
+}
+function requiresApproval(ctx, key) {
+  const r = checkPermission(ctx, key);
+  return !r.allowed && r.reason === "approval-required";
+}
+function isValidPermissionKey(key) {
+  return key in PERMISSION_BY_KEY;
+}
+function describePermission(key) {
+  return PERMISSION_BY_KEY[key];
 }
 function mergePermissionSets(base, overrides) {
   const out = {};
@@ -145,6 +234,7 @@ const ROLE_ORDER = [
   "reports",
   "warehouse"
 ];
+const SURFACED_BUILTIN_ROLES = ["owner", "cashier"];
 const DEFAULT_ROLE_SETS = {
   // ðŸ‘‘ Owner â€” full control over everything.
   owner: {
@@ -434,12 +524,8053 @@ const BUILTIN_ROLES = ROLE_ORDER.map((key) => ({
 function getBuiltinRole(key) {
   return BUILTIN_ROLES.find((r) => r.builtinKey === key);
 }
+function getRoleName(key) {
+  const builtin = getBuiltinRole(key);
+  if (builtin) return builtin.name;
+  return key;
+}
+function detectSymbology(value) {
+  const v = value.trim();
+  if (/^\d{13}$/.test(v)) return "ean13";
+  if (/^\d{12}$/.test(v)) return "upca";
+  if (/^\d{8}$/.test(v)) return "ean8";
+  if (/^\d{6,8}$/.test(v) && v.length === 8 && isValidUpceCheck()) ;
+  if (/^[0-9A-Z\-. $/+%]+$/.test(v) && v.length <= 12) return "code39";
+  return "code128";
+}
+function isValidUpceCheck(_v) {
+  return false;
+}
+const L = {
+  "0": "0001101",
+  "1": "0011001",
+  "2": "0010011",
+  "3": "0111101",
+  "4": "0100011",
+  "5": "0110001",
+  "6": "0101111",
+  "7": "0111011",
+  "8": "0110111",
+  "9": "0001011"
+};
+const G = {
+  "0": "0100111",
+  "1": "0110011",
+  "2": "0011011",
+  "3": "0100001",
+  "4": "0011101",
+  "5": "0111001",
+  "6": "0000101",
+  "7": "0010001",
+  "8": "0001001",
+  "9": "0010111"
+};
+const R = Object.fromEntries(
+  Object.entries(L).map(([d, p]) => [d, p.split("").map((b) => b === "1" ? "0" : "1").join("")])
+);
+const EAN13_PARITY = ["000000", "001011", "001101", "001110", "010011", "011001", "011100", "010101", "010110", "011010"];
+function upceToUpca(v) {
+  let ns = "0";
+  let six = v;
+  if (v.length >= 7) {
+    ns = v[0];
+    six = v.slice(1, 7);
+  }
+  if (v.length === 8) six = v.slice(1, 7);
+  const [a1, a2, a3, a4, a5, a6] = six.split("");
+  let mfg;
+  let item;
+  if (a6 >= "5" && a6 <= "9") {
+    mfg = a1 + a2 + a6;
+    item = "0000" + a3 + a4 + a5;
+  } else if (a3 === "0" || a3 === "1" || a3 === "2") {
+    mfg = a1 + a2 + a3;
+    item = "00" + a4 + a5 + a6;
+  } else if (a4 === "0") {
+    mfg = a1 + a2 + a3 + a4;
+    item = "000" + a5 + a6;
+  } else {
+    mfg = a1 + a2 + a3 + a4 + a5;
+    item = "0000" + a6;
+  }
+  return ns + mfg + item;
+}
+function mod10Check(digits) {
+  let sum = 0;
+  const rev = digits.split("").reverse();
+  for (let i = 0; i < rev.length; i++) sum += Number(rev[i]) * (i % 2 === 0 ? 3 : 1);
+  return String((10 - sum % 10) % 10);
+}
+function ean13Pattern(digits13) {
+  let bits = "101";
+  const parity = EAN13_PARITY[Number(digits13[0])];
+  for (let i = 1; i <= 6; i++) {
+    const useG = parity[i - 1] === "1";
+    bits += useG ? G[digits13[i]] : L[digits13[i]];
+  }
+  bits += "01010";
+  for (let i = 7; i <= 12; i++) bits += R[digits13[i]];
+  bits += "101";
+  return bits;
+}
+function ean8Pattern(digits8) {
+  let bits = "101";
+  for (let i = 0; i < 4; i++) bits += L[digits8[i]];
+  bits += "01010";
+  for (let i = 4; i < 8; i++) bits += R[digits8[i]];
+  bits += "101";
+  return bits;
+}
+const CODE128_PATTERNS = [
+  "11011001100",
+  "11001101100",
+  "11001100110",
+  "10010011000",
+  "10010001100",
+  "10001001100",
+  "10011001000",
+  "10011000100",
+  "10001100100",
+  "11001001000",
+  "11001000100",
+  "11000100100",
+  "10110011100",
+  "10011011100",
+  "10011001110",
+  "10111001100",
+  "10011101100",
+  "10011100110",
+  "11001110010",
+  "11001011100",
+  "11001001110",
+  "11011100100",
+  "11001110100",
+  "11101101110",
+  "11101001100",
+  "11100101100",
+  "11100100110",
+  "11101100100",
+  "11100110100",
+  "11100110010",
+  "11011011000",
+  "11011000110",
+  "11000110110",
+  "10100011000",
+  "10001011000",
+  "10001000110",
+  "10110001000",
+  "10001101000",
+  "10001100010",
+  "11010001000",
+  "11000101000",
+  "11000100010",
+  "10110111000",
+  "10110001110",
+  "10001101110",
+  "10111011000",
+  "10111000110",
+  "10001110110",
+  "11101110110",
+  "11010001110",
+  "11000101110",
+  "11011101000",
+  "11011100010",
+  "11011101110",
+  "11101011000",
+  "11101000110",
+  "11100010110",
+  "11101101000",
+  "11101100010",
+  "11100011010",
+  "11101111010",
+  "11001000010",
+  "11110001010",
+  "10100110000",
+  "10100001100",
+  "10010110000",
+  "10010000110",
+  "10000110100",
+  "10000110010",
+  "11000010010",
+  "11001010000",
+  "11110111010",
+  "11000010100",
+  "10001111010",
+  "10100111100",
+  "10010111100",
+  "10010011110",
+  "10111100100",
+  "10011110100",
+  "10011110010",
+  "11110100100",
+  "11110010100",
+  "11110010010",
+  "11011011110",
+  "11011110110",
+  "11110110110",
+  "10101111000",
+  "10100011110",
+  "10001011110",
+  "10111101000",
+  "10111100010",
+  "11110101000",
+  "11110100010",
+  "10111011110",
+  "10111101110",
+  "11101011110",
+  "11110101110",
+  "11010000100",
+  "11010010000",
+  "11010011100",
+  "11000111010"
+];
+function code128Pattern(value) {
+  const codes = [104];
+  let i = 0;
+  const isDigits = (s) => /^\d+$/.test(s);
+  while (i < value.length) {
+    if (isDigits(value[i]) && isDigits(value[i + 1] ?? "")) {
+      let run = "";
+      let j = i;
+      while (j < value.length && isDigits(value[j])) {
+        run += value[j];
+        j++;
+      }
+      codes.push(99);
+      let k = 0;
+      while (k + 1 < run.length) {
+        codes.push(Number(run.slice(k, k + 2)));
+        k += 2;
+      }
+      if (k < run.length) {
+        codes.push(100);
+        codes.push(run.charCodeAt(k) - 32);
+      }
+      i = j;
+    } else {
+      codes.push(value.charCodeAt(i) - 32);
+      i++;
+    }
+  }
+  let sum = codes[0];
+  for (let k = 1; k < codes.length; k++) sum += codes[k] * k;
+  codes.push(sum % 103);
+  codes.push(106);
+  return codes.map((c) => CODE128_PATTERNS[c]).join("") + "11";
+}
+const CODE39_PATTERNS = {
+  "0": "101001101101",
+  "1": "110100101011",
+  "2": "101100101011",
+  "3": "110110010101",
+  "4": "101001101011",
+  "5": "110100110101",
+  "6": "101100110101",
+  "7": "101001011011",
+  "8": "110100101101",
+  "9": "101100101101",
+  "A": "110101001011",
+  "B": "101101001011",
+  "C": "110110100101",
+  "D": "101011001011",
+  "E": "110101100101",
+  "F": "101101100101",
+  "G": "101010011011",
+  "H": "110101001101",
+  "I": "101101001101",
+  "J": "101011001101",
+  "K": "110101010011",
+  "L": "101101010011",
+  "M": "110110101001",
+  "N": "101011010011",
+  "O": "110101101001",
+  "P": "101101101001",
+  "Q": "101010110011",
+  "R": "110101011001",
+  "S": "101101011001",
+  "T": "101011011001",
+  "U": "110010101011",
+  "V": "100110101011",
+  "W": "110011010101",
+  "X": "100101101011",
+  "Y": "110010110101",
+  "Z": "100110110101",
+  "-": "100101011011",
+  ".": "110010101101",
+  " ": "100110101101",
+  "$": "100100100101",
+  "/": "100100101001",
+  "+": "100101001001",
+  "%": "101001001001",
+  "*": "100101101101"
+};
+function code39Pattern(value) {
+  const chars = ("*" + value.toUpperCase() + "*").split("");
+  return chars.map((c) => CODE39_PATTERNS[c] ?? CODE39_PATTERNS["-"]).join("0");
+}
+function barcodeModules(value, symbology) {
+  const v = value.trim();
+  const sym = symbology ?? detectSymbology(v);
+  try {
+    switch (sym) {
+      case "ean13": {
+        let d = v;
+        if (d.length === 13) {
+          const check = mod10Check(d.slice(0, 12));
+          if (check !== d[12]) d = d.slice(0, 12) + check;
+        } else if (d.length === 12) d += mod10Check(d);
+        else return null;
+        return { bits: ean13Pattern(d), symbology: "ean13" };
+      }
+      case "upca": {
+        const d = "0" + v;
+        return { bits: ean13Pattern(d), symbology: "upca" };
+      }
+      case "upce": {
+        const upca = upceToUpca(v) + mod10Check(upceToUpca(v));
+        return { bits: ean13Pattern("0" + upca.slice(1, 12)), symbology: "upce" };
+      }
+      case "ean8": {
+        let d = v;
+        if (d.length === 8) {
+          const check = mod10Check(d.slice(0, 7));
+          if (check !== d[7]) d = d.slice(0, 7) + check;
+        } else if (d.length === 7) d += mod10Check(d);
+        else return null;
+        return { bits: ean8Pattern(d), symbology: "ean8" };
+      }
+      case "code128":
+        return { bits: code128Pattern(v), symbology: "code128" };
+      case "code39":
+        return { bits: code39Pattern(v), symbology: "code39" };
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+function crc32(buf) {
+  let c = -1;
+  for (let i = 0; i < buf.length; i++) {
+    c ^= buf[i];
+    for (let k = 0; k < 8; k++) c = c >>> 1 ^ 3988292384 & -(c & 1);
+  }
+  return ~c >>> 0;
+}
+function chunk(type, data) {
+  const out = new Uint8Array(12 + data.length);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, data.length);
+  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+  out.set(data, 8);
+  view.setUint32(8 + data.length, crc32(out.subarray(8, 8 + data.length)));
+  return out;
+}
+function adler32(data) {
+  let a = 1, b = 0;
+  for (let i = 0; i < data.length; i++) {
+    a = (a + data[i]) % 65521;
+    b = (b + a) % 65521;
+  }
+  return (b << 16 | a) >>> 0;
+}
+function zlibStore(data) {
+  const out = new Uint8Array(6 + data.length + Math.ceil(data.length / 65535) * 5);
+  out[0] = 120;
+  out[1] = 1;
+  let pos = 2;
+  if (data.length === 0) {
+    out[pos++] = 1;
+    out[pos++] = 0;
+    out[pos++] = 0;
+    out[pos++] = 255;
+    out[pos++] = 255;
+  } else {
+    for (let i = 0; i < data.length; i += 65535) {
+      const block = data.subarray(i, Math.min(i + 65535, data.length));
+      const last2 = i + 65535 >= data.length ? 1 : 0;
+      out[pos++] = last2;
+      out[pos++] = block.length & 255;
+      out[pos++] = block.length >> 8 & 255;
+      out[pos++] = ~block.length & 255;
+      out[pos++] = ~block.length >> 8 & 255;
+      out.set(block, pos);
+      pos += block.length;
+    }
+  }
+  const view = new DataView(out.buffer);
+  view.setUint32(pos, adler32(data));
+  return out.subarray(0, pos + 4);
+}
+function barcodePng(value, symbology, opts = {}) {
+  const mod = barcodeModules(value, symbology);
+  if (!mod) return null;
+  const moduleWidth = Math.max(1, opts.moduleWidth ?? 2);
+  const heightPx = Math.max(20, opts.heightPx ?? 120);
+  const quiet = Math.max(2, opts.quietZoneModules ?? 8);
+  const showText = opts.showText !== false;
+  const textHeight = opts.textHeight ?? 24;
+  const textGap = showText ? 6 : 0;
+  const totalModules = mod.bits.length + quiet * 2;
+  const widthPx = totalModules * moduleWidth;
+  const imgHeight = heightPx + (showText ? textHeight + textGap : 0);
+  const bytesPerRow = Math.ceil(widthPx / 8);
+  const raw = new Uint8Array((bytesPerRow + 1) * imgHeight);
+  const setPx = (row, x, black) => {
+    const byte = x >> 3;
+    row[1 + byte] |= 128 >> (x & 7);
+  };
+  for (let y = 0; y < heightPx; y++) {
+    const row = raw.subarray(y * (bytesPerRow + 1), (y + 1) * (bytesPerRow + 1));
+    row[0] = 0;
+    for (let m = 0; m < totalModules; m++) {
+      const srcIdx = m - quiet;
+      const bar = srcIdx >= 0 && srcIdx < mod.bits.length && mod.bits[srcIdx] === "1";
+      if (!bar) continue;
+      for (let px = m * moduleWidth; px < (m + 1) * moduleWidth; px++) setPx(row, px);
+    }
+  }
+  if (showText) {
+    const digits = value.replace(/[^0-9A-Za-z\-. ]/g, "").slice(0, 20);
+    if (digits.length > 0) {
+      const charW = Math.floor(widthPx / digits.length);
+      const rowStart = heightPx + textGap;
+      const font = tinyFont5x7();
+      for (let y = 0; y < Math.min(textHeight, 21); y++) {
+        const row = raw.subarray((rowStart + y) * (bytesPerRow + 1), (rowStart + y + 1) * (bytesPerRow + 1));
+        row[0] = 0;
+        for (let d = 0; d < digits.length; d++) {
+          const glyph = font[digits[d]] ?? font[" "];
+          const scale = Math.max(1, Math.floor(Math.min(charW / 5, textHeight / 7)));
+          for (let gy = 0; gy < 7; gy++) {
+            if (y < gy * scale || y >= (gy + 1) * scale) continue;
+            for (let gx = 0; gx < 5; gx++) {
+              if (glyph[gy][gx] !== "1") continue;
+              const baseX = d * charW + Math.floor((charW - 5 * scale) / 2);
+              for (let sx = 0; sx < scale && baseX + gx * scale + sx < widthPx; sx++) {
+                setPx(row, baseX + gx * scale + sx);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  const ihdr = new Uint8Array(13);
+  const dv = new DataView(ihdr.buffer);
+  dv.setUint32(0, widthPx);
+  dv.setUint32(4, imgHeight);
+  ihdr[8] = 8;
+  ihdr[9] = 0;
+  ihdr[8] = 8;
+  ihdr[9] = 0;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  const raw8 = new Uint8Array((widthPx + 1) * imgHeight);
+  for (let y = 0; y < imgHeight; y++) {
+    raw8[y * (widthPx + 1)] = 0;
+    for (let x = 0; x < widthPx; x++) {
+      const byteIdx = y * (bytesPerRow + 1) + 1 + (x >> 3);
+      const bit = raw[byteIdx] >> 7 - (x & 7) & 1;
+      raw8[y * (widthPx + 1) + 1 + x] = bit ? 0 : 255;
+    }
+  }
+  ihdr[9] = 0;
+  const png = [
+    new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlibStore(raw8)),
+    chunk("IEND", new Uint8Array(0))
+  ];
+  const total = png.reduce((s, p) => s + p.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of png) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
+}
+function barcodeRaster(value, widthPx, symbology) {
+  const mod = barcodeModules(value, symbology);
+  if (!mod) return null;
+  const bytesPerRow = Math.ceil(widthPx / 8);
+  const rows = [];
+  const row = new Uint8Array(bytesPerRow);
+  const scale = Math.max(1, Math.floor(widthPx / mod.bits.length));
+  const offset = Math.floor((widthPx - mod.bits.length * scale) / 2);
+  for (let m = 0; m < mod.bits.length; m++) {
+    if (mod.bits[m] !== "1") continue;
+    for (let s = 0; s < scale; s++) {
+      const x = offset + m * scale + s;
+      if (x < 0 || x >= widthPx) continue;
+      row[x >> 3] |= 128 >> (x & 7);
+    }
+  }
+  rows.push(row);
+  return rows;
+}
+function tinyFont5x7() {
+  const d = (rows) => rows.map((r) => r.split(""));
+  const F = {
+    "0": d(["01110", "10001", "10011", "10101", "11001", "10001", "01110"]),
+    "1": d(["00100", "01100", "00100", "00100", "00100", "00100", "01110"]),
+    "2": d(["01110", "10001", "00001", "00010", "00100", "01000", "11111"]),
+    "3": d(["11110", "00001", "00001", "01110", "00001", "00001", "11110"]),
+    "4": d(["00010", "00110", "01010", "10010", "11111", "00010", "00010"]),
+    "5": d(["11111", "10000", "11110", "00001", "00001", "10001", "01110"]),
+    "6": d(["00110", "01000", "10000", "11110", "10001", "10001", "01110"]),
+    "7": d(["11111", "00001", "00010", "00100", "01000", "01000", "01000"]),
+    "8": d(["01110", "10001", "10001", "01110", "10001", "10001", "01110"]),
+    "9": d(["01110", "10001", "10001", "01111", "00001", "00010", "01100"]),
+    "A": d(["01110", "10001", "10001", "11111", "10001", "10001", "10001"]),
+    "B": d(["11110", "10001", "10001", "11110", "10001", "10001", "11110"]),
+    "C": d(["01110", "10001", "10000", "10000", "10000", "10001", "01110"]),
+    "D": d(["11100", "10010", "10001", "10001", "10001", "10010", "11100"]),
+    "E": d(["11111", "10000", "10000", "11110", "10000", "10000", "11111"]),
+    "F": d(["11111", "10000", "10000", "11110", "10000", "10000", "10000"]),
+    "G": d(["01110", "10001", "10000", "10111", "10001", "10001", "01111"]),
+    "H": d(["10001", "10001", "10001", "11111", "10001", "10001", "10001"]),
+    "I": d(["01110", "00100", "00100", "00100", "00100", "00100", "01110"]),
+    "J": d(["00111", "00010", "00010", "00010", "00010", "10010", "01100"]),
+    "K": d(["10001", "10010", "10100", "11000", "10100", "10010", "10001"]),
+    "L": d(["10000", "10000", "10000", "10000", "10000", "10000", "11111"]),
+    "M": d(["10001", "11011", "10101", "10101", "10001", "10001", "10001"]),
+    "N": d(["10001", "11001", "10101", "10011", "10001", "10001", "10001"]),
+    "O": d(["01110", "10001", "10001", "10001", "10001", "10001", "01110"]),
+    "P": d(["11110", "10001", "10001", "11110", "10000", "10000", "10000"]),
+    "Q": d(["01110", "10001", "10001", "10001", "10101", "10010", "01101"]),
+    "R": d(["11110", "10001", "10001", "11110", "10100", "10010", "10001"]),
+    "S": d(["01111", "10000", "10000", "01110", "00001", "00001", "11110"]),
+    "T": d(["11111", "00100", "00100", "00100", "00100", "00100", "00100"]),
+    "U": d(["10001", "10001", "10001", "10001", "10001", "10001", "01110"]),
+    "V": d(["10001", "10001", "10001", "10001", "10001", "01010", "00100"]),
+    "W": d(["10001", "10001", "10001", "10101", "10101", "10101", "01010"]),
+    "X": d(["10001", "01010", "00100", "00100", "00100", "01010", "10001"]),
+    "Y": d(["10001", "10001", "01010", "00100", "00100", "00100", "00100"]),
+    "Z": d(["11111", "00001", "00010", "00100", "01000", "10000", "11111"]),
+    "-": d(["00000", "00000", "00000", "11111", "00000", "00000", "00000"]),
+    ".": d(["00000", "00000", "00000", "00000", "00000", "01100", "01100"]),
+    " ": d(["00000", "00000", "00000", "00000", "00000", "00000", "00000"])
+  };
+  return F;
+}
+const ALIAS_TO_DESKTOP = {
+  // mobile field -> desktop column (beyond simple case conversion)
+  business_id: "businessId",
+  user_id: "userId",
+  created_at: "createdAt",
+  updated_at: "updated_at",
+  // desktop also uses updated_at/created_at on many tables
+  customer_name: "customerName",
+  customer_phone: "customerPhone",
+  item_id: "itemId",
+  total_price: "totalPrice",
+  payment_method: "paymentMethod",
+  payment_status: "paymentStatus",
+  paid_amount: "paidAmount",
+  due_date: "dueDate",
+  quantity_added: "quantityAdded",
+  base_purchase_price: "basePurchasePrice",
+  base_selling_price: "baseSellingPrice",
+  base_unit: "baseUnit",
+  units_per_pack: "unitsPerPack",
+  warehouse_id: "warehouseId",
+  category_id: "categoryId",
+  supplier_id: "supplierId",
+  company_name: "companyName",
+  selling_price: "baseSellingPrice",
+  purchase_price: "basePurchasePrice",
+  name: "name",
+  is_active: "isActive",
+  is_deleted: "is_deleted",
+  logo: "logo"
+};
+const ALIAS_TO_MOBILE = Object.fromEntries(
+  Object.entries(ALIAS_TO_DESKTOP).filter(([mobileKey]) => mobileKey !== "selling_price" && mobileKey !== "purchase_price").map(([mobileKey, desktopKey]) => [desktopKey, mobileKey])
+);
+const camelToSnake = (s) => s.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+const snakeToCamel = (s) => s.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
+function mobileToDesktopData(data) {
+  const out = {};
+  for (const [k, v] of Object.entries(data)) {
+    out[ALIAS_TO_DESKTOP[k] ?? snakeToCamel(k)] = v;
+  }
+  return out;
+}
+function desktopToMobileData(data) {
+  const out = {};
+  for (const [k, v] of Object.entries(data)) {
+    out[ALIAS_TO_MOBILE[k] ?? camelToSnake(k)] = v;
+  }
+  return out;
+}
+function detectPayloadPlatform(data) {
+  for (const k of Object.keys(data)) {
+    if (/[A-Z]/.test(k)) return "desktop";
+    if (k.includes("_")) return "mobile";
+  }
+  return "desktop";
+}
+function normalizeToPlatform(data, target) {
+  return target === "desktop" ? mobileToDesktopData(data) : desktopToMobileData(data);
+}
+function reconcileToColumns(data, cols, target) {
+  const out = {};
+  for (const k of Object.keys(data)) {
+    if (cols.has(k)) {
+      out[k] = data[k];
+      continue;
+    }
+    const mappedName = target === "desktop" ? ALIAS_TO_DESKTOP[k] ?? snakeToCamel(k) : ALIAS_TO_MOBILE[k] ?? camelToSnake(k);
+    if (mappedName && mappedName !== k && cols.has(mappedName)) {
+      out[mappedName] = data[k];
+    }
+  }
+  return out;
+}
+const create$9 = () => /* @__PURE__ */ new Map();
+const copy$1 = (m) => {
+  const r = create$9();
+  m.forEach((v, k) => {
+    r.set(k, v);
+  });
+  return r;
+};
+const setIfUndefined$1 = (map, key, createT) => {
+  let set = map.get(key);
+  if (set === void 0) {
+    map.set(key, set = createT());
+  }
+  return set;
+};
+const any$1 = (m, f) => {
+  for (const [key, value] of m) {
+    if (f(value, key)) {
+      return true;
+    }
+  }
+  return false;
+};
+const create$8 = () => /* @__PURE__ */ new Set();
+const last$1 = (arr) => arr[arr.length - 1];
+const appendTo$1 = (dest, src) => {
+  for (let i = 0; i < src.length; i++) {
+    dest.push(src[i]);
+  }
+};
+const from$1 = Array.from;
+const isArray$1 = Array.isArray;
+let ObservableV2$1 = class ObservableV2 {
+  constructor() {
+    this._observers = create$9();
+  }
+  /**
+   * @template {keyof EVENTS & string} NAME
+   * @param {NAME} name
+   * @param {EVENTS[NAME]} f
+   */
+  on(name, f) {
+    setIfUndefined$1(
+      this._observers,
+      /** @type {string} */
+      name,
+      create$8
+    ).add(f);
+    return f;
+  }
+  /**
+   * @template {keyof EVENTS & string} NAME
+   * @param {NAME} name
+   * @param {EVENTS[NAME]} f
+   */
+  once(name, f) {
+    const _f = (...args) => {
+      this.off(
+        name,
+        /** @type {any} */
+        _f
+      );
+      f(...args);
+    };
+    this.on(
+      name,
+      /** @type {any} */
+      _f
+    );
+  }
+  /**
+   * @template {keyof EVENTS & string} NAME
+   * @param {NAME} name
+   * @param {EVENTS[NAME]} f
+   */
+  off(name, f) {
+    const observers = this._observers.get(name);
+    if (observers !== void 0) {
+      observers.delete(f);
+      if (observers.size === 0) {
+        this._observers.delete(name);
+      }
+    }
+  }
+  /**
+   * Emit a named event. All registered event listeners that listen to the
+   * specified name will receive the event.
+   *
+   * @todo This should catch exceptions
+   *
+   * @template {keyof EVENTS & string} NAME
+   * @param {NAME} name The event name.
+   * @param {Parameters<EVENTS[NAME]>} args The arguments that are applied to the event listener.
+   */
+  emit(name, args) {
+    return from$1((this._observers.get(name) || create$9()).values()).forEach((f) => f(...args));
+  }
+  destroy() {
+    this._observers = create$9();
+  }
+};
+const floor$1 = Math.floor;
+const abs$1 = Math.abs;
+const min$1 = (a, b) => a < b ? a : b;
+const max$1 = (a, b) => a > b ? a : b;
+const isNegativeZero$1 = (n) => n !== 0 ? n < 0 : 1 / n < 0;
+const BIT1$1 = 1;
+const BIT2$1 = 2;
+const BIT3$1 = 4;
+const BIT4$1 = 8;
+const BIT6$1 = 32;
+const BIT7$1 = 64;
+const BIT8$1 = 128;
+const BITS5$1 = 31;
+const BITS6$1 = 63;
+const BITS7$1 = 127;
+const BITS31$1 = 2147483647;
+const MAX_SAFE_INTEGER$1 = Number.MAX_SAFE_INTEGER;
+const isInteger$1 = Number.isInteger || ((num) => typeof num === "number" && isFinite(num) && floor$1(num) === num);
+const toLowerCase$1 = (s) => s.toLowerCase();
+const trimLeftRegex$1 = /^\s*/g;
+const trimLeft$1 = (s) => s.replace(trimLeftRegex$1, "");
+const fromCamelCaseRegex$1 = /([A-Z])/g;
+const fromCamelCase$1 = (s, separator) => trimLeft$1(s.replace(fromCamelCaseRegex$1, (match) => `${separator}${toLowerCase$1(match)}`));
+const _encodeUtf8Polyfill$1 = (str) => {
+  const encodedString = unescape(encodeURIComponent(str));
+  const len = encodedString.length;
+  const buf = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    buf[i] = /** @type {number} */
+    encodedString.codePointAt(i);
+  }
+  return buf;
+};
+const utf8TextEncoder$1 = (
+  /** @type {TextEncoder} */
+  typeof TextEncoder !== "undefined" ? new TextEncoder() : null
+);
+const _encodeUtf8Native$1 = (str) => utf8TextEncoder$1.encode(str);
+const encodeUtf8$1 = utf8TextEncoder$1 ? _encodeUtf8Native$1 : _encodeUtf8Polyfill$1;
+let utf8TextDecoder$1 = typeof TextDecoder === "undefined" ? null : new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+if (utf8TextDecoder$1 && utf8TextDecoder$1.decode(new Uint8Array()).length === 1) {
+  utf8TextDecoder$1 = null;
+}
+let Encoder$1 = class Encoder {
+  constructor() {
+    this.cpos = 0;
+    this.cbuf = new Uint8Array(100);
+    this.bufs = [];
+  }
+};
+const createEncoder$1 = () => new Encoder$1();
+const length$1 = (encoder) => {
+  let len = encoder.cpos;
+  for (let i = 0; i < encoder.bufs.length; i++) {
+    len += encoder.bufs[i].length;
+  }
+  return len;
+};
+const toUint8Array$1 = (encoder) => {
+  const uint8arr = new Uint8Array(length$1(encoder));
+  let curPos = 0;
+  for (let i = 0; i < encoder.bufs.length; i++) {
+    const d = encoder.bufs[i];
+    uint8arr.set(d, curPos);
+    curPos += d.length;
+  }
+  uint8arr.set(new Uint8Array(encoder.cbuf.buffer, 0, encoder.cpos), curPos);
+  return uint8arr;
+};
+const verifyLen$1 = (encoder, len) => {
+  const bufferLen = encoder.cbuf.length;
+  if (bufferLen - encoder.cpos < len) {
+    encoder.bufs.push(new Uint8Array(encoder.cbuf.buffer, 0, encoder.cpos));
+    encoder.cbuf = new Uint8Array(max$1(bufferLen, len) * 2);
+    encoder.cpos = 0;
+  }
+};
+const write$2 = (encoder, num) => {
+  const bufferLen = encoder.cbuf.length;
+  if (encoder.cpos === bufferLen) {
+    encoder.bufs.push(encoder.cbuf);
+    encoder.cbuf = new Uint8Array(bufferLen * 2);
+    encoder.cpos = 0;
+  }
+  encoder.cbuf[encoder.cpos++] = num;
+};
+const writeUint8$1 = write$2;
+const writeVarUint$1 = (encoder, num) => {
+  while (num > BITS7$1) {
+    write$2(encoder, BIT8$1 | BITS7$1 & num);
+    num = floor$1(num / 128);
+  }
+  write$2(encoder, BITS7$1 & num);
+};
+const writeVarInt$1 = (encoder, num) => {
+  const isNegative = isNegativeZero$1(num);
+  if (isNegative) {
+    num = -num;
+  }
+  write$2(encoder, (num > BITS6$1 ? BIT8$1 : 0) | (isNegative ? BIT7$1 : 0) | BITS6$1 & num);
+  num = floor$1(num / 64);
+  while (num > 0) {
+    write$2(encoder, (num > BITS7$1 ? BIT8$1 : 0) | BITS7$1 & num);
+    num = floor$1(num / 128);
+  }
+};
+const _strBuffer$1 = new Uint8Array(3e4);
+const _maxStrBSize$1 = _strBuffer$1.length / 3;
+const _writeVarStringNative$1 = (encoder, str) => {
+  if (str.length < _maxStrBSize$1) {
+    const written = utf8TextEncoder$1.encodeInto(str, _strBuffer$1).written || 0;
+    writeVarUint$1(encoder, written);
+    for (let i = 0; i < written; i++) {
+      write$2(encoder, _strBuffer$1[i]);
+    }
+  } else {
+    writeVarUint8Array$1(encoder, encodeUtf8$1(str));
+  }
+};
+const _writeVarStringPolyfill$1 = (encoder, str) => {
+  const encodedString = unescape(encodeURIComponent(str));
+  const len = encodedString.length;
+  writeVarUint$1(encoder, len);
+  for (let i = 0; i < len; i++) {
+    write$2(
+      encoder,
+      /** @type {number} */
+      encodedString.codePointAt(i)
+    );
+  }
+};
+const writeVarString$1 = utf8TextEncoder$1 && /** @type {any} */
+utf8TextEncoder$1.encodeInto ? _writeVarStringNative$1 : _writeVarStringPolyfill$1;
+const writeUint8Array$1 = (encoder, uint8Array) => {
+  const bufferLen = encoder.cbuf.length;
+  const cpos = encoder.cpos;
+  const leftCopyLen = min$1(bufferLen - cpos, uint8Array.length);
+  const rightCopyLen = uint8Array.length - leftCopyLen;
+  encoder.cbuf.set(uint8Array.subarray(0, leftCopyLen), cpos);
+  encoder.cpos += leftCopyLen;
+  if (rightCopyLen > 0) {
+    encoder.bufs.push(encoder.cbuf);
+    encoder.cbuf = new Uint8Array(max$1(bufferLen * 2, rightCopyLen));
+    encoder.cbuf.set(uint8Array.subarray(leftCopyLen));
+    encoder.cpos = rightCopyLen;
+  }
+};
+const writeVarUint8Array$1 = (encoder, uint8Array) => {
+  writeVarUint$1(encoder, uint8Array.byteLength);
+  writeUint8Array$1(encoder, uint8Array);
+};
+const writeOnDataView$1 = (encoder, len) => {
+  verifyLen$1(encoder, len);
+  const dview = new DataView(encoder.cbuf.buffer, encoder.cpos, len);
+  encoder.cpos += len;
+  return dview;
+};
+const writeFloat32$1 = (encoder, num) => writeOnDataView$1(encoder, 4).setFloat32(0, num, false);
+const writeFloat64$1 = (encoder, num) => writeOnDataView$1(encoder, 8).setFloat64(0, num, false);
+const writeBigInt64$1 = (encoder, num) => (
+  /** @type {any} */
+  writeOnDataView$1(encoder, 8).setBigInt64(0, num, false)
+);
+const floatTestBed$1 = new DataView(new ArrayBuffer(4));
+const isFloat32$1 = (num) => {
+  floatTestBed$1.setFloat32(0, num);
+  return floatTestBed$1.getFloat32(0) === num;
+};
+const writeAny$1 = (encoder, data) => {
+  switch (typeof data) {
+    case "string":
+      write$2(encoder, 119);
+      writeVarString$1(encoder, data);
+      break;
+    case "number":
+      if (isInteger$1(data) && abs$1(data) <= BITS31$1) {
+        write$2(encoder, 125);
+        writeVarInt$1(encoder, data);
+      } else if (isFloat32$1(data)) {
+        write$2(encoder, 124);
+        writeFloat32$1(encoder, data);
+      } else {
+        write$2(encoder, 123);
+        writeFloat64$1(encoder, data);
+      }
+      break;
+    case "bigint":
+      write$2(encoder, 122);
+      writeBigInt64$1(encoder, data);
+      break;
+    case "object":
+      if (data === null) {
+        write$2(encoder, 126);
+      } else if (isArray$1(data)) {
+        write$2(encoder, 117);
+        writeVarUint$1(encoder, data.length);
+        for (let i = 0; i < data.length; i++) {
+          writeAny$1(encoder, data[i]);
+        }
+      } else if (data instanceof Uint8Array) {
+        write$2(encoder, 116);
+        writeVarUint8Array$1(encoder, data);
+      } else {
+        write$2(encoder, 118);
+        const keys2 = Object.keys(data);
+        writeVarUint$1(encoder, keys2.length);
+        for (let i = 0; i < keys2.length; i++) {
+          const key = keys2[i];
+          writeVarString$1(encoder, key);
+          writeAny$1(encoder, data[key]);
+        }
+      }
+      break;
+    case "boolean":
+      write$2(encoder, data ? 120 : 121);
+      break;
+    default:
+      write$2(encoder, 127);
+  }
+};
+let RleEncoder$1 = class RleEncoder extends Encoder$1 {
+  /**
+   * @param {function(Encoder, T):void} writer
+   */
+  constructor(writer) {
+    super();
+    this.w = writer;
+    this.s = null;
+    this.count = 0;
+  }
+  /**
+   * @param {T} v
+   */
+  write(v) {
+    if (this.s === v) {
+      this.count++;
+    } else {
+      if (this.count > 0) {
+        writeVarUint$1(this, this.count - 1);
+      }
+      this.count = 1;
+      this.w(this, v);
+      this.s = v;
+    }
+  }
+};
+const flushUintOptRleEncoder$1 = (encoder) => {
+  if (encoder.count > 0) {
+    writeVarInt$1(encoder.encoder, encoder.count === 1 ? encoder.s : -encoder.s);
+    if (encoder.count > 1) {
+      writeVarUint$1(encoder.encoder, encoder.count - 2);
+    }
+  }
+};
+let UintOptRleEncoder$1 = class UintOptRleEncoder {
+  constructor() {
+    this.encoder = new Encoder$1();
+    this.s = 0;
+    this.count = 0;
+  }
+  /**
+   * @param {number} v
+   */
+  write(v) {
+    if (this.s === v) {
+      this.count++;
+    } else {
+      flushUintOptRleEncoder$1(this);
+      this.count = 1;
+      this.s = v;
+    }
+  }
+  /**
+   * Flush the encoded state and transform this to a Uint8Array.
+   *
+   * Note that this should only be called once.
+   */
+  toUint8Array() {
+    flushUintOptRleEncoder$1(this);
+    return toUint8Array$1(this.encoder);
+  }
+};
+const flushIntDiffOptRleEncoder$1 = (encoder) => {
+  if (encoder.count > 0) {
+    const encodedDiff = encoder.diff * 2 + (encoder.count === 1 ? 0 : 1);
+    writeVarInt$1(encoder.encoder, encodedDiff);
+    if (encoder.count > 1) {
+      writeVarUint$1(encoder.encoder, encoder.count - 2);
+    }
+  }
+};
+let IntDiffOptRleEncoder$1 = class IntDiffOptRleEncoder {
+  constructor() {
+    this.encoder = new Encoder$1();
+    this.s = 0;
+    this.count = 0;
+    this.diff = 0;
+  }
+  /**
+   * @param {number} v
+   */
+  write(v) {
+    if (this.diff === v - this.s) {
+      this.s = v;
+      this.count++;
+    } else {
+      flushIntDiffOptRleEncoder$1(this);
+      this.count = 1;
+      this.diff = v - this.s;
+      this.s = v;
+    }
+  }
+  /**
+   * Flush the encoded state and transform this to a Uint8Array.
+   *
+   * Note that this should only be called once.
+   */
+  toUint8Array() {
+    flushIntDiffOptRleEncoder$1(this);
+    return toUint8Array$1(this.encoder);
+  }
+};
+let StringEncoder$1 = class StringEncoder {
+  constructor() {
+    this.sarr = [];
+    this.s = "";
+    this.lensE = new UintOptRleEncoder$1();
+  }
+  /**
+   * @param {string} string
+   */
+  write(string) {
+    this.s += string;
+    if (this.s.length > 19) {
+      this.sarr.push(this.s);
+      this.s = "";
+    }
+    this.lensE.write(string.length);
+  }
+  toUint8Array() {
+    const encoder = new Encoder$1();
+    this.sarr.push(this.s);
+    this.s = "";
+    writeVarString$1(encoder, this.sarr.join(""));
+    writeUint8Array$1(encoder, this.lensE.toUint8Array());
+    return toUint8Array$1(encoder);
+  }
+};
+const create$7 = (s) => new Error(s);
+const methodUnimplemented$1 = () => {
+  throw create$7("Method unimplemented");
+};
+const unexpectedCase$1 = () => {
+  throw create$7("Unexpected case");
+};
+const errorUnexpectedEndOfArray$1 = create$7("Unexpected end of array");
+const errorIntegerOutOfRange$1 = create$7("Integer out of Range");
+let Decoder$1 = class Decoder {
+  /**
+   * @param {Uint8Array<Buf>} uint8Array Binary data to decode
+   */
+  constructor(uint8Array) {
+    this.arr = uint8Array;
+    this.pos = 0;
+  }
+};
+const createDecoder$1 = (uint8Array) => new Decoder$1(uint8Array);
+const hasContent$1 = (decoder) => decoder.pos !== decoder.arr.length;
+const readUint8Array$1 = (decoder, len) => {
+  const view = new Uint8Array(decoder.arr.buffer, decoder.pos + decoder.arr.byteOffset, len);
+  decoder.pos += len;
+  return view;
+};
+const readVarUint8Array$1 = (decoder) => readUint8Array$1(decoder, readVarUint$1(decoder));
+const readUint8$1 = (decoder) => decoder.arr[decoder.pos++];
+const readVarUint$1 = (decoder) => {
+  let num = 0;
+  let mult = 1;
+  const len = decoder.arr.length;
+  while (decoder.pos < len) {
+    const r = decoder.arr[decoder.pos++];
+    num = num + (r & BITS7$1) * mult;
+    mult *= 128;
+    if (r < BIT8$1) {
+      return num;
+    }
+    if (num > MAX_SAFE_INTEGER$1) {
+      throw errorIntegerOutOfRange$1;
+    }
+  }
+  throw errorUnexpectedEndOfArray$1;
+};
+const readVarInt$1 = (decoder) => {
+  let r = decoder.arr[decoder.pos++];
+  let num = r & BITS6$1;
+  let mult = 64;
+  const sign = (r & BIT7$1) > 0 ? -1 : 1;
+  if ((r & BIT8$1) === 0) {
+    return sign * num;
+  }
+  const len = decoder.arr.length;
+  while (decoder.pos < len) {
+    r = decoder.arr[decoder.pos++];
+    num = num + (r & BITS7$1) * mult;
+    mult *= 128;
+    if (r < BIT8$1) {
+      return sign * num;
+    }
+    if (num > MAX_SAFE_INTEGER$1) {
+      throw errorIntegerOutOfRange$1;
+    }
+  }
+  throw errorUnexpectedEndOfArray$1;
+};
+const _readVarStringPolyfill$1 = (decoder) => {
+  let remainingLen = readVarUint$1(decoder);
+  if (remainingLen === 0) {
+    return "";
+  } else {
+    let encodedString = String.fromCodePoint(readUint8$1(decoder));
+    if (--remainingLen < 100) {
+      while (remainingLen--) {
+        encodedString += String.fromCodePoint(readUint8$1(decoder));
+      }
+    } else {
+      while (remainingLen > 0) {
+        const nextLen = remainingLen < 1e4 ? remainingLen : 1e4;
+        const bytes = decoder.arr.subarray(decoder.pos, decoder.pos + nextLen);
+        decoder.pos += nextLen;
+        encodedString += String.fromCodePoint.apply(
+          null,
+          /** @type {any} */
+          bytes
+        );
+        remainingLen -= nextLen;
+      }
+    }
+    return decodeURIComponent(escape(encodedString));
+  }
+};
+const _readVarStringNative$1 = (decoder) => (
+  /** @type any */
+  utf8TextDecoder$1.decode(readVarUint8Array$1(decoder))
+);
+const readVarString$1 = utf8TextDecoder$1 ? _readVarStringNative$1 : _readVarStringPolyfill$1;
+const readFromDataView$1 = (decoder, len) => {
+  const dv = new DataView(decoder.arr.buffer, decoder.arr.byteOffset + decoder.pos, len);
+  decoder.pos += len;
+  return dv;
+};
+const readFloat32$1 = (decoder) => readFromDataView$1(decoder, 4).getFloat32(0, false);
+const readFloat64$1 = (decoder) => readFromDataView$1(decoder, 8).getFloat64(0, false);
+const readBigInt64$1 = (decoder) => (
+  /** @type {any} */
+  readFromDataView$1(decoder, 8).getBigInt64(0, false)
+);
+const readAnyLookupTable$1 = [
+  (decoder) => void 0,
+  // CASE 127: undefined
+  (decoder) => null,
+  // CASE 126: null
+  readVarInt$1,
+  // CASE 125: integer
+  readFloat32$1,
+  // CASE 124: float32
+  readFloat64$1,
+  // CASE 123: float64
+  readBigInt64$1,
+  // CASE 122: bigint
+  (decoder) => false,
+  // CASE 121: boolean (false)
+  (decoder) => true,
+  // CASE 120: boolean (true)
+  readVarString$1,
+  // CASE 119: string
+  (decoder) => {
+    const len = readVarUint$1(decoder);
+    const obj = {};
+    for (let i = 0; i < len; i++) {
+      const key = readVarString$1(decoder);
+      obj[key] = readAny$1(decoder);
+    }
+    return obj;
+  },
+  (decoder) => {
+    const len = readVarUint$1(decoder);
+    const arr = [];
+    for (let i = 0; i < len; i++) {
+      arr.push(readAny$1(decoder));
+    }
+    return arr;
+  },
+  readVarUint8Array$1
+  // CASE 116: Uint8Array
+];
+const readAny$1 = (decoder) => readAnyLookupTable$1[127 - readUint8$1(decoder)](decoder);
+let RleDecoder$1 = class RleDecoder extends Decoder$1 {
+  /**
+   * @param {Uint8Array} uint8Array
+   * @param {function(Decoder):T} reader
+   */
+  constructor(uint8Array, reader) {
+    super(uint8Array);
+    this.reader = reader;
+    this.s = null;
+    this.count = 0;
+  }
+  read() {
+    if (this.count === 0) {
+      this.s = this.reader(this);
+      if (hasContent$1(this)) {
+        this.count = readVarUint$1(this) + 1;
+      } else {
+        this.count = -1;
+      }
+    }
+    this.count--;
+    return (
+      /** @type {T} */
+      this.s
+    );
+  }
+};
+let UintOptRleDecoder$1 = class UintOptRleDecoder extends Decoder$1 {
+  /**
+   * @param {Uint8Array} uint8Array
+   */
+  constructor(uint8Array) {
+    super(uint8Array);
+    this.s = 0;
+    this.count = 0;
+  }
+  read() {
+    if (this.count === 0) {
+      this.s = readVarInt$1(this);
+      const isNegative = isNegativeZero$1(this.s);
+      this.count = 1;
+      if (isNegative) {
+        this.s = -this.s;
+        this.count = readVarUint$1(this) + 2;
+      }
+    }
+    this.count--;
+    return (
+      /** @type {number} */
+      this.s
+    );
+  }
+};
+let IntDiffOptRleDecoder$1 = class IntDiffOptRleDecoder extends Decoder$1 {
+  /**
+   * @param {Uint8Array} uint8Array
+   */
+  constructor(uint8Array) {
+    super(uint8Array);
+    this.s = 0;
+    this.count = 0;
+    this.diff = 0;
+  }
+  /**
+   * @return {number}
+   */
+  read() {
+    if (this.count === 0) {
+      const diff = readVarInt$1(this);
+      const hasCount = diff & 1;
+      this.diff = floor$1(diff / 2);
+      this.count = 1;
+      if (hasCount) {
+        this.count = readVarUint$1(this) + 2;
+      }
+    }
+    this.s += this.diff;
+    this.count--;
+    return this.s;
+  }
+};
+let StringDecoder$1 = class StringDecoder {
+  /**
+   * @param {Uint8Array} uint8Array
+   */
+  constructor(uint8Array) {
+    this.decoder = new UintOptRleDecoder$1(uint8Array);
+    this.str = readVarString$1(this.decoder);
+    this.spos = 0;
+  }
+  /**
+   * @return {string}
+   */
+  read() {
+    const end = this.spos + this.decoder.read();
+    const res = this.str.slice(this.spos, end);
+    this.spos = end;
+    return res;
+  }
+};
+node_crypto.webcrypto.subtle;
+const getRandomValues$1 = (
+  /** @type {any} */
+  node_crypto.webcrypto.getRandomValues.bind(node_crypto.webcrypto)
+);
+const uint32$1 = () => getRandomValues$1(new Uint32Array(1))[0];
+const uuidv4Template$1 = "10000000-1000-4000-8000" + -1e11;
+const uuidv4$1 = () => uuidv4Template$1.replace(
+  /[018]/g,
+  /** @param {number} c */
+  (c) => (c ^ uint32$1() & 15 >> c / 4).toString(16)
+);
+const create$6 = (f) => (
+  /** @type {Promise<T>} */
+  new Promise(f)
+);
+Promise.all.bind(Promise);
+const undefinedToNull$1 = (v) => v === void 0 ? null : v;
+let VarStoragePolyfill$1 = class VarStoragePolyfill {
+  constructor() {
+    this.map = /* @__PURE__ */ new Map();
+  }
+  /**
+   * @param {string} key
+   * @param {any} newValue
+   */
+  setItem(key, newValue) {
+    this.map.set(key, newValue);
+  }
+  /**
+   * @param {string} key
+   */
+  getItem(key) {
+    return this.map.get(key);
+  }
+};
+let _localStorage$1 = new VarStoragePolyfill$1();
+let usePolyfill$1 = true;
+try {
+  if (typeof localStorage !== "undefined" && localStorage) {
+    _localStorage$1 = localStorage;
+    usePolyfill$1 = false;
+  }
+} catch (e) {
+}
+const varStorage$1 = _localStorage$1;
+const EqualityTraitSymbol$1 = Symbol("Equality");
+const equals$1 = (a, b) => a === b || !!a?.[EqualityTraitSymbol$1]?.(b) || false;
+const assign$1 = Object.assign;
+const keys$1 = Object.keys;
+const forEach$1 = (obj, f) => {
+  for (const key in obj) {
+    f(obj[key], key);
+  }
+};
+const size$1 = (obj) => keys$1(obj).length;
+const isEmpty$1 = (obj) => {
+  for (const _k in obj) {
+    return false;
+  }
+  return true;
+};
+const every$1 = (obj, f) => {
+  for (const key in obj) {
+    if (!f(obj[key], key)) {
+      return false;
+    }
+  }
+  return true;
+};
+const hasProperty$1 = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+const equalFlat$1 = (a, b) => a === b || size$1(a) === size$1(b) && every$1(a, (val, key) => (val !== void 0 || hasProperty$1(b, key)) && equals$1(b[key], val));
+const freeze$1 = Object.freeze;
+const deepFreeze$1 = (o) => {
+  for (const key in o) {
+    const c = o[key];
+    if (typeof c === "object" || typeof c === "function") {
+      deepFreeze$1(o[key]);
+    }
+  }
+  return freeze$1(o);
+};
+const callAll$1 = (fs2, args, i = 0) => {
+  try {
+    for (; i < fs2.length; i++) {
+      fs2[i](...args);
+    }
+  } finally {
+    if (i < fs2.length) {
+      callAll$1(fs2, args, i + 1);
+    }
+  }
+};
+const id = (a) => a;
+const isOneOf$1 = (value, options) => options.includes(value);
+const isNode$1 = typeof process !== "undefined" && process.release && /node|io\.js/.test(process.release.name) && Object.prototype.toString.call(typeof process !== "undefined" ? process : 0) === "[object process]";
+let params$1;
+const computeParams$1 = () => {
+  if (params$1 === void 0) {
+    if (isNode$1) {
+      params$1 = create$9();
+      const pargs = process.argv;
+      let currParamName = null;
+      for (let i = 0; i < pargs.length; i++) {
+        const parg = pargs[i];
+        if (parg[0] === "-") {
+          if (currParamName !== null) {
+            params$1.set(currParamName, "");
+          }
+          currParamName = parg;
+        } else {
+          if (currParamName !== null) {
+            params$1.set(currParamName, parg);
+            currParamName = null;
+          }
+        }
+      }
+      if (currParamName !== null) {
+        params$1.set(currParamName, "");
+      }
+    } else if (typeof location === "object") {
+      params$1 = create$9();
+      (location.search || "?").slice(1).split("&").forEach((kv) => {
+        if (kv.length !== 0) {
+          const [key, value] = kv.split("=");
+          params$1.set(`--${fromCamelCase$1(key, "-")}`, value);
+          params$1.set(`-${fromCamelCase$1(key, "-")}`, value);
+        }
+      });
+    } else {
+      params$1 = create$9();
+    }
+  }
+  return params$1;
+};
+const hasParam$1 = (name) => computeParams$1().has(name);
+const getVariable$1 = (name) => isNode$1 ? undefinedToNull$1(process.env[name.toUpperCase().replaceAll("-", "_")]) : undefinedToNull$1(varStorage$1.getItem(name));
+const hasConf$1 = (name) => hasParam$1("--" + name) || getVariable$1(name) !== null;
+hasConf$1("production");
+const forceColor$1 = isNode$1 && isOneOf$1(process.env.FORCE_COLOR, ["true", "1", "2"]);
+const supportsColor$1 = forceColor$1 || !hasParam$1("--no-colors") && // @todo deprecate --no-colors
+!hasConf$1("no-color") && (!isNode$1 || process.stdout.isTTY) && (!isNode$1 || hasParam$1("--color") || getVariable$1("COLORTERM") !== null || (getVariable$1("TERM") || "").includes("color"));
+const createUint8ArrayFromLen$1 = (len) => new Uint8Array(len);
+const copyUint8Array$1 = (uint8Array) => {
+  const newBuf = createUint8ArrayFromLen$1(uint8Array.byteLength);
+  newBuf.set(uint8Array);
+  return newBuf;
+};
+const create$5 = Symbol;
+const BOLD$1 = create$5();
+const UNBOLD$1 = create$5();
+const BLUE$1 = create$5();
+const GREY$1 = create$5();
+const GREEN$1 = create$5();
+const RED$1 = create$5();
+const PURPLE$1 = create$5();
+const ORANGE$1 = create$5();
+const UNCOLOR$1 = create$5();
+const computeNoColorLoggingArgs$1 = (args) => {
+  if (args.length === 1 && args[0]?.constructor === Function) {
+    args = /** @type {Array<string|Symbol|Object|number>} */
+    /** @type {[function]} */
+    args[0]();
+  }
+  const strBuilder = [];
+  const logArgs = [];
+  let i = 0;
+  for (; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === void 0) {
+      break;
+    } else if (arg.constructor === String || arg.constructor === Number) {
+      strBuilder.push(arg);
+    } else if (arg.constructor === Object) {
+      break;
+    }
+  }
+  if (i > 0) {
+    logArgs.push(strBuilder.join(""));
+  }
+  for (; i < args.length; i++) {
+    const arg = args[i];
+    if (!(arg instanceof Symbol)) {
+      logArgs.push(arg);
+    }
+  }
+  return logArgs;
+};
+const _nodeStyleMap$1 = {
+  [BOLD$1]: "\x1B[1m",
+  [UNBOLD$1]: "\x1B[2m",
+  [BLUE$1]: "\x1B[34m",
+  [GREEN$1]: "\x1B[32m",
+  [GREY$1]: "\x1B[37m",
+  [RED$1]: "\x1B[31m",
+  [PURPLE$1]: "\x1B[35m",
+  [ORANGE$1]: "\x1B[38;5;208m",
+  [UNCOLOR$1]: "\x1B[0m"
+};
+const computeNodeLoggingArgs$1 = (args) => {
+  if (args.length === 1 && args[0]?.constructor === Function) {
+    args = /** @type {Array<string|Symbol|Object|number>} */
+    /** @type {[function]} */
+    args[0]();
+  }
+  const strBuilder = [];
+  const logArgs = [];
+  let i = 0;
+  for (; i < args.length; i++) {
+    const arg = args[i];
+    const style = _nodeStyleMap$1[arg];
+    if (style !== void 0) {
+      strBuilder.push(style);
+    } else {
+      if (arg === void 0) {
+        break;
+      } else if (arg.constructor === String || arg.constructor === Number) {
+        strBuilder.push(arg);
+      } else {
+        break;
+      }
+    }
+  }
+  if (i > 0) {
+    strBuilder.push("\x1B[0m");
+    logArgs.push(strBuilder.join(""));
+  }
+  for (; i < args.length; i++) {
+    const arg = args[i];
+    if (!(arg instanceof Symbol)) {
+      logArgs.push(arg);
+    }
+  }
+  return logArgs;
+};
+const computeLoggingArgs$1 = supportsColor$1 ? computeNodeLoggingArgs$1 : computeNoColorLoggingArgs$1;
+const print$1 = (...args) => {
+  console.log(...computeLoggingArgs$1(args));
+};
+const warn$1 = (...args) => {
+  console.warn(...computeLoggingArgs$1(args));
+};
+const createIterator$1 = (next) => ({
+  /**
+   * @return {IterableIterator<T>}
+   */
+  [Symbol.iterator]() {
+    return this;
+  },
+  // @ts-ignore
+  next
+});
+const iteratorFilter$1 = (iterator, filter) => createIterator$1(() => {
+  let res;
+  do {
+    res = iterator.next();
+  } while (!res.done && !filter(res.value));
+  return res;
+});
+const iteratorMap$1 = (iterator, fmap) => createIterator$1(() => {
+  const { done, value } = iterator.next();
+  return { done, value: done ? void 0 : fmap(value) };
+});
+let DeleteItem$1 = class DeleteItem {
+  /**
+   * @param {number} clock
+   * @param {number} len
+   */
+  constructor(clock, len) {
+    this.clock = clock;
+    this.len = len;
+  }
+};
+let DeleteSet$1 = class DeleteSet {
+  constructor() {
+    this.clients = /* @__PURE__ */ new Map();
+  }
+};
+const iterateDeletedStructs$1 = (transaction, ds, f) => ds.clients.forEach((deletes, clientid) => {
+  const structs = (
+    /** @type {Array<GC|Item>} */
+    transaction.doc.store.clients.get(clientid)
+  );
+  if (structs != null) {
+    const lastStruct = structs[structs.length - 1];
+    const clockState = lastStruct.id.clock + lastStruct.length;
+    for (let i = 0, del = deletes[i]; i < deletes.length && del.clock < clockState; del = deletes[++i]) {
+      iterateStructs$1(transaction, structs, del.clock, del.len, f);
+    }
+  }
+});
+const findIndexDS$1 = (dis, clock) => {
+  let left = 0;
+  let right = dis.length - 1;
+  while (left <= right) {
+    const midindex = floor$1((left + right) / 2);
+    const mid = dis[midindex];
+    const midclock = mid.clock;
+    if (midclock <= clock) {
+      if (clock < midclock + mid.len) {
+        return midindex;
+      }
+      left = midindex + 1;
+    } else {
+      right = midindex - 1;
+    }
+  }
+  return null;
+};
+const isDeleted$1 = (ds, id2) => {
+  const dis = ds.clients.get(id2.client);
+  return dis !== void 0 && findIndexDS$1(dis, id2.clock) !== null;
+};
+const sortAndMergeDeleteSet$1 = (ds) => {
+  ds.clients.forEach((dels) => {
+    dels.sort((a, b) => a.clock - b.clock);
+    let i, j;
+    for (i = 1, j = 1; i < dels.length; i++) {
+      const left = dels[j - 1];
+      const right = dels[i];
+      if (left.clock + left.len >= right.clock) {
+        dels[j - 1] = new DeleteItem$1(left.clock, max$1(left.len, right.clock + right.len - left.clock));
+      } else {
+        if (j < i) {
+          dels[j] = right;
+        }
+        j++;
+      }
+    }
+    dels.length = j;
+  });
+};
+const mergeDeleteSets$1 = (dss) => {
+  const merged = new DeleteSet$1();
+  for (let dssI = 0; dssI < dss.length; dssI++) {
+    dss[dssI].clients.forEach((delsLeft, client) => {
+      if (!merged.clients.has(client)) {
+        const dels = delsLeft.slice();
+        for (let i = dssI + 1; i < dss.length; i++) {
+          appendTo$1(dels, dss[i].clients.get(client) || []);
+        }
+        merged.clients.set(client, dels);
+      }
+    });
+  }
+  sortAndMergeDeleteSet$1(merged);
+  return merged;
+};
+const addToDeleteSet$1 = (ds, client, clock, length2) => {
+  setIfUndefined$1(ds.clients, client, () => (
+    /** @type {Array<DeleteItem>} */
+    []
+  )).push(new DeleteItem$1(clock, length2));
+};
+const createDeleteSet = () => new DeleteSet$1();
+const createDeleteSetFromStructStore = (ss) => {
+  const ds = createDeleteSet();
+  ss.clients.forEach((structs, client) => {
+    const dsitems = [];
+    for (let i = 0; i < structs.length; i++) {
+      const struct = structs[i];
+      if (struct.deleted) {
+        const clock = struct.id.clock;
+        let len = struct.length;
+        if (i + 1 < structs.length) {
+          for (let next = structs[i + 1]; i + 1 < structs.length && next.deleted; next = structs[++i + 1]) {
+            len += next.length;
+          }
+        }
+        dsitems.push(new DeleteItem$1(clock, len));
+      }
+    }
+    if (dsitems.length > 0) {
+      ds.clients.set(client, dsitems);
+    }
+  });
+  return ds;
+};
+const writeDeleteSet$1 = (encoder, ds) => {
+  writeVarUint$1(encoder.restEncoder, ds.clients.size);
+  from$1(ds.clients.entries()).sort((a, b) => b[0] - a[0]).forEach(([client, dsitems]) => {
+    encoder.resetDsCurVal();
+    writeVarUint$1(encoder.restEncoder, client);
+    const len = dsitems.length;
+    writeVarUint$1(encoder.restEncoder, len);
+    for (let i = 0; i < len; i++) {
+      const item = dsitems[i];
+      encoder.writeDsClock(item.clock);
+      encoder.writeDsLen(item.len);
+    }
+  });
+};
+const readDeleteSet$1 = (decoder) => {
+  const ds = new DeleteSet$1();
+  const numClients = readVarUint$1(decoder.restDecoder);
+  for (let i = 0; i < numClients; i++) {
+    decoder.resetDsCurVal();
+    const client = readVarUint$1(decoder.restDecoder);
+    const numberOfDeletes = readVarUint$1(decoder.restDecoder);
+    if (numberOfDeletes > 0) {
+      const dsField = setIfUndefined$1(ds.clients, client, () => (
+        /** @type {Array<DeleteItem>} */
+        []
+      ));
+      for (let i2 = 0; i2 < numberOfDeletes; i2++) {
+        dsField.push(new DeleteItem$1(decoder.readDsClock(), decoder.readDsLen()));
+      }
+    }
+  }
+  return ds;
+};
+const readAndApplyDeleteSet$1 = (decoder, transaction, store) => {
+  const unappliedDS = new DeleteSet$1();
+  const numClients = readVarUint$1(decoder.restDecoder);
+  for (let i = 0; i < numClients; i++) {
+    decoder.resetDsCurVal();
+    const client = readVarUint$1(decoder.restDecoder);
+    const numberOfDeletes = readVarUint$1(decoder.restDecoder);
+    const structs = store.clients.get(client) || [];
+    const state = getState$1(store, client);
+    for (let i2 = 0; i2 < numberOfDeletes; i2++) {
+      const clock = decoder.readDsClock();
+      const clockEnd = clock + decoder.readDsLen();
+      if (clock < state) {
+        if (state < clockEnd) {
+          addToDeleteSet$1(unappliedDS, client, state, clockEnd - state);
+        }
+        let index = findIndexSS$1(structs, clock);
+        let struct = structs[index];
+        if (!struct.deleted && struct.id.clock < clock) {
+          structs.splice(index + 1, 0, splitItem$1(transaction, struct, clock - struct.id.clock));
+          index++;
+        }
+        while (index < structs.length) {
+          struct = structs[index++];
+          if (struct.id.clock < clockEnd) {
+            if (!struct.deleted) {
+              if (clockEnd < struct.id.clock + struct.length) {
+                structs.splice(index, 0, splitItem$1(transaction, struct, clockEnd - struct.id.clock));
+              }
+              struct.delete(transaction);
+            }
+          } else {
+            break;
+          }
+        }
+      } else {
+        addToDeleteSet$1(unappliedDS, client, clock, clockEnd - clock);
+      }
+    }
+  }
+  if (unappliedDS.clients.size > 0) {
+    const ds = new UpdateEncoderV2$1();
+    writeVarUint$1(ds.restEncoder, 0);
+    writeDeleteSet$1(ds, unappliedDS);
+    return ds.toUint8Array();
+  }
+  return null;
+};
+const generateNewClientId$1 = uint32$1;
+let Doc$1 = class Doc extends ObservableV2$1 {
+  /**
+   * @param {DocOpts} opts configuration
+   */
+  constructor({ guid = uuidv4$1(), collectionid = null, gc = true, gcFilter = () => true, meta = null, autoLoad = false, shouldLoad = true } = {}) {
+    super();
+    this.gc = gc;
+    this.gcFilter = gcFilter;
+    this.clientID = generateNewClientId$1();
+    this.guid = guid;
+    this.collectionid = collectionid;
+    this.share = /* @__PURE__ */ new Map();
+    this.store = new StructStore$1();
+    this._transaction = null;
+    this._transactionCleanups = [];
+    this.subdocs = /* @__PURE__ */ new Set();
+    this._item = null;
+    this.shouldLoad = shouldLoad;
+    this.autoLoad = autoLoad;
+    this.meta = meta;
+    this.isLoaded = false;
+    this.isSynced = false;
+    this.isDestroyed = false;
+    this.whenLoaded = create$6((resolve) => {
+      this.on("load", () => {
+        this.isLoaded = true;
+        resolve(this);
+      });
+    });
+    const provideSyncedPromise = () => create$6((resolve) => {
+      const eventHandler = (isSynced) => {
+        if (isSynced === void 0 || isSynced === true) {
+          this.off("sync", eventHandler);
+          resolve();
+        }
+      };
+      this.on("sync", eventHandler);
+    });
+    this.on("sync", (isSynced) => {
+      if (isSynced === false && this.isSynced) {
+        this.whenSynced = provideSyncedPromise();
+      }
+      this.isSynced = isSynced === void 0 || isSynced === true;
+      if (this.isSynced && !this.isLoaded) {
+        this.emit("load", [this]);
+      }
+    });
+    this.whenSynced = provideSyncedPromise();
+  }
+  /**
+   * Notify the parent document that you request to load data into this subdocument (if it is a subdocument).
+   *
+   * `load()` might be used in the future to request any provider to load the most current data.
+   *
+   * It is safe to call `load()` multiple times.
+   */
+  load() {
+    const item = this._item;
+    if (item !== null && !this.shouldLoad) {
+      transact$1(
+        /** @type {any} */
+        item.parent.doc,
+        (transaction) => {
+          transaction.subdocsLoaded.add(this);
+        },
+        null,
+        true
+      );
+    }
+    this.shouldLoad = true;
+  }
+  getSubdocs() {
+    return this.subdocs;
+  }
+  getSubdocGuids() {
+    return new Set(from$1(this.subdocs).map((doc) => doc.guid));
+  }
+  /**
+   * Changes that happen inside of a transaction are bundled. This means that
+   * the observer fires _after_ the transaction is finished and that all changes
+   * that happened inside of the transaction are sent as one message to the
+   * other peers.
+   *
+   * @template T
+   * @param {function(Transaction):T} f The function that should be executed as a transaction
+   * @param {any} [origin] Origin of who started the transaction. Will be stored on transaction.origin
+   * @return T
+   *
+   * @public
+   */
+  transact(f, origin = null) {
+    return transact$1(this, f, origin);
+  }
+  /**
+   * Define a shared data type.
+   *
+   * Multiple calls of `ydoc.get(name, TypeConstructor)` yield the same result
+   * and do not overwrite each other. I.e.
+   * `ydoc.get(name, Y.Array) === ydoc.get(name, Y.Array)`
+   *
+   * After this method is called, the type is also available on `ydoc.share.get(name)`.
+   *
+   * *Best Practices:*
+   * Define all types right after the Y.Doc instance is created and store them in a separate object.
+   * Also use the typed methods `getText(name)`, `getArray(name)`, ..
+   *
+   * @template {typeof AbstractType<any>} Type
+   * @example
+   *   const ydoc = new Y.Doc(..)
+   *   const appState = {
+   *     document: ydoc.getText('document')
+   *     comments: ydoc.getArray('comments')
+   *   }
+   *
+   * @param {string} name
+   * @param {Type} TypeConstructor The constructor of the type definition. E.g. Y.Text, Y.Array, Y.Map, ...
+   * @return {InstanceType<Type>} The created type. Constructed with TypeConstructor
+   *
+   * @public
+   */
+  get(name, TypeConstructor = (
+    /** @type {any} */
+    AbstractType$1
+  )) {
+    const type = setIfUndefined$1(this.share, name, () => {
+      const t = new TypeConstructor();
+      t._integrate(this, null);
+      return t;
+    });
+    const Constr = type.constructor;
+    if (TypeConstructor !== AbstractType$1 && Constr !== TypeConstructor) {
+      if (Constr === AbstractType$1) {
+        const t = new TypeConstructor();
+        t._map = type._map;
+        type._map.forEach(
+          /** @param {Item?} n */
+          (n) => {
+            for (; n !== null; n = n.left) {
+              n.parent = t;
+            }
+          }
+        );
+        t._start = type._start;
+        for (let n = t._start; n !== null; n = n.right) {
+          n.parent = t;
+        }
+        t._length = type._length;
+        this.share.set(name, t);
+        t._integrate(this, null);
+        return (
+          /** @type {InstanceType<Type>} */
+          t
+        );
+      } else {
+        throw new Error(`Type with the name ${name} has already been defined with a different constructor`);
+      }
+    }
+    return (
+      /** @type {InstanceType<Type>} */
+      type
+    );
+  }
+  /**
+   * @template T
+   * @param {string} [name]
+   * @return {YArray<T>}
+   *
+   * @public
+   */
+  getArray(name = "") {
+    return (
+      /** @type {YArray<T>} */
+      this.get(name, YArray$1)
+    );
+  }
+  /**
+   * @param {string} [name]
+   * @return {YText}
+   *
+   * @public
+   */
+  getText(name = "") {
+    return this.get(name, YText$1);
+  }
+  /**
+   * @template T
+   * @param {string} [name]
+   * @return {YMap<T>}
+   *
+   * @public
+   */
+  getMap(name = "") {
+    return (
+      /** @type {YMap<T>} */
+      this.get(name, YMap$1)
+    );
+  }
+  /**
+   * @param {string} [name]
+   * @return {YXmlElement}
+   *
+   * @public
+   */
+  getXmlElement(name = "") {
+    return (
+      /** @type {YXmlElement<{[key:string]:string}>} */
+      this.get(name, YXmlElement$1)
+    );
+  }
+  /**
+   * @param {string} [name]
+   * @return {YXmlFragment}
+   *
+   * @public
+   */
+  getXmlFragment(name = "") {
+    return this.get(name, YXmlFragment$1);
+  }
+  /**
+   * Converts the entire document into a js object, recursively traversing each yjs type
+   * Doesn't log types that have not been defined (using ydoc.getType(..)).
+   *
+   * @deprecated Do not use this method and rather call toJSON directly on the shared types.
+   *
+   * @return {Object<string, any>}
+   */
+  toJSON() {
+    const doc = {};
+    this.share.forEach((value, key) => {
+      doc[key] = value.toJSON();
+    });
+    return doc;
+  }
+  /**
+   * Emit `destroy` event and unregister all event handlers.
+   */
+  destroy() {
+    this.isDestroyed = true;
+    from$1(this.subdocs).forEach((subdoc) => subdoc.destroy());
+    const item = this._item;
+    if (item !== null) {
+      this._item = null;
+      const content = (
+        /** @type {ContentDoc} */
+        item.content
+      );
+      content.doc = new Doc({ guid: this.guid, ...content.opts, shouldLoad: false });
+      content.doc._item = item;
+      transact$1(
+        /** @type {any} */
+        item.parent.doc,
+        (transaction) => {
+          const doc = content.doc;
+          if (!item.deleted) {
+            transaction.subdocsAdded.add(doc);
+          }
+          transaction.subdocsRemoved.add(this);
+        },
+        null,
+        true
+      );
+    }
+    this.emit("destroyed", [true]);
+    this.emit("destroy", [this]);
+    super.destroy();
+  }
+};
+let DSDecoderV1$1 = class DSDecoderV1 {
+  /**
+   * @param {decoding.Decoder} decoder
+   */
+  constructor(decoder) {
+    this.restDecoder = decoder;
+  }
+  resetDsCurVal() {
+  }
+  /**
+   * @return {number}
+   */
+  readDsClock() {
+    return readVarUint$1(this.restDecoder);
+  }
+  /**
+   * @return {number}
+   */
+  readDsLen() {
+    return readVarUint$1(this.restDecoder);
+  }
+};
+let UpdateDecoderV1$1 = class UpdateDecoderV1 extends DSDecoderV1$1 {
+  /**
+   * @return {ID}
+   */
+  readLeftID() {
+    return createID$1(readVarUint$1(this.restDecoder), readVarUint$1(this.restDecoder));
+  }
+  /**
+   * @return {ID}
+   */
+  readRightID() {
+    return createID$1(readVarUint$1(this.restDecoder), readVarUint$1(this.restDecoder));
+  }
+  /**
+   * Read the next client id.
+   * Use this in favor of readID whenever possible to reduce the number of objects created.
+   */
+  readClient() {
+    return readVarUint$1(this.restDecoder);
+  }
+  /**
+   * @return {number} info An unsigned 8-bit integer
+   */
+  readInfo() {
+    return readUint8$1(this.restDecoder);
+  }
+  /**
+   * @return {string}
+   */
+  readString() {
+    return readVarString$1(this.restDecoder);
+  }
+  /**
+   * @return {boolean} isKey
+   */
+  readParentInfo() {
+    return readVarUint$1(this.restDecoder) === 1;
+  }
+  /**
+   * @return {number} info An unsigned 8-bit integer
+   */
+  readTypeRef() {
+    return readVarUint$1(this.restDecoder);
+  }
+  /**
+   * Write len of a struct - well suited for Opt RLE encoder.
+   *
+   * @return {number} len
+   */
+  readLen() {
+    return readVarUint$1(this.restDecoder);
+  }
+  /**
+   * @return {any}
+   */
+  readAny() {
+    return readAny$1(this.restDecoder);
+  }
+  /**
+   * @return {Uint8Array}
+   */
+  readBuf() {
+    return copyUint8Array$1(readVarUint8Array$1(this.restDecoder));
+  }
+  /**
+   * Legacy implementation uses JSON parse. We use any-decoding in v2.
+   *
+   * @return {any}
+   */
+  readJSON() {
+    return JSON.parse(readVarString$1(this.restDecoder));
+  }
+  /**
+   * @return {string}
+   */
+  readKey() {
+    return readVarString$1(this.restDecoder);
+  }
+};
+let DSDecoderV2$1 = class DSDecoderV2 {
+  /**
+   * @param {decoding.Decoder} decoder
+   */
+  constructor(decoder) {
+    this.dsCurrVal = 0;
+    this.restDecoder = decoder;
+  }
+  resetDsCurVal() {
+    this.dsCurrVal = 0;
+  }
+  /**
+   * @return {number}
+   */
+  readDsClock() {
+    this.dsCurrVal += readVarUint$1(this.restDecoder);
+    return this.dsCurrVal;
+  }
+  /**
+   * @return {number}
+   */
+  readDsLen() {
+    const diff = readVarUint$1(this.restDecoder) + 1;
+    this.dsCurrVal += diff;
+    return diff;
+  }
+};
+let UpdateDecoderV2$1 = class UpdateDecoderV2 extends DSDecoderV2$1 {
+  /**
+   * @param {decoding.Decoder} decoder
+   */
+  constructor(decoder) {
+    super(decoder);
+    this.keys = [];
+    readVarUint$1(decoder);
+    this.keyClockDecoder = new IntDiffOptRleDecoder$1(readVarUint8Array$1(decoder));
+    this.clientDecoder = new UintOptRleDecoder$1(readVarUint8Array$1(decoder));
+    this.leftClockDecoder = new IntDiffOptRleDecoder$1(readVarUint8Array$1(decoder));
+    this.rightClockDecoder = new IntDiffOptRleDecoder$1(readVarUint8Array$1(decoder));
+    this.infoDecoder = new RleDecoder$1(readVarUint8Array$1(decoder), readUint8$1);
+    this.stringDecoder = new StringDecoder$1(readVarUint8Array$1(decoder));
+    this.parentInfoDecoder = new RleDecoder$1(readVarUint8Array$1(decoder), readUint8$1);
+    this.typeRefDecoder = new UintOptRleDecoder$1(readVarUint8Array$1(decoder));
+    this.lenDecoder = new UintOptRleDecoder$1(readVarUint8Array$1(decoder));
+  }
+  /**
+   * @return {ID}
+   */
+  readLeftID() {
+    return new ID$1(this.clientDecoder.read(), this.leftClockDecoder.read());
+  }
+  /**
+   * @return {ID}
+   */
+  readRightID() {
+    return new ID$1(this.clientDecoder.read(), this.rightClockDecoder.read());
+  }
+  /**
+   * Read the next client id.
+   * Use this in favor of readID whenever possible to reduce the number of objects created.
+   */
+  readClient() {
+    return this.clientDecoder.read();
+  }
+  /**
+   * @return {number} info An unsigned 8-bit integer
+   */
+  readInfo() {
+    return (
+      /** @type {number} */
+      this.infoDecoder.read()
+    );
+  }
+  /**
+   * @return {string}
+   */
+  readString() {
+    return this.stringDecoder.read();
+  }
+  /**
+   * @return {boolean}
+   */
+  readParentInfo() {
+    return this.parentInfoDecoder.read() === 1;
+  }
+  /**
+   * @return {number} An unsigned 8-bit integer
+   */
+  readTypeRef() {
+    return this.typeRefDecoder.read();
+  }
+  /**
+   * Write len of a struct - well suited for Opt RLE encoder.
+   *
+   * @return {number}
+   */
+  readLen() {
+    return this.lenDecoder.read();
+  }
+  /**
+   * @return {any}
+   */
+  readAny() {
+    return readAny$1(this.restDecoder);
+  }
+  /**
+   * @return {Uint8Array}
+   */
+  readBuf() {
+    return readVarUint8Array$1(this.restDecoder);
+  }
+  /**
+   * This is mainly here for legacy purposes.
+   *
+   * Initial we incoded objects using JSON. Now we use the much faster lib0/any-encoder. This method mainly exists for legacy purposes for the v1 encoder.
+   *
+   * @return {any}
+   */
+  readJSON() {
+    return readAny$1(this.restDecoder);
+  }
+  /**
+   * @return {string}
+   */
+  readKey() {
+    const keyClock = this.keyClockDecoder.read();
+    if (keyClock < this.keys.length) {
+      return this.keys[keyClock];
+    } else {
+      const key = this.stringDecoder.read();
+      this.keys.push(key);
+      return key;
+    }
+  }
+};
+let DSEncoderV1$1 = class DSEncoderV1 {
+  constructor() {
+    this.restEncoder = createEncoder$1();
+  }
+  toUint8Array() {
+    return toUint8Array$1(this.restEncoder);
+  }
+  resetDsCurVal() {
+  }
+  /**
+   * @param {number} clock
+   */
+  writeDsClock(clock) {
+    writeVarUint$1(this.restEncoder, clock);
+  }
+  /**
+   * @param {number} len
+   */
+  writeDsLen(len) {
+    writeVarUint$1(this.restEncoder, len);
+  }
+};
+let UpdateEncoderV1$1 = class UpdateEncoderV1 extends DSEncoderV1$1 {
+  /**
+   * @param {ID} id
+   */
+  writeLeftID(id2) {
+    writeVarUint$1(this.restEncoder, id2.client);
+    writeVarUint$1(this.restEncoder, id2.clock);
+  }
+  /**
+   * @param {ID} id
+   */
+  writeRightID(id2) {
+    writeVarUint$1(this.restEncoder, id2.client);
+    writeVarUint$1(this.restEncoder, id2.clock);
+  }
+  /**
+   * Use writeClient and writeClock instead of writeID if possible.
+   * @param {number} client
+   */
+  writeClient(client) {
+    writeVarUint$1(this.restEncoder, client);
+  }
+  /**
+   * @param {number} info An unsigned 8-bit integer
+   */
+  writeInfo(info) {
+    writeUint8$1(this.restEncoder, info);
+  }
+  /**
+   * @param {string} s
+   */
+  writeString(s) {
+    writeVarString$1(this.restEncoder, s);
+  }
+  /**
+   * @param {boolean} isYKey
+   */
+  writeParentInfo(isYKey) {
+    writeVarUint$1(this.restEncoder, isYKey ? 1 : 0);
+  }
+  /**
+   * @param {number} info An unsigned 8-bit integer
+   */
+  writeTypeRef(info) {
+    writeVarUint$1(this.restEncoder, info);
+  }
+  /**
+   * Write len of a struct - well suited for Opt RLE encoder.
+   *
+   * @param {number} len
+   */
+  writeLen(len) {
+    writeVarUint$1(this.restEncoder, len);
+  }
+  /**
+   * @param {any} any
+   */
+  writeAny(any2) {
+    writeAny$1(this.restEncoder, any2);
+  }
+  /**
+   * @param {Uint8Array} buf
+   */
+  writeBuf(buf) {
+    writeVarUint8Array$1(this.restEncoder, buf);
+  }
+  /**
+   * @param {any} embed
+   */
+  writeJSON(embed) {
+    writeVarString$1(this.restEncoder, JSON.stringify(embed));
+  }
+  /**
+   * @param {string} key
+   */
+  writeKey(key) {
+    writeVarString$1(this.restEncoder, key);
+  }
+};
+let DSEncoderV2$1 = class DSEncoderV2 {
+  constructor() {
+    this.restEncoder = createEncoder$1();
+    this.dsCurrVal = 0;
+  }
+  toUint8Array() {
+    return toUint8Array$1(this.restEncoder);
+  }
+  resetDsCurVal() {
+    this.dsCurrVal = 0;
+  }
+  /**
+   * @param {number} clock
+   */
+  writeDsClock(clock) {
+    const diff = clock - this.dsCurrVal;
+    this.dsCurrVal = clock;
+    writeVarUint$1(this.restEncoder, diff);
+  }
+  /**
+   * @param {number} len
+   */
+  writeDsLen(len) {
+    if (len === 0) {
+      unexpectedCase$1();
+    }
+    writeVarUint$1(this.restEncoder, len - 1);
+    this.dsCurrVal += len;
+  }
+};
+let UpdateEncoderV2$1 = class UpdateEncoderV2 extends DSEncoderV2$1 {
+  constructor() {
+    super();
+    this.keyMap = /* @__PURE__ */ new Map();
+    this.keyClock = 0;
+    this.keyClockEncoder = new IntDiffOptRleEncoder$1();
+    this.clientEncoder = new UintOptRleEncoder$1();
+    this.leftClockEncoder = new IntDiffOptRleEncoder$1();
+    this.rightClockEncoder = new IntDiffOptRleEncoder$1();
+    this.infoEncoder = new RleEncoder$1(writeUint8$1);
+    this.stringEncoder = new StringEncoder$1();
+    this.parentInfoEncoder = new RleEncoder$1(writeUint8$1);
+    this.typeRefEncoder = new UintOptRleEncoder$1();
+    this.lenEncoder = new UintOptRleEncoder$1();
+  }
+  toUint8Array() {
+    const encoder = createEncoder$1();
+    writeVarUint$1(encoder, 0);
+    writeVarUint8Array$1(encoder, this.keyClockEncoder.toUint8Array());
+    writeVarUint8Array$1(encoder, this.clientEncoder.toUint8Array());
+    writeVarUint8Array$1(encoder, this.leftClockEncoder.toUint8Array());
+    writeVarUint8Array$1(encoder, this.rightClockEncoder.toUint8Array());
+    writeVarUint8Array$1(encoder, toUint8Array$1(this.infoEncoder));
+    writeVarUint8Array$1(encoder, this.stringEncoder.toUint8Array());
+    writeVarUint8Array$1(encoder, toUint8Array$1(this.parentInfoEncoder));
+    writeVarUint8Array$1(encoder, this.typeRefEncoder.toUint8Array());
+    writeVarUint8Array$1(encoder, this.lenEncoder.toUint8Array());
+    writeUint8Array$1(encoder, toUint8Array$1(this.restEncoder));
+    return toUint8Array$1(encoder);
+  }
+  /**
+   * @param {ID} id
+   */
+  writeLeftID(id2) {
+    this.clientEncoder.write(id2.client);
+    this.leftClockEncoder.write(id2.clock);
+  }
+  /**
+   * @param {ID} id
+   */
+  writeRightID(id2) {
+    this.clientEncoder.write(id2.client);
+    this.rightClockEncoder.write(id2.clock);
+  }
+  /**
+   * @param {number} client
+   */
+  writeClient(client) {
+    this.clientEncoder.write(client);
+  }
+  /**
+   * @param {number} info An unsigned 8-bit integer
+   */
+  writeInfo(info) {
+    this.infoEncoder.write(info);
+  }
+  /**
+   * @param {string} s
+   */
+  writeString(s) {
+    this.stringEncoder.write(s);
+  }
+  /**
+   * @param {boolean} isYKey
+   */
+  writeParentInfo(isYKey) {
+    this.parentInfoEncoder.write(isYKey ? 1 : 0);
+  }
+  /**
+   * @param {number} info An unsigned 8-bit integer
+   */
+  writeTypeRef(info) {
+    this.typeRefEncoder.write(info);
+  }
+  /**
+   * Write len of a struct - well suited for Opt RLE encoder.
+   *
+   * @param {number} len
+   */
+  writeLen(len) {
+    this.lenEncoder.write(len);
+  }
+  /**
+   * @param {any} any
+   */
+  writeAny(any2) {
+    writeAny$1(this.restEncoder, any2);
+  }
+  /**
+   * @param {Uint8Array} buf
+   */
+  writeBuf(buf) {
+    writeVarUint8Array$1(this.restEncoder, buf);
+  }
+  /**
+   * This is mainly here for legacy purposes.
+   *
+   * Initial we incoded objects using JSON. Now we use the much faster lib0/any-encoder. This method mainly exists for legacy purposes for the v1 encoder.
+   *
+   * @param {any} embed
+   */
+  writeJSON(embed) {
+    writeAny$1(this.restEncoder, embed);
+  }
+  /**
+   * Property keys are often reused. For example, in y-prosemirror the key `bold` might
+   * occur very often. For a 3d application, the key `position` might occur very often.
+   *
+   * We cache these keys in a Map and refer to them via a unique number.
+   *
+   * @param {string} key
+   */
+  writeKey(key) {
+    const clock = this.keyMap.get(key);
+    if (clock === void 0) {
+      this.keyClockEncoder.write(this.keyClock++);
+      this.stringEncoder.write(key);
+    } else {
+      this.keyClockEncoder.write(clock);
+    }
+  }
+};
+const writeStructs$1 = (encoder, structs, client, clock) => {
+  clock = max$1(clock, structs[0].id.clock);
+  const startNewStructs = findIndexSS$1(structs, clock);
+  writeVarUint$1(encoder.restEncoder, structs.length - startNewStructs);
+  encoder.writeClient(client);
+  writeVarUint$1(encoder.restEncoder, clock);
+  const firstStruct = structs[startNewStructs];
+  firstStruct.write(encoder, clock - firstStruct.id.clock);
+  for (let i = startNewStructs + 1; i < structs.length; i++) {
+    structs[i].write(encoder, 0);
+  }
+};
+const writeClientsStructs$1 = (encoder, store, _sm) => {
+  const sm = /* @__PURE__ */ new Map();
+  _sm.forEach((clock, client) => {
+    if (getState$1(store, client) > clock) {
+      sm.set(client, clock);
+    }
+  });
+  getStateVector$1(store).forEach((_clock, client) => {
+    if (!_sm.has(client)) {
+      sm.set(client, 0);
+    }
+  });
+  writeVarUint$1(encoder.restEncoder, sm.size);
+  from$1(sm.entries()).sort((a, b) => b[0] - a[0]).forEach(([client, clock]) => {
+    writeStructs$1(
+      encoder,
+      /** @type {Array<GC|Item>} */
+      store.clients.get(client),
+      client,
+      clock
+    );
+  });
+};
+const readClientsStructRefs$1 = (decoder, doc) => {
+  const clientRefs = create$9();
+  const numOfStateUpdates = readVarUint$1(decoder.restDecoder);
+  for (let i = 0; i < numOfStateUpdates; i++) {
+    const numberOfStructs = readVarUint$1(decoder.restDecoder);
+    const refs = new Array(numberOfStructs);
+    const client = decoder.readClient();
+    let clock = readVarUint$1(decoder.restDecoder);
+    clientRefs.set(client, { i: 0, refs });
+    for (let i2 = 0; i2 < numberOfStructs; i2++) {
+      const info = decoder.readInfo();
+      switch (BITS5$1 & info) {
+        case 0: {
+          const len = decoder.readLen();
+          refs[i2] = new GC$1(createID$1(client, clock), len);
+          clock += len;
+          break;
+        }
+        case 10: {
+          const len = readVarUint$1(decoder.restDecoder);
+          refs[i2] = new Skip$1(createID$1(client, clock), len);
+          clock += len;
+          break;
+        }
+        default: {
+          const cantCopyParentInfo = (info & (BIT7$1 | BIT8$1)) === 0;
+          const struct = new Item$1(
+            createID$1(client, clock),
+            null,
+            // left
+            (info & BIT8$1) === BIT8$1 ? decoder.readLeftID() : null,
+            // origin
+            null,
+            // right
+            (info & BIT7$1) === BIT7$1 ? decoder.readRightID() : null,
+            // right origin
+            cantCopyParentInfo ? decoder.readParentInfo() ? doc.get(decoder.readString()) : decoder.readLeftID() : null,
+            // parent
+            cantCopyParentInfo && (info & BIT6$1) === BIT6$1 ? decoder.readString() : null,
+            // parentSub
+            readItemContent$1(decoder, info)
+            // item content
+          );
+          refs[i2] = struct;
+          clock += struct.length;
+        }
+      }
+    }
+  }
+  return clientRefs;
+};
+const integrateStructs$1 = (transaction, store, clientsStructRefs) => {
+  const stack = [];
+  let clientsStructRefsIds = from$1(clientsStructRefs.keys()).sort((a, b) => a - b);
+  if (clientsStructRefsIds.length === 0) {
+    return null;
+  }
+  const getNextStructTarget = () => {
+    if (clientsStructRefsIds.length === 0) {
+      return null;
+    }
+    let nextStructsTarget = (
+      /** @type {{i:number,refs:Array<GC|Item>}} */
+      clientsStructRefs.get(clientsStructRefsIds[clientsStructRefsIds.length - 1])
+    );
+    while (nextStructsTarget.refs.length === nextStructsTarget.i) {
+      clientsStructRefsIds.pop();
+      if (clientsStructRefsIds.length > 0) {
+        nextStructsTarget = /** @type {{i:number,refs:Array<GC|Item>}} */
+        clientsStructRefs.get(clientsStructRefsIds[clientsStructRefsIds.length - 1]);
+      } else {
+        return null;
+      }
+    }
+    return nextStructsTarget;
+  };
+  let curStructsTarget = getNextStructTarget();
+  if (curStructsTarget === null) {
+    return null;
+  }
+  const restStructs = new StructStore$1();
+  const missingSV = /* @__PURE__ */ new Map();
+  const updateMissingSv = (client, clock) => {
+    const mclock = missingSV.get(client);
+    if (mclock == null || mclock > clock) {
+      missingSV.set(client, clock);
+    }
+  };
+  let stackHead = (
+    /** @type {any} */
+    curStructsTarget.refs[
+      /** @type {any} */
+      curStructsTarget.i++
+    ]
+  );
+  const state = /* @__PURE__ */ new Map();
+  const addStackToRestSS = () => {
+    for (const item of stack) {
+      const client = item.id.client;
+      const inapplicableItems = clientsStructRefs.get(client);
+      if (inapplicableItems) {
+        inapplicableItems.i--;
+        restStructs.clients.set(client, inapplicableItems.refs.slice(inapplicableItems.i));
+        clientsStructRefs.delete(client);
+        inapplicableItems.i = 0;
+        inapplicableItems.refs = [];
+      } else {
+        restStructs.clients.set(client, [item]);
+      }
+      clientsStructRefsIds = clientsStructRefsIds.filter((c) => c !== client);
+    }
+    stack.length = 0;
+  };
+  while (true) {
+    if (stackHead.constructor !== Skip$1) {
+      const localClock = setIfUndefined$1(state, stackHead.id.client, () => getState$1(store, stackHead.id.client));
+      const offset = localClock - stackHead.id.clock;
+      if (offset < 0) {
+        stack.push(stackHead);
+        updateMissingSv(stackHead.id.client, stackHead.id.clock - 1);
+        addStackToRestSS();
+      } else {
+        const missing = stackHead.getMissing(transaction, store);
+        if (missing !== null) {
+          stack.push(stackHead);
+          const structRefs = clientsStructRefs.get(
+            /** @type {number} */
+            missing
+          ) || { refs: [], i: 0 };
+          if (structRefs.refs.length === structRefs.i) {
+            updateMissingSv(
+              /** @type {number} */
+              missing,
+              getState$1(store, missing)
+            );
+            addStackToRestSS();
+          } else {
+            stackHead = structRefs.refs[structRefs.i++];
+            continue;
+          }
+        } else if (offset === 0 || offset < stackHead.length) {
+          stackHead.integrate(transaction, offset);
+          state.set(stackHead.id.client, stackHead.id.clock + stackHead.length);
+        }
+      }
+    }
+    if (stack.length > 0) {
+      stackHead = /** @type {GC|Item} */
+      stack.pop();
+    } else if (curStructsTarget !== null && curStructsTarget.i < curStructsTarget.refs.length) {
+      stackHead = /** @type {GC|Item} */
+      curStructsTarget.refs[curStructsTarget.i++];
+    } else {
+      curStructsTarget = getNextStructTarget();
+      if (curStructsTarget === null) {
+        break;
+      } else {
+        stackHead = /** @type {GC|Item} */
+        curStructsTarget.refs[curStructsTarget.i++];
+      }
+    }
+  }
+  if (restStructs.clients.size > 0) {
+    const encoder = new UpdateEncoderV2$1();
+    writeClientsStructs$1(encoder, restStructs, /* @__PURE__ */ new Map());
+    writeVarUint$1(encoder.restEncoder, 0);
+    return { missing: missingSV, update: encoder.toUint8Array() };
+  }
+  return null;
+};
+const writeStructsFromTransaction$1 = (encoder, transaction) => writeClientsStructs$1(encoder, transaction.doc.store, transaction.beforeState);
+const readUpdateV2$1 = (decoder, ydoc, transactionOrigin, structDecoder = new UpdateDecoderV2$1(decoder)) => transact$1(ydoc, (transaction) => {
+  transaction.local = false;
+  let retry = false;
+  const doc = transaction.doc;
+  const store = doc.store;
+  const ss = readClientsStructRefs$1(structDecoder, doc);
+  const restStructs = integrateStructs$1(transaction, store, ss);
+  const pending2 = store.pendingStructs;
+  if (pending2) {
+    for (const [client, clock] of pending2.missing) {
+      if (clock < getState$1(store, client)) {
+        retry = true;
+        break;
+      }
+    }
+    if (restStructs) {
+      for (const [client, clock] of restStructs.missing) {
+        const mclock = pending2.missing.get(client);
+        if (mclock == null || mclock > clock) {
+          pending2.missing.set(client, clock);
+        }
+      }
+      pending2.update = mergeUpdatesV2$1([pending2.update, restStructs.update]);
+    }
+  } else {
+    store.pendingStructs = restStructs;
+  }
+  const dsRest = readAndApplyDeleteSet$1(structDecoder, transaction, store);
+  if (store.pendingDs) {
+    const pendingDSUpdate = new UpdateDecoderV2$1(createDecoder$1(store.pendingDs));
+    readVarUint$1(pendingDSUpdate.restDecoder);
+    const dsRest2 = readAndApplyDeleteSet$1(pendingDSUpdate, transaction, store);
+    if (dsRest && dsRest2) {
+      store.pendingDs = mergeUpdatesV2$1([dsRest, dsRest2]);
+    } else {
+      store.pendingDs = dsRest || dsRest2;
+    }
+  } else {
+    store.pendingDs = dsRest;
+  }
+  if (retry) {
+    const update = (
+      /** @type {{update: Uint8Array}} */
+      store.pendingStructs.update
+    );
+    store.pendingStructs = null;
+    applyUpdateV2$1(transaction.doc, update);
+  }
+}, transactionOrigin, false);
+const applyUpdateV2$1 = (ydoc, update, transactionOrigin, YDecoder = UpdateDecoderV2$1) => {
+  const decoder = createDecoder$1(update);
+  readUpdateV2$1(decoder, ydoc, transactionOrigin, new YDecoder(decoder));
+};
+const applyUpdate$2 = (ydoc, update, transactionOrigin) => applyUpdateV2$1(ydoc, update, transactionOrigin, UpdateDecoderV1$1);
+const writeStateAsUpdate = (encoder, doc, targetStateVector = /* @__PURE__ */ new Map()) => {
+  writeClientsStructs$1(encoder, doc.store, targetStateVector);
+  writeDeleteSet$1(encoder, createDeleteSetFromStructStore(doc.store));
+};
+const encodeStateAsUpdateV2 = (doc, encodedTargetStateVector = new Uint8Array([0]), encoder = new UpdateEncoderV2$1()) => {
+  const targetStateVector = decodeStateVector(encodedTargetStateVector);
+  writeStateAsUpdate(encoder, doc, targetStateVector);
+  const updates = [encoder.toUint8Array()];
+  if (doc.store.pendingDs) {
+    updates.push(doc.store.pendingDs);
+  }
+  if (doc.store.pendingStructs) {
+    updates.push(diffUpdateV2(doc.store.pendingStructs.update, encodedTargetStateVector));
+  }
+  if (updates.length > 1) {
+    if (encoder.constructor === UpdateEncoderV1$1) {
+      return mergeUpdates(updates.map((update, i) => i === 0 ? update : convertUpdateFormatV2ToV1(update)));
+    } else if (encoder.constructor === UpdateEncoderV2$1) {
+      return mergeUpdatesV2$1(updates);
+    }
+  }
+  return updates[0];
+};
+const encodeStateAsUpdate = (doc, encodedTargetStateVector) => encodeStateAsUpdateV2(doc, encodedTargetStateVector, new UpdateEncoderV1$1());
+const readStateVector = (decoder) => {
+  const ss = /* @__PURE__ */ new Map();
+  const ssLength = readVarUint$1(decoder.restDecoder);
+  for (let i = 0; i < ssLength; i++) {
+    const client = readVarUint$1(decoder.restDecoder);
+    const clock = readVarUint$1(decoder.restDecoder);
+    ss.set(client, clock);
+  }
+  return ss;
+};
+const decodeStateVector = (decodedState) => readStateVector(new DSDecoderV1$1(createDecoder$1(decodedState)));
+let EventHandler$1 = class EventHandler {
+  constructor() {
+    this.l = [];
+  }
+};
+const createEventHandler$1 = () => new EventHandler$1();
+const addEventHandlerListener$1 = (eventHandler, f) => eventHandler.l.push(f);
+const removeEventHandlerListener$1 = (eventHandler, f) => {
+  const l = eventHandler.l;
+  const len = l.length;
+  eventHandler.l = l.filter((g) => f !== g);
+  if (len === eventHandler.l.length) {
+    console.error("[yjs] Tried to remove event handler that doesn't exist.");
+  }
+};
+const callEventHandlerListeners$1 = (eventHandler, arg0, arg1) => callAll$1(eventHandler.l, [arg0, arg1]);
+let ID$1 = class ID {
+  /**
+   * @param {number} client client id
+   * @param {number} clock unique per client id, continuous number
+   */
+  constructor(client, clock) {
+    this.client = client;
+    this.clock = clock;
+  }
+};
+const compareIDs$1 = (a, b) => a === b || a !== null && b !== null && a.client === b.client && a.clock === b.clock;
+const createID$1 = (client, clock) => new ID$1(client, clock);
+const findRootTypeKey$1 = (type) => {
+  for (const [key, value] of type.doc.share.entries()) {
+    if (value === type) {
+      return key;
+    }
+  }
+  throw unexpectedCase$1();
+};
+const isVisible$1 = (item, snapshot) => snapshot === void 0 ? !item.deleted : snapshot.sv.has(item.id.client) && (snapshot.sv.get(item.id.client) || 0) > item.id.clock && !isDeleted$1(snapshot.ds, item.id);
+const splitSnapshotAffectedStructs$1 = (transaction, snapshot) => {
+  const meta = setIfUndefined$1(transaction.meta, splitSnapshotAffectedStructs$1, create$8);
+  const store = transaction.doc.store;
+  if (!meta.has(snapshot)) {
+    snapshot.sv.forEach((clock, client) => {
+      if (clock < getState$1(store, client)) {
+        getItemCleanStart$1(transaction, createID$1(client, clock));
+      }
+    });
+    iterateDeletedStructs$1(transaction, snapshot.ds, (_item) => {
+    });
+    meta.add(snapshot);
+  }
+};
+let StructStore$1 = class StructStore {
+  constructor() {
+    this.clients = /* @__PURE__ */ new Map();
+    this.pendingStructs = null;
+    this.pendingDs = null;
+  }
+};
+const getStateVector$1 = (store) => {
+  const sm = /* @__PURE__ */ new Map();
+  store.clients.forEach((structs, client) => {
+    const struct = structs[structs.length - 1];
+    sm.set(client, struct.id.clock + struct.length);
+  });
+  return sm;
+};
+const getState$1 = (store, client) => {
+  const structs = store.clients.get(client);
+  if (structs === void 0) {
+    return 0;
+  }
+  const lastStruct = structs[structs.length - 1];
+  return lastStruct.id.clock + lastStruct.length;
+};
+const addStruct$1 = (store, struct) => {
+  let structs = store.clients.get(struct.id.client);
+  if (structs === void 0) {
+    structs = [];
+    store.clients.set(struct.id.client, structs);
+  } else {
+    const lastStruct = structs[structs.length - 1];
+    if (lastStruct.id.clock + lastStruct.length !== struct.id.clock) {
+      throw unexpectedCase$1();
+    }
+  }
+  structs.push(struct);
+};
+const findIndexSS$1 = (structs, clock) => {
+  let left = 0;
+  let right = structs.length - 1;
+  let mid = structs[right];
+  let midclock = mid.id.clock;
+  if (midclock === clock) {
+    return right;
+  }
+  let midindex = floor$1(clock / (midclock + mid.length - 1) * right);
+  while (left <= right) {
+    mid = structs[midindex];
+    midclock = mid.id.clock;
+    if (midclock <= clock) {
+      if (clock < midclock + mid.length) {
+        return midindex;
+      }
+      left = midindex + 1;
+    } else {
+      right = midindex - 1;
+    }
+    midindex = floor$1((left + right) / 2);
+  }
+  throw unexpectedCase$1();
+};
+const find$1 = (store, id2) => {
+  const structs = store.clients.get(id2.client);
+  return structs[findIndexSS$1(structs, id2.clock)];
+};
+const getItem$1 = (
+  /** @type {function(StructStore,ID):Item} */
+  find$1
+);
+const findIndexCleanStart$1 = (transaction, structs, clock) => {
+  const index = findIndexSS$1(structs, clock);
+  const struct = structs[index];
+  if (struct.id.clock < clock && struct instanceof Item$1) {
+    structs.splice(index + 1, 0, splitItem$1(transaction, struct, clock - struct.id.clock));
+    return index + 1;
+  }
+  return index;
+};
+const getItemCleanStart$1 = (transaction, id2) => {
+  const structs = (
+    /** @type {Array<Item>} */
+    transaction.doc.store.clients.get(id2.client)
+  );
+  return structs[findIndexCleanStart$1(transaction, structs, id2.clock)];
+};
+const getItemCleanEnd$1 = (transaction, store, id2) => {
+  const structs = store.clients.get(id2.client);
+  const index = findIndexSS$1(structs, id2.clock);
+  const struct = structs[index];
+  if (id2.clock !== struct.id.clock + struct.length - 1 && struct.constructor !== GC$1) {
+    structs.splice(index + 1, 0, splitItem$1(transaction, struct, id2.clock - struct.id.clock + 1));
+  }
+  return struct;
+};
+const replaceStruct$1 = (store, struct, newStruct) => {
+  const structs = (
+    /** @type {Array<GC|Item>} */
+    store.clients.get(struct.id.client)
+  );
+  structs[findIndexSS$1(structs, struct.id.clock)] = newStruct;
+};
+const iterateStructs$1 = (transaction, structs, clockStart, len, f) => {
+  if (len === 0) {
+    return;
+  }
+  const clockEnd = clockStart + len;
+  let index = findIndexCleanStart$1(transaction, structs, clockStart);
+  let struct;
+  do {
+    struct = structs[index++];
+    if (clockEnd < struct.id.clock + struct.length) {
+      findIndexCleanStart$1(transaction, structs, clockEnd);
+    }
+    f(struct);
+  } while (index < structs.length && structs[index].id.clock < clockEnd);
+};
+let Transaction$1 = class Transaction {
+  /**
+   * @param {Doc} doc
+   * @param {any} origin
+   * @param {boolean} local
+   */
+  constructor(doc, origin, local) {
+    this.doc = doc;
+    this.deleteSet = new DeleteSet$1();
+    this.beforeState = getStateVector$1(doc.store);
+    this.afterState = /* @__PURE__ */ new Map();
+    this.changed = /* @__PURE__ */ new Map();
+    this.changedParentTypes = /* @__PURE__ */ new Map();
+    this._mergeStructs = [];
+    this.origin = origin;
+    this.meta = /* @__PURE__ */ new Map();
+    this.local = local;
+    this.subdocsAdded = /* @__PURE__ */ new Set();
+    this.subdocsRemoved = /* @__PURE__ */ new Set();
+    this.subdocsLoaded = /* @__PURE__ */ new Set();
+    this._needFormattingCleanup = false;
+  }
+};
+const writeUpdateMessageFromTransaction$1 = (encoder, transaction) => {
+  if (transaction.deleteSet.clients.size === 0 && !any$1(transaction.afterState, (clock, client) => transaction.beforeState.get(client) !== clock)) {
+    return false;
+  }
+  sortAndMergeDeleteSet$1(transaction.deleteSet);
+  writeStructsFromTransaction$1(encoder, transaction);
+  writeDeleteSet$1(encoder, transaction.deleteSet);
+  return true;
+};
+const addChangedTypeToTransaction$1 = (transaction, type, parentSub) => {
+  const item = type._item;
+  if (item === null || item.id.clock < (transaction.beforeState.get(item.id.client) || 0) && !item.deleted) {
+    setIfUndefined$1(transaction.changed, type, create$8).add(parentSub);
+  }
+};
+const tryToMergeWithLefts$1 = (structs, pos) => {
+  let right = structs[pos];
+  let left = structs[pos - 1];
+  let i = pos;
+  for (; i > 0; right = left, left = structs[--i - 1]) {
+    if (left.deleted === right.deleted && left.constructor === right.constructor) {
+      if (left.mergeWith(right)) {
+        if (right instanceof Item$1 && right.parentSub !== null && /** @type {AbstractType<any>} */
+        right.parent._map.get(right.parentSub) === right) {
+          right.parent._map.set(
+            right.parentSub,
+            /** @type {Item} */
+            left
+          );
+        }
+        continue;
+      }
+    }
+    break;
+  }
+  const merged = pos - i;
+  if (merged) {
+    structs.splice(pos + 1 - merged, merged);
+  }
+  return merged;
+};
+const tryGcDeleteSet$1 = (ds, store, gcFilter) => {
+  for (const [client, deleteItems] of ds.clients.entries()) {
+    const structs = (
+      /** @type {Array<GC|Item>} */
+      store.clients.get(client)
+    );
+    for (let di = deleteItems.length - 1; di >= 0; di--) {
+      const deleteItem = deleteItems[di];
+      const endDeleteItemClock = deleteItem.clock + deleteItem.len;
+      for (let si = findIndexSS$1(structs, deleteItem.clock), struct = structs[si]; si < structs.length && struct.id.clock < endDeleteItemClock; struct = structs[++si]) {
+        const struct2 = structs[si];
+        if (deleteItem.clock + deleteItem.len <= struct2.id.clock) {
+          break;
+        }
+        if (struct2 instanceof Item$1 && struct2.deleted && !struct2.keep && gcFilter(struct2)) {
+          struct2.gc(store, false);
+        }
+      }
+    }
+  }
+};
+const tryMergeDeleteSet$1 = (ds, store) => {
+  ds.clients.forEach((deleteItems, client) => {
+    const structs = (
+      /** @type {Array<GC|Item>} */
+      store.clients.get(client)
+    );
+    for (let di = deleteItems.length - 1; di >= 0; di--) {
+      const deleteItem = deleteItems[di];
+      const mostRightIndexToCheck = min$1(structs.length - 1, 1 + findIndexSS$1(structs, deleteItem.clock + deleteItem.len - 1));
+      for (let si = mostRightIndexToCheck, struct = structs[si]; si > 0 && struct.id.clock >= deleteItem.clock; struct = structs[si]) {
+        si -= 1 + tryToMergeWithLefts$1(structs, si);
+      }
+    }
+  });
+};
+const cleanupTransactions$1 = (transactionCleanups, i) => {
+  if (i < transactionCleanups.length) {
+    const transaction = transactionCleanups[i];
+    const doc = transaction.doc;
+    const store = doc.store;
+    const ds = transaction.deleteSet;
+    const mergeStructs = transaction._mergeStructs;
+    try {
+      sortAndMergeDeleteSet$1(ds);
+      transaction.afterState = getStateVector$1(transaction.doc.store);
+      doc.emit("beforeObserverCalls", [transaction, doc]);
+      const fs2 = [];
+      transaction.changed.forEach(
+        (subs, itemtype) => fs2.push(() => {
+          if (itemtype._item === null || !itemtype._item.deleted) {
+            itemtype._callObserver(transaction, subs);
+          }
+        })
+      );
+      fs2.push(() => {
+        transaction.changedParentTypes.forEach((events2, type) => {
+          if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
+            events2 = events2.filter(
+              (event) => event.target._item === null || !event.target._item.deleted
+            );
+            events2.forEach((event) => {
+              event.currentTarget = type;
+              event._path = null;
+            });
+            events2.sort((event1, event2) => event1.path.length - event2.path.length);
+            fs2.push(() => {
+              callEventHandlerListeners$1(type._dEH, events2, transaction);
+            });
+          }
+        });
+        fs2.push(() => doc.emit("afterTransaction", [transaction, doc]));
+        fs2.push(() => {
+          if (transaction._needFormattingCleanup) {
+            cleanupYTextAfterTransaction$1(transaction);
+          }
+        });
+      });
+      callAll$1(fs2, []);
+    } finally {
+      if (doc.gc) {
+        tryGcDeleteSet$1(ds, store, doc.gcFilter);
+      }
+      tryMergeDeleteSet$1(ds, store);
+      transaction.afterState.forEach((clock, client) => {
+        const beforeClock = transaction.beforeState.get(client) || 0;
+        if (beforeClock !== clock) {
+          const structs = (
+            /** @type {Array<GC|Item>} */
+            store.clients.get(client)
+          );
+          const firstChangePos = max$1(findIndexSS$1(structs, beforeClock), 1);
+          for (let i2 = structs.length - 1; i2 >= firstChangePos; ) {
+            i2 -= 1 + tryToMergeWithLefts$1(structs, i2);
+          }
+        }
+      });
+      for (let i2 = mergeStructs.length - 1; i2 >= 0; i2--) {
+        const { client, clock } = mergeStructs[i2].id;
+        const structs = (
+          /** @type {Array<GC|Item>} */
+          store.clients.get(client)
+        );
+        const replacedStructPos = findIndexSS$1(structs, clock);
+        if (replacedStructPos + 1 < structs.length) {
+          if (tryToMergeWithLefts$1(structs, replacedStructPos + 1) > 1) {
+            continue;
+          }
+        }
+        if (replacedStructPos > 0) {
+          tryToMergeWithLefts$1(structs, replacedStructPos);
+        }
+      }
+      if (!transaction.local && transaction.afterState.get(doc.clientID) !== transaction.beforeState.get(doc.clientID)) {
+        print$1(ORANGE$1, BOLD$1, "[yjs] ", UNBOLD$1, RED$1, "Changed the client-id because another client seems to be using it.");
+        doc.clientID = generateNewClientId$1();
+      }
+      doc.emit("afterTransactionCleanup", [transaction, doc]);
+      if (doc._observers.has("update")) {
+        const encoder = new UpdateEncoderV1$1();
+        const hasContent2 = writeUpdateMessageFromTransaction$1(encoder, transaction);
+        if (hasContent2) {
+          doc.emit("update", [encoder.toUint8Array(), transaction.origin, doc, transaction]);
+        }
+      }
+      if (doc._observers.has("updateV2")) {
+        const encoder = new UpdateEncoderV2$1();
+        const hasContent2 = writeUpdateMessageFromTransaction$1(encoder, transaction);
+        if (hasContent2) {
+          doc.emit("updateV2", [encoder.toUint8Array(), transaction.origin, doc, transaction]);
+        }
+      }
+      const { subdocsAdded, subdocsLoaded, subdocsRemoved } = transaction;
+      if (subdocsAdded.size > 0 || subdocsRemoved.size > 0 || subdocsLoaded.size > 0) {
+        subdocsAdded.forEach((subdoc) => {
+          subdoc.clientID = doc.clientID;
+          if (subdoc.collectionid == null) {
+            subdoc.collectionid = doc.collectionid;
+          }
+          doc.subdocs.add(subdoc);
+        });
+        subdocsRemoved.forEach((subdoc) => doc.subdocs.delete(subdoc));
+        doc.emit("subdocs", [{ loaded: subdocsLoaded, added: subdocsAdded, removed: subdocsRemoved }, doc, transaction]);
+        subdocsRemoved.forEach((subdoc) => subdoc.destroy());
+      }
+      if (transactionCleanups.length <= i + 1) {
+        doc._transactionCleanups = [];
+        doc.emit("afterAllTransactions", [doc, transactionCleanups]);
+      } else {
+        cleanupTransactions$1(transactionCleanups, i + 1);
+      }
+    }
+  }
+};
+const transact$1 = (doc, f, origin = null, local = true) => {
+  const transactionCleanups = doc._transactionCleanups;
+  let initialCall = false;
+  let result = null;
+  if (doc._transaction === null) {
+    initialCall = true;
+    doc._transaction = new Transaction$1(doc, origin, local);
+    transactionCleanups.push(doc._transaction);
+    if (transactionCleanups.length === 1) {
+      doc.emit("beforeAllTransactions", [doc]);
+    }
+    doc.emit("beforeTransaction", [doc._transaction, doc]);
+  }
+  try {
+    result = f(doc._transaction);
+  } finally {
+    if (initialCall) {
+      const finishCleanup = doc._transaction === transactionCleanups[0];
+      doc._transaction = null;
+      if (finishCleanup) {
+        cleanupTransactions$1(transactionCleanups, 0);
+      }
+    }
+  }
+  return result;
+};
+function* lazyStructReaderGenerator$1(decoder) {
+  const numOfStateUpdates = readVarUint$1(decoder.restDecoder);
+  for (let i = 0; i < numOfStateUpdates; i++) {
+    const numberOfStructs = readVarUint$1(decoder.restDecoder);
+    const client = decoder.readClient();
+    let clock = readVarUint$1(decoder.restDecoder);
+    for (let i2 = 0; i2 < numberOfStructs; i2++) {
+      const info = decoder.readInfo();
+      if (info === 10) {
+        const len = readVarUint$1(decoder.restDecoder);
+        yield new Skip$1(createID$1(client, clock), len);
+        clock += len;
+      } else if ((BITS5$1 & info) !== 0) {
+        const cantCopyParentInfo = (info & (BIT7$1 | BIT8$1)) === 0;
+        const struct = new Item$1(
+          createID$1(client, clock),
+          null,
+          // left
+          (info & BIT8$1) === BIT8$1 ? decoder.readLeftID() : null,
+          // origin
+          null,
+          // right
+          (info & BIT7$1) === BIT7$1 ? decoder.readRightID() : null,
+          // right origin
+          // @ts-ignore Force writing a string here.
+          cantCopyParentInfo ? decoder.readParentInfo() ? decoder.readString() : decoder.readLeftID() : null,
+          // parent
+          cantCopyParentInfo && (info & BIT6$1) === BIT6$1 ? decoder.readString() : null,
+          // parentSub
+          readItemContent$1(decoder, info)
+          // item content
+        );
+        yield struct;
+        clock += struct.length;
+      } else {
+        const len = decoder.readLen();
+        yield new GC$1(createID$1(client, clock), len);
+        clock += len;
+      }
+    }
+  }
+}
+let LazyStructReader$1 = class LazyStructReader {
+  /**
+   * @param {UpdateDecoderV1 | UpdateDecoderV2} decoder
+   * @param {boolean} filterSkips
+   */
+  constructor(decoder, filterSkips) {
+    this.gen = lazyStructReaderGenerator$1(decoder);
+    this.curr = null;
+    this.done = false;
+    this.filterSkips = filterSkips;
+    this.next();
+  }
+  /**
+   * @return {Item | GC | Skip |null}
+   */
+  next() {
+    do {
+      this.curr = this.gen.next().value || null;
+    } while (this.filterSkips && this.curr !== null && this.curr.constructor === Skip$1);
+    return this.curr;
+  }
+};
+let LazyStructWriter$1 = class LazyStructWriter {
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   */
+  constructor(encoder) {
+    this.currClient = 0;
+    this.startClock = 0;
+    this.written = 0;
+    this.encoder = encoder;
+    this.clientStructs = [];
+  }
+};
+const mergeUpdates = (updates) => mergeUpdatesV2$1(updates, UpdateDecoderV1$1, UpdateEncoderV1$1);
+const sliceStruct$1 = (left, diff) => {
+  if (left.constructor === GC$1) {
+    const { client, clock } = left.id;
+    return new GC$1(createID$1(client, clock + diff), left.length - diff);
+  } else if (left.constructor === Skip$1) {
+    const { client, clock } = left.id;
+    return new Skip$1(createID$1(client, clock + diff), left.length - diff);
+  } else {
+    const leftItem = (
+      /** @type {Item} */
+      left
+    );
+    const { client, clock } = leftItem.id;
+    return new Item$1(
+      createID$1(client, clock + diff),
+      null,
+      createID$1(client, clock + diff - 1),
+      null,
+      leftItem.rightOrigin,
+      leftItem.parent,
+      leftItem.parentSub,
+      leftItem.content.splice(diff)
+    );
+  }
+};
+const mergeUpdatesV2$1 = (updates, YDecoder = UpdateDecoderV2$1, YEncoder = UpdateEncoderV2$1) => {
+  if (updates.length === 1) {
+    return updates[0];
+  }
+  const updateDecoders = updates.map((update) => new YDecoder(createDecoder$1(update)));
+  let lazyStructDecoders = updateDecoders.map((decoder) => new LazyStructReader$1(decoder, true));
+  let currWrite = null;
+  const updateEncoder = new YEncoder();
+  const lazyStructEncoder = new LazyStructWriter$1(updateEncoder);
+  while (true) {
+    lazyStructDecoders = lazyStructDecoders.filter((dec) => dec.curr !== null);
+    lazyStructDecoders.sort(
+      /** @type {function(any,any):number} */
+      (dec1, dec2) => {
+        if (dec1.curr.id.client === dec2.curr.id.client) {
+          const clockDiff = dec1.curr.id.clock - dec2.curr.id.clock;
+          if (clockDiff === 0) {
+            return dec1.curr.constructor === dec2.curr.constructor ? 0 : dec1.curr.constructor === Skip$1 ? 1 : -1;
+          } else {
+            return clockDiff;
+          }
+        } else {
+          return dec2.curr.id.client - dec1.curr.id.client;
+        }
+      }
+    );
+    if (lazyStructDecoders.length === 0) {
+      break;
+    }
+    const currDecoder = lazyStructDecoders[0];
+    const firstClient = (
+      /** @type {Item | GC} */
+      currDecoder.curr.id.client
+    );
+    if (currWrite !== null) {
+      let curr = (
+        /** @type {Item | GC | null} */
+        currDecoder.curr
+      );
+      let iterated = false;
+      while (curr !== null && curr.id.clock + curr.length <= currWrite.struct.id.clock + currWrite.struct.length && curr.id.client >= currWrite.struct.id.client) {
+        curr = currDecoder.next();
+        iterated = true;
+      }
+      if (curr === null || // current decoder is empty
+      curr.id.client !== firstClient || // check whether there is another decoder that has has updates from `firstClient`
+      iterated && curr.id.clock > currWrite.struct.id.clock + currWrite.struct.length) {
+        continue;
+      }
+      if (firstClient !== currWrite.struct.id.client) {
+        writeStructToLazyStructWriter$1(lazyStructEncoder, currWrite.struct, currWrite.offset);
+        currWrite = { struct: curr, offset: 0 };
+        currDecoder.next();
+      } else {
+        if (currWrite.struct.id.clock + currWrite.struct.length < curr.id.clock) {
+          if (currWrite.struct.constructor === Skip$1) {
+            currWrite.struct.length = curr.id.clock + curr.length - currWrite.struct.id.clock;
+          } else {
+            writeStructToLazyStructWriter$1(lazyStructEncoder, currWrite.struct, currWrite.offset);
+            const diff = curr.id.clock - currWrite.struct.id.clock - currWrite.struct.length;
+            const struct = new Skip$1(createID$1(firstClient, currWrite.struct.id.clock + currWrite.struct.length), diff);
+            currWrite = { struct, offset: 0 };
+          }
+        } else {
+          const diff = currWrite.struct.id.clock + currWrite.struct.length - curr.id.clock;
+          if (diff > 0) {
+            if (currWrite.struct.constructor === Skip$1) {
+              currWrite.struct.length -= diff;
+            } else {
+              curr = sliceStruct$1(curr, diff);
+            }
+          }
+          if (!currWrite.struct.mergeWith(
+            /** @type {any} */
+            curr
+          )) {
+            writeStructToLazyStructWriter$1(lazyStructEncoder, currWrite.struct, currWrite.offset);
+            currWrite = { struct: curr, offset: 0 };
+            currDecoder.next();
+          }
+        }
+      }
+    } else {
+      currWrite = { struct: (
+        /** @type {Item | GC} */
+        currDecoder.curr
+      ), offset: 0 };
+      currDecoder.next();
+    }
+    for (let next = currDecoder.curr; next !== null && next.id.client === firstClient && next.id.clock === currWrite.struct.id.clock + currWrite.struct.length && next.constructor !== Skip$1; next = currDecoder.next()) {
+      writeStructToLazyStructWriter$1(lazyStructEncoder, currWrite.struct, currWrite.offset);
+      currWrite = { struct: next, offset: 0 };
+    }
+  }
+  if (currWrite !== null) {
+    writeStructToLazyStructWriter$1(lazyStructEncoder, currWrite.struct, currWrite.offset);
+    currWrite = null;
+  }
+  finishLazyStructWriting$1(lazyStructEncoder);
+  const dss = updateDecoders.map((decoder) => readDeleteSet$1(decoder));
+  const ds = mergeDeleteSets$1(dss);
+  writeDeleteSet$1(updateEncoder, ds);
+  return updateEncoder.toUint8Array();
+};
+const diffUpdateV2 = (update, sv, YDecoder = UpdateDecoderV2$1, YEncoder = UpdateEncoderV2$1) => {
+  const state = decodeStateVector(sv);
+  const encoder = new YEncoder();
+  const lazyStructWriter = new LazyStructWriter$1(encoder);
+  const decoder = new YDecoder(createDecoder$1(update));
+  const reader = new LazyStructReader$1(decoder, false);
+  while (reader.curr) {
+    const curr = reader.curr;
+    const currClient = curr.id.client;
+    const svClock = state.get(currClient) || 0;
+    if (reader.curr.constructor === Skip$1) {
+      reader.next();
+      continue;
+    }
+    if (curr.id.clock + curr.length > svClock) {
+      writeStructToLazyStructWriter$1(lazyStructWriter, curr, max$1(svClock - curr.id.clock, 0));
+      reader.next();
+      while (reader.curr && reader.curr.id.client === currClient) {
+        writeStructToLazyStructWriter$1(lazyStructWriter, reader.curr, 0);
+        reader.next();
+      }
+    } else {
+      while (reader.curr && reader.curr.id.client === currClient && reader.curr.id.clock + reader.curr.length <= svClock) {
+        reader.next();
+      }
+    }
+  }
+  finishLazyStructWriting$1(lazyStructWriter);
+  const ds = readDeleteSet$1(decoder);
+  writeDeleteSet$1(encoder, ds);
+  return encoder.toUint8Array();
+};
+const flushLazyStructWriter$1 = (lazyWriter) => {
+  if (lazyWriter.written > 0) {
+    lazyWriter.clientStructs.push({ written: lazyWriter.written, restEncoder: toUint8Array$1(lazyWriter.encoder.restEncoder) });
+    lazyWriter.encoder.restEncoder = createEncoder$1();
+    lazyWriter.written = 0;
+  }
+};
+const writeStructToLazyStructWriter$1 = (lazyWriter, struct, offset) => {
+  if (lazyWriter.written > 0 && lazyWriter.currClient !== struct.id.client) {
+    flushLazyStructWriter$1(lazyWriter);
+  }
+  if (lazyWriter.written === 0) {
+    lazyWriter.currClient = struct.id.client;
+    lazyWriter.encoder.writeClient(struct.id.client);
+    writeVarUint$1(lazyWriter.encoder.restEncoder, struct.id.clock + offset);
+  }
+  struct.write(lazyWriter.encoder, offset);
+  lazyWriter.written++;
+};
+const finishLazyStructWriting$1 = (lazyWriter) => {
+  flushLazyStructWriter$1(lazyWriter);
+  const restEncoder = lazyWriter.encoder.restEncoder;
+  writeVarUint$1(restEncoder, lazyWriter.clientStructs.length);
+  for (let i = 0; i < lazyWriter.clientStructs.length; i++) {
+    const partStructs = lazyWriter.clientStructs[i];
+    writeVarUint$1(restEncoder, partStructs.written);
+    writeUint8Array$1(restEncoder, partStructs.restEncoder);
+  }
+};
+const convertUpdateFormat = (update, blockTransformer, YDecoder, YEncoder) => {
+  const updateDecoder = new YDecoder(createDecoder$1(update));
+  const lazyDecoder = new LazyStructReader$1(updateDecoder, false);
+  const updateEncoder = new YEncoder();
+  const lazyWriter = new LazyStructWriter$1(updateEncoder);
+  for (let curr = lazyDecoder.curr; curr !== null; curr = lazyDecoder.next()) {
+    writeStructToLazyStructWriter$1(lazyWriter, blockTransformer(curr), 0);
+  }
+  finishLazyStructWriting$1(lazyWriter);
+  const ds = readDeleteSet$1(updateDecoder);
+  writeDeleteSet$1(updateEncoder, ds);
+  return updateEncoder.toUint8Array();
+};
+const convertUpdateFormatV2ToV1 = (update) => convertUpdateFormat(update, id, UpdateDecoderV2$1, UpdateEncoderV1$1);
+const errorComputeChanges$1 = "You must not compute changes after the event-handler fired.";
+let YEvent$1 = class YEvent {
+  /**
+   * @param {T} target The changed type.
+   * @param {Transaction} transaction
+   */
+  constructor(target, transaction) {
+    this.target = target;
+    this.currentTarget = target;
+    this.transaction = transaction;
+    this._changes = null;
+    this._keys = null;
+    this._delta = null;
+    this._path = null;
+  }
+  /**
+   * Computes the path from `y` to the changed type.
+   *
+   * @todo v14 should standardize on path: Array<{parent, index}> because that is easier to work with.
+   *
+   * The following property holds:
+   * @example
+   *   let type = y
+   *   event.path.forEach(dir => {
+   *     type = type.get(dir)
+   *   })
+   *   type === event.target // => true
+   */
+  get path() {
+    return this._path || (this._path = getPathTo$1(this.currentTarget, this.target));
+  }
+  /**
+   * Check if a struct is deleted by this event.
+   *
+   * In contrast to change.deleted, this method also returns true if the struct was added and then deleted.
+   *
+   * @param {AbstractStruct} struct
+   * @return {boolean}
+   */
+  deletes(struct) {
+    return isDeleted$1(this.transaction.deleteSet, struct.id);
+  }
+  /**
+   * @type {Map<string, { action: 'add' | 'update' | 'delete', oldValue: any }>}
+   */
+  get keys() {
+    if (this._keys === null) {
+      if (this.transaction.doc._transactionCleanups.length === 0) {
+        throw create$7(errorComputeChanges$1);
+      }
+      const keys2 = /* @__PURE__ */ new Map();
+      const target = this.target;
+      const changed = (
+        /** @type Set<string|null> */
+        this.transaction.changed.get(target)
+      );
+      changed.forEach((key) => {
+        if (key !== null) {
+          const item = (
+            /** @type {Item} */
+            target._map.get(key)
+          );
+          let action;
+          let oldValue;
+          if (this.adds(item)) {
+            let prev = item.left;
+            while (prev !== null && this.adds(prev)) {
+              prev = prev.left;
+            }
+            if (this.deletes(item)) {
+              if (prev !== null && this.deletes(prev)) {
+                action = "delete";
+                oldValue = last$1(prev.content.getContent());
+              } else {
+                return;
+              }
+            } else {
+              if (prev !== null && this.deletes(prev)) {
+                action = "update";
+                oldValue = last$1(prev.content.getContent());
+              } else {
+                action = "add";
+                oldValue = void 0;
+              }
+            }
+          } else {
+            if (this.deletes(item)) {
+              action = "delete";
+              oldValue = last$1(
+                /** @type {Item} */
+                item.content.getContent()
+              );
+            } else {
+              return;
+            }
+          }
+          keys2.set(key, { action, oldValue });
+        }
+      });
+      this._keys = keys2;
+    }
+    return this._keys;
+  }
+  /**
+   * This is a computed property. Note that this can only be safely computed during the
+   * event call. Computing this property after other changes happened might result in
+   * unexpected behavior (incorrect computation of deltas). A safe way to collect changes
+   * is to store the `changes` or the `delta` object. Avoid storing the `transaction` object.
+   *
+   * @type {Array<{insert?: string | Array<any> | object | AbstractType<any>, retain?: number, delete?: number, attributes?: Object<string, any>}>}
+   */
+  get delta() {
+    return this.changes.delta;
+  }
+  /**
+   * Check if a struct is added by this event.
+   *
+   * In contrast to change.deleted, this method also returns true if the struct was added and then deleted.
+   *
+   * @param {AbstractStruct} struct
+   * @return {boolean}
+   */
+  adds(struct) {
+    return struct.id.clock >= (this.transaction.beforeState.get(struct.id.client) || 0);
+  }
+  /**
+   * This is a computed property. Note that this can only be safely computed during the
+   * event call. Computing this property after other changes happened might result in
+   * unexpected behavior (incorrect computation of deltas). A safe way to collect changes
+   * is to store the `changes` or the `delta` object. Avoid storing the `transaction` object.
+   *
+   * @type {{added:Set<Item>,deleted:Set<Item>,keys:Map<string,{action:'add'|'update'|'delete',oldValue:any}>,delta:Array<{insert?:Array<any>|string, delete?:number, retain?:number}>}}
+   */
+  get changes() {
+    let changes = this._changes;
+    if (changes === null) {
+      if (this.transaction.doc._transactionCleanups.length === 0) {
+        throw create$7(errorComputeChanges$1);
+      }
+      const target = this.target;
+      const added = create$8();
+      const deleted = create$8();
+      const delta = [];
+      changes = {
+        added,
+        deleted,
+        delta,
+        keys: this.keys
+      };
+      const changed = (
+        /** @type Set<string|null> */
+        this.transaction.changed.get(target)
+      );
+      if (changed.has(null)) {
+        let lastOp = null;
+        const packOp = () => {
+          if (lastOp) {
+            delta.push(lastOp);
+          }
+        };
+        for (let item = target._start; item !== null; item = item.right) {
+          if (item.deleted) {
+            if (this.deletes(item) && !this.adds(item)) {
+              if (lastOp === null || lastOp.delete === void 0) {
+                packOp();
+                lastOp = { delete: 0 };
+              }
+              lastOp.delete += item.length;
+              deleted.add(item);
+            }
+          } else {
+            if (this.adds(item)) {
+              if (lastOp === null || lastOp.insert === void 0) {
+                packOp();
+                lastOp = { insert: [] };
+              }
+              lastOp.insert = lastOp.insert.concat(item.content.getContent());
+              added.add(item);
+            } else {
+              if (lastOp === null || lastOp.retain === void 0) {
+                packOp();
+                lastOp = { retain: 0 };
+              }
+              lastOp.retain += item.length;
+            }
+          }
+        }
+        if (lastOp !== null && lastOp.retain === void 0) {
+          packOp();
+        }
+      }
+      this._changes = changes;
+    }
+    return (
+      /** @type {any} */
+      changes
+    );
+  }
+};
+const getPathTo$1 = (parent, child) => {
+  const path2 = [];
+  while (child._item !== null && child !== parent) {
+    if (child._item.parentSub !== null) {
+      path2.unshift(child._item.parentSub);
+    } else {
+      let i = 0;
+      let c = (
+        /** @type {AbstractType<any>} */
+        child._item.parent._start
+      );
+      while (c !== child._item && c !== null) {
+        if (!c.deleted && c.countable) {
+          i += c.length;
+        }
+        c = c.right;
+      }
+      path2.unshift(i);
+    }
+    child = /** @type {AbstractType<any>} */
+    child._item.parent;
+  }
+  return path2;
+};
+const warnPrematureAccess$1 = () => {
+  warn$1("Invalid access: Add Yjs type to a document before reading data.");
+};
+const maxSearchMarker$1 = 80;
+let globalSearchMarkerTimestamp$1 = 0;
+let ArraySearchMarker$1 = class ArraySearchMarker {
+  /**
+   * @param {Item} p
+   * @param {number} index
+   */
+  constructor(p, index) {
+    p.marker = true;
+    this.p = p;
+    this.index = index;
+    this.timestamp = globalSearchMarkerTimestamp$1++;
+  }
+};
+const refreshMarkerTimestamp$1 = (marker) => {
+  marker.timestamp = globalSearchMarkerTimestamp$1++;
+};
+const overwriteMarker$1 = (marker, p, index) => {
+  marker.p.marker = false;
+  marker.p = p;
+  p.marker = true;
+  marker.index = index;
+  marker.timestamp = globalSearchMarkerTimestamp$1++;
+};
+const markPosition$1 = (searchMarker, p, index) => {
+  if (searchMarker.length >= maxSearchMarker$1) {
+    const marker = searchMarker.reduce((a, b) => a.timestamp < b.timestamp ? a : b);
+    overwriteMarker$1(marker, p, index);
+    return marker;
+  } else {
+    const pm = new ArraySearchMarker$1(p, index);
+    searchMarker.push(pm);
+    return pm;
+  }
+};
+const findMarker$1 = (yarray, index) => {
+  if (yarray._start === null || index === 0 || yarray._searchMarker === null) {
+    return null;
+  }
+  const marker = yarray._searchMarker.length === 0 ? null : yarray._searchMarker.reduce((a, b) => abs$1(index - a.index) < abs$1(index - b.index) ? a : b);
+  let p = yarray._start;
+  let pindex = 0;
+  if (marker !== null) {
+    p = marker.p;
+    pindex = marker.index;
+    refreshMarkerTimestamp$1(marker);
+  }
+  while (p.right !== null && pindex < index) {
+    if (!p.deleted && p.countable) {
+      if (index < pindex + p.length) {
+        break;
+      }
+      pindex += p.length;
+    }
+    p = p.right;
+  }
+  while (p.left !== null && pindex > index) {
+    p = p.left;
+    if (!p.deleted && p.countable) {
+      pindex -= p.length;
+    }
+  }
+  while (p.left !== null && p.left.id.client === p.id.client && p.left.id.clock + p.left.length === p.id.clock) {
+    p = p.left;
+    if (!p.deleted && p.countable) {
+      pindex -= p.length;
+    }
+  }
+  if (marker !== null && abs$1(marker.index - pindex) < /** @type {YText|YArray<any>} */
+  p.parent.length / maxSearchMarker$1) {
+    overwriteMarker$1(marker, p, pindex);
+    return marker;
+  } else {
+    return markPosition$1(yarray._searchMarker, p, pindex);
+  }
+};
+const updateMarkerChanges$1 = (searchMarker, index, len) => {
+  for (let i = searchMarker.length - 1; i >= 0; i--) {
+    const m = searchMarker[i];
+    if (len > 0) {
+      let p = m.p;
+      p.marker = false;
+      while (p && (p.deleted || !p.countable)) {
+        p = p.left;
+        if (p && !p.deleted && p.countable) {
+          m.index -= p.length;
+        }
+      }
+      if (p === null || p.marker === true) {
+        searchMarker.splice(i, 1);
+        continue;
+      }
+      m.p = p;
+      p.marker = true;
+    }
+    if (index < m.index || len > 0 && index === m.index) {
+      m.index = max$1(index, m.index + len);
+    }
+  }
+};
+const callTypeObservers$1 = (type, transaction, event) => {
+  const changedType = type;
+  const changedParentTypes = transaction.changedParentTypes;
+  while (true) {
+    setIfUndefined$1(changedParentTypes, type, () => []).push(event);
+    if (type._item === null) {
+      break;
+    }
+    type = /** @type {AbstractType<any>} */
+    type._item.parent;
+  }
+  callEventHandlerListeners$1(changedType._eH, event, transaction);
+};
+let AbstractType$1 = class AbstractType {
+  constructor() {
+    this._item = null;
+    this._map = /* @__PURE__ */ new Map();
+    this._start = null;
+    this.doc = null;
+    this._length = 0;
+    this._eH = createEventHandler$1();
+    this._dEH = createEventHandler$1();
+    this._searchMarker = null;
+  }
+  /**
+   * @return {AbstractType<any>|null}
+   */
+  get parent() {
+    return this._item ? (
+      /** @type {AbstractType<any>} */
+      this._item.parent
+    ) : null;
+  }
+  /**
+   * Integrate this type into the Yjs instance.
+   *
+   * * Save this struct in the os
+   * * This type is sent to other client
+   * * Observer functions are fired
+   *
+   * @param {Doc} y The Yjs instance
+   * @param {Item|null} item
+   */
+  _integrate(y, item) {
+    this.doc = y;
+    this._item = item;
+  }
+  /**
+   * @return {AbstractType<EventType>}
+   */
+  _copy() {
+    throw methodUnimplemented$1();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {AbstractType<EventType>}
+   */
+  clone() {
+    throw methodUnimplemented$1();
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} _encoder
+   */
+  _write(_encoder) {
+  }
+  /**
+   * The first non-deleted item
+   */
+  get _first() {
+    let n = this._start;
+    while (n !== null && n.deleted) {
+      n = n.right;
+    }
+    return n;
+  }
+  /**
+   * Creates YEvent and calls all type observers.
+   * Must be implemented by each type.
+   *
+   * @param {Transaction} transaction
+   * @param {Set<null|string>} _parentSubs Keys changed on this type. `null` if list was modified.
+   */
+  _callObserver(transaction, _parentSubs) {
+    if (!transaction.local && this._searchMarker) {
+      this._searchMarker.length = 0;
+    }
+  }
+  /**
+   * Observe all events that are created on this type.
+   *
+   * @param {function(EventType, Transaction):void} f Observer function
+   */
+  observe(f) {
+    addEventHandlerListener$1(this._eH, f);
+  }
+  /**
+   * Observe all events that are created by this type and its children.
+   *
+   * @param {function(Array<YEvent<any>>,Transaction):void} f Observer function
+   */
+  observeDeep(f) {
+    addEventHandlerListener$1(this._dEH, f);
+  }
+  /**
+   * Unregister an observer function.
+   *
+   * @param {function(EventType,Transaction):void} f Observer function
+   */
+  unobserve(f) {
+    removeEventHandlerListener$1(this._eH, f);
+  }
+  /**
+   * Unregister an observer function.
+   *
+   * @param {function(Array<YEvent<any>>,Transaction):void} f Observer function
+   */
+  unobserveDeep(f) {
+    removeEventHandlerListener$1(this._dEH, f);
+  }
+  /**
+   * @abstract
+   * @return {any}
+   */
+  toJSON() {
+  }
+};
+const typeListSlice$1 = (type, start, end) => {
+  type.doc ?? warnPrematureAccess$1();
+  if (start < 0) {
+    start = type._length + start;
+  }
+  if (end < 0) {
+    end = type._length + end;
+  }
+  let len = end - start;
+  const cs = [];
+  let n = type._start;
+  while (n !== null && len > 0) {
+    if (n.countable && !n.deleted) {
+      const c = n.content.getContent();
+      if (c.length <= start) {
+        start -= c.length;
+      } else {
+        for (let i = start; i < c.length && len > 0; i++) {
+          cs.push(c[i]);
+          len--;
+        }
+        start = 0;
+      }
+    }
+    n = n.right;
+  }
+  return cs;
+};
+const typeListToArray$1 = (type) => {
+  type.doc ?? warnPrematureAccess$1();
+  const cs = [];
+  let n = type._start;
+  while (n !== null) {
+    if (n.countable && !n.deleted) {
+      const c = n.content.getContent();
+      for (let i = 0; i < c.length; i++) {
+        cs.push(c[i]);
+      }
+    }
+    n = n.right;
+  }
+  return cs;
+};
+const typeListForEach$1 = (type, f) => {
+  let index = 0;
+  let n = type._start;
+  type.doc ?? warnPrematureAccess$1();
+  while (n !== null) {
+    if (n.countable && !n.deleted) {
+      const c = n.content.getContent();
+      for (let i = 0; i < c.length; i++) {
+        f(c[i], index++, type);
+      }
+    }
+    n = n.right;
+  }
+};
+const typeListMap$1 = (type, f) => {
+  const result = [];
+  typeListForEach$1(type, (c, i) => {
+    result.push(f(c, i, type));
+  });
+  return result;
+};
+const typeListCreateIterator$1 = (type) => {
+  let n = type._start;
+  let currentContent = null;
+  let currentContentIndex = 0;
+  return {
+    [Symbol.iterator]() {
+      return this;
+    },
+    next: () => {
+      if (currentContent === null) {
+        while (n !== null && n.deleted) {
+          n = n.right;
+        }
+        if (n === null) {
+          return {
+            done: true,
+            value: void 0
+          };
+        }
+        currentContent = n.content.getContent();
+        currentContentIndex = 0;
+        n = n.right;
+      }
+      const value = currentContent[currentContentIndex++];
+      if (currentContent.length <= currentContentIndex) {
+        currentContent = null;
+      }
+      return {
+        done: false,
+        value
+      };
+    }
+  };
+};
+const typeListGet$1 = (type, index) => {
+  type.doc ?? warnPrematureAccess$1();
+  const marker = findMarker$1(type, index);
+  let n = type._start;
+  if (marker !== null) {
+    n = marker.p;
+    index -= marker.index;
+  }
+  for (; n !== null; n = n.right) {
+    if (!n.deleted && n.countable) {
+      if (index < n.length) {
+        return n.content.getContent()[index];
+      }
+      index -= n.length;
+    }
+  }
+};
+const typeListInsertGenericsAfter$1 = (transaction, parent, referenceItem, content) => {
+  let left = referenceItem;
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  const store = doc.store;
+  const right = referenceItem === null ? parent._start : referenceItem.right;
+  let jsonContent = [];
+  const packJsonContent = () => {
+    if (jsonContent.length > 0) {
+      left = new Item$1(createID$1(ownClientId, getState$1(store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentAny$1(jsonContent));
+      left.integrate(transaction, 0);
+      jsonContent = [];
+    }
+  };
+  content.forEach((c) => {
+    if (c === null) {
+      jsonContent.push(c);
+    } else {
+      switch (c.constructor) {
+        case Number:
+        case Object:
+        case Boolean:
+        case Array:
+        case String:
+          jsonContent.push(c);
+          break;
+        default:
+          packJsonContent();
+          switch (c.constructor) {
+            case Uint8Array:
+            case ArrayBuffer:
+              left = new Item$1(createID$1(ownClientId, getState$1(store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentBinary$1(new Uint8Array(
+                /** @type {Uint8Array} */
+                c
+              )));
+              left.integrate(transaction, 0);
+              break;
+            case Doc$1:
+              left = new Item$1(createID$1(ownClientId, getState$1(store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentDoc$1(
+                /** @type {Doc} */
+                c
+              ));
+              left.integrate(transaction, 0);
+              break;
+            default:
+              if (c instanceof AbstractType$1) {
+                left = new Item$1(createID$1(ownClientId, getState$1(store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentType$1(c));
+                left.integrate(transaction, 0);
+              } else {
+                throw new Error("Unexpected content type in insert operation");
+              }
+          }
+      }
+    }
+  });
+  packJsonContent();
+};
+const lengthExceeded$1 = () => create$7("Length exceeded!");
+const typeListInsertGenerics$1 = (transaction, parent, index, content) => {
+  if (index > parent._length) {
+    throw lengthExceeded$1();
+  }
+  if (index === 0) {
+    if (parent._searchMarker) {
+      updateMarkerChanges$1(parent._searchMarker, index, content.length);
+    }
+    return typeListInsertGenericsAfter$1(transaction, parent, null, content);
+  }
+  const startIndex = index;
+  const marker = findMarker$1(parent, index);
+  let n = parent._start;
+  if (marker !== null) {
+    n = marker.p;
+    index -= marker.index;
+    if (index === 0) {
+      n = n.prev;
+      index += n && n.countable && !n.deleted ? n.length : 0;
+    }
+  }
+  for (; n !== null; n = n.right) {
+    if (!n.deleted && n.countable) {
+      if (index <= n.length) {
+        if (index < n.length) {
+          getItemCleanStart$1(transaction, createID$1(n.id.client, n.id.clock + index));
+        }
+        break;
+      }
+      index -= n.length;
+    }
+  }
+  if (parent._searchMarker) {
+    updateMarkerChanges$1(parent._searchMarker, startIndex, content.length);
+  }
+  return typeListInsertGenericsAfter$1(transaction, parent, n, content);
+};
+const typeListPushGenerics$1 = (transaction, parent, content) => {
+  const marker = (parent._searchMarker || []).reduce((maxMarker, currMarker) => currMarker.index > maxMarker.index ? currMarker : maxMarker, { index: 0, p: parent._start });
+  let n = marker.p;
+  if (n) {
+    while (n.right) {
+      n = n.right;
+    }
+  }
+  return typeListInsertGenericsAfter$1(transaction, parent, n, content);
+};
+const typeListDelete$1 = (transaction, parent, index, length2) => {
+  if (length2 === 0) {
+    return;
+  }
+  const startIndex = index;
+  const startLength = length2;
+  const marker = findMarker$1(parent, index);
+  let n = parent._start;
+  if (marker !== null) {
+    n = marker.p;
+    index -= marker.index;
+  }
+  for (; n !== null && index > 0; n = n.right) {
+    if (!n.deleted && n.countable) {
+      if (index < n.length) {
+        getItemCleanStart$1(transaction, createID$1(n.id.client, n.id.clock + index));
+      }
+      index -= n.length;
+    }
+  }
+  while (length2 > 0 && n !== null) {
+    if (!n.deleted) {
+      if (length2 < n.length) {
+        getItemCleanStart$1(transaction, createID$1(n.id.client, n.id.clock + length2));
+      }
+      n.delete(transaction);
+      length2 -= n.length;
+    }
+    n = n.right;
+  }
+  if (length2 > 0) {
+    throw lengthExceeded$1();
+  }
+  if (parent._searchMarker) {
+    updateMarkerChanges$1(
+      parent._searchMarker,
+      startIndex,
+      -startLength + length2
+      /* in case we remove the above exception */
+    );
+  }
+};
+const typeMapDelete$1 = (transaction, parent, key) => {
+  const c = parent._map.get(key);
+  if (c !== void 0) {
+    c.delete(transaction);
+  }
+};
+const typeMapSet$1 = (transaction, parent, key, value) => {
+  const left = parent._map.get(key) || null;
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  let content;
+  if (value == null) {
+    content = new ContentAny$1([value]);
+  } else {
+    switch (value.constructor) {
+      case Number:
+      case Object:
+      case Boolean:
+      case Array:
+      case String:
+      case Date:
+      case BigInt:
+        content = new ContentAny$1([value]);
+        break;
+      case Uint8Array:
+        content = new ContentBinary$1(
+          /** @type {Uint8Array} */
+          value
+        );
+        break;
+      case Doc$1:
+        content = new ContentDoc$1(
+          /** @type {Doc} */
+          value
+        );
+        break;
+      default:
+        if (value instanceof AbstractType$1) {
+          content = new ContentType$1(value);
+        } else {
+          throw new Error("Unexpected content type");
+        }
+    }
+  }
+  new Item$1(createID$1(ownClientId, getState$1(doc.store, ownClientId)), left, left && left.lastId, null, null, parent, key, content).integrate(transaction, 0);
+};
+const typeMapGet$1 = (parent, key) => {
+  parent.doc ?? warnPrematureAccess$1();
+  const val = parent._map.get(key);
+  return val !== void 0 && !val.deleted ? val.content.getContent()[val.length - 1] : void 0;
+};
+const typeMapGetAll$1 = (parent) => {
+  const res = {};
+  parent.doc ?? warnPrematureAccess$1();
+  parent._map.forEach((value, key) => {
+    if (!value.deleted) {
+      res[key] = value.content.getContent()[value.length - 1];
+    }
+  });
+  return res;
+};
+const typeMapHas$1 = (parent, key) => {
+  parent.doc ?? warnPrematureAccess$1();
+  const val = parent._map.get(key);
+  return val !== void 0 && !val.deleted;
+};
+const typeMapGetAllSnapshot$1 = (parent, snapshot) => {
+  const res = {};
+  parent._map.forEach((value, key) => {
+    let v = value;
+    while (v !== null && (!snapshot.sv.has(v.id.client) || v.id.clock >= (snapshot.sv.get(v.id.client) || 0))) {
+      v = v.left;
+    }
+    if (v !== null && isVisible$1(v, snapshot)) {
+      res[key] = v.content.getContent()[v.length - 1];
+    }
+  });
+  return res;
+};
+const createMapIterator$1 = (type) => {
+  type.doc ?? warnPrematureAccess$1();
+  return iteratorFilter$1(
+    type._map.entries(),
+    /** @param {any} entry */
+    (entry) => !entry[1].deleted
+  );
+};
+let YArrayEvent$1 = class YArrayEvent extends YEvent$1 {
+};
+let YArray$1 = class YArray extends AbstractType$1 {
+  constructor() {
+    super();
+    this._prelimContent = [];
+    this._searchMarker = [];
+  }
+  /**
+   * Construct a new YArray containing the specified items.
+   * @template {Object<string,any>|Array<any>|number|null|string|Uint8Array} T
+   * @param {Array<T>} items
+   * @return {YArray<T>}
+   */
+  static from(items) {
+    const a = new YArray();
+    a.push(items);
+    return a;
+  }
+  /**
+   * Integrate this type into the Yjs instance.
+   *
+   * * Save this struct in the os
+   * * This type is sent to other client
+   * * Observer functions are fired
+   *
+   * @param {Doc} y The Yjs instance
+   * @param {Item} item
+   */
+  _integrate(y, item) {
+    super._integrate(y, item);
+    this.insert(
+      0,
+      /** @type {Array<any>} */
+      this._prelimContent
+    );
+    this._prelimContent = null;
+  }
+  /**
+   * @return {YArray<T>}
+   */
+  _copy() {
+    return new YArray();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YArray<T>}
+   */
+  clone() {
+    const arr = new YArray();
+    arr.insert(0, this.toArray().map(
+      (el) => el instanceof AbstractType$1 ? (
+        /** @type {typeof el} */
+        el.clone()
+      ) : el
+    ));
+    return arr;
+  }
+  get length() {
+    this.doc ?? warnPrematureAccess$1();
+    return this._length;
+  }
+  /**
+   * Creates YArrayEvent and calls observers.
+   *
+   * @param {Transaction} transaction
+   * @param {Set<null|string>} parentSubs Keys changed on this type. `null` if list was modified.
+   */
+  _callObserver(transaction, parentSubs) {
+    super._callObserver(transaction, parentSubs);
+    callTypeObservers$1(this, transaction, new YArrayEvent$1(this, transaction));
+  }
+  /**
+   * Inserts new content at an index.
+   *
+   * Important: This function expects an array of content. Not just a content
+   * object. The reason for this "weirdness" is that inserting several elements
+   * is very efficient when it is done as a single operation.
+   *
+   * @example
+   *  // Insert character 'a' at position 0
+   *  yarray.insert(0, ['a'])
+   *  // Insert numbers 1, 2 at position 1
+   *  yarray.insert(1, [1, 2])
+   *
+   * @param {number} index The index to insert content at.
+   * @param {Array<T>} content The array of content
+   */
+  insert(index, content) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        typeListInsertGenerics$1(
+          transaction,
+          this,
+          index,
+          /** @type {any} */
+          content
+        );
+      });
+    } else {
+      this._prelimContent.splice(index, 0, ...content);
+    }
+  }
+  /**
+   * Appends content to this YArray.
+   *
+   * @param {Array<T>} content Array of content to append.
+   *
+   * @todo Use the following implementation in all types.
+   */
+  push(content) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        typeListPushGenerics$1(
+          transaction,
+          this,
+          /** @type {any} */
+          content
+        );
+      });
+    } else {
+      this._prelimContent.push(...content);
+    }
+  }
+  /**
+   * Prepends content to this YArray.
+   *
+   * @param {Array<T>} content Array of content to prepend.
+   */
+  unshift(content) {
+    this.insert(0, content);
+  }
+  /**
+   * Deletes elements starting from an index.
+   *
+   * @param {number} index Index at which to start deleting elements
+   * @param {number} length The number of elements to remove. Defaults to 1.
+   */
+  delete(index, length2 = 1) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        typeListDelete$1(transaction, this, index, length2);
+      });
+    } else {
+      this._prelimContent.splice(index, length2);
+    }
+  }
+  /**
+   * Returns the i-th element from a YArray.
+   *
+   * @param {number} index The index of the element to return from the YArray
+   * @return {T}
+   */
+  get(index) {
+    return typeListGet$1(this, index);
+  }
+  /**
+   * Transforms this YArray to a JavaScript Array.
+   *
+   * @return {Array<T>}
+   */
+  toArray() {
+    return typeListToArray$1(this);
+  }
+  /**
+   * Returns a portion of this YArray into a JavaScript Array selected
+   * from start to end (end not included).
+   *
+   * @param {number} [start]
+   * @param {number} [end]
+   * @return {Array<T>}
+   */
+  slice(start = 0, end = this.length) {
+    return typeListSlice$1(this, start, end);
+  }
+  /**
+   * Transforms this Shared Type to a JSON object.
+   *
+   * @return {Array<any>}
+   */
+  toJSON() {
+    return this.map((c) => c instanceof AbstractType$1 ? c.toJSON() : c);
+  }
+  /**
+   * Returns an Array with the result of calling a provided function on every
+   * element of this YArray.
+   *
+   * @template M
+   * @param {function(T,number,YArray<T>):M} f Function that produces an element of the new Array
+   * @return {Array<M>} A new array with each element being the result of the
+   *                 callback function
+   */
+  map(f) {
+    return typeListMap$1(
+      this,
+      /** @type {any} */
+      f
+    );
+  }
+  /**
+   * Executes a provided function once on every element of this YArray.
+   *
+   * @param {function(T,number,YArray<T>):void} f A function to execute on every element of this YArray.
+   */
+  forEach(f) {
+    typeListForEach$1(this, f);
+  }
+  /**
+   * @return {IterableIterator<T>}
+   */
+  [Symbol.iterator]() {
+    return typeListCreateIterator$1(this);
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YArrayRefID$1);
+  }
+};
+const readYArray$1 = (_decoder) => new YArray$1();
+let YMapEvent$1 = class YMapEvent extends YEvent$1 {
+  /**
+   * @param {YMap<T>} ymap The YArray that changed.
+   * @param {Transaction} transaction
+   * @param {Set<any>} subs The keys that changed.
+   */
+  constructor(ymap, transaction, subs) {
+    super(ymap, transaction);
+    this.keysChanged = subs;
+  }
+};
+let YMap$1 = class YMap extends AbstractType$1 {
+  /**
+   *
+   * @param {Iterable<readonly [string, any]>=} entries - an optional iterable to initialize the YMap
+   */
+  constructor(entries) {
+    super();
+    this._prelimContent = null;
+    if (entries === void 0) {
+      this._prelimContent = /* @__PURE__ */ new Map();
+    } else {
+      this._prelimContent = new Map(entries);
+    }
+  }
+  /**
+   * Integrate this type into the Yjs instance.
+   *
+   * * Save this struct in the os
+   * * This type is sent to other client
+   * * Observer functions are fired
+   *
+   * @param {Doc} y The Yjs instance
+   * @param {Item} item
+   */
+  _integrate(y, item) {
+    super._integrate(y, item);
+    this._prelimContent.forEach((value, key) => {
+      this.set(key, value);
+    });
+    this._prelimContent = null;
+  }
+  /**
+   * @return {YMap<MapType>}
+   */
+  _copy() {
+    return new YMap();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YMap<MapType>}
+   */
+  clone() {
+    const map = new YMap();
+    this.forEach((value, key) => {
+      map.set(key, value instanceof AbstractType$1 ? (
+        /** @type {typeof value} */
+        value.clone()
+      ) : value);
+    });
+    return map;
+  }
+  /**
+   * Creates YMapEvent and calls observers.
+   *
+   * @param {Transaction} transaction
+   * @param {Set<null|string>} parentSubs Keys changed on this type. `null` if list was modified.
+   */
+  _callObserver(transaction, parentSubs) {
+    callTypeObservers$1(this, transaction, new YMapEvent$1(this, transaction, parentSubs));
+  }
+  /**
+   * Transforms this Shared Type to a JSON object.
+   *
+   * @return {Object<string,any>}
+   */
+  toJSON() {
+    this.doc ?? warnPrematureAccess$1();
+    const map = {};
+    this._map.forEach((item, key) => {
+      if (!item.deleted) {
+        const v = item.content.getContent()[item.length - 1];
+        map[key] = v instanceof AbstractType$1 ? v.toJSON() : v;
+      }
+    });
+    return map;
+  }
+  /**
+   * Returns the size of the YMap (count of key/value pairs)
+   *
+   * @return {number}
+   */
+  get size() {
+    return [...createMapIterator$1(this)].length;
+  }
+  /**
+   * Returns the keys for each element in the YMap Type.
+   *
+   * @return {IterableIterator<string>}
+   */
+  keys() {
+    return iteratorMap$1(
+      createMapIterator$1(this),
+      /** @param {any} v */
+      (v) => v[0]
+    );
+  }
+  /**
+   * Returns the values for each element in the YMap Type.
+   *
+   * @return {IterableIterator<MapType>}
+   */
+  values() {
+    return iteratorMap$1(
+      createMapIterator$1(this),
+      /** @param {any} v */
+      (v) => v[1].content.getContent()[v[1].length - 1]
+    );
+  }
+  /**
+   * Returns an Iterator of [key, value] pairs
+   *
+   * @return {IterableIterator<[string, MapType]>}
+   */
+  entries() {
+    return iteratorMap$1(
+      createMapIterator$1(this),
+      /** @param {any} v */
+      (v) => (
+        /** @type {any} */
+        [v[0], v[1].content.getContent()[v[1].length - 1]]
+      )
+    );
+  }
+  /**
+   * Executes a provided function on once on every key-value pair.
+   *
+   * @param {function(MapType,string,YMap<MapType>):void} f A function to execute on every element of this YArray.
+   */
+  forEach(f) {
+    this.doc ?? warnPrematureAccess$1();
+    this._map.forEach((item, key) => {
+      if (!item.deleted) {
+        f(item.content.getContent()[item.length - 1], key, this);
+      }
+    });
+  }
+  /**
+   * Returns an Iterator of [key, value] pairs
+   *
+   * @return {IterableIterator<[string, MapType]>}
+   */
+  [Symbol.iterator]() {
+    return this.entries();
+  }
+  /**
+   * Remove a specified element from this YMap.
+   *
+   * @param {string} key The key of the element to remove.
+   */
+  delete(key) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        typeMapDelete$1(transaction, this, key);
+      });
+    } else {
+      this._prelimContent.delete(key);
+    }
+  }
+  /**
+   * Adds or updates an element with a specified key and value.
+   * @template {MapType} VAL
+   *
+   * @param {string} key The key of the element to add to this YMap
+   * @param {VAL} value The value of the element to add
+   * @return {VAL}
+   */
+  set(key, value) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        typeMapSet$1(
+          transaction,
+          this,
+          key,
+          /** @type {any} */
+          value
+        );
+      });
+    } else {
+      this._prelimContent.set(key, value);
+    }
+    return value;
+  }
+  /**
+   * Returns a specified element from this YMap.
+   *
+   * @param {string} key
+   * @return {MapType|undefined}
+   */
+  get(key) {
+    return (
+      /** @type {any} */
+      typeMapGet$1(this, key)
+    );
+  }
+  /**
+   * Returns a boolean indicating whether the specified key exists or not.
+   *
+   * @param {string} key The key to test.
+   * @return {boolean}
+   */
+  has(key) {
+    return typeMapHas$1(this, key);
+  }
+  /**
+   * Removes all elements from this YMap.
+   */
+  clear() {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        this.forEach(function(_value, key, map) {
+          typeMapDelete$1(transaction, map, key);
+        });
+      });
+    } else {
+      this._prelimContent.clear();
+    }
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YMapRefID$1);
+  }
+};
+const readYMap$1 = (_decoder) => new YMap$1();
+const equalAttrs$1 = (a, b) => a === b || typeof a === "object" && typeof b === "object" && a && b && equalFlat$1(a, b);
+let ItemTextListPosition$1 = class ItemTextListPosition {
+  /**
+   * @param {Item|null} left
+   * @param {Item|null} right
+   * @param {number} index
+   * @param {Map<string,any>} currentAttributes
+   */
+  constructor(left, right, index, currentAttributes) {
+    this.left = left;
+    this.right = right;
+    this.index = index;
+    this.currentAttributes = currentAttributes;
+  }
+  /**
+   * Only call this if you know that this.right is defined
+   */
+  forward() {
+    if (this.right === null) {
+      unexpectedCase$1();
+    }
+    switch (this.right.content.constructor) {
+      case ContentFormat$1:
+        if (!this.right.deleted) {
+          updateCurrentAttributes$1(
+            this.currentAttributes,
+            /** @type {ContentFormat} */
+            this.right.content
+          );
+        }
+        break;
+      default:
+        if (!this.right.deleted) {
+          this.index += this.right.length;
+        }
+        break;
+    }
+    this.left = this.right;
+    this.right = this.right.right;
+  }
+};
+const findNextPosition$1 = (transaction, pos, count) => {
+  while (pos.right !== null && count > 0) {
+    switch (pos.right.content.constructor) {
+      case ContentFormat$1:
+        if (!pos.right.deleted) {
+          updateCurrentAttributes$1(
+            pos.currentAttributes,
+            /** @type {ContentFormat} */
+            pos.right.content
+          );
+        }
+        break;
+      default:
+        if (!pos.right.deleted) {
+          if (count < pos.right.length) {
+            getItemCleanStart$1(transaction, createID$1(pos.right.id.client, pos.right.id.clock + count));
+          }
+          pos.index += pos.right.length;
+          count -= pos.right.length;
+        }
+        break;
+    }
+    pos.left = pos.right;
+    pos.right = pos.right.right;
+  }
+  return pos;
+};
+const findPosition$1 = (transaction, parent, index, useSearchMarker) => {
+  const currentAttributes = /* @__PURE__ */ new Map();
+  const marker = useSearchMarker ? findMarker$1(parent, index) : null;
+  if (marker) {
+    const pos = new ItemTextListPosition$1(marker.p.left, marker.p, marker.index, currentAttributes);
+    return findNextPosition$1(transaction, pos, index - marker.index);
+  } else {
+    const pos = new ItemTextListPosition$1(null, parent._start, 0, currentAttributes);
+    return findNextPosition$1(transaction, pos, index);
+  }
+};
+const insertNegatedAttributes$1 = (transaction, parent, currPos, negatedAttributes) => {
+  while (currPos.right !== null && (currPos.right.deleted === true || currPos.right.content.constructor === ContentFormat$1 && equalAttrs$1(
+    negatedAttributes.get(
+      /** @type {ContentFormat} */
+      currPos.right.content.key
+    ),
+    /** @type {ContentFormat} */
+    currPos.right.content.value
+  ))) {
+    if (!currPos.right.deleted) {
+      negatedAttributes.delete(
+        /** @type {ContentFormat} */
+        currPos.right.content.key
+      );
+    }
+    currPos.forward();
+  }
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  negatedAttributes.forEach((val, key) => {
+    const left = currPos.left;
+    const right = currPos.right;
+    const nextFormat = new Item$1(createID$1(ownClientId, getState$1(doc.store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentFormat$1(key, val));
+    nextFormat.integrate(transaction, 0);
+    currPos.right = nextFormat;
+    currPos.forward();
+  });
+};
+const updateCurrentAttributes$1 = (currentAttributes, format) => {
+  const { key, value } = format;
+  if (value === null) {
+    currentAttributes.delete(key);
+  } else {
+    currentAttributes.set(key, value);
+  }
+};
+const minimizeAttributeChanges$1 = (currPos, attributes) => {
+  while (true) {
+    if (currPos.right === null) {
+      break;
+    } else if (currPos.right.deleted || currPos.right.content.constructor === ContentFormat$1 && equalAttrs$1(
+      attributes[
+        /** @type {ContentFormat} */
+        currPos.right.content.key
+      ] ?? null,
+      /** @type {ContentFormat} */
+      currPos.right.content.value
+    )) ;
+    else {
+      break;
+    }
+    currPos.forward();
+  }
+};
+const insertAttributes$1 = (transaction, parent, currPos, attributes) => {
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  const negatedAttributes = /* @__PURE__ */ new Map();
+  for (const key in attributes) {
+    const val = attributes[key];
+    const currentVal = currPos.currentAttributes.get(key) ?? null;
+    if (!equalAttrs$1(currentVal, val)) {
+      negatedAttributes.set(key, currentVal);
+      const { left, right } = currPos;
+      currPos.right = new Item$1(createID$1(ownClientId, getState$1(doc.store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentFormat$1(key, val));
+      currPos.right.integrate(transaction, 0);
+      currPos.forward();
+    }
+  }
+  return negatedAttributes;
+};
+const insertText$1 = (transaction, parent, currPos, text, attributes) => {
+  currPos.currentAttributes.forEach((_val, key) => {
+    if (attributes[key] === void 0) {
+      attributes[key] = null;
+    }
+  });
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  minimizeAttributeChanges$1(currPos, attributes);
+  const negatedAttributes = insertAttributes$1(transaction, parent, currPos, attributes);
+  const content = text.constructor === String ? new ContentString$1(
+    /** @type {string} */
+    text
+  ) : text instanceof AbstractType$1 ? new ContentType$1(text) : new ContentEmbed$1(text);
+  let { left, right, index } = currPos;
+  if (parent._searchMarker) {
+    updateMarkerChanges$1(parent._searchMarker, currPos.index, content.getLength());
+  }
+  right = new Item$1(createID$1(ownClientId, getState$1(doc.store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, content);
+  right.integrate(transaction, 0);
+  currPos.right = right;
+  currPos.index = index;
+  currPos.forward();
+  insertNegatedAttributes$1(transaction, parent, currPos, negatedAttributes);
+};
+const formatText$1 = (transaction, parent, currPos, length2, attributes) => {
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  minimizeAttributeChanges$1(currPos, attributes);
+  const negatedAttributes = insertAttributes$1(transaction, parent, currPos, attributes);
+  iterationLoop: while (currPos.right !== null && (length2 > 0 || negatedAttributes.size > 0 && (currPos.right.deleted || currPos.right.content.constructor === ContentFormat$1))) {
+    if (!currPos.right.deleted) {
+      switch (currPos.right.content.constructor) {
+        case ContentFormat$1: {
+          const { key, value } = (
+            /** @type {ContentFormat} */
+            currPos.right.content
+          );
+          const attr = attributes[key];
+          if (attr !== void 0) {
+            if (equalAttrs$1(attr, value)) {
+              negatedAttributes.delete(key);
+            } else {
+              if (length2 === 0) {
+                break iterationLoop;
+              }
+              negatedAttributes.set(key, value);
+            }
+            currPos.right.delete(transaction);
+          } else {
+            currPos.currentAttributes.set(key, value);
+          }
+          break;
+        }
+        default:
+          if (length2 < currPos.right.length) {
+            getItemCleanStart$1(transaction, createID$1(currPos.right.id.client, currPos.right.id.clock + length2));
+          }
+          length2 -= currPos.right.length;
+          break;
+      }
+    }
+    currPos.forward();
+  }
+  if (length2 > 0) {
+    let newlines = "";
+    for (; length2 > 0; length2--) {
+      newlines += "\n";
+    }
+    currPos.right = new Item$1(createID$1(ownClientId, getState$1(doc.store, ownClientId)), currPos.left, currPos.left && currPos.left.lastId, currPos.right, currPos.right && currPos.right.id, parent, null, new ContentString$1(newlines));
+    currPos.right.integrate(transaction, 0);
+    currPos.forward();
+  }
+  insertNegatedAttributes$1(transaction, parent, currPos, negatedAttributes);
+};
+const cleanupFormattingGap$1 = (transaction, start, curr, startAttributes, currAttributes) => {
+  let end = start;
+  const endFormats = create$9();
+  while (end && (!end.countable || end.deleted)) {
+    if (!end.deleted && end.content.constructor === ContentFormat$1) {
+      const cf = (
+        /** @type {ContentFormat} */
+        end.content
+      );
+      endFormats.set(cf.key, cf);
+    }
+    end = end.right;
+  }
+  let cleanups = 0;
+  let reachedCurr = false;
+  while (start !== end) {
+    if (curr === start) {
+      reachedCurr = true;
+    }
+    if (!start.deleted) {
+      const content = start.content;
+      switch (content.constructor) {
+        case ContentFormat$1: {
+          const { key, value } = (
+            /** @type {ContentFormat} */
+            content
+          );
+          const startAttrValue = startAttributes.get(key) ?? null;
+          if (endFormats.get(key) !== content || startAttrValue === value) {
+            start.delete(transaction);
+            cleanups++;
+            if (!reachedCurr && (currAttributes.get(key) ?? null) === value && startAttrValue !== value) {
+              if (startAttrValue === null) {
+                currAttributes.delete(key);
+              } else {
+                currAttributes.set(key, startAttrValue);
+              }
+            }
+          }
+          if (!reachedCurr && !start.deleted) {
+            updateCurrentAttributes$1(
+              currAttributes,
+              /** @type {ContentFormat} */
+              content
+            );
+          }
+          break;
+        }
+      }
+    }
+    start = /** @type {Item} */
+    start.right;
+  }
+  return cleanups;
+};
+const cleanupContextlessFormattingGap$1 = (transaction, item) => {
+  while (item && item.right && (item.right.deleted || !item.right.countable)) {
+    item = item.right;
+  }
+  const attrs = /* @__PURE__ */ new Set();
+  while (item && (item.deleted || !item.countable)) {
+    if (!item.deleted && item.content.constructor === ContentFormat$1) {
+      const key = (
+        /** @type {ContentFormat} */
+        item.content.key
+      );
+      if (attrs.has(key)) {
+        item.delete(transaction);
+      } else {
+        attrs.add(key);
+      }
+    }
+    item = item.left;
+  }
+};
+const cleanupYTextFormatting$1 = (type) => {
+  let res = 0;
+  transact$1(
+    /** @type {Doc} */
+    type.doc,
+    (transaction) => {
+      let start = (
+        /** @type {Item} */
+        type._start
+      );
+      let end = type._start;
+      let startAttributes = create$9();
+      const currentAttributes = copy$1(startAttributes);
+      while (end) {
+        if (end.deleted === false) {
+          switch (end.content.constructor) {
+            case ContentFormat$1:
+              updateCurrentAttributes$1(
+                currentAttributes,
+                /** @type {ContentFormat} */
+                end.content
+              );
+              break;
+            default:
+              res += cleanupFormattingGap$1(transaction, start, end, startAttributes, currentAttributes);
+              startAttributes = copy$1(currentAttributes);
+              start = end;
+              break;
+          }
+        }
+        end = end.right;
+      }
+    }
+  );
+  return res;
+};
+const cleanupYTextAfterTransaction$1 = (transaction) => {
+  const needFullCleanup = /* @__PURE__ */ new Set();
+  const doc = transaction.doc;
+  for (const [client, afterClock] of transaction.afterState.entries()) {
+    const clock = transaction.beforeState.get(client) || 0;
+    if (afterClock === clock) {
+      continue;
+    }
+    iterateStructs$1(
+      transaction,
+      /** @type {Array<Item|GC>} */
+      doc.store.clients.get(client),
+      clock,
+      afterClock,
+      (item) => {
+        if (!item.deleted && /** @type {Item} */
+        item.content.constructor === ContentFormat$1 && item.constructor !== GC$1) {
+          needFullCleanup.add(
+            /** @type {any} */
+            item.parent
+          );
+        }
+      }
+    );
+  }
+  transact$1(doc, (t) => {
+    iterateDeletedStructs$1(transaction, transaction.deleteSet, (item) => {
+      if (item instanceof GC$1 || !/** @type {YText} */
+      item.parent._hasFormatting || needFullCleanup.has(
+        /** @type {YText} */
+        item.parent
+      )) {
+        return;
+      }
+      const parent = (
+        /** @type {YText} */
+        item.parent
+      );
+      if (item.content.constructor === ContentFormat$1) {
+        needFullCleanup.add(parent);
+      } else {
+        cleanupContextlessFormattingGap$1(t, item);
+      }
+    });
+    for (const yText of needFullCleanup) {
+      cleanupYTextFormatting$1(yText);
+    }
+  });
+};
+const deleteText$1 = (transaction, currPos, length2) => {
+  const startLength = length2;
+  const startAttrs = copy$1(currPos.currentAttributes);
+  const start = currPos.right;
+  while (length2 > 0 && currPos.right !== null) {
+    if (currPos.right.deleted === false) {
+      switch (currPos.right.content.constructor) {
+        case ContentType$1:
+        case ContentEmbed$1:
+        case ContentString$1:
+          if (length2 < currPos.right.length) {
+            getItemCleanStart$1(transaction, createID$1(currPos.right.id.client, currPos.right.id.clock + length2));
+          }
+          length2 -= currPos.right.length;
+          currPos.right.delete(transaction);
+          break;
+      }
+    }
+    currPos.forward();
+  }
+  if (start) {
+    cleanupFormattingGap$1(transaction, start, currPos.right, startAttrs, currPos.currentAttributes);
+  }
+  const parent = (
+    /** @type {AbstractType<any>} */
+    /** @type {Item} */
+    (currPos.left || currPos.right).parent
+  );
+  if (parent._searchMarker) {
+    updateMarkerChanges$1(parent._searchMarker, currPos.index, -startLength + length2);
+  }
+  return currPos;
+};
+let YTextEvent$1 = class YTextEvent extends YEvent$1 {
+  /**
+   * @param {YText} ytext
+   * @param {Transaction} transaction
+   * @param {Set<any>} subs The keys that changed
+   */
+  constructor(ytext, transaction, subs) {
+    super(ytext, transaction);
+    this.childListChanged = false;
+    this.keysChanged = /* @__PURE__ */ new Set();
+    subs.forEach((sub) => {
+      if (sub === null) {
+        this.childListChanged = true;
+      } else {
+        this.keysChanged.add(sub);
+      }
+    });
+  }
+  /**
+   * @type {{added:Set<Item>,deleted:Set<Item>,keys:Map<string,{action:'add'|'update'|'delete',oldValue:any}>,delta:Array<{insert?:Array<any>|string, delete?:number, retain?:number}>}}
+   */
+  get changes() {
+    if (this._changes === null) {
+      const changes = {
+        keys: this.keys,
+        delta: this.delta,
+        added: /* @__PURE__ */ new Set(),
+        deleted: /* @__PURE__ */ new Set()
+      };
+      this._changes = changes;
+    }
+    return (
+      /** @type {any} */
+      this._changes
+    );
+  }
+  /**
+   * Compute the changes in the delta format.
+   * A {@link https://quilljs.com/docs/delta/|Quill Delta}) that represents the changes on the document.
+   *
+   * @type {Array<{insert?:string|object|AbstractType<any>, delete?:number, retain?:number, attributes?: Object<string,any>}>}
+   *
+   * @public
+   */
+  get delta() {
+    if (this._delta === null) {
+      const y = (
+        /** @type {Doc} */
+        this.target.doc
+      );
+      const delta = [];
+      transact$1(y, (transaction) => {
+        const currentAttributes = /* @__PURE__ */ new Map();
+        const oldAttributes = /* @__PURE__ */ new Map();
+        let item = this.target._start;
+        let action = null;
+        const attributes = {};
+        let insert = "";
+        let retain = 0;
+        let deleteLen = 0;
+        const addOp = () => {
+          if (action !== null) {
+            let op = null;
+            switch (action) {
+              case "delete":
+                if (deleteLen > 0) {
+                  op = { delete: deleteLen };
+                }
+                deleteLen = 0;
+                break;
+              case "insert":
+                if (typeof insert === "object" || insert.length > 0) {
+                  op = { insert };
+                  if (currentAttributes.size > 0) {
+                    op.attributes = {};
+                    currentAttributes.forEach((value, key) => {
+                      if (value !== null) {
+                        op.attributes[key] = value;
+                      }
+                    });
+                  }
+                }
+                insert = "";
+                break;
+              case "retain":
+                if (retain > 0) {
+                  op = { retain };
+                  if (!isEmpty$1(attributes)) {
+                    op.attributes = assign$1({}, attributes);
+                  }
+                }
+                retain = 0;
+                break;
+            }
+            if (op) delta.push(op);
+            action = null;
+          }
+        };
+        while (item !== null) {
+          switch (item.content.constructor) {
+            case ContentType$1:
+            case ContentEmbed$1:
+              if (this.adds(item)) {
+                if (!this.deletes(item)) {
+                  addOp();
+                  action = "insert";
+                  insert = item.content.getContent()[0];
+                  addOp();
+                }
+              } else if (this.deletes(item)) {
+                if (action !== "delete") {
+                  addOp();
+                  action = "delete";
+                }
+                deleteLen += 1;
+              } else if (!item.deleted) {
+                if (action !== "retain") {
+                  addOp();
+                  action = "retain";
+                }
+                retain += 1;
+              }
+              break;
+            case ContentString$1:
+              if (this.adds(item)) {
+                if (!this.deletes(item)) {
+                  if (action !== "insert") {
+                    addOp();
+                    action = "insert";
+                  }
+                  insert += /** @type {ContentString} */
+                  item.content.str;
+                }
+              } else if (this.deletes(item)) {
+                if (action !== "delete") {
+                  addOp();
+                  action = "delete";
+                }
+                deleteLen += item.length;
+              } else if (!item.deleted) {
+                if (action !== "retain") {
+                  addOp();
+                  action = "retain";
+                }
+                retain += item.length;
+              }
+              break;
+            case ContentFormat$1: {
+              const { key, value } = (
+                /** @type {ContentFormat} */
+                item.content
+              );
+              if (this.adds(item)) {
+                if (!this.deletes(item)) {
+                  const curVal = currentAttributes.get(key) ?? null;
+                  if (!equalAttrs$1(curVal, value)) {
+                    if (action === "retain") {
+                      addOp();
+                    }
+                    if (equalAttrs$1(value, oldAttributes.get(key) ?? null)) {
+                      delete attributes[key];
+                    } else {
+                      attributes[key] = value;
+                    }
+                  } else if (value !== null) {
+                    item.delete(transaction);
+                  }
+                }
+              } else if (this.deletes(item)) {
+                oldAttributes.set(key, value);
+                const curVal = currentAttributes.get(key) ?? null;
+                if (!equalAttrs$1(curVal, value)) {
+                  if (action === "retain") {
+                    addOp();
+                  }
+                  attributes[key] = curVal;
+                }
+              } else if (!item.deleted) {
+                oldAttributes.set(key, value);
+                const attr = attributes[key];
+                if (attr !== void 0) {
+                  if (!equalAttrs$1(attr, value)) {
+                    if (action === "retain") {
+                      addOp();
+                    }
+                    if (value === null) {
+                      delete attributes[key];
+                    } else {
+                      attributes[key] = value;
+                    }
+                  } else if (attr !== null) {
+                    item.delete(transaction);
+                  }
+                }
+              }
+              if (!item.deleted) {
+                if (action === "insert") {
+                  addOp();
+                }
+                updateCurrentAttributes$1(
+                  currentAttributes,
+                  /** @type {ContentFormat} */
+                  item.content
+                );
+              }
+              break;
+            }
+          }
+          item = item.right;
+        }
+        addOp();
+        while (delta.length > 0) {
+          const lastOp = delta[delta.length - 1];
+          if (lastOp.retain !== void 0 && lastOp.attributes === void 0) {
+            delta.pop();
+          } else {
+            break;
+          }
+        }
+      });
+      this._delta = delta;
+    }
+    return (
+      /** @type {any} */
+      this._delta
+    );
+  }
+};
+let YText$1 = class YText extends AbstractType$1 {
+  /**
+   * @param {String} [string] The initial value of the YText.
+   */
+  constructor(string) {
+    super();
+    this._pending = string !== void 0 ? [() => this.insert(0, string)] : [];
+    this._searchMarker = [];
+    this._hasFormatting = false;
+  }
+  /**
+   * Number of characters of this text type.
+   *
+   * @type {number}
+   */
+  get length() {
+    this.doc ?? warnPrematureAccess$1();
+    return this._length;
+  }
+  /**
+   * @param {Doc} y
+   * @param {Item} item
+   */
+  _integrate(y, item) {
+    super._integrate(y, item);
+    try {
+      this._pending.forEach((f) => f());
+    } catch (e) {
+      console.error(e);
+    }
+    this._pending = null;
+  }
+  _copy() {
+    return new YText();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YText}
+   */
+  clone() {
+    const text = new YText();
+    text.applyDelta(this.toDelta());
+    return text;
+  }
+  /**
+   * Creates YTextEvent and calls observers.
+   *
+   * @param {Transaction} transaction
+   * @param {Set<null|string>} parentSubs Keys changed on this type. `null` if list was modified.
+   */
+  _callObserver(transaction, parentSubs) {
+    super._callObserver(transaction, parentSubs);
+    const event = new YTextEvent$1(this, transaction, parentSubs);
+    callTypeObservers$1(this, transaction, event);
+    if (!transaction.local && this._hasFormatting) {
+      transaction._needFormattingCleanup = true;
+    }
+  }
+  /**
+   * Returns the unformatted string representation of this YText type.
+   *
+   * @public
+   */
+  toString() {
+    this.doc ?? warnPrematureAccess$1();
+    let str = "";
+    let n = this._start;
+    while (n !== null) {
+      if (!n.deleted && n.countable && n.content.constructor === ContentString$1) {
+        str += /** @type {ContentString} */
+        n.content.str;
+      }
+      n = n.right;
+    }
+    return str;
+  }
+  /**
+   * Returns the unformatted string representation of this YText type.
+   *
+   * @return {string}
+   * @public
+   */
+  toJSON() {
+    return this.toString();
+  }
+  /**
+   * Apply a {@link Delta} on this shared YText type.
+   *
+   * @param {Array<any>} delta The changes to apply on this element.
+   * @param {object}  opts
+   * @param {boolean} [opts.sanitize] Sanitize input delta. Removes ending newlines if set to true.
+   *
+   *
+   * @public
+   */
+  applyDelta(delta, { sanitize = true } = {}) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        const currPos = new ItemTextListPosition$1(null, this._start, 0, /* @__PURE__ */ new Map());
+        for (let i = 0; i < delta.length; i++) {
+          const op = delta[i];
+          if (op.insert !== void 0) {
+            const ins = !sanitize && typeof op.insert === "string" && i === delta.length - 1 && currPos.right === null && op.insert.slice(-1) === "\n" ? op.insert.slice(0, -1) : op.insert;
+            if (typeof ins !== "string" || ins.length > 0) {
+              insertText$1(transaction, this, currPos, ins, op.attributes || {});
+            }
+          } else if (op.retain !== void 0) {
+            formatText$1(transaction, this, currPos, op.retain, op.attributes || {});
+          } else if (op.delete !== void 0) {
+            deleteText$1(transaction, currPos, op.delete);
+          }
+        }
+      });
+    } else {
+      this._pending.push(() => this.applyDelta(delta));
+    }
+  }
+  /**
+   * Returns the Delta representation of this YText type.
+   *
+   * @param {Snapshot} [snapshot]
+   * @param {Snapshot} [prevSnapshot]
+   * @param {function('removed' | 'added', ID):any} [computeYChange]
+   * @return {any} The Delta representation of this type.
+   *
+   * @public
+   */
+  toDelta(snapshot, prevSnapshot, computeYChange) {
+    this.doc ?? warnPrematureAccess$1();
+    const ops = [];
+    const currentAttributes = /* @__PURE__ */ new Map();
+    const doc = (
+      /** @type {Doc} */
+      this.doc
+    );
+    let str = "";
+    let n = this._start;
+    function packStr() {
+      if (str.length > 0) {
+        const attributes = {};
+        let addAttributes = false;
+        currentAttributes.forEach((value, key) => {
+          addAttributes = true;
+          attributes[key] = value;
+        });
+        const op = { insert: str };
+        if (addAttributes) {
+          op.attributes = attributes;
+        }
+        ops.push(op);
+        str = "";
+      }
+    }
+    const computeDelta = () => {
+      while (n !== null) {
+        if (isVisible$1(n, snapshot) || prevSnapshot !== void 0 && isVisible$1(n, prevSnapshot)) {
+          switch (n.content.constructor) {
+            case ContentString$1: {
+              const cur = currentAttributes.get("ychange");
+              if (snapshot !== void 0 && !isVisible$1(n, snapshot)) {
+                if (cur === void 0 || cur.user !== n.id.client || cur.type !== "removed") {
+                  packStr();
+                  currentAttributes.set("ychange", computeYChange ? computeYChange("removed", n.id) : { type: "removed" });
+                }
+              } else if (prevSnapshot !== void 0 && !isVisible$1(n, prevSnapshot)) {
+                if (cur === void 0 || cur.user !== n.id.client || cur.type !== "added") {
+                  packStr();
+                  currentAttributes.set("ychange", computeYChange ? computeYChange("added", n.id) : { type: "added" });
+                }
+              } else if (cur !== void 0) {
+                packStr();
+                currentAttributes.delete("ychange");
+              }
+              str += /** @type {ContentString} */
+              n.content.str;
+              break;
+            }
+            case ContentType$1:
+            case ContentEmbed$1: {
+              packStr();
+              const op = {
+                insert: n.content.getContent()[0]
+              };
+              if (currentAttributes.size > 0) {
+                const attrs = (
+                  /** @type {Object<string,any>} */
+                  {}
+                );
+                op.attributes = attrs;
+                currentAttributes.forEach((value, key) => {
+                  attrs[key] = value;
+                });
+              }
+              ops.push(op);
+              break;
+            }
+            case ContentFormat$1:
+              if (isVisible$1(n, snapshot)) {
+                packStr();
+                updateCurrentAttributes$1(
+                  currentAttributes,
+                  /** @type {ContentFormat} */
+                  n.content
+                );
+              }
+              break;
+          }
+        }
+        n = n.right;
+      }
+      packStr();
+    };
+    if (snapshot || prevSnapshot) {
+      transact$1(doc, (transaction) => {
+        if (snapshot) {
+          splitSnapshotAffectedStructs$1(transaction, snapshot);
+        }
+        if (prevSnapshot) {
+          splitSnapshotAffectedStructs$1(transaction, prevSnapshot);
+        }
+        computeDelta();
+      }, "cleanup");
+    } else {
+      computeDelta();
+    }
+    return ops;
+  }
+  /**
+   * Insert text at a given index.
+   *
+   * @param {number} index The index at which to start inserting.
+   * @param {String} text The text to insert at the specified position.
+   * @param {TextAttributes} [attributes] Optionally define some formatting
+   *                                    information to apply on the inserted
+   *                                    Text.
+   * @public
+   */
+  insert(index, text, attributes) {
+    if (text.length <= 0) {
+      return;
+    }
+    const y = this.doc;
+    if (y !== null) {
+      transact$1(y, (transaction) => {
+        const pos = findPosition$1(transaction, this, index, !attributes);
+        if (!attributes) {
+          attributes = {};
+          pos.currentAttributes.forEach((v, k) => {
+            attributes[k] = v;
+          });
+        }
+        insertText$1(transaction, this, pos, text, attributes);
+      });
+    } else {
+      this._pending.push(() => this.insert(index, text, attributes));
+    }
+  }
+  /**
+   * Inserts an embed at a index.
+   *
+   * @param {number} index The index to insert the embed at.
+   * @param {Object | AbstractType<any>} embed The Object that represents the embed.
+   * @param {TextAttributes} [attributes] Attribute information to apply on the
+   *                                    embed
+   *
+   * @public
+   */
+  insertEmbed(index, embed, attributes) {
+    const y = this.doc;
+    if (y !== null) {
+      transact$1(y, (transaction) => {
+        const pos = findPosition$1(transaction, this, index, !attributes);
+        insertText$1(transaction, this, pos, embed, attributes || {});
+      });
+    } else {
+      this._pending.push(() => this.insertEmbed(index, embed, attributes || {}));
+    }
+  }
+  /**
+   * Deletes text starting from an index.
+   *
+   * @param {number} index Index at which to start deleting.
+   * @param {number} length The number of characters to remove. Defaults to 1.
+   *
+   * @public
+   */
+  delete(index, length2) {
+    if (length2 === 0) {
+      return;
+    }
+    const y = this.doc;
+    if (y !== null) {
+      transact$1(y, (transaction) => {
+        deleteText$1(transaction, findPosition$1(transaction, this, index, true), length2);
+      });
+    } else {
+      this._pending.push(() => this.delete(index, length2));
+    }
+  }
+  /**
+   * Assigns properties to a range of text.
+   *
+   * @param {number} index The position where to start formatting.
+   * @param {number} length The amount of characters to assign properties to.
+   * @param {TextAttributes} attributes Attribute information to apply on the
+   *                                    text.
+   *
+   * @public
+   */
+  format(index, length2, attributes) {
+    if (length2 === 0) {
+      return;
+    }
+    const y = this.doc;
+    if (y !== null) {
+      transact$1(y, (transaction) => {
+        const pos = findPosition$1(transaction, this, index, false);
+        if (pos.right === null) {
+          return;
+        }
+        formatText$1(transaction, this, pos, length2, attributes);
+      });
+    } else {
+      this._pending.push(() => this.format(index, length2, attributes));
+    }
+  }
+  /**
+   * Removes an attribute.
+   *
+   * @note Xml-Text nodes don't have attributes. You can use this feature to assign properties to complete text-blocks.
+   *
+   * @param {String} attributeName The attribute name that is to be removed.
+   *
+   * @public
+   */
+  removeAttribute(attributeName) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        typeMapDelete$1(transaction, this, attributeName);
+      });
+    } else {
+      this._pending.push(() => this.removeAttribute(attributeName));
+    }
+  }
+  /**
+   * Sets or updates an attribute.
+   *
+   * @note Xml-Text nodes don't have attributes. You can use this feature to assign properties to complete text-blocks.
+   *
+   * @param {String} attributeName The attribute name that is to be set.
+   * @param {any} attributeValue The attribute value that is to be set.
+   *
+   * @public
+   */
+  setAttribute(attributeName, attributeValue) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        typeMapSet$1(transaction, this, attributeName, attributeValue);
+      });
+    } else {
+      this._pending.push(() => this.setAttribute(attributeName, attributeValue));
+    }
+  }
+  /**
+   * Returns an attribute value that belongs to the attribute name.
+   *
+   * @note Xml-Text nodes don't have attributes. You can use this feature to assign properties to complete text-blocks.
+   *
+   * @param {String} attributeName The attribute name that identifies the
+   *                               queried value.
+   * @return {any} The queried attribute value.
+   *
+   * @public
+   */
+  getAttribute(attributeName) {
+    return (
+      /** @type {any} */
+      typeMapGet$1(this, attributeName)
+    );
+  }
+  /**
+   * Returns all attribute name/value pairs in a JSON Object.
+   *
+   * @note Xml-Text nodes don't have attributes. You can use this feature to assign properties to complete text-blocks.
+   *
+   * @return {Object<string, any>} A JSON Object that describes the attributes.
+   *
+   * @public
+   */
+  getAttributes() {
+    return typeMapGetAll$1(this);
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YTextRefID$1);
+  }
+};
+const readYText$1 = (_decoder) => new YText$1();
+let YXmlTreeWalker$1 = class YXmlTreeWalker {
+  /**
+   * @param {YXmlFragment | YXmlElement} root
+   * @param {function(AbstractType<any>):boolean} [f]
+   */
+  constructor(root, f = () => true) {
+    this._filter = f;
+    this._root = root;
+    this._currentNode = /** @type {Item} */
+    root._start;
+    this._firstCall = true;
+    root.doc ?? warnPrematureAccess$1();
+  }
+  [Symbol.iterator]() {
+    return this;
+  }
+  /**
+   * Get the next node.
+   *
+   * @return {IteratorResult<YXmlElement|YXmlText|YXmlHook>} The next node.
+   *
+   * @public
+   */
+  next() {
+    let n = this._currentNode;
+    let type = n && n.content && /** @type {any} */
+    n.content.type;
+    if (n !== null && (!this._firstCall || n.deleted || !this._filter(type))) {
+      do {
+        type = /** @type {any} */
+        n.content.type;
+        if (!n.deleted && (type.constructor === YXmlElement$1 || type.constructor === YXmlFragment$1) && type._start !== null) {
+          n = type._start;
+        } else {
+          while (n !== null) {
+            const nxt = n.next;
+            if (nxt !== null) {
+              n = nxt;
+              break;
+            } else if (n.parent === this._root) {
+              n = null;
+            } else {
+              n = /** @type {AbstractType<any>} */
+              n.parent._item;
+            }
+          }
+        }
+      } while (n !== null && (n.deleted || !this._filter(
+        /** @type {ContentType} */
+        n.content.type
+      )));
+    }
+    this._firstCall = false;
+    if (n === null) {
+      return { value: void 0, done: true };
+    }
+    this._currentNode = n;
+    return { value: (
+      /** @type {any} */
+      n.content.type
+    ), done: false };
+  }
+};
+let YXmlFragment$1 = class YXmlFragment extends AbstractType$1 {
+  constructor() {
+    super();
+    this._prelimContent = [];
+  }
+  /**
+   * @type {YXmlElement|YXmlText|null}
+   */
+  get firstChild() {
+    const first = this._first;
+    return first ? first.content.getContent()[0] : null;
+  }
+  /**
+   * Integrate this type into the Yjs instance.
+   *
+   * * Save this struct in the os
+   * * This type is sent to other client
+   * * Observer functions are fired
+   *
+   * @param {Doc} y The Yjs instance
+   * @param {Item} item
+   */
+  _integrate(y, item) {
+    super._integrate(y, item);
+    this.insert(
+      0,
+      /** @type {Array<any>} */
+      this._prelimContent
+    );
+    this._prelimContent = null;
+  }
+  _copy() {
+    return new YXmlFragment();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YXmlFragment}
+   */
+  clone() {
+    const el = new YXmlFragment();
+    el.insert(0, this.toArray().map((item) => item instanceof AbstractType$1 ? item.clone() : item));
+    return el;
+  }
+  get length() {
+    this.doc ?? warnPrematureAccess$1();
+    return this._prelimContent === null ? this._length : this._prelimContent.length;
+  }
+  /**
+   * Create a subtree of childNodes.
+   *
+   * @example
+   * const walker = elem.createTreeWalker(dom => dom.nodeName === 'div')
+   * for (let node in walker) {
+   *   // `node` is a div node
+   *   nop(node)
+   * }
+   *
+   * @param {function(AbstractType<any>):boolean} filter Function that is called on each child element and
+   *                          returns a Boolean indicating whether the child
+   *                          is to be included in the subtree.
+   * @return {YXmlTreeWalker} A subtree and a position within it.
+   *
+   * @public
+   */
+  createTreeWalker(filter) {
+    return new YXmlTreeWalker$1(this, filter);
+  }
+  /**
+   * Returns the first YXmlElement that matches the query.
+   * Similar to DOM's {@link querySelector}.
+   *
+   * Query support:
+   *   - tagname
+   * TODO:
+   *   - id
+   *   - attribute
+   *
+   * @param {CSS_Selector} query The query on the children.
+   * @return {YXmlElement|YXmlText|YXmlHook|null} The first element that matches the query or null.
+   *
+   * @public
+   */
+  querySelector(query) {
+    query = query.toUpperCase();
+    const iterator = new YXmlTreeWalker$1(this, (element) => element.nodeName && element.nodeName.toUpperCase() === query);
+    const next = iterator.next();
+    if (next.done) {
+      return null;
+    } else {
+      return next.value;
+    }
+  }
+  /**
+   * Returns all YXmlElements that match the query.
+   * Similar to Dom's {@link querySelectorAll}.
+   *
+   * @todo Does not yet support all queries. Currently only query by tagName.
+   *
+   * @param {CSS_Selector} query The query on the children
+   * @return {Array<YXmlElement|YXmlText|YXmlHook|null>} The elements that match this query.
+   *
+   * @public
+   */
+  querySelectorAll(query) {
+    query = query.toUpperCase();
+    return from$1(new YXmlTreeWalker$1(this, (element) => element.nodeName && element.nodeName.toUpperCase() === query));
+  }
+  /**
+   * Creates YXmlEvent and calls observers.
+   *
+   * @param {Transaction} transaction
+   * @param {Set<null|string>} parentSubs Keys changed on this type. `null` if list was modified.
+   */
+  _callObserver(transaction, parentSubs) {
+    callTypeObservers$1(this, transaction, new YXmlEvent$1(this, parentSubs, transaction));
+  }
+  /**
+   * Get the string representation of all the children of this YXmlFragment.
+   *
+   * @return {string} The string representation of all children.
+   */
+  toString() {
+    return typeListMap$1(this, (xml) => xml.toString()).join("");
+  }
+  /**
+   * @return {string}
+   */
+  toJSON() {
+    return this.toString();
+  }
+  /**
+   * Creates a Dom Element that mirrors this YXmlElement.
+   *
+   * @param {Document} [_document=document] The document object (you must define
+   *                                        this when calling this method in
+   *                                        nodejs)
+   * @param {Object<string, any>} [hooks={}] Optional property to customize how hooks
+   *                                             are presented in the DOM
+   * @param {any} [binding] You should not set this property. This is
+   *                               used if DomBinding wants to create a
+   *                               association to the created DOM type.
+   * @return {Node} The {@link https://developer.mozilla.org/en-US/docs/Web/API/Element|Dom Element}
+   *
+   * @public
+   */
+  toDOM(_document = document, hooks = {}, binding) {
+    const fragment = _document.createDocumentFragment();
+    if (binding !== void 0) {
+      binding._createAssociation(fragment, this);
+    }
+    typeListForEach$1(this, (xmlType) => {
+      fragment.insertBefore(xmlType.toDOM(_document, hooks, binding), null);
+    });
+    return fragment;
+  }
+  /**
+   * Inserts new content at an index.
+   *
+   * @example
+   *  // Insert character 'a' at position 0
+   *  xml.insert(0, [new Y.XmlText('text')])
+   *
+   * @param {number} index The index to insert content at
+   * @param {Array<YXmlElement|YXmlText>} content The array of content
+   */
+  insert(index, content) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        typeListInsertGenerics$1(transaction, this, index, content);
+      });
+    } else {
+      this._prelimContent.splice(index, 0, ...content);
+    }
+  }
+  /**
+   * Inserts new content at an index.
+   *
+   * @example
+   *  // Insert character 'a' at position 0
+   *  xml.insert(0, [new Y.XmlText('text')])
+   *
+   * @param {null|Item|YXmlElement|YXmlText} ref The index to insert content at
+   * @param {Array<YXmlElement|YXmlText>} content The array of content
+   */
+  insertAfter(ref, content) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        const refItem = ref && ref instanceof AbstractType$1 ? ref._item : ref;
+        typeListInsertGenericsAfter$1(transaction, this, refItem, content);
+      });
+    } else {
+      const pc = (
+        /** @type {Array<any>} */
+        this._prelimContent
+      );
+      const index = ref === null ? 0 : pc.findIndex((el) => el === ref) + 1;
+      if (index === 0 && ref !== null) {
+        throw create$7("Reference item not found");
+      }
+      pc.splice(index, 0, ...content);
+    }
+  }
+  /**
+   * Deletes elements starting from an index.
+   *
+   * @param {number} index Index at which to start deleting elements
+   * @param {number} [length=1] The number of elements to remove. Defaults to 1.
+   */
+  delete(index, length2 = 1) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        typeListDelete$1(transaction, this, index, length2);
+      });
+    } else {
+      this._prelimContent.splice(index, length2);
+    }
+  }
+  /**
+   * Transforms this YArray to a JavaScript Array.
+   *
+   * @return {Array<YXmlElement|YXmlText|YXmlHook>}
+   */
+  toArray() {
+    return typeListToArray$1(this);
+  }
+  /**
+   * Appends content to this YArray.
+   *
+   * @param {Array<YXmlElement|YXmlText>} content Array of content to append.
+   */
+  push(content) {
+    this.insert(this.length, content);
+  }
+  /**
+   * Prepends content to this YArray.
+   *
+   * @param {Array<YXmlElement|YXmlText>} content Array of content to prepend.
+   */
+  unshift(content) {
+    this.insert(0, content);
+  }
+  /**
+   * Returns the i-th element from a YArray.
+   *
+   * @param {number} index The index of the element to return from the YArray
+   * @return {YXmlElement|YXmlText}
+   */
+  get(index) {
+    return typeListGet$1(this, index);
+  }
+  /**
+   * Returns a portion of this YXmlFragment into a JavaScript Array selected
+   * from start to end (end not included).
+   *
+   * @param {number} [start]
+   * @param {number} [end]
+   * @return {Array<YXmlElement|YXmlText>}
+   */
+  slice(start = 0, end = this.length) {
+    return typeListSlice$1(this, start, end);
+  }
+  /**
+   * Executes a provided function on once on every child element.
+   *
+   * @param {function(YXmlElement|YXmlText,number, typeof self):void} f A function to execute on every element of this YArray.
+   */
+  forEach(f) {
+    typeListForEach$1(this, f);
+  }
+  /**
+   * Transform the properties of this type to binary and write it to an
+   * BinaryEncoder.
+   *
+   * This is called when this Item is sent to a remote peer.
+   *
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder The encoder to write data to.
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YXmlFragmentRefID$1);
+  }
+};
+const readYXmlFragment$1 = (_decoder) => new YXmlFragment$1();
+let YXmlElement$1 = class YXmlElement extends YXmlFragment$1 {
+  constructor(nodeName = "UNDEFINED") {
+    super();
+    this.nodeName = nodeName;
+    this._prelimAttrs = /* @__PURE__ */ new Map();
+  }
+  /**
+   * @type {YXmlElement|YXmlText|null}
+   */
+  get nextSibling() {
+    const n = this._item ? this._item.next : null;
+    return n ? (
+      /** @type {YXmlElement|YXmlText} */
+      /** @type {ContentType} */
+      n.content.type
+    ) : null;
+  }
+  /**
+   * @type {YXmlElement|YXmlText|null}
+   */
+  get prevSibling() {
+    const n = this._item ? this._item.prev : null;
+    return n ? (
+      /** @type {YXmlElement|YXmlText} */
+      /** @type {ContentType} */
+      n.content.type
+    ) : null;
+  }
+  /**
+   * Integrate this type into the Yjs instance.
+   *
+   * * Save this struct in the os
+   * * This type is sent to other client
+   * * Observer functions are fired
+   *
+   * @param {Doc} y The Yjs instance
+   * @param {Item} item
+   */
+  _integrate(y, item) {
+    super._integrate(y, item);
+    /** @type {Map<string, any>} */
+    this._prelimAttrs.forEach((value, key) => {
+      this.setAttribute(key, value);
+    });
+    this._prelimAttrs = null;
+  }
+  /**
+   * Creates an Item with the same effect as this Item (without position effect)
+   *
+   * @return {YXmlElement}
+   */
+  _copy() {
+    return new YXmlElement(this.nodeName);
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YXmlElement<KV>}
+   */
+  clone() {
+    const el = new YXmlElement(this.nodeName);
+    const attrs = this.getAttributes();
+    forEach$1(attrs, (value, key) => {
+      el.setAttribute(
+        key,
+        /** @type {any} */
+        value
+      );
+    });
+    el.insert(0, this.toArray().map((v) => v instanceof AbstractType$1 ? v.clone() : v));
+    return el;
+  }
+  /**
+   * Returns the XML serialization of this YXmlElement.
+   * The attributes are ordered by attribute-name, so you can easily use this
+   * method to compare YXmlElements
+   *
+   * @return {string} The string representation of this type.
+   *
+   * @public
+   */
+  toString() {
+    const attrs = this.getAttributes();
+    const stringBuilder = [];
+    const keys2 = [];
+    for (const key in attrs) {
+      keys2.push(key);
+    }
+    keys2.sort();
+    const keysLen = keys2.length;
+    for (let i = 0; i < keysLen; i++) {
+      const key = keys2[i];
+      stringBuilder.push(key + '="' + attrs[key] + '"');
+    }
+    const nodeName = this.nodeName.toLocaleLowerCase();
+    const attrsString = stringBuilder.length > 0 ? " " + stringBuilder.join(" ") : "";
+    return `<${nodeName}${attrsString}>${super.toString()}</${nodeName}>`;
+  }
+  /**
+   * Removes an attribute from this YXmlElement.
+   *
+   * @param {string} attributeName The attribute name that is to be removed.
+   *
+   * @public
+   */
+  removeAttribute(attributeName) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        typeMapDelete$1(transaction, this, attributeName);
+      });
+    } else {
+      this._prelimAttrs.delete(attributeName);
+    }
+  }
+  /**
+   * Sets or updates an attribute.
+   *
+   * @template {keyof KV & string} KEY
+   *
+   * @param {KEY} attributeName The attribute name that is to be set.
+   * @param {KV[KEY]} attributeValue The attribute value that is to be set.
+   *
+   * @public
+   */
+  setAttribute(attributeName, attributeValue) {
+    if (this.doc !== null) {
+      transact$1(this.doc, (transaction) => {
+        typeMapSet$1(transaction, this, attributeName, attributeValue);
+      });
+    } else {
+      this._prelimAttrs.set(attributeName, attributeValue);
+    }
+  }
+  /**
+   * Returns an attribute value that belongs to the attribute name.
+   *
+   * @template {keyof KV & string} KEY
+   *
+   * @param {KEY} attributeName The attribute name that identifies the
+   *                               queried value.
+   * @return {KV[KEY]|undefined} The queried attribute value.
+   *
+   * @public
+   */
+  getAttribute(attributeName) {
+    return (
+      /** @type {any} */
+      typeMapGet$1(this, attributeName)
+    );
+  }
+  /**
+   * Returns whether an attribute exists
+   *
+   * @param {string} attributeName The attribute name to check for existence.
+   * @return {boolean} whether the attribute exists.
+   *
+   * @public
+   */
+  hasAttribute(attributeName) {
+    return (
+      /** @type {any} */
+      typeMapHas$1(this, attributeName)
+    );
+  }
+  /**
+   * Returns all attribute name/value pairs in a JSON Object.
+   *
+   * @param {Snapshot} [snapshot]
+   * @return {{ [Key in Extract<keyof KV,string>]?: KV[Key]}} A JSON Object that describes the attributes.
+   *
+   * @public
+   */
+  getAttributes(snapshot) {
+    return (
+      /** @type {any} */
+      snapshot ? typeMapGetAllSnapshot$1(this, snapshot) : typeMapGetAll$1(this)
+    );
+  }
+  /**
+   * Creates a Dom Element that mirrors this YXmlElement.
+   *
+   * @param {Document} [_document=document] The document object (you must define
+   *                                        this when calling this method in
+   *                                        nodejs)
+   * @param {Object<string, any>} [hooks={}] Optional property to customize how hooks
+   *                                             are presented in the DOM
+   * @param {any} [binding] You should not set this property. This is
+   *                               used if DomBinding wants to create a
+   *                               association to the created DOM type.
+   * @return {Node} The {@link https://developer.mozilla.org/en-US/docs/Web/API/Element|Dom Element}
+   *
+   * @public
+   */
+  toDOM(_document = document, hooks = {}, binding) {
+    const dom = _document.createElement(this.nodeName);
+    const attrs = this.getAttributes();
+    for (const key in attrs) {
+      const value = attrs[key];
+      if (typeof value === "string") {
+        dom.setAttribute(key, value);
+      }
+    }
+    typeListForEach$1(this, (yxml) => {
+      dom.appendChild(yxml.toDOM(_document, hooks, binding));
+    });
+    if (binding !== void 0) {
+      binding._createAssociation(dom, this);
+    }
+    return dom;
+  }
+  /**
+   * Transform the properties of this type to binary and write it to an
+   * BinaryEncoder.
+   *
+   * This is called when this Item is sent to a remote peer.
+   *
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder The encoder to write data to.
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YXmlElementRefID$1);
+    encoder.writeKey(this.nodeName);
+  }
+};
+const readYXmlElement$1 = (decoder) => new YXmlElement$1(decoder.readKey());
+let YXmlEvent$1 = class YXmlEvent extends YEvent$1 {
+  /**
+   * @param {YXmlElement|YXmlText|YXmlFragment} target The target on which the event is created.
+   * @param {Set<string|null>} subs The set of changed attributes. `null` is included if the
+   *                   child list changed.
+   * @param {Transaction} transaction The transaction instance with which the
+   *                                  change was created.
+   */
+  constructor(target, subs, transaction) {
+    super(target, transaction);
+    this.childListChanged = false;
+    this.attributesChanged = /* @__PURE__ */ new Set();
+    subs.forEach((sub) => {
+      if (sub === null) {
+        this.childListChanged = true;
+      } else {
+        this.attributesChanged.add(sub);
+      }
+    });
+  }
+};
+let YXmlHook$1 = class YXmlHook extends YMap$1 {
+  /**
+   * @param {string} hookName nodeName of the Dom Node.
+   */
+  constructor(hookName) {
+    super();
+    this.hookName = hookName;
+  }
+  /**
+   * Creates an Item with the same effect as this Item (without position effect)
+   */
+  _copy() {
+    return new YXmlHook(this.hookName);
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YXmlHook}
+   */
+  clone() {
+    const el = new YXmlHook(this.hookName);
+    this.forEach((value, key) => {
+      el.set(key, value);
+    });
+    return el;
+  }
+  /**
+   * Creates a Dom Element that mirrors this YXmlElement.
+   *
+   * @param {Document} [_document=document] The document object (you must define
+   *                                        this when calling this method in
+   *                                        nodejs)
+   * @param {Object.<string, any>} [hooks] Optional property to customize how hooks
+   *                                             are presented in the DOM
+   * @param {any} [binding] You should not set this property. This is
+   *                               used if DomBinding wants to create a
+   *                               association to the created DOM type
+   * @return {Element} The {@link https://developer.mozilla.org/en-US/docs/Web/API/Element|Dom Element}
+   *
+   * @public
+   */
+  toDOM(_document = document, hooks = {}, binding) {
+    const hook = hooks[this.hookName];
+    let dom;
+    if (hook !== void 0) {
+      dom = hook.createDom(this);
+    } else {
+      dom = document.createElement(this.hookName);
+    }
+    dom.setAttribute("data-yjs-hook", this.hookName);
+    if (binding !== void 0) {
+      binding._createAssociation(dom, this);
+    }
+    return dom;
+  }
+  /**
+   * Transform the properties of this type to binary and write it to an
+   * BinaryEncoder.
+   *
+   * This is called when this Item is sent to a remote peer.
+   *
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder The encoder to write data to.
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YXmlHookRefID$1);
+    encoder.writeKey(this.hookName);
+  }
+};
+const readYXmlHook$1 = (decoder) => new YXmlHook$1(decoder.readKey());
+let YXmlText$1 = class YXmlText extends YText$1 {
+  /**
+   * @type {YXmlElement|YXmlText|null}
+   */
+  get nextSibling() {
+    const n = this._item ? this._item.next : null;
+    return n ? (
+      /** @type {YXmlElement|YXmlText} */
+      /** @type {ContentType} */
+      n.content.type
+    ) : null;
+  }
+  /**
+   * @type {YXmlElement|YXmlText|null}
+   */
+  get prevSibling() {
+    const n = this._item ? this._item.prev : null;
+    return n ? (
+      /** @type {YXmlElement|YXmlText} */
+      /** @type {ContentType} */
+      n.content.type
+    ) : null;
+  }
+  _copy() {
+    return new YXmlText();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YXmlText}
+   */
+  clone() {
+    const text = new YXmlText();
+    text.applyDelta(this.toDelta());
+    return text;
+  }
+  /**
+   * Creates a Dom Element that mirrors this YXmlText.
+   *
+   * @param {Document} [_document=document] The document object (you must define
+   *                                        this when calling this method in
+   *                                        nodejs)
+   * @param {Object<string, any>} [hooks] Optional property to customize how hooks
+   *                                             are presented in the DOM
+   * @param {any} [binding] You should not set this property. This is
+   *                               used if DomBinding wants to create a
+   *                               association to the created DOM type.
+   * @return {Text} The {@link https://developer.mozilla.org/en-US/docs/Web/API/Element|Dom Element}
+   *
+   * @public
+   */
+  toDOM(_document = document, hooks, binding) {
+    const dom = _document.createTextNode(this.toString());
+    if (binding !== void 0) {
+      binding._createAssociation(dom, this);
+    }
+    return dom;
+  }
+  toString() {
+    return this.toDelta().map((delta) => {
+      const nestedNodes = [];
+      for (const nodeName in delta.attributes) {
+        const attrs = [];
+        for (const key in delta.attributes[nodeName]) {
+          attrs.push({ key, value: delta.attributes[nodeName][key] });
+        }
+        attrs.sort((a, b) => a.key < b.key ? -1 : 1);
+        nestedNodes.push({ nodeName, attrs });
+      }
+      nestedNodes.sort((a, b) => a.nodeName < b.nodeName ? -1 : 1);
+      let str = "";
+      for (let i = 0; i < nestedNodes.length; i++) {
+        const node = nestedNodes[i];
+        str += `<${node.nodeName}`;
+        for (let j = 0; j < node.attrs.length; j++) {
+          const attr = node.attrs[j];
+          str += ` ${attr.key}="${attr.value}"`;
+        }
+        str += ">";
+      }
+      str += delta.insert;
+      for (let i = nestedNodes.length - 1; i >= 0; i--) {
+        str += `</${nestedNodes[i].nodeName}>`;
+      }
+      return str;
+    }).join("");
+  }
+  /**
+   * @return {string}
+   */
+  toJSON() {
+    return this.toString();
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YXmlTextRefID$1);
+  }
+};
+const readYXmlText$1 = (decoder) => new YXmlText$1();
+let AbstractStruct$1 = class AbstractStruct {
+  /**
+   * @param {ID} id
+   * @param {number} length
+   */
+  constructor(id2, length2) {
+    this.id = id2;
+    this.length = length2;
+  }
+  /**
+   * @type {boolean}
+   */
+  get deleted() {
+    throw methodUnimplemented$1();
+  }
+  /**
+   * Merge this struct with the item to the right.
+   * This method is already assuming that `this.id.clock + this.length === this.id.clock`.
+   * Also this method does *not* remove right from StructStore!
+   * @param {AbstractStruct} right
+   * @return {boolean} whether this merged with right
+   */
+  mergeWith(right) {
+    return false;
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder The encoder to write data to.
+   * @param {number} offset
+   * @param {number} encodingRef
+   */
+  write(encoder, offset, encodingRef) {
+    throw methodUnimplemented$1();
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {number} offset
+   */
+  integrate(transaction, offset) {
+    throw methodUnimplemented$1();
+  }
+};
+const structGCRefNumber$1 = 0;
+let GC$1 = class GC extends AbstractStruct$1 {
+  get deleted() {
+    return true;
+  }
+  delete() {
+  }
+  /**
+   * @param {GC} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    if (this.constructor !== right.constructor) {
+      return false;
+    }
+    this.length += right.length;
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {number} offset
+   */
+  integrate(transaction, offset) {
+    if (offset > 0) {
+      this.id.clock += offset;
+      this.length -= offset;
+    }
+    addStruct$1(transaction.doc.store, this);
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeInfo(structGCRefNumber$1);
+    encoder.writeLen(this.length - offset);
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {StructStore} store
+   * @return {null | number}
+   */
+  getMissing(transaction, store) {
+    return null;
+  }
+};
+let ContentBinary$1 = class ContentBinary {
+  /**
+   * @param {Uint8Array} content
+   */
+  constructor(content) {
+    this.content = content;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return 1;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [this.content];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentBinary}
+   */
+  copy() {
+    return new ContentBinary(this.content);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentBinary}
+   */
+  splice(offset) {
+    throw methodUnimplemented$1();
+  }
+  /**
+   * @param {ContentBinary} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    return false;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeBuf(this.content);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 3;
+  }
+};
+const readContentBinary$1 = (decoder) => new ContentBinary$1(decoder.readBuf());
+let ContentDeleted$1 = class ContentDeleted {
+  /**
+   * @param {number} len
+   */
+  constructor(len) {
+    this.len = len;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return this.len;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return false;
+  }
+  /**
+   * @return {ContentDeleted}
+   */
+  copy() {
+    return new ContentDeleted(this.len);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentDeleted}
+   */
+  splice(offset) {
+    const right = new ContentDeleted(this.len - offset);
+    this.len = offset;
+    return right;
+  }
+  /**
+   * @param {ContentDeleted} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    this.len += right.len;
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+    addToDeleteSet$1(transaction.deleteSet, item.id.client, item.id.clock, this.len);
+    item.markDeleted();
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeLen(this.len - offset);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 1;
+  }
+};
+const readContentDeleted$1 = (decoder) => new ContentDeleted$1(decoder.readLen());
+const createDocFromOpts$1 = (guid, opts) => new Doc$1({ guid, ...opts, shouldLoad: opts.shouldLoad || opts.autoLoad || false });
+let ContentDoc$1 = class ContentDoc {
+  /**
+   * @param {Doc} doc
+   */
+  constructor(doc) {
+    if (doc._item) {
+      console.error("This document was already integrated as a sub-document. You should create a second instance instead with the same guid.");
+    }
+    this.doc = doc;
+    const opts = {};
+    this.opts = opts;
+    if (!doc.gc) {
+      opts.gc = false;
+    }
+    if (doc.autoLoad) {
+      opts.autoLoad = true;
+    }
+    if (doc.meta !== null) {
+      opts.meta = doc.meta;
+    }
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return 1;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [this.doc];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentDoc}
+   */
+  copy() {
+    return new ContentDoc(createDocFromOpts$1(this.doc.guid, this.opts));
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentDoc}
+   */
+  splice(offset) {
+    throw methodUnimplemented$1();
+  }
+  /**
+   * @param {ContentDoc} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    return false;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+    this.doc._item = item;
+    transaction.subdocsAdded.add(this.doc);
+    if (this.doc.shouldLoad) {
+      transaction.subdocsLoaded.add(this.doc);
+    }
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+    if (transaction.subdocsAdded.has(this.doc)) {
+      transaction.subdocsAdded.delete(this.doc);
+    } else {
+      transaction.subdocsRemoved.add(this.doc);
+    }
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeString(this.doc.guid);
+    encoder.writeAny(this.opts);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 9;
+  }
+};
+const readContentDoc$1 = (decoder) => new ContentDoc$1(createDocFromOpts$1(decoder.readString(), decoder.readAny()));
+let ContentEmbed$1 = class ContentEmbed {
+  /**
+   * @param {Object} embed
+   */
+  constructor(embed) {
+    this.embed = embed;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return 1;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [this.embed];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentEmbed}
+   */
+  copy() {
+    return new ContentEmbed(this.embed);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentEmbed}
+   */
+  splice(offset) {
+    throw methodUnimplemented$1();
+  }
+  /**
+   * @param {ContentEmbed} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    return false;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeJSON(this.embed);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 5;
+  }
+};
+const readContentEmbed$1 = (decoder) => new ContentEmbed$1(decoder.readJSON());
+let ContentFormat$1 = class ContentFormat {
+  /**
+   * @param {string} key
+   * @param {Object} value
+   */
+  constructor(key, value) {
+    this.key = key;
+    this.value = value;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return 1;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return false;
+  }
+  /**
+   * @return {ContentFormat}
+   */
+  copy() {
+    return new ContentFormat(this.key, this.value);
+  }
+  /**
+   * @param {number} _offset
+   * @return {ContentFormat}
+   */
+  splice(_offset) {
+    throw methodUnimplemented$1();
+  }
+  /**
+   * @param {ContentFormat} _right
+   * @return {boolean}
+   */
+  mergeWith(_right) {
+    return false;
+  }
+  /**
+   * @param {Transaction} _transaction
+   * @param {Item} item
+   */
+  integrate(_transaction, item) {
+    const p = (
+      /** @type {YText} */
+      item.parent
+    );
+    p._searchMarker = null;
+    p._hasFormatting = true;
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeKey(this.key);
+    encoder.writeJSON(this.value);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 6;
+  }
+};
+const readContentFormat$1 = (decoder) => new ContentFormat$1(decoder.readKey(), decoder.readJSON());
+let ContentJSON$1 = class ContentJSON {
+  /**
+   * @param {Array<any>} arr
+   */
+  constructor(arr) {
+    this.arr = arr;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return this.arr.length;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return this.arr;
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentJSON}
+   */
+  copy() {
+    return new ContentJSON(this.arr);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentJSON}
+   */
+  splice(offset) {
+    const right = new ContentJSON(this.arr.slice(offset));
+    this.arr = this.arr.slice(0, offset);
+    return right;
+  }
+  /**
+   * @param {ContentJSON} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    this.arr = this.arr.concat(right.arr);
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    const len = this.arr.length;
+    encoder.writeLen(len - offset);
+    for (let i = offset; i < len; i++) {
+      const c = this.arr[i];
+      encoder.writeString(c === void 0 ? "undefined" : JSON.stringify(c));
+    }
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 2;
+  }
+};
+const readContentJSON$1 = (decoder) => {
+  const len = decoder.readLen();
+  const cs = [];
+  for (let i = 0; i < len; i++) {
+    const c = decoder.readString();
+    if (c === "undefined") {
+      cs.push(void 0);
+    } else {
+      cs.push(JSON.parse(c));
+    }
+  }
+  return new ContentJSON$1(cs);
+};
+const isDevMode$1 = getVariable$1("node_env") === "development";
+let ContentAny$1 = class ContentAny {
+  /**
+   * @param {Array<any>} arr
+   */
+  constructor(arr) {
+    this.arr = arr;
+    isDevMode$1 && deepFreeze$1(arr);
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return this.arr.length;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return this.arr;
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentAny}
+   */
+  copy() {
+    return new ContentAny(this.arr);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentAny}
+   */
+  splice(offset) {
+    const right = new ContentAny(this.arr.slice(offset));
+    this.arr = this.arr.slice(0, offset);
+    return right;
+  }
+  /**
+   * @param {ContentAny} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    this.arr = this.arr.concat(right.arr);
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    const len = this.arr.length;
+    encoder.writeLen(len - offset);
+    for (let i = offset; i < len; i++) {
+      const c = this.arr[i];
+      encoder.writeAny(c);
+    }
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 8;
+  }
+};
+const readContentAny$1 = (decoder) => {
+  const len = decoder.readLen();
+  const cs = [];
+  for (let i = 0; i < len; i++) {
+    cs.push(decoder.readAny());
+  }
+  return new ContentAny$1(cs);
+};
+let ContentString$1 = class ContentString {
+  /**
+   * @param {string} str
+   */
+  constructor(str) {
+    this.str = str;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return this.str.length;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return this.str.split("");
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentString}
+   */
+  copy() {
+    return new ContentString(this.str);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentString}
+   */
+  splice(offset) {
+    const right = new ContentString(this.str.slice(offset));
+    this.str = this.str.slice(0, offset);
+    const firstCharCode = this.str.charCodeAt(offset - 1);
+    if (firstCharCode >= 55296 && firstCharCode <= 56319) {
+      this.str = this.str.slice(0, offset - 1) + "�";
+      right.str = "�" + right.str.slice(1);
+    }
+    return right;
+  }
+  /**
+   * @param {ContentString} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    this.str += right.str;
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeString(offset === 0 ? this.str : this.str.slice(offset));
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 4;
+  }
+};
+const readContentString$1 = (decoder) => new ContentString$1(decoder.readString());
+const typeRefs$1 = [
+  readYArray$1,
+  readYMap$1,
+  readYText$1,
+  readYXmlElement$1,
+  readYXmlFragment$1,
+  readYXmlHook$1,
+  readYXmlText$1
+];
+const YArrayRefID$1 = 0;
+const YMapRefID$1 = 1;
+const YTextRefID$1 = 2;
+const YXmlElementRefID$1 = 3;
+const YXmlFragmentRefID$1 = 4;
+const YXmlHookRefID$1 = 5;
+const YXmlTextRefID$1 = 6;
+let ContentType$1 = class ContentType {
+  /**
+   * @param {AbstractType<any>} type
+   */
+  constructor(type) {
+    this.type = type;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return 1;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [this.type];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentType}
+   */
+  copy() {
+    return new ContentType(this.type._copy());
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentType}
+   */
+  splice(offset) {
+    throw methodUnimplemented$1();
+  }
+  /**
+   * @param {ContentType} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    return false;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+    this.type._integrate(transaction.doc, item);
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+    let item = this.type._start;
+    while (item !== null) {
+      if (!item.deleted) {
+        item.delete(transaction);
+      } else if (item.id.clock < (transaction.beforeState.get(item.id.client) || 0)) {
+        transaction._mergeStructs.push(item);
+      }
+      item = item.right;
+    }
+    this.type._map.forEach((item2) => {
+      if (!item2.deleted) {
+        item2.delete(transaction);
+      } else if (item2.id.clock < (transaction.beforeState.get(item2.id.client) || 0)) {
+        transaction._mergeStructs.push(item2);
+      }
+    });
+    transaction.changed.delete(this.type);
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+    let item = this.type._start;
+    while (item !== null) {
+      item.gc(store, true);
+      item = item.right;
+    }
+    this.type._start = null;
+    this.type._map.forEach(
+      /** @param {Item | null} item */
+      (item2) => {
+        while (item2 !== null) {
+          item2.gc(store, true);
+          item2 = item2.left;
+        }
+      }
+    );
+    this.type._map = /* @__PURE__ */ new Map();
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    this.type._write(encoder);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 7;
+  }
+};
+const readContentType$1 = (decoder) => new ContentType$1(typeRefs$1[decoder.readTypeRef()](decoder));
+const splitItem$1 = (transaction, leftItem, diff) => {
+  const { client, clock } = leftItem.id;
+  const rightItem = new Item$1(
+    createID$1(client, clock + diff),
+    leftItem,
+    createID$1(client, clock + diff - 1),
+    leftItem.right,
+    leftItem.rightOrigin,
+    leftItem.parent,
+    leftItem.parentSub,
+    leftItem.content.splice(diff)
+  );
+  if (leftItem.deleted) {
+    rightItem.markDeleted();
+  }
+  if (leftItem.keep) {
+    rightItem.keep = true;
+  }
+  if (leftItem.redone !== null) {
+    rightItem.redone = createID$1(leftItem.redone.client, leftItem.redone.clock + diff);
+  }
+  leftItem.right = rightItem;
+  if (rightItem.right !== null) {
+    rightItem.right.left = rightItem;
+  }
+  transaction._mergeStructs.push(rightItem);
+  if (rightItem.parentSub !== null && rightItem.right === null) {
+    rightItem.parent._map.set(rightItem.parentSub, rightItem);
+  }
+  leftItem.length = diff;
+  return rightItem;
+};
+let Item$1 = class Item extends AbstractStruct$1 {
+  /**
+   * @param {ID} id
+   * @param {Item | null} left
+   * @param {ID | null} origin
+   * @param {Item | null} right
+   * @param {ID | null} rightOrigin
+   * @param {AbstractType<any>|ID|null} parent Is a type if integrated, is null if it is possible to copy parent from left or right, is ID before integration to search for it.
+   * @param {string | null} parentSub
+   * @param {AbstractContent} content
+   */
+  constructor(id2, left, origin, right, rightOrigin, parent, parentSub, content) {
+    super(id2, content.getLength());
+    this.origin = origin;
+    this.left = left;
+    this.right = right;
+    this.rightOrigin = rightOrigin;
+    this.parent = parent;
+    this.parentSub = parentSub;
+    this.redone = null;
+    this.content = content;
+    this.info = this.content.isCountable() ? BIT2$1 : 0;
+  }
+  /**
+   * This is used to mark the item as an indexed fast-search marker
+   *
+   * @type {boolean}
+   */
+  set marker(isMarked) {
+    if ((this.info & BIT4$1) > 0 !== isMarked) {
+      this.info ^= BIT4$1;
+    }
+  }
+  get marker() {
+    return (this.info & BIT4$1) > 0;
+  }
+  /**
+   * If true, do not garbage collect this Item.
+   */
+  get keep() {
+    return (this.info & BIT1$1) > 0;
+  }
+  set keep(doKeep) {
+    if (this.keep !== doKeep) {
+      this.info ^= BIT1$1;
+    }
+  }
+  get countable() {
+    return (this.info & BIT2$1) > 0;
+  }
+  /**
+   * Whether this item was deleted or not.
+   * @type {Boolean}
+   */
+  get deleted() {
+    return (this.info & BIT3$1) > 0;
+  }
+  set deleted(doDelete) {
+    if (this.deleted !== doDelete) {
+      this.info ^= BIT3$1;
+    }
+  }
+  markDeleted() {
+    this.info |= BIT3$1;
+  }
+  /**
+   * Return the creator clientID of the missing op or define missing items and return null.
+   *
+   * @param {Transaction} transaction
+   * @param {StructStore} store
+   * @return {null | number}
+   */
+  getMissing(transaction, store) {
+    if (this.origin && this.origin.client !== this.id.client && this.origin.clock >= getState$1(store, this.origin.client)) {
+      return this.origin.client;
+    }
+    if (this.rightOrigin && this.rightOrigin.client !== this.id.client && this.rightOrigin.clock >= getState$1(store, this.rightOrigin.client)) {
+      return this.rightOrigin.client;
+    }
+    if (this.parent && this.parent.constructor === ID$1 && this.id.client !== this.parent.client && this.parent.clock >= getState$1(store, this.parent.client)) {
+      return this.parent.client;
+    }
+    if (this.origin) {
+      this.left = getItemCleanEnd$1(transaction, store, this.origin);
+      this.origin = this.left.lastId;
+    }
+    if (this.rightOrigin) {
+      this.right = getItemCleanStart$1(transaction, this.rightOrigin);
+      this.rightOrigin = this.right.id;
+    }
+    if (this.left && this.left.constructor === GC$1 || this.right && this.right.constructor === GC$1) {
+      this.parent = null;
+    } else if (!this.parent) {
+      if (this.left && this.left.constructor === Item) {
+        this.parent = this.left.parent;
+        this.parentSub = this.left.parentSub;
+      } else if (this.right && this.right.constructor === Item) {
+        this.parent = this.right.parent;
+        this.parentSub = this.right.parentSub;
+      }
+    } else if (this.parent.constructor === ID$1) {
+      const parentItem = getItem$1(store, this.parent);
+      if (parentItem.constructor === GC$1) {
+        this.parent = null;
+      } else {
+        this.parent = /** @type {ContentType} */
+        parentItem.content.type;
+      }
+    }
+    return null;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {number} offset
+   */
+  integrate(transaction, offset) {
+    if (offset > 0) {
+      this.id.clock += offset;
+      this.left = getItemCleanEnd$1(transaction, transaction.doc.store, createID$1(this.id.client, this.id.clock - 1));
+      this.origin = this.left.lastId;
+      this.content = this.content.splice(offset);
+      this.length -= offset;
+    }
+    if (this.parent) {
+      if (!this.left && (!this.right || this.right.left !== null) || this.left && this.left.right !== this.right) {
+        let left = this.left;
+        let o;
+        if (left !== null) {
+          o = left.right;
+        } else if (this.parentSub !== null) {
+          o = /** @type {AbstractType<any>} */
+          this.parent._map.get(this.parentSub) || null;
+          while (o !== null && o.left !== null) {
+            o = o.left;
+          }
+        } else {
+          o = /** @type {AbstractType<any>} */
+          this.parent._start;
+        }
+        const conflictingItems = /* @__PURE__ */ new Set();
+        const itemsBeforeOrigin = /* @__PURE__ */ new Set();
+        while (o !== null && o !== this.right) {
+          itemsBeforeOrigin.add(o);
+          conflictingItems.add(o);
+          if (compareIDs$1(this.origin, o.origin)) {
+            if (o.id.client < this.id.client) {
+              left = o;
+              conflictingItems.clear();
+            } else if (compareIDs$1(this.rightOrigin, o.rightOrigin)) {
+              break;
+            }
+          } else if (o.origin !== null && itemsBeforeOrigin.has(getItem$1(transaction.doc.store, o.origin))) {
+            if (!conflictingItems.has(getItem$1(transaction.doc.store, o.origin))) {
+              left = o;
+              conflictingItems.clear();
+            }
+          } else {
+            break;
+          }
+          o = o.right;
+        }
+        this.left = left;
+      }
+      if (this.left !== null) {
+        const right = this.left.right;
+        this.right = right;
+        this.left.right = this;
+      } else {
+        let r;
+        if (this.parentSub !== null) {
+          r = /** @type {AbstractType<any>} */
+          this.parent._map.get(this.parentSub) || null;
+          while (r !== null && r.left !== null) {
+            r = r.left;
+          }
+        } else {
+          r = /** @type {AbstractType<any>} */
+          this.parent._start;
+          this.parent._start = this;
+        }
+        this.right = r;
+      }
+      if (this.right !== null) {
+        this.right.left = this;
+      } else if (this.parentSub !== null) {
+        this.parent._map.set(this.parentSub, this);
+        if (this.left !== null) {
+          this.left.delete(transaction);
+        }
+      }
+      if (this.parentSub === null && this.countable && !this.deleted) {
+        this.parent._length += this.length;
+      }
+      addStruct$1(transaction.doc.store, this);
+      this.content.integrate(transaction, this);
+      addChangedTypeToTransaction$1(
+        transaction,
+        /** @type {AbstractType<any>} */
+        this.parent,
+        this.parentSub
+      );
+      if (
+        /** @type {AbstractType<any>} */
+        this.parent._item !== null && /** @type {AbstractType<any>} */
+        this.parent._item.deleted || this.parentSub !== null && this.right !== null
+      ) {
+        this.delete(transaction);
+      }
+    } else {
+      new GC$1(this.id, this.length).integrate(transaction, 0);
+    }
+  }
+  /**
+   * Returns the next non-deleted item
+   */
+  get next() {
+    let n = this.right;
+    while (n !== null && n.deleted) {
+      n = n.right;
+    }
+    return n;
+  }
+  /**
+   * Returns the previous non-deleted item
+   */
+  get prev() {
+    let n = this.left;
+    while (n !== null && n.deleted) {
+      n = n.left;
+    }
+    return n;
+  }
+  /**
+   * Computes the last content address of this Item.
+   */
+  get lastId() {
+    return this.length === 1 ? this.id : createID$1(this.id.client, this.id.clock + this.length - 1);
+  }
+  /**
+   * Try to merge two items
+   *
+   * @param {Item} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    if (this.constructor === right.constructor && compareIDs$1(right.origin, this.lastId) && this.right === right && compareIDs$1(this.rightOrigin, right.rightOrigin) && this.id.client === right.id.client && this.id.clock + this.length === right.id.clock && this.deleted === right.deleted && this.redone === null && right.redone === null && this.content.constructor === right.content.constructor && this.content.mergeWith(right.content)) {
+      const searchMarker = (
+        /** @type {AbstractType<any>} */
+        this.parent._searchMarker
+      );
+      if (searchMarker) {
+        searchMarker.forEach((marker) => {
+          if (marker.p === right) {
+            marker.p = this;
+            if (!this.deleted && this.countable) {
+              marker.index -= this.length;
+            }
+          }
+        });
+      }
+      if (right.keep) {
+        this.keep = true;
+      }
+      this.right = right.right;
+      if (this.right !== null) {
+        this.right.left = this;
+      }
+      this.length += right.length;
+      return true;
+    }
+    return false;
+  }
+  /**
+   * Mark this Item as deleted.
+   *
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+    if (!this.deleted) {
+      const parent = (
+        /** @type {AbstractType<any>} */
+        this.parent
+      );
+      if (this.countable && this.parentSub === null) {
+        parent._length -= this.length;
+      }
+      this.markDeleted();
+      addToDeleteSet$1(transaction.deleteSet, this.id.client, this.id.clock, this.length);
+      addChangedTypeToTransaction$1(transaction, parent, this.parentSub);
+      this.content.delete(transaction);
+    }
+  }
+  /**
+   * @param {StructStore} store
+   * @param {boolean} parentGCd
+   */
+  gc(store, parentGCd) {
+    if (!this.deleted) {
+      throw unexpectedCase$1();
+    }
+    this.content.gc(store);
+    if (parentGCd) {
+      replaceStruct$1(store, this, new GC$1(this.id, this.length));
+    } else {
+      this.content = new ContentDeleted$1(this.length);
+    }
+  }
+  /**
+   * Transform the properties of this type to binary and write it to an
+   * BinaryEncoder.
+   *
+   * This is called when this Item is sent to a remote peer.
+   *
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder The encoder to write data to.
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    const origin = offset > 0 ? createID$1(this.id.client, this.id.clock + offset - 1) : this.origin;
+    const rightOrigin = this.rightOrigin;
+    const parentSub = this.parentSub;
+    const info = this.content.getRef() & BITS5$1 | (origin === null ? 0 : BIT8$1) | // origin is defined
+    (rightOrigin === null ? 0 : BIT7$1) | // right origin is defined
+    (parentSub === null ? 0 : BIT6$1);
+    encoder.writeInfo(info);
+    if (origin !== null) {
+      encoder.writeLeftID(origin);
+    }
+    if (rightOrigin !== null) {
+      encoder.writeRightID(rightOrigin);
+    }
+    if (origin === null && rightOrigin === null) {
+      const parent = (
+        /** @type {AbstractType<any>} */
+        this.parent
+      );
+      if (parent._item !== void 0) {
+        const parentItem = parent._item;
+        if (parentItem === null) {
+          const ykey = findRootTypeKey$1(parent);
+          encoder.writeParentInfo(true);
+          encoder.writeString(ykey);
+        } else {
+          encoder.writeParentInfo(false);
+          encoder.writeLeftID(parentItem.id);
+        }
+      } else if (parent.constructor === String) {
+        encoder.writeParentInfo(true);
+        encoder.writeString(parent);
+      } else if (parent.constructor === ID$1) {
+        encoder.writeParentInfo(false);
+        encoder.writeLeftID(parent);
+      } else {
+        unexpectedCase$1();
+      }
+      if (parentSub !== null) {
+        encoder.writeString(parentSub);
+      }
+    }
+    this.content.write(encoder, offset);
+  }
+};
+const readItemContent$1 = (decoder, info) => contentRefs$1[info & BITS5$1](decoder);
+const contentRefs$1 = [
+  () => {
+    unexpectedCase$1();
+  },
+  // GC is not ItemContent
+  readContentDeleted$1,
+  // 1
+  readContentJSON$1,
+  // 2
+  readContentBinary$1,
+  // 3
+  readContentString$1,
+  // 4
+  readContentEmbed$1,
+  // 5
+  readContentFormat$1,
+  // 6
+  readContentType$1,
+  // 7
+  readContentAny$1,
+  // 8
+  readContentDoc$1,
+  // 9
+  () => {
+    unexpectedCase$1();
+  }
+  // 10 - Skip is not ItemContent
+];
+const structSkipRefNumber$1 = 10;
+let Skip$1 = class Skip extends AbstractStruct$1 {
+  get deleted() {
+    return true;
+  }
+  delete() {
+  }
+  /**
+   * @param {Skip} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    if (this.constructor !== right.constructor) {
+      return false;
+    }
+    this.length += right.length;
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {number} offset
+   */
+  integrate(transaction, offset) {
+    unexpectedCase$1();
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeInfo(structSkipRefNumber$1);
+    writeVarUint$1(encoder.restEncoder, this.length - offset);
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {StructStore} store
+   * @return {null | number}
+   */
+  getMissing(transaction, store) {
+    return null;
+  }
+};
+const glo$1 = (
+  /** @type {any} */
+  typeof globalThis !== "undefined" ? globalThis : typeof window !== "undefined" ? window : typeof global !== "undefined" ? global : {}
+);
+const importIdentifier$1 = "__ $YJS$ __";
+if (glo$1[importIdentifier$1] === true) {
+  console.error("Yjs was already imported. This breaks constructor checks and will lead to issues! - https://github.com/yjs/yjs/issues/438");
+}
+glo$1[importIdentifier$1] = true;
+const YJS_COLLECTIONS = [
+  "products",
+  "categories",
+  "sales",
+  "saleItems",
+  "inventory",
+  // stock_movements — append-only events
+  "payments",
+  "debts",
+  "debtPayments",
+  "customers",
+  "suppliers",
+  "returns",
+  "businesses",
+  "locations",
+  "registers",
+  "activities",
+  "users",
+  "employees",
+  "employeeRoles"
+];
+const COLLECTION_TABLE = {
+  products: "items",
+  categories: "categories",
+  sales: "sales",
+  saleItems: "sale_items",
+  inventory: "stock_movements",
+  payments: "payments",
+  debts: "debts",
+  debtPayments: "debt_payments",
+  customers: "customers",
+  suppliers: "suppliers",
+  returns: "returns",
+  businesses: "businesses",
+  locations: "locations",
+  registers: "registers",
+  activities: "audit_logs",
+  users: "users",
+  employees: "employees",
+  employeeRoles: "employee_roles"
+};
+const APPEND_ONLY = /* @__PURE__ */ new Set([
+  "sales",
+  "saleItems",
+  "inventory",
+  "payments",
+  "debtPayments",
+  "returns",
+  "activities"
+]);
+function isYjsCollection(name) {
+  return YJS_COLLECTIONS.includes(name);
+}
+const DEFAULT_ICE_SERVERS = [
+  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }
+];
+function createBusinessDoc(businessId) {
+  const doc = new Doc$1();
+  doc.getMap("meta").set("businessId", businessId);
+  const maps = {};
+  for (const c of YJS_COLLECTIONS) maps[c] = doc.getMap(c);
+  return { doc, maps };
+}
+function encodeFullState(doc) {
+  return encodeStateAsUpdate(doc);
+}
+function applyUpdate$1(doc, update) {
+  applyUpdate$2(doc, update);
+}
 const BUSINESS_ADAPTER_ENTITIES = ["businesses", "locations", "registers", "business_roles", "users", "devices"];
 const businesses = {
   mobileToDesktop: {
     name: "businessName",
     currency: "currency",
     address: "address",
+    logo: "logo",
+    phone: "phone",
     is_default: "isDefault",
     uuid: "uuid",
     row_version: "row_version",
@@ -452,6 +8583,8 @@ const businesses = {
     businessName: "name",
     currency: "currency",
     address: "address",
+    logo: "logo",
+    phone: "phone",
     isDefault: "is_default",
     uuid: "uuid",
     row_version: "row_version",
@@ -561,6 +8694,8 @@ const users = {
     name: "name",
     phone: "phone",
     email: "email",
+    username: "username",
+    avatar: "avatar",
     role: "role",
     role_name: "roleName",
     permissions: "permissions",
@@ -582,6 +8717,8 @@ const users = {
     name: "name",
     phone: "phone",
     email: "email",
+    username: "username",
+    avatar: "avatar",
     role: "role",
     roleName: "role_name",
     permissions: "permissions",
@@ -706,6 +8843,99 @@ const DEVICE_JOIN_MSG = {
   RESPONSE: "DEVICE_JOIN_RESPONSE",
   ACK: "DEVICE_JOIN_ACK"
 };
+const PERIPHERAL_MSG = {
+  /** desktop -> phones: announce that this hub accepts remote scans/captures */
+  HELLO: "PERIPHERAL_HELLO",
+  /** phone -> desktop: register as scanner/camera peripheral */
+  REGISTER: "PERIPHERAL_REGISTER",
+  /** desktop -> phone: request a barcode scan */
+  SCAN_REQUEST: "PERIPHERAL_SCAN_REQUEST",
+  /** phone -> desktop: scanned barcode payload */
+  SCAN_RESULT: "PERIPHERAL_SCAN_RESULT",
+  /** desktop -> phone: request a camera capture (photo or scan) */
+  CAPTURE_REQUEST: "PERIPHERAL_CAPTURE_REQUEST",
+  /** phone -> desktop: captured image (base64 data URL) or scan payload */
+  CAPTURE_RESULT: "PERIPHERAL_CAPTURE_RESULT",
+  /** either side: cancel an outstanding request */
+  CANCEL: "PERIPHERAL_CANCEL",
+  /** request id is unknown / stale on the receiving side */
+  REJECT: "PERIPHERAL_REJECT",
+  RESPONSE: "PERIPHERAL_RESPONSE",
+  ACK: "PERIPHERAL_ACK",
+  /** phone -> desktop: periodic companion status (mode, connected) */
+  STATUS: "PERIPHERAL_STATUS"
+};
+const MOR_CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
+const TIN_RE = /^\d{8,12}$/;
+const SUB_TIN_RE = /^[A-Za-z0-9]{1,20}$/;
+function normalizeTin(value) {
+  if (typeof value !== "string") return null;
+  const flat = value.replace(/[\s-]/g, "").trim();
+  if (!TIN_RE.test(flat)) return null;
+  return flat;
+}
+function normalizeSubTin(value) {
+  if (value == null || value === "") return void 0;
+  if (typeof value !== "string") return null;
+  const flat = value.trim().toUpperCase();
+  if (!SUB_TIN_RE.test(flat)) return null;
+  return flat;
+}
+function fromMorBackendResponse(res) {
+  return {
+    tin: res.tin,
+    subTin: res.sub_tin ?? null,
+    status: res.status,
+    taxpayerName: res.taxpayer_name ?? null,
+    taxpayerType: res.taxpayer_type ?? null,
+    registration: res.registration ?? null,
+    reference: res.reference ?? null,
+    verifiedAt: res.verified_at ?? null,
+    source: res.source === "backend" ? "backend" : "mor",
+    reason: res.reason ?? null
+  };
+}
+function buildClientCacheRecord(verification, now2 = Date.now(), ttlMs = MOR_CACHE_TTL_MS) {
+  return {
+    ...verification,
+    source: "client-cache",
+    cachedAt: new Date(now2).toISOString(),
+    cacheUntil: new Date(now2 + ttlMs).toISOString()
+  };
+}
+function isVerificationFresh(v, now2 = Date.now()) {
+  if (!v.cacheUntil) return v.status !== "unavailable" && v.status !== "failed";
+  return now2 < new Date(v.cacheUntil).getTime();
+}
+function isVerificationStale(v, now2 = Date.now()) {
+  if (v.status === "unavailable" || v.status === "failed") return false;
+  return !isVerificationFresh(v, now2);
+}
+function verificationAgeLabel(cachedAt, now2 = Date.now()) {
+  if (!cachedAt) return "";
+  const then = new Date(cachedAt).getTime();
+  if (Number.isNaN(then)) return "";
+  const ms = Math.max(0, now2 - then);
+  if (ms < 6e4) return "just now";
+  if (ms < 60 * 6e4) return `${Math.floor(ms / 6e4)}m ago`;
+  if (ms < 24 * 60 * 6e4) return `${Math.floor(ms / 36e5)}h ago`;
+  return `${Math.floor(ms / 864e5)}d ago`;
+}
+function morStatusLabel(status) {
+  switch (status) {
+    case "verified":
+      return "Verified by Ministry of Revenues";
+    case "not_found":
+      return "Not verified (no MoR match)";
+    case "unavailable":
+      return "Verification unavailable";
+    case "failed":
+      return "Verification failed";
+    default:
+      return "Not verified";
+  }
+}
+const isMorVerified = (v) => v != null && v.status === "verified";
 const isDev$1 = !electron.app.isPackaged;
 const dbDir = isDev$1 ? path.join(process.cwd(), "db") : path.join(electron.app.getPath("userData"), "db");
 if (!fs.existsSync(dbDir)) {
@@ -846,16 +9076,7 @@ const ALL_PERMISSIONS = [
   "orders.cancel"
 ];
 const DEFAULT_ROLES = [
-  { name: "Owner", description: "Full system access and control", permissions: ALL_PERMISSIONS },
-  { name: "Administrator", description: "System administration with all operational permissions", permissions: [...ALL_PERMISSIONS.filter((p) => !p.startsWith("settings.")), "settings.backup"] },
-  { name: "Manager", description: "Oversee daily operations across all departments", permissions: ["dashboard", "inventory.view", "inventory.add", "inventory.edit", "inventory.adjust", "inventory.transfer", "sales.create", "sales.edit", "sales.cancel", "sales.returns", "sales.invoices", "purchases.create", "purchases.edit", "purchases.approve", "purchases.receive", "customers.view", "customers.add", "customers.edit", "suppliers.view", "suppliers.add", "suppliers.edit", "warehouses.view", "warehouses.transfer", "expenses.view", "expenses.add", "expenses.edit", "reports.view", "reports.profits", "employees.view", "employees.add", "employees.edit"] },
-  { name: "Accountant", description: "Financial operations and reporting", permissions: ["dashboard", "inventory.view", "sales.view", "purchases.view", "customers.view", "suppliers.view", "expenses.view", "expenses.add", "expenses.edit", "expenses.delete", "reports.view", "reports.profits"] },
-  { name: "Cashier", description: "Process sales transactions", permissions: ["dashboard", "inventory.view", "sales.create", "sales.invoices", "customers.view", "customers.add"] },
-  { name: "Inventory Manager", description: "Manage stock levels and warehouse operations", permissions: ["dashboard", "inventory.view", "inventory.add", "inventory.edit", "inventory.adjust", "inventory.transfer", "purchases.receive", "warehouses.view", "warehouses.edit", "warehouses.transfer", "reports.view"] },
-  { name: "Warehouse Staff", description: "Handle stock movement and organization", permissions: ["inventory.view", "inventory.adjust", "inventory.transfer", "warehouses.view", "warehouses.transfer"] },
-  { name: "Purchasing Officer", description: "Manage purchase orders and supplier relations", permissions: ["dashboard", "inventory.view", "purchases.create", "purchases.edit", "purchases.approve", "purchases.receive", "suppliers.view", "suppliers.add", "suppliers.edit", "suppliers.delete", "reports.view"] },
-  { name: "Sales Representative", description: "Customer-facing sales and relationship management", permissions: ["dashboard", "inventory.view", "sales.create", "sales.edit", "sales.invoices", "customers.view", "customers.add", "customers.edit"] },
-  { name: "Driver", description: "Handle shipments and deliveries", permissions: ["shipments", "inventory.view", "warehouses.view"] }
+  { name: "Cashier", description: "Process sales transactions", permissions: ["dashboard", "inventory.view", "sales.create", "sales.invoices", "customers.view", "customers.add"] }
 ];
 function hashPin$1(pin) {
   const salt = crypto$1.randomBytes(16).toString("hex");
@@ -912,6 +9133,8 @@ function initDB() {
       allowSellByPackUnit INTEGER DEFAULT 0,
       expiryDate TEXT,
       qualityGrade TEXT,
+      taxType TEXT,
+      taxTreatment TEXT,
       notes TEXT,
       isCredit INTEGER,
       supplierPhone TEXT,
@@ -1717,6 +9940,128 @@ function initDB() {
       db.exec("ALTER TABLE sync_meta ADD COLUMN pairing_token TEXT");
     }
   }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER,
+      orderNumber TEXT UNIQUE NOT NULL,
+      customerName TEXT,
+      customerPhone TEXT,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'Order',
+      totalAmount REAL NOT NULL DEFAULT 0,
+      createdBy INTEGER,
+      createdByName TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      convertedAt TEXT,
+      convertedBy TEXT,
+      cancelledAt TEXT,
+      cancelledBy TEXT,
+      cancelReason TEXT,
+      uuid TEXT UNIQUE,
+      is_deleted INTEGER DEFAULT 0,
+      FOREIGN KEY (businessId) REFERENCES businesses(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      orderId INTEGER NOT NULL,
+      itemId INTEGER,
+      itemName TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      unit TEXT,
+      unitType TEXT DEFAULT 'base',
+      unitPrice REAL NOT NULL DEFAULT 0,
+      totalPrice REAL NOT NULL DEFAULT 0,
+      FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE,
+      FOREIGN KEY (itemId) REFERENCES items(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS order_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      orderId INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      performedBy TEXT,
+      notes TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS subscription_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      tier TEXT NOT NULL CHECK(tier IN ('basic', 'premium')),
+      durationMonths INTEGER NOT NULL,
+      price REAL NOT NULL,
+      currency TEXT DEFAULT 'ETB',
+      description TEXT,
+      features TEXT,
+      isActive INTEGER DEFAULT 1,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER NOT NULL UNIQUE,
+      planId INTEGER,
+      tier TEXT NOT NULL DEFAULT 'basic' CHECK(tier IN ('basic', 'premium', 'trial')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'expired', 'cancelled', 'pending')),
+      startedAt TEXT,
+      expiresAt TEXT,
+      trialStartedAt TEXT,
+      trialEndsAt TEXT,
+      isTrial INTEGER DEFAULT 0,
+      autoRenew INTEGER DEFAULT 0,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1,
+      FOREIGN KEY (businessId) REFERENCES businesses(id),
+      FOREIGN KEY (planId) REFERENCES subscription_plans(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS payment_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER,
+      transactionId TEXT,
+      businessName TEXT NOT NULL,
+      phoneNumber TEXT NOT NULL,
+      selectedPlan TEXT NOT NULL,
+      amount REAL NOT NULL,
+      currency TEXT DEFAULT 'ETB',
+      paymentDate TEXT NOT NULL,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'cancelled')),
+      adminNotes TEXT,
+      verifiedBy INTEGER,
+      verifiedAt TEXT,
+      subscriptionId INTEGER,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (businessId) REFERENCES businesses(id),
+      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS subscription_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subscriptionId INTEGER,
+      businessId INTEGER,
+      action TEXT NOT NULL,
+      oldTier TEXT,
+      newTier TEXT,
+      oldStatus TEXT,
+      newStatus TEXT,
+      details TEXT,
+      changedBy TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id),
+      FOREIGN KEY (businessId) REFERENCES businesses(id)
+    );
+  `);
   const currentVersion = db.pragma("user_version", { simple: true });
   let version = typeof currentVersion === "number" ? currentVersion : 0;
   if (version < 1) {
@@ -2176,6 +10521,7 @@ function initDB() {
         name TEXT NOT NULL,
         phone TEXT,
         email TEXT,
+        username TEXT,
         role TEXT,
         roleName TEXT,
         permissions TEXT DEFAULT '{}',
@@ -2183,6 +10529,9 @@ function initDB() {
         isOwner INTEGER DEFAULT 0,
         pinHash TEXT,
         pinSalt TEXT,
+        avatar TEXT,
+        sourceType TEXT,
+        sourceId INTEGER,
         uuid TEXT,
         device_id TEXT,
         row_version INTEGER DEFAULT 1,
@@ -2340,8 +10689,6 @@ function initDB() {
       "customers",
       "warehouses",
       "returns",
-      "gift_cards",
-      "gift_card_transactions",
       "attendance",
       "employee_performance",
       "stock_movements",
@@ -2374,12 +10721,260 @@ function initDB() {
     version = 33;
     db.pragma(`user_version = ${version}`);
   }
+  if (version < 34) {
+    const notificationCols = db.prepare("PRAGMA table_info(notifications)").all().map((c) => c.name);
+    const addNotificationCol = (name, definition) => {
+      if (!notificationCols.includes(name)) db.exec(`ALTER TABLE notifications ADD COLUMN ${name} ${definition}`);
+    };
+    addNotificationCol("category", "TEXT DEFAULT 'system'");
+    addNotificationCol("priority", "TEXT DEFAULT 'normal'");
+    addNotificationCol("groupKey", "TEXT");
+    addNotificationCol("actionUrl", "TEXT");
+    addNotificationCol("actionLabel", "TEXT");
+    addNotificationCol("expiresAt", "TEXT");
+    addNotificationCol("severity", "TEXT DEFAULT 'info'");
+    addNotificationCol("entityType", "TEXT");
+    addNotificationCol("entityId", "INTEGER");
+    addNotificationCol("isDismissed", "INTEGER DEFAULT 0");
+    addNotificationCol("snoozedUntil", "TEXT");
+    addNotificationCol("channels", "TEXT DEFAULT 'in_app'");
+    addNotificationCol("requiresAction", "INTEGER DEFAULT 0");
+    addNotificationCol("uuid", "TEXT");
+    addNotificationCol("device_id", "TEXT");
+    addNotificationCol("row_version", "INTEGER DEFAULT 1");
+    addNotificationCol("updated_at", "TEXT");
+    addNotificationCol("is_deleted", "INTEGER DEFAULT 0");
+    addNotificationCol("deleted_at", "TEXT");
+    addNotificationCol("is_synced", "INTEGER DEFAULT 1");
+    db.exec("UPDATE notifications SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))) WHERE uuid IS NULL");
+    db.exec("UPDATE notifications SET updated_at = COALESCE(updated_at, createdAt, CURRENT_TIMESTAMP) WHERE updated_at IS NULL");
+    version = 34;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 35) {
+    const fallbackBiz = db.prepare("SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1").get()?.id || 1;
+    for (const table of ["employees", "employee_roles"]) {
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+      if (!cols.includes("businessId")) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN businessId INTEGER`);
+      }
+      db.prepare(`UPDATE ${table} SET businessId = ? WHERE businessId IS NULL`).run(fallbackBiz);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_businessId ON ${table}(businessId)`);
+    }
+    version = 35;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 36) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tax_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER NOT NULL UNIQUE,
+        tin TEXT,
+        vatNumber TEXT,
+        authority TEXT DEFAULT 'Ministry of Revenues',
+        category TEXT DEFAULT 'B',
+        vatRegistered INTEGER DEFAULT 0,
+        licenseNumber TEXT,
+        cashRegisterNumber TEXT,
+        estimatedAnnualTurnover REAL DEFAULT 0,
+        estimatedAnnualTax REAL DEFAULT 0,
+        payrollActive INTEGER DEFAULT 0,
+        taxYearStartMonth INTEGER DEFAULT 1,
+        taxYearStartDay INTEGER DEFAULT 1,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS tax_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER,
+        obligationId TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        period TEXT NOT NULL,
+        amount REAL NOT NULL,
+        paidDate TEXT NOT NULL,
+        method TEXT,
+        reference TEXT,
+        notes TEXT,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(businessId, obligationId)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tax_payments_business_kind ON tax_payments(businessId, kind, period);
+
+      CREATE TABLE IF NOT EXISTS compliance_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER,
+        eventType TEXT NOT NULL,
+        details TEXT,
+        userId INTEGER,
+        timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_compliance_audit_business_time ON compliance_audit_log(businessId, timestamp);
+    `);
+    const taxAddCol = (table, col, def) => {
+      const taxCols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+      if (!taxCols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+    };
+    taxAddCol("sales", "taxType", "TEXT DEFAULT 'VAT'");
+    taxAddCol("sales", "invoiceNo", "TEXT");
+    taxAddCol("sales", "customerTin", "TEXT");
+    taxAddCol("sales", "vatAmount", "REAL DEFAULT 0");
+    taxAddCol("sales", "totAmount", "REAL DEFAULT 0");
+    taxAddCol("sales", "whtAmount", "REAL DEFAULT 0");
+    db.exec("UPDATE sales SET vatAmount = COALESCE(vatAmount, 0) + COALESCE(vat, 0) WHERE vatAmount = 0 AND vat > 0");
+    taxAddCol("supplier_purchases", "supplierTin", "TEXT");
+    taxAddCol("supplier_purchases", "supplierName", "TEXT");
+    taxAddCol("supplier_purchases", "vatAmount", "REAL DEFAULT 0");
+    taxAddCol("supplier_purchases", "whtAmount", "REAL DEFAULT 0");
+    taxAddCol("supplier_purchases", "paymentMethod", 'TEXT DEFAULT "bank"');
+    taxAddCol("supplier_purchases", "invoiceNo", "TEXT");
+    version = 36;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 37) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS mor_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tin TEXT NOT NULL UNIQUE,
+        sub_tin TEXT,
+        status TEXT NOT NULL,
+        taxpayer_name TEXT,
+        taxpayer_type TEXT,
+        registration TEXT,
+        reference TEXT,
+        verified_at TEXT,
+        source TEXT NOT NULL DEFAULT 'client-cache',
+        reason TEXT,
+        cached_at TEXT NOT NULL,
+        cache_until TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_mor_verifications_tin ON mor_verifications(tin);
+      CREATE INDEX IF NOT EXISTS idx_mor_verifications_status ON mor_verifications(status);
+    `);
+    version = 37;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 38) {
+    const itemCols = db.prepare("PRAGMA table_info(items)").all();
+    const itemColNames = itemCols.map((c) => c.name);
+    if (!itemColNames.includes("taxType")) db.exec("ALTER TABLE items ADD COLUMN taxType TEXT DEFAULT 'VAT'");
+    if (!itemColNames.includes("taxTreatment")) db.exec("ALTER TABLE items ADD COLUMN taxTreatment TEXT DEFAULT 'inclusive'");
+    version = 38;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 39) {
+    const itemCols = db.prepare("PRAGMA table_info(items)").all();
+    const itemColNames = itemCols.map((c) => c.name);
+    if (!itemColNames.includes("image")) db.exec("ALTER TABLE items ADD COLUMN image TEXT");
+    if (!itemColNames.includes("wholesaleSellingPrice")) db.exec("ALTER TABLE items ADD COLUMN wholesaleSellingPrice REAL");
+    if (!itemColNames.includes("minWholesaleQty")) db.exec("ALTER TABLE items ADD COLUMN minWholesaleQty REAL");
+    if (!itemColNames.includes("transportCost")) db.exec("ALTER TABLE items ADD COLUMN transportCost REAL DEFAULT 0");
+    if (!itemColNames.includes("importCost")) db.exec("ALTER TABLE items ADD COLUMN importCost REAL DEFAULT 0");
+    if (!itemColNames.includes("packagingCost")) db.exec("ALTER TABLE items ADD COLUMN packagingCost REAL DEFAULT 0");
+    if (!itemColNames.includes("handlingCost")) db.exec("ALTER TABLE items ADD COLUMN handlingCost REAL DEFAULT 0");
+    if (!itemColNames.includes("otherCost")) db.exec("ALTER TABLE items ADD COLUMN otherCost REAL DEFAULT 0");
+    if (!itemColNames.includes("targetMargin")) db.exec("ALTER TABLE items ADD COLUMN targetMargin REAL");
+    if (!itemColNames.includes("supplierAccount")) db.exec("ALTER TABLE items ADD COLUMN supplierAccount TEXT");
+    if (!itemColNames.includes("supplierCallEnabled")) db.exec("ALTER TABLE items ADD COLUMN supplierCallEnabled INTEGER DEFAULT 0");
+    if (!itemColNames.includes("warehouseId")) db.exec("ALTER TABLE items ADD COLUMN warehouseId INTEGER");
+    if (!itemColNames.includes("isActive")) db.exec("ALTER TABLE items ADD COLUMN isActive INTEGER DEFAULT 1");
+    if (!itemColNames.includes("quickProduct")) db.exec("ALTER TABLE items ADD COLUMN quickProduct INTEGER DEFAULT 0");
+    db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );`);
+    db.exec(`CREATE TABLE IF NOT EXISTS item_barcodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      itemId INTEGER NOT NULL,
+      barcode TEXT NOT NULL,
+      isPrimary INTEGER DEFAULT 0,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1,
+      FOREIGN KEY (itemId) REFERENCES items(id),
+      UNIQUE(itemId, barcode)
+    );`);
+    db.exec(`CREATE TABLE IF NOT EXISTS quick_products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER NOT NULL,
+      itemId INTEGER NOT NULL,
+      displayOrder INTEGER DEFAULT 0,
+      label TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1,
+      FOREIGN KEY (itemId) REFERENCES items(id),
+      FOREIGN KEY (businessId) REFERENCES businesses(id),
+      UNIQUE(businessId, itemId)
+    );`);
+    version = 39;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 40) {
+    const legacyDefaultRoles = ["Owner", "Administrator", "Manager", "Accountant", "Inventory Manager", "Warehouse Staff", "Purchasing Officer", "Sales Representative", "Driver"];
+    const roleCols = db.prepare("PRAGMA table_info(employee_roles)").all().map((c) => c.name);
+    if (roleCols.includes("businessId")) {
+      const legacyRoles = db.prepare(`SELECT id, businessId FROM employee_roles WHERE isSystem = 1 AND name IN (${legacyDefaultRoles.map(() => "?").join(",")})`).all(...legacyDefaultRoles);
+      for (const role of legacyRoles) {
+        const cashier = db.prepare("SELECT id FROM employee_roles WHERE isSystem = 1 AND name = 'Cashier' AND businessId = ? LIMIT 1").get(role.businessId ?? 1);
+        const targetId = cashier?.id;
+        db.prepare("UPDATE employees SET roleId = ? WHERE roleId = ?").run(targetId ?? null, role.id);
+        db.prepare("DELETE FROM employee_roles WHERE id = ?").run(role.id);
+      }
+    }
+    version = 40;
+    db.pragma(`user_version = ${version}`);
+  }
+  if (version < 41) {
+    const adjCols = db.prepare("PRAGMA table_info(adjustments)").all().map((c) => c.name);
+    if (!adjCols.includes("user_id")) db.exec("ALTER TABLE adjustments ADD COLUMN user_id INTEGER");
+    const uCols2 = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+    if (!uCols2.includes("avatar")) db.exec("ALTER TABLE users ADD COLUMN avatar TEXT");
+    if (!uCols2.includes("username")) db.exec("ALTER TABLE users ADD COLUMN username TEXT");
+    if (!uCols2.includes("sourceType")) db.exec("ALTER TABLE users ADD COLUMN sourceType TEXT");
+    if (!uCols2.includes("sourceId")) db.exec("ALTER TABLE users ADD COLUMN sourceId INTEGER");
+    version = 41;
+    db.pragma(`user_version = ${version}`);
+  }
+  const ensureSyncColumns = (table) => {
+    try {
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+      const add = (col, def) => {
+        if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+      };
+      add("uuid", "TEXT");
+      add("device_id", "TEXT");
+      add("row_version", "INTEGER DEFAULT 1");
+      add("updated_at", "TEXT");
+      add("is_deleted", "INTEGER DEFAULT 0");
+      add("deleted_at", "TEXT");
+      add("is_synced", "INTEGER DEFAULT 1");
+      db.exec(`UPDATE ${table} SET updated_at = COALESCE(updated_at, ${cols.includes("createdAt") ? "createdAt, " : ""}CURRENT_TIMESTAMP) WHERE updated_at IS NULL`);
+      db.exec(`UPDATE ${table} SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL`);
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_uuid ON ${table}(uuid)`);
+    } catch (e) {
+      console.error(`sync column backstop (${table}):`, e?.message);
+    }
+  };
   const syncTables = [
     { table: "businesses", id: "id", columns: ["id", "businessName", "storeName", "logo", "address", "phone", "email", "currency", "isDefault", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "categories", id: "id", columns: ["id", "businessId", "name", "icon", "isCustom", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
-    { table: "items", id: "id", columns: ["id", "businessId", "name", "categoryId", "sku", "barcode", "companyName", "purchaseUnit", "baseUnit", "unitsPerPack", "totalPackQuantity", "totalBaseQuantity", "packPurchasePrice", "basePurchasePrice", "baseSellingPrice", "packSellingPrice", "allowSellByBaseUnit", "allowSellByPackUnit", "expiryDate", "qualityGrade", "notes", "isCredit", "supplierPhone", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "items", id: "id", columns: ["id", "businessId", "name", "categoryId", "sku", "barcode", "companyName", "purchaseUnit", "baseUnit", "unitsPerPack", "totalPackQuantity", "totalBaseQuantity", "packPurchasePrice", "basePurchasePrice", "baseSellingPrice", "packSellingPrice", "allowSellByBaseUnit", "allowSellByPackUnit", "expiryDate", "qualityGrade", "taxType", "taxTreatment", "notes", "isCredit", "supplierPhone", "image", "wholesaleSellingPrice", "minWholesaleQty", "transportCost", "importCost", "packagingCost", "handlingCost", "otherCost", "targetMargin", "supplierAccount", "supplierCallEnabled", "warehouseId", "isActive", "quickProduct", "supplierId", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "item_packs", id: "id", columns: ["id", "itemId", "packNumber", "initialQuantity", "currentQuantity", "unit", "status", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
-    { table: "sales", id: "id", columns: ["id", "businessId", "itemId", "quantity", "unit", "unitType", "discount", "vat", "totalPrice", "paymentMethod", "paymentStatus", "status", "customerName", "customerPhone", "packId", "dueDate", "paidAmount", "createdBy", "createdAt", "fiscal_number", "fiscal_signature", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced", "overrideBy", "overrideReason", "voidReason", "voidedBy", "voidedAt"] },
+    { table: "item_barcodes", id: "id", columns: ["id", "itemId", "barcode", "isPrimary", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "quick_products", id: "id", columns: ["id", "businessId", "itemId", "displayOrder", "label", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "sales", id: "id", columns: ["id", "businessId", "itemId", "quantity", "unit", "unitType", "discount", "vat", "totalPrice", "paymentMethod", "paymentStatus", "status", "customerName", "customerPhone", "packId", "dueDate", "paidAmount", "createdBy", "createdAt", "fiscal_number", "fiscal_signature", "taxType", "invoiceNo", "customerTin", "vatAmount", "totAmount", "whtAmount", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced", "overrideBy", "overrideReason", "voidReason", "voidedBy", "voidedAt"] },
     { table: "debt_payments", id: "id", columns: ["id", "saleId", "customerName", "customerPhone", "amount", "type", "note", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "returns", id: "id", columns: ["id", "businessId", "saleId", "itemId", "quantity", "unit", "unitType", "refundAmount", "reason", "status", "createdBy", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "expenses", id: "id", columns: ["id", "businessId", "name", "amount", "category", "date", "isRecurring", "frequency", "nextBillingDate", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
@@ -2388,7 +10983,7 @@ function initDB() {
     { table: "locations", id: "id", columns: ["id", "businessId", "name", "address", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "registers", id: "id", columns: ["id", "businessId", "locationId", "name", "deviceId", "printerName", "hasDrawer", "isActive", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "business_roles", id: "id", columns: ["id", "businessId", "name", "description", "permissions", "isSystem", "builtinKey", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
-    { table: "users", relay: "users", id: "id", columns: ["id", "businessId", "name", "phone", "email", "role", "roleName", "permissions", "isActive", "isOwner", "pinHash", "pinSalt", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "users", relay: "users", id: "id", columns: ["id", "businessId", "name", "phone", "email", "username", "role", "roleName", "permissions", "isActive", "isOwner", "pinHash", "pinSalt", "avatar", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "roster_devices", relay: "devices", id: "id", columns: ["id", "businessId", "userId", "name", "model", "platform", "registerId", "role", "status", "pairingCode", "pairingExpiresAt", "lastSeenAt", "lastSyncAt", "appVersion", "isPrimary", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "budgets", id: "id", columns: ["id", "businessId", "category", "amount", "period", "month", "year", "budgetType", "referenceName", "isRecurring", "notes", "updatedAt", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "suppliers", id: "id", columns: ["id", "businessId", "supplierCode", "supplierName", "companyName", "contactPerson", "phone", "secondaryPhone", "email", "address", "city", "country", "taxNumber", "paymentTerms", "creditLimit", "notes", "status", "isActive", "createdAt", "updatedAt", "contact_id", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
@@ -2404,7 +10999,7 @@ function initDB() {
     { table: "subscriptions", id: "id", columns: ["id", "businessId", "planId", "tier", "status", "startedAt", "expiresAt", "trialStartedAt", "trialEndsAt", "isTrial", "autoRenew", "createdAt", "updatedAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "attendance", id: "id", columns: ["id", "employeeId", "date", "clockIn", "clockOut", "status", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "employee_performance", id: "id", columns: ["id", "employeeId", "period", "salesAmount", "ordersProcessed", "attendanceScore", "tasksCompleted", "rating", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
-    { table: "order_history", id: "id", columns: ["id", "orderId", "status", "changedBy", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
+    { table: "order_history", id: "id", columns: ["id", "orderId", "action", "performedBy", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "shipment_history", id: "id", columns: ["id", "shipmentId", "status", "changedBy", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "budget_categories", id: "id", columns: ["id", "budgetId", "category", "plannedAmount", "notes", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "budget_adjustments", id: "id", columns: ["id", "budgetId", "businessId", "previousAmount", "newAmount", "reason", "status", "requestedBy", "approvedBy", "approvedAt", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
@@ -2412,26 +11007,72 @@ function initDB() {
     { table: "subscription_renewals", id: "id", columns: ["id", "subscriptionId", "previousExpiry", "newExpiry", "plan", "durationMonths", "amount", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] },
     { table: "notifications", id: "id", columns: ["id", "type", "title", "message", "category", "priority", "isRead", "groupKey", "actionUrl", "actionLabel", "expiresAt", "createdAt", "uuid", "device_id", "row_version", "updated_at", "is_deleted", "deleted_at", "is_synced"] }
   ];
+  for (const t of syncTables) {
+    ensureSyncColumns(t.table);
+  }
   const genUuid = "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))";
   for (const t of syncTables) {
+    try {
+      const trigSql = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_${t.table}_ad'`).get()?.sql;
+      if (trigSql) {
+        const liveCols = db.prepare(`PRAGMA table_info(${t.table})`).all().map((c) => c.name);
+        const stale = [...trigSql.matchAll(/OLD\.([A-Za-z_][A-Za-z0-9_]*)/g)].some((m) => !liveCols.includes(m[1]));
+        if (stale) {
+          db.exec(`DROP TRIGGER IF EXISTS trg_${t.table}_ai; DROP TRIGGER IF EXISTS trg_${t.table}_au; DROP TRIGGER IF EXISTS trg_${t.table}_ad;`);
+        }
+      }
+    } catch (e) {
+      console.error(`sync trigger sanitation (${t.table}):`, e?.message);
+    }
     const relayName = t.relay ?? t.table;
     const newArgs = t.columns.map((c) => `'${c}', ${c}`).join(", ");
     const oldArgs = t.columns.map((c) => `'${c}', OLD.${c}`).join(", ");
-    db.exec(`
-      CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ai AFTER INSERT ON ${t.table} BEGIN
-        UPDATE ${t.table} SET uuid = ${genUuid} WHERE ${t.id} = NEW.${t.id} AND uuid IS NULL;
-        INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-        SELECT '${relayName}', uuid, 'INSERT', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
-      END;
-      CREATE TRIGGER IF NOT EXISTS trg_${t.table}_au AFTER UPDATE ON ${t.table} WHEN OLD.uuid IS NOT NULL AND NEW.uuid IS NOT NULL BEGIN
-        INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-        SELECT '${relayName}', uuid, 'UPDATE', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
-      END;
-      CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ad AFTER DELETE ON ${t.table} BEGIN
-        INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-        VALUES ('${relayName}', OLD.uuid, 'DELETE', json_object(${oldArgs}), OLD.device_id);
-      END;
-    `);
+    try {
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ai AFTER INSERT ON ${t.table} BEGIN
+          UPDATE ${t.table} SET uuid = ${genUuid} WHERE ${t.id} = NEW.${t.id} AND uuid IS NULL;
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          SELECT '${relayName}', uuid, 'INSERT', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_${t.table}_au AFTER UPDATE ON ${t.table} WHEN OLD.uuid IS NOT NULL AND NEW.uuid IS NOT NULL BEGIN
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          SELECT '${relayName}', uuid, 'UPDATE', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ad AFTER DELETE ON ${t.table} BEGIN
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          VALUES ('${relayName}', OLD.uuid, 'DELETE', json_object(${oldArgs}), OLD.device_id);
+        END;
+      `);
+    } catch (e) {
+      console.error(`sync trigger (${t.table}):`, e?.message);
+    }
+  }
+  {
+    const uCols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+    const uTrigCols = uCols.includes("username") && uCols.includes("avatar") ? ["id", "businessId", "name", "phone", "email", "username", "role", "roleName", "permissions", "isActive", "isOwner", "pinHash", "pinSalt", "avatar", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"] : ["id", "businessId", "name", "phone", "email", "role", "roleName", "permissions", "isActive", "isOwner", "pinHash", "pinSalt", "uuid", "device_id", "row_version", "created_at", "updated_at", "is_deleted", "deleted_at", "is_synced"];
+    const userArgs = uTrigCols.map((c) => `'${c}', ${c}`).join(", ");
+    try {
+      db.exec(`
+        DROP TRIGGER IF EXISTS trg_users_ai;
+        DROP TRIGGER IF EXISTS trg_users_au;
+        DROP TRIGGER IF EXISTS trg_users_ad;
+        CREATE TRIGGER IF NOT EXISTS trg_users_ai AFTER INSERT ON users BEGIN
+          UPDATE users SET uuid = ${genUuid} WHERE id = NEW.id AND uuid IS NULL;
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          SELECT 'users', uuid, 'INSERT', json_object(${userArgs}), device_id FROM users WHERE id = NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_users_au AFTER UPDATE ON users WHEN OLD.uuid IS NOT NULL AND NEW.uuid IS NOT NULL BEGIN
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          SELECT 'users', uuid, 'UPDATE', json_object(${userArgs}), device_id FROM users WHERE id = NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_users_ad AFTER DELETE ON users BEGIN
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          VALUES ('users', OLD.uuid, 'DELETE', json_object('id', OLD.id, 'businessId', OLD.businessId, 'name', OLD.name, 'uuid', OLD.uuid, 'device_id', OLD.device_id, 'row_version', OLD.row_version, 'updated_at', OLD.updated_at, 'is_deleted', OLD.is_deleted, 'deleted_at', OLD.deleted_at, 'is_synced', OLD.is_synced), OLD.device_id);
+        END;
+      `);
+    } catch (e) {
+      console.error("users relay triggers:", e?.message);
+    }
   }
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS trg_stock_movements_ai AFTER INSERT ON stock_movements
@@ -2452,129 +11093,6 @@ function initDB() {
         NEW.device_id
       FROM audit_logs WHERE id = NEW.id AND uuid IS NOT NULL;
     END;
-  `);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      businessId INTEGER,
-      orderNumber TEXT UNIQUE NOT NULL,
-      customerName TEXT,
-      customerPhone TEXT,
-      notes TEXT,
-      status TEXT NOT NULL DEFAULT 'Order',
-      totalAmount REAL NOT NULL DEFAULT 0,
-      createdBy INTEGER,
-      createdByName TEXT,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      convertedAt TEXT,
-      convertedBy TEXT,
-      cancelledAt TEXT,
-      cancelledBy TEXT,
-      cancelReason TEXT,
-      uuid TEXT UNIQUE,
-      is_deleted INTEGER DEFAULT 0,
-      FOREIGN KEY (businessId) REFERENCES businesses(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS order_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      orderId INTEGER NOT NULL,
-      itemId INTEGER,
-      itemName TEXT NOT NULL,
-      quantity REAL NOT NULL,
-      unit TEXT,
-      unitType TEXT DEFAULT 'base',
-      unitPrice REAL NOT NULL DEFAULT 0,
-      totalPrice REAL NOT NULL DEFAULT 0,
-      FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE,
-      FOREIGN KEY (itemId) REFERENCES items(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS order_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      orderId INTEGER NOT NULL,
-      action TEXT NOT NULL,
-      performedBy TEXT,
-      notes TEXT,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE
-    );
-  `);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS subscription_plans (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      tier TEXT NOT NULL CHECK(tier IN ('basic', 'premium')),
-      durationMonths INTEGER NOT NULL,
-      price REAL NOT NULL,
-      currency TEXT DEFAULT 'ETB',
-      description TEXT,
-      features TEXT,
-      isActive INTEGER DEFAULT 1,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS subscriptions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      businessId INTEGER NOT NULL UNIQUE,
-      planId INTEGER,
-      tier TEXT NOT NULL DEFAULT 'basic' CHECK(tier IN ('basic', 'premium', 'trial')),
-      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'expired', 'cancelled', 'pending')),
-      startedAt TEXT,
-      expiresAt TEXT,
-      trialStartedAt TEXT,
-      trialEndsAt TEXT,
-      isTrial INTEGER DEFAULT 0,
-      autoRenew INTEGER DEFAULT 0,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      uuid TEXT,
-      device_id TEXT,
-      row_version INTEGER DEFAULT 1,
-      updated_at TEXT,
-      is_deleted INTEGER DEFAULT 0,
-      deleted_at TEXT,
-      is_synced INTEGER DEFAULT 1,
-      FOREIGN KEY (businessId) REFERENCES businesses(id),
-      FOREIGN KEY (planId) REFERENCES subscription_plans(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS payment_transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      businessId INTEGER,
-      transactionId TEXT,
-      businessName TEXT NOT NULL,
-      phoneNumber TEXT NOT NULL,
-      selectedPlan TEXT NOT NULL,
-      amount REAL NOT NULL,
-      currency TEXT DEFAULT 'ETB',
-      paymentDate TEXT NOT NULL,
-      notes TEXT,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'cancelled')),
-      adminNotes TEXT,
-      verifiedBy INTEGER,
-      verifiedAt TEXT,
-      subscriptionId INTEGER,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (businessId) REFERENCES businesses(id),
-      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS subscription_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      subscriptionId INTEGER,
-      businessId INTEGER,
-      action TEXT NOT NULL,
-      oldTier TEXT,
-      newTier TEXT,
-      oldStatus TEXT,
-      newStatus TEXT,
-      details TEXT,
-      changedBy TEXT,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id),
-      FOREIGN KEY (businessId) REFERENCES businesses(id)
-    );
   `);
   const planCount = db.prepare("SELECT COUNT(*) as count FROM subscription_plans").get();
   if (planCount.count === 0) {
@@ -2726,9 +11244,9 @@ function initDB() {
   }
   const roleCount = db.prepare("SELECT COUNT(*) as count FROM employee_roles").get();
   if (roleCount.count === 0) {
-    const insertRole = db.prepare("INSERT INTO employee_roles (name, description, permissions, isSystem) VALUES (?, ?, ?, 1)");
+    const insertRole = db.prepare("INSERT INTO employee_roles (businessId, name, description, permissions, isSystem) VALUES (?, ?, ?, ?, 1)");
     for (const role of DEFAULT_ROLES) {
-      insertRole.run(role.name, role.description, JSON.stringify(role.permissions));
+      insertRole.run(businessId, role.name, role.description, JSON.stringify(role.permissions));
     }
   }
   const adminRole = db.prepare("SELECT id, permissions FROM employee_roles WHERE name = 'Administrator' LIMIT 1").get();
@@ -2760,6 +11278,18 @@ function initDB() {
     db.prepare(
       "INSERT INTO admins (name, username, pin, role, permissions) VALUES (?, ?, ?, ?, ?)"
     ).run("Super Admin", "admin", hash, "super_admin", JSON.stringify(ALL_PERMISSIONS));
+    const usersMissingPinHash = db.prepare("SELECT COUNT(*) AS c FROM users WHERE isOwner = 1").get();
+    if ((usersMissingPinHash.c ?? 0) === 0) {
+      db.prepare(
+        `INSERT INTO users (businessId, name, phone, email, role, roleName, permissions, isActive, isOwner, pinHash, pinSalt, uuid)
+         VALUES (?, 'Super Admin', NULL, 'admin', 'owner', 'Owner', ?, 1, 1, ?, NULL, ?)`
+      ).run(
+        businessId,
+        JSON.stringify({ "*": true }),
+        hash,
+        crypto$1.randomUUID()
+      );
+    }
   }
   const existingCustomerNames = db.prepare("SELECT DISTINCT customerName, customerPhone FROM sales WHERE customerName IS NOT NULL AND customerName != ''").all();
   for (const c of existingCustomerNames) {
@@ -2953,11 +11483,11 @@ function insertAudit(db2, entry, opts) {
       uuid,
       source_device: opts?.sourceDevice ?? null
     });
-    const id = Number(info.lastInsertRowid);
-    const row = db2.prepare("SELECT * FROM audit_logs WHERE id = ?").get(id);
+    const id2 = Number(info.lastInsertRowid);
+    const row = db2.prepare("SELECT * FROM audit_logs WHERE id = ?").get(id2);
     const h = auditHash(prev, row);
-    db2.prepare("UPDATE audit_logs SET hash = ?, prev_hash = ? WHERE id = ?").run(h, prev, id);
-    return id;
+    db2.prepare("UPDATE audit_logs SET hash = ?, prev_hash = ? WHERE id = ?").run(h, prev, id2);
+    return id2;
   });
   return tx();
 }
@@ -3434,10 +11964,12 @@ function getPrinterConfig() {
       port: Number(stored.port) || 9100,
       drawerPin: stored.drawerPin === 5 ? 5 : 2,
       autoOpenDrawer: stored.autoOpenDrawer !== false,
-      enabled: stored.enabled !== false
+      enabled: stored.enabled !== false,
+      paperWidth: Number(stored.paperWidth) === 58 ? 58 : 80,
+      simulate: !!stored.simulate
     };
   } catch {
-    return { transport: "os-dialog", host: "127.0.0.1", port: 9100, drawerPin: 2, autoOpenDrawer: true, enabled: true };
+    return { transport: "os-dialog", host: "127.0.0.1", port: 9100, drawerPin: 2, autoOpenDrawer: true, enabled: true, paperWidth: 80, simulate: false };
   }
 }
 function savePrinterConfig(cfg2) {
@@ -3506,7 +12038,9 @@ function getPrintStatus() {
     port: cfg2.port,
     drawerPin: cfg2.drawerPin,
     autoOpenDrawer: cfg2.autoOpenDrawer,
-    online: cfg2.enabled && cfg2.transport === "network",
+    paperWidth: cfg2.paperWidth,
+    simulate: cfg2.simulate,
+    online: cfg2.enabled && (cfg2.transport === "network" || cfg2.simulate),
     lastError,
     lastPrintAt
   };
@@ -3521,6 +12055,17 @@ function enqueue(fn) {
 async function printRaw(data) {
   const cfg2 = getPrinterConfig();
   if (!cfg2.enabled) throw new Error("Printer is disabled in Settings");
+  if (cfg2.simulate) {
+    const fs2 = await import("fs");
+    const path2 = await import("path");
+    const { app } = await import("electron");
+    const dir = path2.join(app.getPath("userData"), "simulated-printer");
+    fs2.mkdirSync(dir, { recursive: true });
+    fs2.appendFileSync(path2.join(dir, `output-${cfg2.paperWidth}mm.bin`), Buffer.from(data));
+    lastPrintAt = (/* @__PURE__ */ new Date()).toISOString();
+    lastError = null;
+    return;
+  }
   if (cfg2.transport === "os-dialog") throw new Error("Raw ESC/POS requires the network printer transport");
   await enqueue(async () => {
     try {
@@ -3535,11 +12080,17 @@ async function printRaw(data) {
 }
 async function openDrawer() {
   const cfg2 = getPrinterConfig();
+  if (cfg2.simulate) {
+    lastPrintAt = (/* @__PURE__ */ new Date()).toISOString();
+    return;
+  }
   const w = new EscposWriter().init().openDrawer(cfg2.drawerPin);
   await printRaw(w.toUint8Array());
   lastPrintAt = (/* @__PURE__ */ new Date()).toISOString();
 }
-const WIDTH$1 = 42;
+function colWidth(paperWidth) {
+  return paperWidth === 58 ? 30 : 42;
+}
 function padRight$1(s, w) {
   if (s.length >= w) return s.slice(0, w);
   return s + " ".repeat(w - s.length);
@@ -3547,38 +12098,40 @@ function padRight$1(s, w) {
 function money$1(n) {
   return `ETB ${(Math.round(n * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
-const divider$1 = "-".repeat(WIDTH$1);
 function buildReceiptCommands(input) {
+  const WIDTH2 = colWidth(input.paperWidth ?? 80);
+  const divider2 = "-".repeat(WIDTH2);
   const w = new EscposWriter().init();
-  w.align(1).bold(true).text(input.context.businessName.slice(0, WIDTH$1)).lineFeed();
+  w.align(1).bold(true).text(input.context.businessName.slice(0, WIDTH2)).lineFeed();
   w.bold(false).align(0);
-  if (input.context.address) w.align(1).text(input.context.address.slice(0, WIDTH$1)).lineFeed().align(0);
+  if (input.context.address) w.align(1).text(input.context.address.slice(0, WIDTH2)).lineFeed().align(0);
   if (input.context.tin) w.text(`TIN: ${input.context.tin}`).lineFeed();
-  w.text(divider$1).lineFeed();
+  w.text(divider2).lineFeed();
   for (const line of input.lines) {
-    w.text(padRight$1(line.name.slice(0, 28), 28)).text(padRight$1(String(line.quantity), 4)).text(padRight$1(line.unit.slice(0, 3), 4)).text(money$1(line.total).padStart(6)).lineFeed();
+    const nameW = Math.max(8, WIDTH2 - 14);
+    w.text(padRight$1(line.name.slice(0, nameW), nameW)).text(padRight$1(String(line.quantity), 4)).text(padRight$1(line.unit.slice(0, 3), 4)).text(money$1(line.total).padStart(6)).lineFeed();
     if (line.unitPrice !== line.total) {
       w.text(`  @ ${money$1(line.unitPrice)}`).lineFeed();
     }
   }
-  w.text(divider$1).lineFeed();
-  w.column("Subtotal", money$1(input.subtotal), WIDTH$1);
-  if (input.discount > 0) w.column("Discount", `-${money$1(input.discount)}`, WIDTH$1);
-  if (input.vat > 0) w.column(`${input.taxType || "VAT"}`, money$1(input.vat), WIDTH$1);
-  w.text(divider$1).lineFeed();
-  w.bold(true).size(2, 2).text(padRight$1("TOTAL", WIDTH$1 - 6) + money$1(input.total)).lineFeed().size(1, 1).bold(false);
-  w.text(divider$1).lineFeed();
-  if (input.customerName) w.column("Customer", input.customerName.slice(0, 30), WIDTH$1);
-  w.column("Payment", input.paymentMethod || "Cash", WIDTH$1);
+  w.text(divider2).lineFeed();
+  w.column("Subtotal", money$1(input.subtotal), WIDTH2);
+  if (input.discount > 0) w.column("Discount", `-${money$1(input.discount)}`, WIDTH2);
+  if (input.vat > 0) w.column(`${input.taxType || "VAT"}`, money$1(input.vat), WIDTH2);
+  w.text(divider2).lineFeed();
+  w.bold(true).size(2, 2).text(padRight$1("TOTAL", Math.min(24, WIDTH2 - 6)) + money$1(input.total)).lineFeed().size(1, 1).bold(false);
+  w.text(divider2).lineFeed();
+  if (input.customerName) w.column("Customer", input.customerName.slice(0, WIDTH2 - 10), WIDTH2);
+  w.column("Payment", (input.paymentMethod || "Cash").slice(0, WIDTH2 - 10), WIDTH2);
   if (input.paymentStatus === "Debt") {
-    w.column("Status", "DEBT", WIDTH$1);
+    w.column("Status", "DEBT", WIDTH2);
   } else if (input.change > 0) {
-    w.column("Paid", money$1(input.paid), WIDTH$1);
-    w.column("Change", money$1(input.change), WIDTH$1);
+    w.column("Paid", money$1(input.paid), WIDTH2);
+    w.column("Change", money$1(input.change), WIDTH2);
   }
-  w.text(divider$1).lineFeed();
-  w.text(padRight$1("Date: " + (input.createdAt ? input.createdAt.slice(0, 16).replace("T", " ") : (/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace("T", " ")), WIDTH$1 / 2) + padRight$1("Rcpt #" + (input.context.receiptSerial ?? ""), WIDTH$1 / 2)).lineFeed();
-  if (input.context.cashier) w.text(`Cashier: ${input.context.cashier.slice(0, WIDTH$1)}`).lineFeed();
+  w.text(divider2).lineFeed();
+  w.text(padRight$1("Date: " + (input.createdAt ? input.createdAt.slice(0, 16).replace("T", " ") : (/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace("T", " ")), Math.ceil(WIDTH2 / 2)) + padRight$1("Rcpt #" + (input.context.receiptSerial ?? ""), Math.floor(WIDTH2 / 2))).lineFeed();
+  if (input.context.cashier) w.text(`Cashier: ${input.context.cashier.slice(0, WIDTH2)}`).lineFeed();
   w.align(1).text("Thank you for shopping with us!").lineFeed(2).align(0);
   w.cut(true);
   return w.toUint8Array();
@@ -3589,21 +12142,26 @@ function buildLabelCommands(label, copies = 1) {
   for (let i = 0; i < Math.max(1, copies); i++) {
     w.align(1).bold(true).text(label.name.slice(0, 32)).lineFeed().bold(false);
     if (code) {
-      if (label.barcodeType === "code128") w.barcodeCode128(code);
+      if (label.barcodeType === "code128" || !/^\d{13}$|^\d{12}$|^\d{8}$/.test(code)) w.barcodeCode128(code);
       else w.barcodeEan13(code);
     } else if (label.sku) {
       w.qr(label.sku, 6);
     }
+    if (code) w.align(1).text(code.slice(0, 24)).lineFeed().align(0);
+    if (label.sku && label.sku !== code) w.align(1).text(`SKU ${label.sku}`.slice(0, 24)).lineFeed().align(0);
     w.align(1).size(2, 2).text(money$1(label.price)).lineFeed().size(1, 1).align(0);
     w.lineFeed(1);
   }
   w.cut(true);
   return w.toUint8Array();
 }
-function buildTestPageCommands() {
+function buildTestPageCommands(paperWidth = 80) {
+  const WIDTH2 = colWidth(paperWidth);
+  const divider2 = "-".repeat(WIDTH2);
   const w = new EscposWriter().init();
   w.align(1).bold(true).size(2, 2).text("SHEGA TEST PAGE").lineFeed().size(1, 1).bold(false);
-  w.text(divider$1).lineFeed();
+  w.text(`Paper: ${paperWidth}mm`).lineFeed();
+  w.text(divider2).lineFeed();
   w.text("Date: " + (/* @__PURE__ */ new Date()).toLocaleString()).lineFeed();
   w.text("ESC/POS transport OK").lineFeed();
   w.text("  - align left  : Shega").lineFeed();
@@ -3613,7 +12171,7 @@ function buildTestPageCommands() {
   w.barcodeEan13("1234567890128");
   w.text("QR test:").lineFeed();
   w.qr("SHEGA::TEST::" + Date.now(), 6);
-  w.text(divider$1).lineFeed();
+  w.text(divider2).lineFeed();
   w.lineFeed(2);
   w.cut(true);
   return w.toUint8Array();
@@ -3690,7 +12248,7 @@ function rotateIfNeeded() {
   } catch {
   }
 }
-function write(level, msg, meta) {
+function write$1(level, msg, meta) {
   rotateIfNeeded();
   const line = JSON.stringify({
     ts: (/* @__PURE__ */ new Date()).toISOString(),
@@ -3706,16 +12264,25 @@ function write(level, msg, meta) {
   }
 }
 const logger = {
-  debug: (msg, meta) => write("debug", msg, meta),
-  info: (msg, meta) => write("info", msg, meta),
-  warn: (msg, meta) => write("warn", msg, meta),
-  error: (msg, meta) => write("error", msg, meta),
-  fatal: (msg, meta) => write("fatal", msg, meta),
+  debug: (msg, meta) => write$1("debug", msg, meta),
+  info: (msg, meta) => write$1("info", msg, meta),
+  warn: (msg, meta) => write$1("warn", msg, meta),
+  error: (msg, meta) => write$1("error", msg, meta),
+  fatal: (msg, meta) => write$1("fatal", msg, meta),
   get path() {
     return LOG_PATH;
   }
 };
+function notifyDataApplied(stats) {
+  const payload = { ...stats, at: (/* @__PURE__ */ new Date()).toISOString() };
+  for (const win of electron.BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send("data:changed", payload);
+    }
+  }
+}
 const SYNC_PORT = 5757;
+const syncHubBus = new events.EventEmitter();
 const SHARED_TABLES = [
   "categories",
   "items",
@@ -3723,14 +12290,10 @@ const SHARED_TABLES = [
   "sales",
   "debt_payments",
   "returns",
-  "expenses",
   "adjustments",
   "customers",
   "contacts",
   "suppliers",
-  "budgets",
-  "budget_categories",
-  "budget_adjustments",
   "orders",
   "order_items",
   "order_history",
@@ -3765,21 +12328,21 @@ function changeChecksum(change) {
   const canonical = `${change.entity}|${change.entity_uuid}|${change.op}|${JSON.stringify(change.payload)}`;
   return crypto$1.createHash("sha256").update(canonical).digest("hex");
 }
-let columnCache = {};
+let columnCache$1 = {};
 function columnsOf(entity) {
   const table = tbl(entity);
-  if (!columnCache[table]) {
-    columnCache[table] = dbProxy.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!columnCache$1[table]) {
+    columnCache$1[table] = dbProxy.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
   }
-  return columnCache[table];
+  return columnCache$1[table];
 }
 function ensureHubDeviceId() {
   const row = dbProxy.prepare("SELECT device_id, pairing_token FROM sync_meta WHERE id = 1").get();
   if (row?.device_id) return row.device_id;
-  const id = crypto$1.randomUUID();
+  const id2 = crypto$1.randomUUID();
   const token = generatePairingToken();
-  dbProxy.prepare("INSERT OR REPLACE INTO sync_meta (id, device_id, pairing_token, schema_version) VALUES (1, ?, ?, 21)").run(id, token);
-  return id;
+  dbProxy.prepare("INSERT OR REPLACE INTO sync_meta (id, device_id, pairing_token, schema_version) VALUES (1, ?, ?, 21)").run(id2, token);
+  return id2;
 }
 function getPairingToken() {
   const row = dbProxy.prepare("SELECT pairing_token FROM sync_meta WHERE id = 1").get();
@@ -3799,14 +12362,61 @@ function validToken(token) {
   return !!token && token.trim().toUpperCase() === getPairingToken();
 }
 function getLanAddress(port = SYNC_PORT) {
-  for (const ifaces of Object.values(os.networkInterfaces())) {
-    for (const iface of ifaces ?? []) {
-      if (iface.family === "IPv4" && !iface.internal) {
-        return `http://${iface.address}:${port}`;
-      }
+  const candidates = [];
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name] ?? []) {
+      if (iface.family !== "IPv4" || iface.internal) continue;
+      const addr = iface.address;
+      if (/^(127\.|169\.254\.|0\.)/.test(addr)) continue;
+      candidates.push({ name, address: addr });
     }
   }
-  return null;
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => lanScore(a) - lanScore(b));
+  return `http://${candidates[0].address}:${port}`;
+}
+function lanScore(c) {
+  let score = isVirtualAdapterName(c.name) ? 10 : 0;
+  if (!/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(c.address)) score += 1;
+  return score;
+}
+function isVirtualAdapterName(name) {
+  const n = name.toLowerCase();
+  const virtual = [
+    "veethernet",
+    "vether",
+    "wsl",
+    "hyper-v",
+    "hyperv",
+    "virtualbox",
+    "vmware",
+    "vmnet",
+    "docker",
+    "bluetooth",
+    "loopback",
+    "hamachi",
+    "tailscale",
+    "zerotier",
+    "npcap",
+    "wireguard",
+    "openvpn",
+    "anyconnect",
+    "globalprotect",
+    "fortinet",
+    "tap-",
+    "tap_",
+    "tun-",
+    "tun_",
+    "cisco",
+    "wan miniport",
+    "ndis",
+    "localhost",
+    "lan-v6",
+    "teredo",
+    "isatap"
+  ];
+  return virtual.some((v) => n.includes(v));
 }
 function registerDevice(deviceId, name) {
   const existing = dbProxy.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId);
@@ -3857,6 +12467,19 @@ function lwwWins(incoming, existing) {
   if (iVer !== eVer) return iVer > eVer;
   return String(incoming.uuid ?? "") >= String(existing.uuid ?? "");
 }
+function payloadEqualsExisting(incoming, existing) {
+  for (const k of Object.keys(incoming)) {
+    if (k === "id" || k === "uuid" || k === "device_id" || k === "is_synced") continue;
+    if (!Object.prototype.hasOwnProperty.call(existing, k)) continue;
+    const a = incoming[k];
+    const b = existing[k];
+    if (a === b) continue;
+    if (typeof a === "number" && typeof b === "string" && String(a) === b) continue;
+    if (typeof b === "number" && typeof a === "string" && String(b) === a) continue;
+    return false;
+  }
+  return true;
+}
 function cleanPayload(entity, payload) {
   const cols = columnsOf(entity);
   const clean = {};
@@ -3864,6 +12487,20 @@ function cleanPayload(entity, payload) {
     if (cols.includes(k)) clean[k] = payload[k];
   }
   return clean;
+}
+const HISTORY_COLUMN_BRIDGE = {
+  order_history: ["status", "action"],
+  shipment_history: ["status", "action"],
+  sales: ["user_id", "createdBy"]
+};
+function bridgeHistoryColumns(entity, payload) {
+  const bridge = HISTORY_COLUMN_BRIDGE[entity];
+  if (!bridge) return payload;
+  const [mobileCol, desktopCol] = bridge;
+  const out = { ...payload };
+  if (out[desktopCol] == null && out[mobileCol] != null) out[desktopCol] = out[mobileCol];
+  if (out[mobileCol] == null && out[desktopCol] != null) out[mobileCol] = out[desktopCol];
+  return out;
 }
 function resolveFk(deviceId, entity, localId) {
   if (localId == null) return null;
@@ -3918,13 +12555,10 @@ const CORE_BUSINESS_SCOPED_ENTITIES = [
   "quick_products",
   "sales",
   "debt_payments",
-  "expenses",
   "adjustments",
   "customers",
   "warehouses",
   "returns",
-  "gift_cards",
-  "gift_card_transactions",
   "employee_roles",
   "employees",
   "employee_accounts",
@@ -3984,7 +12618,7 @@ function applyChange(deviceId, change) {
     return "skipped";
   }
   const adapterData = isAdapterEntity(entity) && looksLikeMobile(entity, payload) ? toDesktopPayload(entity, payload) : payload;
-  const data = cleanPayload(entity, adapterData);
+  const data = cleanPayload(entity, bridgeHistoryColumns(entity, adapterData));
   if (CORE_BUSINESS_SCOPED_ENTITIES.includes(entity) && data.businessId != null) {
     const asStr = String(data.businessId);
     if (!/^[0-9]+$/.test(asStr)) {
@@ -4008,6 +12642,8 @@ function applyChange(deviceId, change) {
   const existing = existingByUuid(entity, entity_uuid);
   if (!existing) {
     const insertData = { ...data };
+    const remoteId = Number(data.id);
+    delete insertData.id;
     insertData.uuid = entity_uuid;
     insertData.device_id = deviceId;
     insertData.updated_at = insertData.updated_at ?? (/* @__PURE__ */ new Date()).toISOString();
@@ -4026,14 +12662,24 @@ function applyChange(deviceId, change) {
       const hubPackId = resolveFk(deviceId, "item_packs", insertData.packId);
       if (hubPackId != null) insertData.packId = hubPackId;
     }
+    if (entity === "stock_movements" && insertData.warehouseId != null) {
+      const hubWhId = resolveFk(deviceId, "warehouses", insertData.warehouseId);
+      if (hubWhId != null) insertData.warehouseId = hubWhId;
+    }
     const cols = columnsOf(entity).filter((c) => c in insertData);
     const placeholders = cols.map(() => "?").join(", ");
     const values = cols.map((c) => insertData[c]);
     dbProxy.prepare(`INSERT INTO ${tbl(entity)} (${cols.join(", ")}) VALUES (${placeholders})`).run(...values);
-    recordRef(deviceId, entity, insertData);
+    if (Number.isFinite(remoteId) && remoteId > 0) {
+      recordRef(deviceId, entity, { id: remoteId, uuid: entity_uuid });
+    }
     return pending2 ? "pending" : "applied";
   }
   const incoming = { ...data, uuid: entity_uuid, updated_at: data.updated_at ?? (/* @__PURE__ */ new Date()).toISOString() };
+  if (payloadEqualsExisting(incoming, existing)) {
+    logSync(deviceId, entity, entity_uuid, change.op, "noop_identical");
+    return "applied";
+  }
   if (lwwWins(incoming, existing)) {
     const updateData = { ...data };
     delete updateData.id;
@@ -4080,32 +12726,75 @@ function applyAuditChange(deviceId, change) {
     return false;
   }
 }
+function ensureSyncReceivedTable() {
+  dbProxy.exec(
+    "CREATE TABLE IF NOT EXISTS sync_received (device_id TEXT NOT NULL, checksum TEXT NOT NULL, received_at TEXT, PRIMARY KEY (device_id, checksum))"
+  );
+}
+function ensureBaselineOutbox() {
+  const exists = dbProxy.prepare("SELECT 1 FROM sync_outbox WHERE entity = ? AND entity_uuid = ? LIMIT 1");
+  const enqueue2 = dbProxy.prepare(
+    "INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+  );
+  let added = 0;
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
+  for (const entity of SHARED_TABLES) {
+    const rows = dbProxy.prepare(`SELECT * FROM ${tbl(entity)} WHERE is_deleted = 0`).all();
+    for (const r of rows) {
+      if (!r.uuid) continue;
+      if (exists.get(entity, r.uuid)) continue;
+      enqueue2.run(entity, r.uuid, "INSERT", JSON.stringify(r), r.device_id ?? null, now2);
+      added += 1;
+    }
+  }
+  if (added) logSync("", "sync_outbox", "baseline", "INSERT", `backfilled ${added} pre-trigger rows`);
+  return added;
+}
 function applyPush(deviceId, changes) {
-  const result = { applied: 0, conflicts: 0, skipped: 0, pending: 0 };
+  const result = { applied: 0, conflicts: 0, skipped: 0, pending: 0, results: [] };
+  ensureSyncReceivedTable();
+  const receivedMark = dbProxy.prepare("INSERT OR IGNORE INTO sync_received (device_id, checksum, received_at) VALUES (?, ?, ?)");
+  const alreadyReceived = dbProxy.prepare("SELECT 1 FROM sync_received WHERE device_id = ? AND checksum = ?");
   const doApply = dbProxy.transaction((list) => {
     for (const change of list) {
+      const clientSeq = change.client_seq != null ? Number(change.client_seq) : null;
+      let status;
       try {
         if (change.checksum) {
           const expected = changeChecksum(change);
           if (change.checksum !== expected) {
             result.skipped += 1;
+            status = "skipped";
             logSync(deviceId, change.entity, change.entity_uuid, change.op, `checksum_mismatch`);
+            result.results.push({ client_seq: clientSeq, status });
             continue;
           }
+        }
+        if (change.checksum && alreadyReceived.get(deviceId, change.checksum)) {
+          result.applied += 1;
+          result.results.push({ client_seq: clientSeq, status: "applied" });
+          continue;
         }
         const existing = existingByUuid(change.entity, change.entity_uuid);
         const data = cleanPayload(change.entity, change.payload);
         if (existing && change.op === "INSERT" && lwwWins(existing, { ...data, uuid: change.entity_uuid })) {
           result.conflicts += 1;
+          status = "conflict";
+          result.results.push({ client_seq: clientSeq, status });
           continue;
         }
-        const status = applyChange(deviceId, change);
-        if (status === "applied") result.applied += 1;
-        else if (status === "conflict") result.conflicts += 1;
+        status = applyChange(deviceId, change);
+        if (status === "applied") {
+          result.applied += 1;
+          if (change.checksum) receivedMark.run(deviceId, change.checksum, (/* @__PURE__ */ new Date()).toISOString());
+        } else if (status === "conflict") result.conflicts += 1;
         else if (status === "pending") result.pending += 1;
         else result.skipped += 1;
+        result.results.push({ client_seq: clientSeq, status });
       } catch (e) {
         result.skipped += 1;
+        status = "skipped";
+        result.results.push({ client_seq: clientSeq, status });
         logSync(deviceId, change.entity, change.entity_uuid, change.op, `error ${e?.message ?? ""}`);
       }
     }
@@ -4115,6 +12804,10 @@ function applyPush(deviceId, changes) {
     }
   });
   doApply(changes);
+  if (result.applied > 0) {
+    notifyDataApplied({ applied: result.applied, conflicts: result.conflicts, changes: changes.length, source: "hub" });
+    syncHubBus.emit("applied", { applied: result.applied });
+  }
   return result;
 }
 function snapshotSince(since) {
@@ -4128,7 +12821,7 @@ function snapshotSince(since) {
           entity,
           entity_uuid: r.uuid,
           op: "INSERT",
-          payload: emitEntityPayload(entity, r),
+          payload: emitEntityPayload(entity, bridgeHistoryColumns(entity, r)),
           device_id: r.device_id
         });
       }
@@ -4142,7 +12835,7 @@ function snapshotSince(since) {
       payload = JSON.parse(r.payload);
     } catch {
     }
-    payload = emitEntityPayload(r.entity, payload);
+    payload = emitEntityPayload(r.entity, bridgeHistoryColumns(r.entity, payload));
     return { entity: r.entity, entity_uuid: r.entity_uuid, op: r.op, payload, device_id: r.device_id, seq: r.seq };
   });
   return { changes, lastSeq: seq, snapshot: false };
@@ -4189,13 +12882,13 @@ function sendJson(res, code, body) {
   });
   res.end(raw);
 }
-function readBody(req, max = 8 * 1024 * 1024) {
+function readBody(req, max2 = 8 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
-    let size = 0;
+    let size2 = 0;
     const chunks = [];
     req.on("data", (c) => {
-      size += c.length;
-      if (size > max) {
+      size2 += c.length;
+      if (size2 > max2) {
         reject(new Error("body too large"));
         req.destroy();
         return;
@@ -4316,15 +13009,22 @@ const syncHub$1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePro
   SyncHub,
   applyPush,
   applyRemoteChanges,
+  bridgeHistoryColumns,
   buildCloudChanges,
   changeChecksum,
+  emitEntityPayload,
+  ensureBaselineOutbox,
   ensureHubDeviceId,
+  ensureSyncReceivedTable,
   getLanAddress,
   getPairingToken,
   lwwWins,
+  payloadEqualsExisting,
   registerDevice,
   requestDeviceResync,
   snapshotSince,
+  syncHubBus,
+  tbl,
   verifyChecksums
 }, Symbol.toStringTag, { value: "Module" }));
 function openShift(businessId, registerId, cashierId, openingFloat, notes) {
@@ -4357,6 +13057,13 @@ function getOpenShift(registerId) {
 }
 function getShiftById$1(shiftId) {
   return dbProxy.prepare("SELECT * FROM shifts WHERE id = ?").get(shiftId);
+}
+function getLastShiftByCashier(cashierId) {
+  return dbProxy.prepare(`
+    SELECT * FROM shifts
+    WHERE cashierId = ?
+    ORDER BY openedAt DESC LIMIT 1
+  `).get(cashierId);
 }
 function recordMidShiftAudit(shiftId, countedCash, notes) {
   const shift = getShiftById$1(shiftId);
@@ -4836,7 +13543,7 @@ function printFiscalReport(report, escposDriver) {
   w.cut(true);
   return w.toUint8Array();
 }
-function createLedgerEntry(params) {
+function createLedgerEntry(params2) {
   (/* @__PURE__ */ new Date()).toISOString();
   crypto.randomUUID();
   const lastEntry = dbProxy.prepare(`
@@ -4930,33 +13637,33 @@ function getLedgerBalance(businessId) {
 }
 function getLedgerEntries(businessId, options) {
   let query = "SELECT * FROM ledger_entries WHERE businessId = ?";
-  const params = [businessId];
+  const params2 = [businessId];
   if (options?.shiftId) {
     query += " AND shiftId = ?";
-    params.push(options.shiftId);
+    params2.push(options.shiftId);
   }
   if (options?.type) {
     query += " AND type = ?";
-    params.push(options.type);
+    params2.push(options.type);
   }
   if (options?.fromDate) {
     query += " AND createdAt >= ?";
-    params.push(options.fromDate);
+    params2.push(options.fromDate);
   }
   if (options?.toDate) {
     query += " AND createdAt <= ?";
-    params.push(options.toDate);
+    params2.push(options.toDate);
   }
   query += " ORDER BY createdAt DESC";
   if (options?.limit) {
     query += " LIMIT ?";
-    params.push(options.limit);
+    params2.push(options.limit);
   }
   if (options?.offset) {
     query += " OFFSET ?";
-    params.push(options.offset);
+    params2.push(options.offset);
   }
-  return dbProxy.prepare(query).all(...params);
+  return dbProxy.prepare(query).all(...params2);
 }
 function getShiftLedgerSummary(shiftId) {
   const entries = dbProxy.prepare(`
@@ -5701,7 +14408,7 @@ function generateEtaxSalesCsv(options) {
   const startDate = `${year}-${month.toString().padStart(2, "0")}-01`;
   const endDate = new Date(year, month, 0).toISOString().split("T")[0];
   let whereClause = `WHERE s.businessId = ? AND s.createdAt >= ? AND s.createdAt <= ?`;
-  const params = [businessId, startDate, endDate + " 23:59:59"];
+  const params2 = [businessId, startDate, endDate + " 23:59:59"];
   if (!includeVoided) {
     whereClause += ` AND s.status != 'Voided'`;
   }
@@ -5725,7 +14432,7 @@ function generateEtaxSalesCsv(options) {
     ${whereClause}
     ORDER BY s.createdAt ASC
   `;
-  const sales = db2.prepare(query).all(...params);
+  const sales = db2.prepare(query).all(...params2);
   const errors = [];
   const headers = [
     "TIN",
@@ -5807,7 +14514,7 @@ function generateEtaxPurchasesCsv(options) {
   const startDate = `${year}-${month.toString().padStart(2, "0")}-01`;
   const endDate = new Date(year, month, 0).toISOString().split("T")[0];
   let whereClause = `WHERE sp.businessId = ? AND sp.purchaseDate >= ? AND sp.purchaseDate <= ?`;
-  const params = [businessId, startDate, endDate];
+  const params2 = [businessId, startDate, endDate];
   if (!includeVoided) {
     whereClause += ` AND sp.status != 'Voided'`;
   }
@@ -5827,7 +14534,7 @@ function generateEtaxPurchasesCsv(options) {
     ${whereClause}
     ORDER BY sp.purchaseDate ASC
   `;
-  const purchases = db2.prepare(query).all(...params);
+  const purchases = db2.prepare(query).all(...params2);
   const errors = [];
   const headers = [
     "TIN",
@@ -5926,117 +14633,6 @@ function validateEtaxCsv(csv, type) {
   }
   return { valid: errors.length === 0, errors };
 }
-function getSetting$1(key) {
-  const row = dbProxy.prepare("SELECT value FROM settings WHERE key = ?").get(key);
-  return row?.value ?? null;
-}
-function setSetting$1(key, value) {
-  dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
-}
-function getCloudConfig() {
-  const url = (getSetting$1("cloud_sync_url") || "").toString().trim();
-  const key = (getSetting$1("cloud_sync_device_key") || "").toString().trim();
-  if (!url || !key) return null;
-  return { url: url.replace(/\/+$/, ""), key };
-}
-function getCloudStatus() {
-  const cfg2 = getCloudConfig();
-  return {
-    enabled: getSetting$1("cloud_sync_enabled") === "true",
-    configured: !!cfg2,
-    lastError: getSetting$1("cloud_sync_last_error"),
-    lastAt: getSetting$1("cloud_sync_last_at")
-  };
-}
-async function httpJson(url, init) {
-  const res = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...init?.headers || {} } });
-  const text = await res.text();
-  let body = null;
-  try {
-    body = JSON.parse(text);
-  } catch {
-  }
-  if (!res.ok) throw new Error(typeof body === "object" ? body?.error || `HTTP ${res.status}` : `HTTP ${res.status}`);
-  return body;
-}
-async function syncToCloud() {
-  const cfg2 = getCloudConfig();
-  if (!cfg2) throw new Error("Cloud relay not configured (set cloud_sync_url + cloud_sync_device_key)");
-  const hubId = ensureHubDeviceId();
-  const idempotentKey = `${hubId}@${dbProxy.prepare("SELECT COALESCE(MAX(seq),0) AS m FROM sync_outbox").get().m}`;
-  const pushed = buildCloudChanges();
-  let result = { pushed: pushed.length, pulled: 0, conflicts: 0 };
-  try {
-    const res = await httpJson(`${cfg2.url}/api/sync/push`, {
-      method: "POST",
-      headers: { "X-Device-Key": cfg2.key, "X-Idempotency-Key": idempotentKey },
-      body: JSON.stringify({ device_id: hubId, changes: pushed })
-    });
-    result.pushed = Number(res?.accepted ?? pushed.length);
-    const cursor = dbProxy.prepare("SELECT value FROM settings WHERE key = 'cloud_sync_cursor'").get()?.value;
-    const since = Number(cursor ?? 0);
-    const pulled = await httpJson(`${cfg2.url}/api/sync/pull?device=${encodeURIComponent(hubId)}&since=${since}`, {
-      method: "GET",
-      headers: { "X-Device-Key": cfg2.key }
-    });
-    const incoming = pulled?.changes ?? [];
-    if (incoming.length > 0) {
-      const applied = applyRemoteChanges(hubId, incoming.map((c) => ({
-        entity: c.entity,
-        entity_uuid: c.entity_uuid,
-        op: c.op,
-        payload: c.payload,
-        device_id: c.device_id,
-        checksum: c.checksum
-      })));
-      result.conflicts = applied.conflicts;
-    }
-    result.pulled = incoming.length;
-    const newSeq = Number(pulled?.lastSeq ?? since);
-    setSetting$1("cloud_sync_cursor", String(newSeq));
-    setSetting$1("cloud_sync_last_error", "");
-    setSetting$1("cloud_sync_last_at", (/* @__PURE__ */ new Date()).toISOString());
-  } catch (e) {
-    setSetting$1("cloud_sync_last_error", e?.message || String(e));
-    throw e;
-  }
-  return result;
-}
-async function refreshCloudStatus() {
-  const cfg2 = getCloudConfig();
-  if (!cfg2) return null;
-  const hubId = ensureHubDeviceId();
-  try {
-    const res = await httpJson(`${cfg2.url}/api/sync/status/?device=${encodeURIComponent(hubId)}`, {
-      method: "GET",
-      headers: { "X-Device-Key": cfg2.key }
-    });
-    const status = res?.status ?? null;
-    const blocked = !!res?.blocked;
-    setSetting$1("cloud_device_status", String(status ?? ""));
-    setSetting$1("cloud_device_blocked", String(blocked));
-    return { status, blocked, lastError: null };
-  } catch (e) {
-    return { status: null, blocked: false, lastError: e?.message || String(e) };
-  }
-}
-let timer = null;
-const CLOUD_PERIOD_MS = 60 * 1e3;
-function startCloudSyncTimer() {
-  if (timer) return;
-  timer = setInterval(async () => {
-    const enabled = getSetting$1("cloud_sync_enabled") === "true";
-    if (!enabled) return;
-    const cfg2 = getCloudConfig();
-    if (!cfg2) return;
-    try {
-      await syncToCloud();
-      await refreshCloudStatus();
-    } catch (e) {
-    }
-  }, CLOUD_PERIOD_MS);
-  timer.unref?.();
-}
 let cfg = null;
 function countUnsyncedForDevice(deviceId) {
   const row = dbProxy.prepare("SELECT COUNT(*) AS c FROM sync_outbox WHERE device_id = ?").get(String(deviceId));
@@ -6055,8 +14651,8 @@ function registerBusinessDomainHandlers(config) {
     config.audit("register.added", "register", r.lastInsertRowid, `Added register ${name}`);
     return dbProxy.prepare("SELECT * FROM registers WHERE id = ?").get(r.lastInsertRowid);
   });
-  electron.ipcMain.handle("business:update-register", (_e, id, patch) => {
-    const cur = dbProxy.prepare("SELECT * FROM registers WHERE id = ?").get(id);
+  electron.ipcMain.handle("business:update-register", (_e, id2, patch) => {
+    const cur = dbProxy.prepare("SELECT * FROM registers WHERE id = ?").get(id2);
     if (!cur) throw new Error("Register not found");
     dbProxy.prepare(
       "UPDATE registers SET name = ?, locationId = ?, printerName = ?, hasDrawer = ?, isActive = ?, deviceId = ?, updated_at = ? WHERE id = ?"
@@ -6068,13 +14664,13 @@ function registerBusinessDomainHandlers(config) {
       patch.isActive !== void 0 ? patch.isActive ? 1 : 0 : cur.isActive,
       patch.deviceId ?? cur.deviceId,
       (/* @__PURE__ */ new Date()).toISOString(),
-      id
+      id2
     );
-    return dbProxy.prepare("SELECT * FROM registers WHERE id = ?").get(id);
+    return dbProxy.prepare("SELECT * FROM registers WHERE id = ?").get(id2);
   });
-  electron.ipcMain.handle("business:delete-register", (_e, id) => {
-    dbProxy.prepare("UPDATE registers SET is_deleted = 1, updated_at = ? WHERE id = ?").run((/* @__PURE__ */ new Date()).toISOString(), id);
-    config.audit("register.removed", "register", id, "Removed register");
+  electron.ipcMain.handle("business:delete-register", (_e, id2) => {
+    dbProxy.prepare("UPDATE registers SET is_deleted = 1, updated_at = ? WHERE id = ?").run((/* @__PURE__ */ new Date()).toISOString(), id2);
+    config.audit("register.removed", "register", id2, "Removed register");
     return { ok: true };
   });
   electron.ipcMain.handle("business:list-locations", () => {
@@ -6118,8 +14714,7 @@ function registerBusinessDomainHandlers(config) {
     const now2 = (/* @__PURE__ */ new Date()).toISOString();
     const newDeviceId = crypto$1.randomUUID();
     const wasPrimary = !!old.isPrimary;
-    const isThis = input.setThisAsReplacement === true;
-    const status = isThis ? "active" : "active";
+    const status = "active";
     const colon = dbProxy.prepare(
       `INSERT INTO devices (device_id, name, businessId, platform, role, userId, registerId, status, isPrimary, uuid, row_version, created_at, updated_at, is_deleted, is_synced)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, 1)`
@@ -6160,9 +14755,12 @@ function registerBusinessDomainHandlers(config) {
   });
   electron.ipcMain.handle("business:roles", () => {
     return {
-      builtin: BUILTIN_ROLES.map((r) => ({ key: r.key, name: r.name, description: r.description, isSystem: true })),
-      order: ROLE_ORDER,
-      custom: dbProxy.prepare("SELECT * FROM business_roles WHERE isSystem = 0 AND is_deleted = 0 ORDER BY created_at").all(bizId())
+      builtin: SURFACED_BUILTIN_ROLES.map((key) => {
+        const r = getBuiltinRole(key);
+        return { key: r.key, name: r.name, description: r.description, isSystem: true };
+      }),
+      order: SURFACED_BUILTIN_ROLES,
+      custom: dbProxy.prepare("SELECT * FROM business_roles WHERE businessId = ? AND isSystem = 0 AND is_deleted = 0 ORDER BY created_at").all(bizId())
     };
   });
   electron.ipcMain.handle("business:can", (_e, key) => {
@@ -6177,26 +14775,7962 @@ function registerBusinessDomainHandlers(config) {
       phone: e.phone,
       email: e.email,
       roleKey: e.role_key || "cashier",
+      isOwner: (e.role_key || "cashier") === "owner",
       permissions: e.permissions_json ? JSON.parse(e.permissions_json) : void 0
     }));
   });
   electron.ipcMain.handle("business:set-person-role", (_e, employeeId, roleKey) => {
     if (!canManageTeam()) throw new Error("You do not have permission to manage team roles");
-    const r = getBuiltinRole(roleKey);
+    let name = getBuiltinRole(roleKey)?.name;
+    if (!name) {
+      const custom = dbProxy.prepare("SELECT name FROM business_roles WHERE id = ? AND businessId = ? AND isSystem = 0 AND is_deleted = 0").get(roleKey, bizId());
+      if (!custom) throw new Error(`Unknown role: ${roleKey}`);
+      name = custom.name;
+    }
     dbProxy.prepare("UPDATE employees SET role_key = ? WHERE id = ? AND businessId = ?").run(roleKey, employeeId, bizId());
-    config.audit("role.changed", "employee", employeeId, `Role -> ${r?.name ?? roleKey}`);
+    const projected = dbProxy.prepare("SELECT id, isOwner FROM users WHERE sourceType = ? AND sourceId = ?").get("employee", employeeId);
+    if (projected && roleKey === "owner" !== !!projected.isOwner) {
+      dbProxy.prepare("UPDATE users SET isOwner = ?, role = ?, roleName = ?, permissions = ?, updated_at = ? WHERE id = ?").run(roleKey === "owner" ? 1 : 0, roleKey, name ?? "Owner", roleKey === "owner" ? JSON.stringify(DEFAULT_ROLE_SETS.owner) : projected.permissions ?? "{}", (/* @__PURE__ */ new Date()).toISOString(), projected.id);
+    }
+    config.audit("role.changed", "employee", employeeId, `Role -> ${name}`);
     return { ok: true };
   });
   electron.ipcMain.handle("business:set-person-active", (_e, employeeId, isActive) => {
     if (!canManageTeam()) throw new Error("You do not have permission to manage team members");
+    if (!isActive) {
+      const projected = dbProxy.prepare("SELECT id FROM users WHERE sourceType = ? AND sourceId = ? AND isOwner = 1 AND isActive = 1 AND is_deleted = 0").get("employee", employeeId);
+      if (projected) {
+        const remaining = dbProxy.prepare("SELECT COUNT(*) AS c FROM users WHERE isOwner = 1 AND isActive = 1 AND is_deleted = 0 AND businessId = ? AND id != ?").get(bizId(), projected.id).c;
+        if (remaining === 0) throw new Error("Cannot deactivate the last owner of this business. Promote another owner first.");
+      }
+    }
     dbProxy.prepare("UPDATE employees SET isActive = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(isActive ? 1 : 0, employeeId, bizId());
     config.audit("employee.changed", "employee", employeeId, `Set active = ${isActive}`);
     return { ok: true };
   });
   electron.ipcMain.handle("business:get-user", () => {
-    return { role: "admin", isOwner: config.isOwnerOrSuper() };
+    const role = config.getUserRole() || "cashier";
+    return { role, isOwner: config.isOwnerOrSuper() || role === "owner" };
   });
 }
+const create$4 = () => /* @__PURE__ */ new Map();
+const copy = (m) => {
+  const r = create$4();
+  m.forEach((v, k) => {
+    r.set(k, v);
+  });
+  return r;
+};
+const setIfUndefined = (map, key, createT) => {
+  let set = map.get(key);
+  if (set === void 0) {
+    map.set(key, set = createT());
+  }
+  return set;
+};
+const any = (m, f) => {
+  for (const [key, value] of m) {
+    if (f(value, key)) {
+      return true;
+    }
+  }
+  return false;
+};
+const create$3 = () => /* @__PURE__ */ new Set();
+const last = (arr) => arr[arr.length - 1];
+const appendTo = (dest, src) => {
+  for (let i = 0; i < src.length; i++) {
+    dest.push(src[i]);
+  }
+};
+const from = Array.from;
+const isArray = Array.isArray;
+class ObservableV22 {
+  constructor() {
+    this._observers = create$4();
+  }
+  /**
+   * @template {keyof EVENTS & string} NAME
+   * @param {NAME} name
+   * @param {EVENTS[NAME]} f
+   */
+  on(name, f) {
+    setIfUndefined(
+      this._observers,
+      /** @type {string} */
+      name,
+      create$3
+    ).add(f);
+    return f;
+  }
+  /**
+   * @template {keyof EVENTS & string} NAME
+   * @param {NAME} name
+   * @param {EVENTS[NAME]} f
+   */
+  once(name, f) {
+    const _f = (...args) => {
+      this.off(
+        name,
+        /** @type {any} */
+        _f
+      );
+      f(...args);
+    };
+    this.on(
+      name,
+      /** @type {any} */
+      _f
+    );
+  }
+  /**
+   * @template {keyof EVENTS & string} NAME
+   * @param {NAME} name
+   * @param {EVENTS[NAME]} f
+   */
+  off(name, f) {
+    const observers = this._observers.get(name);
+    if (observers !== void 0) {
+      observers.delete(f);
+      if (observers.size === 0) {
+        this._observers.delete(name);
+      }
+    }
+  }
+  /**
+   * Emit a named event. All registered event listeners that listen to the
+   * specified name will receive the event.
+   *
+   * @todo This should catch exceptions
+   *
+   * @template {keyof EVENTS & string} NAME
+   * @param {NAME} name The event name.
+   * @param {Parameters<EVENTS[NAME]>} args The arguments that are applied to the event listener.
+   */
+  emit(name, args) {
+    return from((this._observers.get(name) || create$4()).values()).forEach((f) => f(...args));
+  }
+  destroy() {
+    this._observers = create$4();
+  }
+}
+const floor = Math.floor;
+const abs = Math.abs;
+const min = (a, b) => a < b ? a : b;
+const max = (a, b) => a > b ? a : b;
+const isNegativeZero = (n) => n !== 0 ? n < 0 : 1 / n < 0;
+const BIT1 = 1;
+const BIT2 = 2;
+const BIT3 = 4;
+const BIT4 = 8;
+const BIT6 = 32;
+const BIT7 = 64;
+const BIT8 = 128;
+const BITS5 = 31;
+const BITS6 = 63;
+const BITS7 = 127;
+const BITS31 = 2147483647;
+const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
+const isInteger = Number.isInteger || ((num) => typeof num === "number" && isFinite(num) && floor(num) === num);
+const toLowerCase = (s) => s.toLowerCase();
+const trimLeftRegex = /^\s*/g;
+const trimLeft = (s) => s.replace(trimLeftRegex, "");
+const fromCamelCaseRegex = /([A-Z])/g;
+const fromCamelCase = (s, separator) => trimLeft(s.replace(fromCamelCaseRegex, (match) => `${separator}${toLowerCase(match)}`));
+const _encodeUtf8Polyfill = (str) => {
+  const encodedString = unescape(encodeURIComponent(str));
+  const len = encodedString.length;
+  const buf = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    buf[i] = /** @type {number} */
+    encodedString.codePointAt(i);
+  }
+  return buf;
+};
+const utf8TextEncoder = (
+  /** @type {TextEncoder} */
+  typeof TextEncoder !== "undefined" ? new TextEncoder() : null
+);
+const _encodeUtf8Native = (str) => utf8TextEncoder.encode(str);
+const encodeUtf8 = utf8TextEncoder ? _encodeUtf8Native : _encodeUtf8Polyfill;
+let utf8TextDecoder = typeof TextDecoder === "undefined" ? null : new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+if (utf8TextDecoder && utf8TextDecoder.decode(new Uint8Array()).length === 1) {
+  utf8TextDecoder = null;
+}
+class Encoder2 {
+  constructor() {
+    this.cpos = 0;
+    this.cbuf = new Uint8Array(100);
+    this.bufs = [];
+  }
+}
+const createEncoder = () => new Encoder2();
+const length = (encoder) => {
+  let len = encoder.cpos;
+  for (let i = 0; i < encoder.bufs.length; i++) {
+    len += encoder.bufs[i].length;
+  }
+  return len;
+};
+const toUint8Array = (encoder) => {
+  const uint8arr = new Uint8Array(length(encoder));
+  let curPos = 0;
+  for (let i = 0; i < encoder.bufs.length; i++) {
+    const d = encoder.bufs[i];
+    uint8arr.set(d, curPos);
+    curPos += d.length;
+  }
+  uint8arr.set(new Uint8Array(encoder.cbuf.buffer, 0, encoder.cpos), curPos);
+  return uint8arr;
+};
+const verifyLen = (encoder, len) => {
+  const bufferLen = encoder.cbuf.length;
+  if (bufferLen - encoder.cpos < len) {
+    encoder.bufs.push(new Uint8Array(encoder.cbuf.buffer, 0, encoder.cpos));
+    encoder.cbuf = new Uint8Array(max(bufferLen, len) * 2);
+    encoder.cpos = 0;
+  }
+};
+const write = (encoder, num) => {
+  const bufferLen = encoder.cbuf.length;
+  if (encoder.cpos === bufferLen) {
+    encoder.bufs.push(encoder.cbuf);
+    encoder.cbuf = new Uint8Array(bufferLen * 2);
+    encoder.cpos = 0;
+  }
+  encoder.cbuf[encoder.cpos++] = num;
+};
+const writeUint8 = write;
+const writeVarUint = (encoder, num) => {
+  while (num > BITS7) {
+    write(encoder, BIT8 | BITS7 & num);
+    num = floor(num / 128);
+  }
+  write(encoder, BITS7 & num);
+};
+const writeVarInt = (encoder, num) => {
+  const isNegative = isNegativeZero(num);
+  if (isNegative) {
+    num = -num;
+  }
+  write(encoder, (num > BITS6 ? BIT8 : 0) | (isNegative ? BIT7 : 0) | BITS6 & num);
+  num = floor(num / 64);
+  while (num > 0) {
+    write(encoder, (num > BITS7 ? BIT8 : 0) | BITS7 & num);
+    num = floor(num / 128);
+  }
+};
+const _strBuffer = new Uint8Array(3e4);
+const _maxStrBSize = _strBuffer.length / 3;
+const _writeVarStringNative = (encoder, str) => {
+  if (str.length < _maxStrBSize) {
+    const written = utf8TextEncoder.encodeInto(str, _strBuffer).written || 0;
+    writeVarUint(encoder, written);
+    for (let i = 0; i < written; i++) {
+      write(encoder, _strBuffer[i]);
+    }
+  } else {
+    writeVarUint8Array(encoder, encodeUtf8(str));
+  }
+};
+const _writeVarStringPolyfill = (encoder, str) => {
+  const encodedString = unescape(encodeURIComponent(str));
+  const len = encodedString.length;
+  writeVarUint(encoder, len);
+  for (let i = 0; i < len; i++) {
+    write(
+      encoder,
+      /** @type {number} */
+      encodedString.codePointAt(i)
+    );
+  }
+};
+const writeVarString = utf8TextEncoder && /** @type {any} */
+utf8TextEncoder.encodeInto ? _writeVarStringNative : _writeVarStringPolyfill;
+const writeUint8Array = (encoder, uint8Array) => {
+  const bufferLen = encoder.cbuf.length;
+  const cpos = encoder.cpos;
+  const leftCopyLen = min(bufferLen - cpos, uint8Array.length);
+  const rightCopyLen = uint8Array.length - leftCopyLen;
+  encoder.cbuf.set(uint8Array.subarray(0, leftCopyLen), cpos);
+  encoder.cpos += leftCopyLen;
+  if (rightCopyLen > 0) {
+    encoder.bufs.push(encoder.cbuf);
+    encoder.cbuf = new Uint8Array(max(bufferLen * 2, rightCopyLen));
+    encoder.cbuf.set(uint8Array.subarray(leftCopyLen));
+    encoder.cpos = rightCopyLen;
+  }
+};
+const writeVarUint8Array = (encoder, uint8Array) => {
+  writeVarUint(encoder, uint8Array.byteLength);
+  writeUint8Array(encoder, uint8Array);
+};
+const writeOnDataView = (encoder, len) => {
+  verifyLen(encoder, len);
+  const dview = new DataView(encoder.cbuf.buffer, encoder.cpos, len);
+  encoder.cpos += len;
+  return dview;
+};
+const writeFloat32 = (encoder, num) => writeOnDataView(encoder, 4).setFloat32(0, num, false);
+const writeFloat64 = (encoder, num) => writeOnDataView(encoder, 8).setFloat64(0, num, false);
+const writeBigInt64 = (encoder, num) => (
+  /** @type {any} */
+  writeOnDataView(encoder, 8).setBigInt64(0, num, false)
+);
+const floatTestBed = new DataView(new ArrayBuffer(4));
+const isFloat32 = (num) => {
+  floatTestBed.setFloat32(0, num);
+  return floatTestBed.getFloat32(0) === num;
+};
+const writeAny = (encoder, data) => {
+  switch (typeof data) {
+    case "string":
+      write(encoder, 119);
+      writeVarString(encoder, data);
+      break;
+    case "number":
+      if (isInteger(data) && abs(data) <= BITS31) {
+        write(encoder, 125);
+        writeVarInt(encoder, data);
+      } else if (isFloat32(data)) {
+        write(encoder, 124);
+        writeFloat32(encoder, data);
+      } else {
+        write(encoder, 123);
+        writeFloat64(encoder, data);
+      }
+      break;
+    case "bigint":
+      write(encoder, 122);
+      writeBigInt64(encoder, data);
+      break;
+    case "object":
+      if (data === null) {
+        write(encoder, 126);
+      } else if (isArray(data)) {
+        write(encoder, 117);
+        writeVarUint(encoder, data.length);
+        for (let i = 0; i < data.length; i++) {
+          writeAny(encoder, data[i]);
+        }
+      } else if (data instanceof Uint8Array) {
+        write(encoder, 116);
+        writeVarUint8Array(encoder, data);
+      } else {
+        write(encoder, 118);
+        const keys2 = Object.keys(data);
+        writeVarUint(encoder, keys2.length);
+        for (let i = 0; i < keys2.length; i++) {
+          const key = keys2[i];
+          writeVarString(encoder, key);
+          writeAny(encoder, data[key]);
+        }
+      }
+      break;
+    case "boolean":
+      write(encoder, data ? 120 : 121);
+      break;
+    default:
+      write(encoder, 127);
+  }
+};
+class RleEncoder2 extends Encoder2 {
+  /**
+   * @param {function(Encoder, T):void} writer
+   */
+  constructor(writer) {
+    super();
+    this.w = writer;
+    this.s = null;
+    this.count = 0;
+  }
+  /**
+   * @param {T} v
+   */
+  write(v) {
+    if (this.s === v) {
+      this.count++;
+    } else {
+      if (this.count > 0) {
+        writeVarUint(this, this.count - 1);
+      }
+      this.count = 1;
+      this.w(this, v);
+      this.s = v;
+    }
+  }
+}
+const flushUintOptRleEncoder = (encoder) => {
+  if (encoder.count > 0) {
+    writeVarInt(encoder.encoder, encoder.count === 1 ? encoder.s : -encoder.s);
+    if (encoder.count > 1) {
+      writeVarUint(encoder.encoder, encoder.count - 2);
+    }
+  }
+};
+class UintOptRleEncoder2 {
+  constructor() {
+    this.encoder = new Encoder2();
+    this.s = 0;
+    this.count = 0;
+  }
+  /**
+   * @param {number} v
+   */
+  write(v) {
+    if (this.s === v) {
+      this.count++;
+    } else {
+      flushUintOptRleEncoder(this);
+      this.count = 1;
+      this.s = v;
+    }
+  }
+  /**
+   * Flush the encoded state and transform this to a Uint8Array.
+   *
+   * Note that this should only be called once.
+   */
+  toUint8Array() {
+    flushUintOptRleEncoder(this);
+    return toUint8Array(this.encoder);
+  }
+}
+const flushIntDiffOptRleEncoder = (encoder) => {
+  if (encoder.count > 0) {
+    const encodedDiff = encoder.diff * 2 + (encoder.count === 1 ? 0 : 1);
+    writeVarInt(encoder.encoder, encodedDiff);
+    if (encoder.count > 1) {
+      writeVarUint(encoder.encoder, encoder.count - 2);
+    }
+  }
+};
+class IntDiffOptRleEncoder2 {
+  constructor() {
+    this.encoder = new Encoder2();
+    this.s = 0;
+    this.count = 0;
+    this.diff = 0;
+  }
+  /**
+   * @param {number} v
+   */
+  write(v) {
+    if (this.diff === v - this.s) {
+      this.s = v;
+      this.count++;
+    } else {
+      flushIntDiffOptRleEncoder(this);
+      this.count = 1;
+      this.diff = v - this.s;
+      this.s = v;
+    }
+  }
+  /**
+   * Flush the encoded state and transform this to a Uint8Array.
+   *
+   * Note that this should only be called once.
+   */
+  toUint8Array() {
+    flushIntDiffOptRleEncoder(this);
+    return toUint8Array(this.encoder);
+  }
+}
+class StringEncoder2 {
+  constructor() {
+    this.sarr = [];
+    this.s = "";
+    this.lensE = new UintOptRleEncoder2();
+  }
+  /**
+   * @param {string} string
+   */
+  write(string) {
+    this.s += string;
+    if (this.s.length > 19) {
+      this.sarr.push(this.s);
+      this.s = "";
+    }
+    this.lensE.write(string.length);
+  }
+  toUint8Array() {
+    const encoder = new Encoder2();
+    this.sarr.push(this.s);
+    this.s = "";
+    writeVarString(encoder, this.sarr.join(""));
+    writeUint8Array(encoder, this.lensE.toUint8Array());
+    return toUint8Array(encoder);
+  }
+}
+const create$2 = (s) => new Error(s);
+const methodUnimplemented = () => {
+  throw create$2("Method unimplemented");
+};
+const unexpectedCase = () => {
+  throw create$2("Unexpected case");
+};
+const errorUnexpectedEndOfArray = create$2("Unexpected end of array");
+const errorIntegerOutOfRange = create$2("Integer out of Range");
+class Decoder2 {
+  /**
+   * @param {Uint8Array<Buf>} uint8Array Binary data to decode
+   */
+  constructor(uint8Array) {
+    this.arr = uint8Array;
+    this.pos = 0;
+  }
+}
+const createDecoder = (uint8Array) => new Decoder2(uint8Array);
+const hasContent = (decoder) => decoder.pos !== decoder.arr.length;
+const readUint8Array = (decoder, len) => {
+  const view = new Uint8Array(decoder.arr.buffer, decoder.pos + decoder.arr.byteOffset, len);
+  decoder.pos += len;
+  return view;
+};
+const readVarUint8Array = (decoder) => readUint8Array(decoder, readVarUint(decoder));
+const readUint8 = (decoder) => decoder.arr[decoder.pos++];
+const readVarUint = (decoder) => {
+  let num = 0;
+  let mult = 1;
+  const len = decoder.arr.length;
+  while (decoder.pos < len) {
+    const r = decoder.arr[decoder.pos++];
+    num = num + (r & BITS7) * mult;
+    mult *= 128;
+    if (r < BIT8) {
+      return num;
+    }
+    if (num > MAX_SAFE_INTEGER) {
+      throw errorIntegerOutOfRange;
+    }
+  }
+  throw errorUnexpectedEndOfArray;
+};
+const readVarInt = (decoder) => {
+  let r = decoder.arr[decoder.pos++];
+  let num = r & BITS6;
+  let mult = 64;
+  const sign = (r & BIT7) > 0 ? -1 : 1;
+  if ((r & BIT8) === 0) {
+    return sign * num;
+  }
+  const len = decoder.arr.length;
+  while (decoder.pos < len) {
+    r = decoder.arr[decoder.pos++];
+    num = num + (r & BITS7) * mult;
+    mult *= 128;
+    if (r < BIT8) {
+      return sign * num;
+    }
+    if (num > MAX_SAFE_INTEGER) {
+      throw errorIntegerOutOfRange;
+    }
+  }
+  throw errorUnexpectedEndOfArray;
+};
+const _readVarStringPolyfill = (decoder) => {
+  let remainingLen = readVarUint(decoder);
+  if (remainingLen === 0) {
+    return "";
+  } else {
+    let encodedString = String.fromCodePoint(readUint8(decoder));
+    if (--remainingLen < 100) {
+      while (remainingLen--) {
+        encodedString += String.fromCodePoint(readUint8(decoder));
+      }
+    } else {
+      while (remainingLen > 0) {
+        const nextLen = remainingLen < 1e4 ? remainingLen : 1e4;
+        const bytes = decoder.arr.subarray(decoder.pos, decoder.pos + nextLen);
+        decoder.pos += nextLen;
+        encodedString += String.fromCodePoint.apply(
+          null,
+          /** @type {any} */
+          bytes
+        );
+        remainingLen -= nextLen;
+      }
+    }
+    return decodeURIComponent(escape(encodedString));
+  }
+};
+const _readVarStringNative = (decoder) => (
+  /** @type any */
+  utf8TextDecoder.decode(readVarUint8Array(decoder))
+);
+const readVarString = utf8TextDecoder ? _readVarStringNative : _readVarStringPolyfill;
+const readFromDataView = (decoder, len) => {
+  const dv = new DataView(decoder.arr.buffer, decoder.arr.byteOffset + decoder.pos, len);
+  decoder.pos += len;
+  return dv;
+};
+const readFloat32 = (decoder) => readFromDataView(decoder, 4).getFloat32(0, false);
+const readFloat64 = (decoder) => readFromDataView(decoder, 8).getFloat64(0, false);
+const readBigInt64 = (decoder) => (
+  /** @type {any} */
+  readFromDataView(decoder, 8).getBigInt64(0, false)
+);
+const readAnyLookupTable = [
+  (decoder) => void 0,
+  // CASE 127: undefined
+  (decoder) => null,
+  // CASE 126: null
+  readVarInt,
+  // CASE 125: integer
+  readFloat32,
+  // CASE 124: float32
+  readFloat64,
+  // CASE 123: float64
+  readBigInt64,
+  // CASE 122: bigint
+  (decoder) => false,
+  // CASE 121: boolean (false)
+  (decoder) => true,
+  // CASE 120: boolean (true)
+  readVarString,
+  // CASE 119: string
+  (decoder) => {
+    const len = readVarUint(decoder);
+    const obj = {};
+    for (let i = 0; i < len; i++) {
+      const key = readVarString(decoder);
+      obj[key] = readAny(decoder);
+    }
+    return obj;
+  },
+  (decoder) => {
+    const len = readVarUint(decoder);
+    const arr = [];
+    for (let i = 0; i < len; i++) {
+      arr.push(readAny(decoder));
+    }
+    return arr;
+  },
+  readVarUint8Array
+  // CASE 116: Uint8Array
+];
+const readAny = (decoder) => readAnyLookupTable[127 - readUint8(decoder)](decoder);
+class RleDecoder2 extends Decoder2 {
+  /**
+   * @param {Uint8Array} uint8Array
+   * @param {function(Decoder):T} reader
+   */
+  constructor(uint8Array, reader) {
+    super(uint8Array);
+    this.reader = reader;
+    this.s = null;
+    this.count = 0;
+  }
+  read() {
+    if (this.count === 0) {
+      this.s = this.reader(this);
+      if (hasContent(this)) {
+        this.count = readVarUint(this) + 1;
+      } else {
+        this.count = -1;
+      }
+    }
+    this.count--;
+    return (
+      /** @type {T} */
+      this.s
+    );
+  }
+}
+class UintOptRleDecoder2 extends Decoder2 {
+  /**
+   * @param {Uint8Array} uint8Array
+   */
+  constructor(uint8Array) {
+    super(uint8Array);
+    this.s = 0;
+    this.count = 0;
+  }
+  read() {
+    if (this.count === 0) {
+      this.s = readVarInt(this);
+      const isNegative = isNegativeZero(this.s);
+      this.count = 1;
+      if (isNegative) {
+        this.s = -this.s;
+        this.count = readVarUint(this) + 2;
+      }
+    }
+    this.count--;
+    return (
+      /** @type {number} */
+      this.s
+    );
+  }
+}
+class IntDiffOptRleDecoder2 extends Decoder2 {
+  /**
+   * @param {Uint8Array} uint8Array
+   */
+  constructor(uint8Array) {
+    super(uint8Array);
+    this.s = 0;
+    this.count = 0;
+    this.diff = 0;
+  }
+  /**
+   * @return {number}
+   */
+  read() {
+    if (this.count === 0) {
+      const diff = readVarInt(this);
+      const hasCount = diff & 1;
+      this.diff = floor(diff / 2);
+      this.count = 1;
+      if (hasCount) {
+        this.count = readVarUint(this) + 2;
+      }
+    }
+    this.s += this.diff;
+    this.count--;
+    return this.s;
+  }
+}
+class StringDecoder2 {
+  /**
+   * @param {Uint8Array} uint8Array
+   */
+  constructor(uint8Array) {
+    this.decoder = new UintOptRleDecoder2(uint8Array);
+    this.str = readVarString(this.decoder);
+    this.spos = 0;
+  }
+  /**
+   * @return {string}
+   */
+  read() {
+    const end = this.spos + this.decoder.read();
+    const res = this.str.slice(this.spos, end);
+    this.spos = end;
+    return res;
+  }
+}
+node_crypto.webcrypto.subtle;
+const getRandomValues = (
+  /** @type {any} */
+  node_crypto.webcrypto.getRandomValues.bind(node_crypto.webcrypto)
+);
+const uint32 = () => getRandomValues(new Uint32Array(1))[0];
+const uuidv4Template = "10000000-1000-4000-8000" + -1e11;
+const uuidv4 = () => uuidv4Template.replace(
+  /[018]/g,
+  /** @param {number} c */
+  (c) => (c ^ uint32() & 15 >> c / 4).toString(16)
+);
+const create$1 = (f) => (
+  /** @type {Promise<T>} */
+  new Promise(f)
+);
+Promise.all.bind(Promise);
+const undefinedToNull = (v) => v === void 0 ? null : v;
+class VarStoragePolyfill2 {
+  constructor() {
+    this.map = /* @__PURE__ */ new Map();
+  }
+  /**
+   * @param {string} key
+   * @param {any} newValue
+   */
+  setItem(key, newValue) {
+    this.map.set(key, newValue);
+  }
+  /**
+   * @param {string} key
+   */
+  getItem(key) {
+    return this.map.get(key);
+  }
+}
+let _localStorage = new VarStoragePolyfill2();
+let usePolyfill = true;
+try {
+  if (typeof localStorage !== "undefined" && localStorage) {
+    _localStorage = localStorage;
+    usePolyfill = false;
+  }
+} catch (e) {
+}
+const varStorage = _localStorage;
+const EqualityTraitSymbol = Symbol("Equality");
+const equals = (a, b) => a === b || !!a?.[EqualityTraitSymbol]?.(b) || false;
+const assign = Object.assign;
+const keys = Object.keys;
+const forEach = (obj, f) => {
+  for (const key in obj) {
+    f(obj[key], key);
+  }
+};
+const size = (obj) => keys(obj).length;
+const isEmpty = (obj) => {
+  for (const _k in obj) {
+    return false;
+  }
+  return true;
+};
+const every = (obj, f) => {
+  for (const key in obj) {
+    if (!f(obj[key], key)) {
+      return false;
+    }
+  }
+  return true;
+};
+const hasProperty = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+const equalFlat = (a, b) => a === b || size(a) === size(b) && every(a, (val, key) => (val !== void 0 || hasProperty(b, key)) && equals(b[key], val));
+const freeze = Object.freeze;
+const deepFreeze = (o) => {
+  for (const key in o) {
+    const c = o[key];
+    if (typeof c === "object" || typeof c === "function") {
+      deepFreeze(o[key]);
+    }
+  }
+  return freeze(o);
+};
+const callAll = (fs2, args, i = 0) => {
+  try {
+    for (; i < fs2.length; i++) {
+      fs2[i](...args);
+    }
+  } finally {
+    if (i < fs2.length) {
+      callAll(fs2, args, i + 1);
+    }
+  }
+};
+const isOneOf = (value, options) => options.includes(value);
+const isNode = typeof process !== "undefined" && process.release && /node|io\.js/.test(process.release.name) && Object.prototype.toString.call(typeof process !== "undefined" ? process : 0) === "[object process]";
+let params;
+const computeParams = () => {
+  if (params === void 0) {
+    if (isNode) {
+      params = create$4();
+      const pargs = process.argv;
+      let currParamName = null;
+      for (let i = 0; i < pargs.length; i++) {
+        const parg = pargs[i];
+        if (parg[0] === "-") {
+          if (currParamName !== null) {
+            params.set(currParamName, "");
+          }
+          currParamName = parg;
+        } else {
+          if (currParamName !== null) {
+            params.set(currParamName, parg);
+            currParamName = null;
+          }
+        }
+      }
+      if (currParamName !== null) {
+        params.set(currParamName, "");
+      }
+    } else if (typeof location === "object") {
+      params = create$4();
+      (location.search || "?").slice(1).split("&").forEach((kv) => {
+        if (kv.length !== 0) {
+          const [key, value] = kv.split("=");
+          params.set(`--${fromCamelCase(key, "-")}`, value);
+          params.set(`-${fromCamelCase(key, "-")}`, value);
+        }
+      });
+    } else {
+      params = create$4();
+    }
+  }
+  return params;
+};
+const hasParam = (name) => computeParams().has(name);
+const getVariable = (name) => isNode ? undefinedToNull(process.env[name.toUpperCase().replaceAll("-", "_")]) : undefinedToNull(varStorage.getItem(name));
+const hasConf = (name) => hasParam("--" + name) || getVariable(name) !== null;
+hasConf("production");
+const forceColor = isNode && isOneOf(process.env.FORCE_COLOR, ["true", "1", "2"]);
+const supportsColor = forceColor || !hasParam("--no-colors") && // @todo deprecate --no-colors
+!hasConf("no-color") && (!isNode || process.stdout.isTTY) && (!isNode || hasParam("--color") || getVariable("COLORTERM") !== null || (getVariable("TERM") || "").includes("color"));
+const createUint8ArrayFromLen = (len) => new Uint8Array(len);
+const copyUint8Array = (uint8Array) => {
+  const newBuf = createUint8ArrayFromLen(uint8Array.byteLength);
+  newBuf.set(uint8Array);
+  return newBuf;
+};
+const create = Symbol;
+const BOLD = create();
+const UNBOLD = create();
+const BLUE = create();
+const GREY = create();
+const GREEN = create();
+const RED = create();
+const PURPLE = create();
+const ORANGE = create();
+const UNCOLOR = create();
+const computeNoColorLoggingArgs = (args) => {
+  if (args.length === 1 && args[0]?.constructor === Function) {
+    args = /** @type {Array<string|Symbol|Object|number>} */
+    /** @type {[function]} */
+    args[0]();
+  }
+  const strBuilder = [];
+  const logArgs = [];
+  let i = 0;
+  for (; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === void 0) {
+      break;
+    } else if (arg.constructor === String || arg.constructor === Number) {
+      strBuilder.push(arg);
+    } else if (arg.constructor === Object) {
+      break;
+    }
+  }
+  if (i > 0) {
+    logArgs.push(strBuilder.join(""));
+  }
+  for (; i < args.length; i++) {
+    const arg = args[i];
+    if (!(arg instanceof Symbol)) {
+      logArgs.push(arg);
+    }
+  }
+  return logArgs;
+};
+const _nodeStyleMap = {
+  [BOLD]: "\x1B[1m",
+  [UNBOLD]: "\x1B[2m",
+  [BLUE]: "\x1B[34m",
+  [GREEN]: "\x1B[32m",
+  [GREY]: "\x1B[37m",
+  [RED]: "\x1B[31m",
+  [PURPLE]: "\x1B[35m",
+  [ORANGE]: "\x1B[38;5;208m",
+  [UNCOLOR]: "\x1B[0m"
+};
+const computeNodeLoggingArgs = (args) => {
+  if (args.length === 1 && args[0]?.constructor === Function) {
+    args = /** @type {Array<string|Symbol|Object|number>} */
+    /** @type {[function]} */
+    args[0]();
+  }
+  const strBuilder = [];
+  const logArgs = [];
+  let i = 0;
+  for (; i < args.length; i++) {
+    const arg = args[i];
+    const style = _nodeStyleMap[arg];
+    if (style !== void 0) {
+      strBuilder.push(style);
+    } else {
+      if (arg === void 0) {
+        break;
+      } else if (arg.constructor === String || arg.constructor === Number) {
+        strBuilder.push(arg);
+      } else {
+        break;
+      }
+    }
+  }
+  if (i > 0) {
+    strBuilder.push("\x1B[0m");
+    logArgs.push(strBuilder.join(""));
+  }
+  for (; i < args.length; i++) {
+    const arg = args[i];
+    if (!(arg instanceof Symbol)) {
+      logArgs.push(arg);
+    }
+  }
+  return logArgs;
+};
+const computeLoggingArgs = supportsColor ? computeNodeLoggingArgs : computeNoColorLoggingArgs;
+const print = (...args) => {
+  console.log(...computeLoggingArgs(args));
+};
+const warn = (...args) => {
+  console.warn(...computeLoggingArgs(args));
+};
+const createIterator = (next) => ({
+  /**
+   * @return {IterableIterator<T>}
+   */
+  [Symbol.iterator]() {
+    return this;
+  },
+  // @ts-ignore
+  next
+});
+const iteratorFilter = (iterator, filter) => createIterator(() => {
+  let res;
+  do {
+    res = iterator.next();
+  } while (!res.done && !filter(res.value));
+  return res;
+});
+const iteratorMap = (iterator, fmap) => createIterator(() => {
+  const { done, value } = iterator.next();
+  return { done, value: done ? void 0 : fmap(value) };
+});
+class DeleteItem2 {
+  /**
+   * @param {number} clock
+   * @param {number} len
+   */
+  constructor(clock, len) {
+    this.clock = clock;
+    this.len = len;
+  }
+}
+class DeleteSet2 {
+  constructor() {
+    this.clients = /* @__PURE__ */ new Map();
+  }
+}
+const iterateDeletedStructs = (transaction, ds, f) => ds.clients.forEach((deletes, clientid) => {
+  const structs = (
+    /** @type {Array<GC|Item>} */
+    transaction.doc.store.clients.get(clientid)
+  );
+  if (structs != null) {
+    const lastStruct = structs[structs.length - 1];
+    const clockState = lastStruct.id.clock + lastStruct.length;
+    for (let i = 0, del = deletes[i]; i < deletes.length && del.clock < clockState; del = deletes[++i]) {
+      iterateStructs(transaction, structs, del.clock, del.len, f);
+    }
+  }
+});
+const findIndexDS = (dis, clock) => {
+  let left = 0;
+  let right = dis.length - 1;
+  while (left <= right) {
+    const midindex = floor((left + right) / 2);
+    const mid = dis[midindex];
+    const midclock = mid.clock;
+    if (midclock <= clock) {
+      if (clock < midclock + mid.len) {
+        return midindex;
+      }
+      left = midindex + 1;
+    } else {
+      right = midindex - 1;
+    }
+  }
+  return null;
+};
+const isDeleted = (ds, id2) => {
+  const dis = ds.clients.get(id2.client);
+  return dis !== void 0 && findIndexDS(dis, id2.clock) !== null;
+};
+const sortAndMergeDeleteSet = (ds) => {
+  ds.clients.forEach((dels) => {
+    dels.sort((a, b) => a.clock - b.clock);
+    let i, j;
+    for (i = 1, j = 1; i < dels.length; i++) {
+      const left = dels[j - 1];
+      const right = dels[i];
+      if (left.clock + left.len >= right.clock) {
+        dels[j - 1] = new DeleteItem2(left.clock, max(left.len, right.clock + right.len - left.clock));
+      } else {
+        if (j < i) {
+          dels[j] = right;
+        }
+        j++;
+      }
+    }
+    dels.length = j;
+  });
+};
+const mergeDeleteSets = (dss) => {
+  const merged = new DeleteSet2();
+  for (let dssI = 0; dssI < dss.length; dssI++) {
+    dss[dssI].clients.forEach((delsLeft, client) => {
+      if (!merged.clients.has(client)) {
+        const dels = delsLeft.slice();
+        for (let i = dssI + 1; i < dss.length; i++) {
+          appendTo(dels, dss[i].clients.get(client) || []);
+        }
+        merged.clients.set(client, dels);
+      }
+    });
+  }
+  sortAndMergeDeleteSet(merged);
+  return merged;
+};
+const addToDeleteSet = (ds, client, clock, length2) => {
+  setIfUndefined(ds.clients, client, () => (
+    /** @type {Array<DeleteItem>} */
+    []
+  )).push(new DeleteItem2(clock, length2));
+};
+const writeDeleteSet = (encoder, ds) => {
+  writeVarUint(encoder.restEncoder, ds.clients.size);
+  from(ds.clients.entries()).sort((a, b) => b[0] - a[0]).forEach(([client, dsitems]) => {
+    encoder.resetDsCurVal();
+    writeVarUint(encoder.restEncoder, client);
+    const len = dsitems.length;
+    writeVarUint(encoder.restEncoder, len);
+    for (let i = 0; i < len; i++) {
+      const item = dsitems[i];
+      encoder.writeDsClock(item.clock);
+      encoder.writeDsLen(item.len);
+    }
+  });
+};
+const readDeleteSet = (decoder) => {
+  const ds = new DeleteSet2();
+  const numClients = readVarUint(decoder.restDecoder);
+  for (let i = 0; i < numClients; i++) {
+    decoder.resetDsCurVal();
+    const client = readVarUint(decoder.restDecoder);
+    const numberOfDeletes = readVarUint(decoder.restDecoder);
+    if (numberOfDeletes > 0) {
+      const dsField = setIfUndefined(ds.clients, client, () => (
+        /** @type {Array<DeleteItem>} */
+        []
+      ));
+      for (let i2 = 0; i2 < numberOfDeletes; i2++) {
+        dsField.push(new DeleteItem2(decoder.readDsClock(), decoder.readDsLen()));
+      }
+    }
+  }
+  return ds;
+};
+const readAndApplyDeleteSet = (decoder, transaction, store) => {
+  const unappliedDS = new DeleteSet2();
+  const numClients = readVarUint(decoder.restDecoder);
+  for (let i = 0; i < numClients; i++) {
+    decoder.resetDsCurVal();
+    const client = readVarUint(decoder.restDecoder);
+    const numberOfDeletes = readVarUint(decoder.restDecoder);
+    const structs = store.clients.get(client) || [];
+    const state = getState(store, client);
+    for (let i2 = 0; i2 < numberOfDeletes; i2++) {
+      const clock = decoder.readDsClock();
+      const clockEnd = clock + decoder.readDsLen();
+      if (clock < state) {
+        if (state < clockEnd) {
+          addToDeleteSet(unappliedDS, client, state, clockEnd - state);
+        }
+        let index = findIndexSS(structs, clock);
+        let struct = structs[index];
+        if (!struct.deleted && struct.id.clock < clock) {
+          structs.splice(index + 1, 0, splitItem(transaction, struct, clock - struct.id.clock));
+          index++;
+        }
+        while (index < structs.length) {
+          struct = structs[index++];
+          if (struct.id.clock < clockEnd) {
+            if (!struct.deleted) {
+              if (clockEnd < struct.id.clock + struct.length) {
+                structs.splice(index, 0, splitItem(transaction, struct, clockEnd - struct.id.clock));
+              }
+              struct.delete(transaction);
+            }
+          } else {
+            break;
+          }
+        }
+      } else {
+        addToDeleteSet(unappliedDS, client, clock, clockEnd - clock);
+      }
+    }
+  }
+  if (unappliedDS.clients.size > 0) {
+    const ds = new UpdateEncoderV22();
+    writeVarUint(ds.restEncoder, 0);
+    writeDeleteSet(ds, unappliedDS);
+    return ds.toUint8Array();
+  }
+  return null;
+};
+const generateNewClientId = uint32;
+class Doc2 extends ObservableV22 {
+  /**
+   * @param {DocOpts} opts configuration
+   */
+  constructor({ guid = uuidv4(), collectionid = null, gc = true, gcFilter = () => true, meta = null, autoLoad = false, shouldLoad = true } = {}) {
+    super();
+    this.gc = gc;
+    this.gcFilter = gcFilter;
+    this.clientID = generateNewClientId();
+    this.guid = guid;
+    this.collectionid = collectionid;
+    this.share = /* @__PURE__ */ new Map();
+    this.store = new StructStore2();
+    this._transaction = null;
+    this._transactionCleanups = [];
+    this.subdocs = /* @__PURE__ */ new Set();
+    this._item = null;
+    this.shouldLoad = shouldLoad;
+    this.autoLoad = autoLoad;
+    this.meta = meta;
+    this.isLoaded = false;
+    this.isSynced = false;
+    this.isDestroyed = false;
+    this.whenLoaded = create$1((resolve) => {
+      this.on("load", () => {
+        this.isLoaded = true;
+        resolve(this);
+      });
+    });
+    const provideSyncedPromise = () => create$1((resolve) => {
+      const eventHandler = (isSynced) => {
+        if (isSynced === void 0 || isSynced === true) {
+          this.off("sync", eventHandler);
+          resolve();
+        }
+      };
+      this.on("sync", eventHandler);
+    });
+    this.on("sync", (isSynced) => {
+      if (isSynced === false && this.isSynced) {
+        this.whenSynced = provideSyncedPromise();
+      }
+      this.isSynced = isSynced === void 0 || isSynced === true;
+      if (this.isSynced && !this.isLoaded) {
+        this.emit("load", [this]);
+      }
+    });
+    this.whenSynced = provideSyncedPromise();
+  }
+  /**
+   * Notify the parent document that you request to load data into this subdocument (if it is a subdocument).
+   *
+   * `load()` might be used in the future to request any provider to load the most current data.
+   *
+   * It is safe to call `load()` multiple times.
+   */
+  load() {
+    const item = this._item;
+    if (item !== null && !this.shouldLoad) {
+      transact(
+        /** @type {any} */
+        item.parent.doc,
+        (transaction) => {
+          transaction.subdocsLoaded.add(this);
+        },
+        null,
+        true
+      );
+    }
+    this.shouldLoad = true;
+  }
+  getSubdocs() {
+    return this.subdocs;
+  }
+  getSubdocGuids() {
+    return new Set(from(this.subdocs).map((doc) => doc.guid));
+  }
+  /**
+   * Changes that happen inside of a transaction are bundled. This means that
+   * the observer fires _after_ the transaction is finished and that all changes
+   * that happened inside of the transaction are sent as one message to the
+   * other peers.
+   *
+   * @template T
+   * @param {function(Transaction):T} f The function that should be executed as a transaction
+   * @param {any} [origin] Origin of who started the transaction. Will be stored on transaction.origin
+   * @return T
+   *
+   * @public
+   */
+  transact(f, origin = null) {
+    return transact(this, f, origin);
+  }
+  /**
+   * Define a shared data type.
+   *
+   * Multiple calls of `ydoc.get(name, TypeConstructor)` yield the same result
+   * and do not overwrite each other. I.e.
+   * `ydoc.get(name, Y.Array) === ydoc.get(name, Y.Array)`
+   *
+   * After this method is called, the type is also available on `ydoc.share.get(name)`.
+   *
+   * *Best Practices:*
+   * Define all types right after the Y.Doc instance is created and store them in a separate object.
+   * Also use the typed methods `getText(name)`, `getArray(name)`, ..
+   *
+   * @template {typeof AbstractType<any>} Type
+   * @example
+   *   const ydoc = new Y.Doc(..)
+   *   const appState = {
+   *     document: ydoc.getText('document')
+   *     comments: ydoc.getArray('comments')
+   *   }
+   *
+   * @param {string} name
+   * @param {Type} TypeConstructor The constructor of the type definition. E.g. Y.Text, Y.Array, Y.Map, ...
+   * @return {InstanceType<Type>} The created type. Constructed with TypeConstructor
+   *
+   * @public
+   */
+  get(name, TypeConstructor = (
+    /** @type {any} */
+    AbstractType2
+  )) {
+    const type = setIfUndefined(this.share, name, () => {
+      const t = new TypeConstructor();
+      t._integrate(this, null);
+      return t;
+    });
+    const Constr = type.constructor;
+    if (TypeConstructor !== AbstractType2 && Constr !== TypeConstructor) {
+      if (Constr === AbstractType2) {
+        const t = new TypeConstructor();
+        t._map = type._map;
+        type._map.forEach(
+          /** @param {Item?} n */
+          (n) => {
+            for (; n !== null; n = n.left) {
+              n.parent = t;
+            }
+          }
+        );
+        t._start = type._start;
+        for (let n = t._start; n !== null; n = n.right) {
+          n.parent = t;
+        }
+        t._length = type._length;
+        this.share.set(name, t);
+        t._integrate(this, null);
+        return (
+          /** @type {InstanceType<Type>} */
+          t
+        );
+      } else {
+        throw new Error(`Type with the name ${name} has already been defined with a different constructor`);
+      }
+    }
+    return (
+      /** @type {InstanceType<Type>} */
+      type
+    );
+  }
+  /**
+   * @template T
+   * @param {string} [name]
+   * @return {YArray<T>}
+   *
+   * @public
+   */
+  getArray(name = "") {
+    return (
+      /** @type {YArray<T>} */
+      this.get(name, YArray2)
+    );
+  }
+  /**
+   * @param {string} [name]
+   * @return {YText}
+   *
+   * @public
+   */
+  getText(name = "") {
+    return this.get(name, YText2);
+  }
+  /**
+   * @template T
+   * @param {string} [name]
+   * @return {YMap<T>}
+   *
+   * @public
+   */
+  getMap(name = "") {
+    return (
+      /** @type {YMap<T>} */
+      this.get(name, YMap2)
+    );
+  }
+  /**
+   * @param {string} [name]
+   * @return {YXmlElement}
+   *
+   * @public
+   */
+  getXmlElement(name = "") {
+    return (
+      /** @type {YXmlElement<{[key:string]:string}>} */
+      this.get(name, YXmlElement2)
+    );
+  }
+  /**
+   * @param {string} [name]
+   * @return {YXmlFragment}
+   *
+   * @public
+   */
+  getXmlFragment(name = "") {
+    return this.get(name, YXmlFragment2);
+  }
+  /**
+   * Converts the entire document into a js object, recursively traversing each yjs type
+   * Doesn't log types that have not been defined (using ydoc.getType(..)).
+   *
+   * @deprecated Do not use this method and rather call toJSON directly on the shared types.
+   *
+   * @return {Object<string, any>}
+   */
+  toJSON() {
+    const doc = {};
+    this.share.forEach((value, key) => {
+      doc[key] = value.toJSON();
+    });
+    return doc;
+  }
+  /**
+   * Emit `destroy` event and unregister all event handlers.
+   */
+  destroy() {
+    this.isDestroyed = true;
+    from(this.subdocs).forEach((subdoc) => subdoc.destroy());
+    const item = this._item;
+    if (item !== null) {
+      this._item = null;
+      const content = (
+        /** @type {ContentDoc} */
+        item.content
+      );
+      content.doc = new Doc2({ guid: this.guid, ...content.opts, shouldLoad: false });
+      content.doc._item = item;
+      transact(
+        /** @type {any} */
+        item.parent.doc,
+        (transaction) => {
+          const doc = content.doc;
+          if (!item.deleted) {
+            transaction.subdocsAdded.add(doc);
+          }
+          transaction.subdocsRemoved.add(this);
+        },
+        null,
+        true
+      );
+    }
+    this.emit("destroyed", [true]);
+    this.emit("destroy", [this]);
+    super.destroy();
+  }
+}
+class DSDecoderV12 {
+  /**
+   * @param {decoding.Decoder} decoder
+   */
+  constructor(decoder) {
+    this.restDecoder = decoder;
+  }
+  resetDsCurVal() {
+  }
+  /**
+   * @return {number}
+   */
+  readDsClock() {
+    return readVarUint(this.restDecoder);
+  }
+  /**
+   * @return {number}
+   */
+  readDsLen() {
+    return readVarUint(this.restDecoder);
+  }
+}
+class UpdateDecoderV12 extends DSDecoderV12 {
+  /**
+   * @return {ID}
+   */
+  readLeftID() {
+    return createID(readVarUint(this.restDecoder), readVarUint(this.restDecoder));
+  }
+  /**
+   * @return {ID}
+   */
+  readRightID() {
+    return createID(readVarUint(this.restDecoder), readVarUint(this.restDecoder));
+  }
+  /**
+   * Read the next client id.
+   * Use this in favor of readID whenever possible to reduce the number of objects created.
+   */
+  readClient() {
+    return readVarUint(this.restDecoder);
+  }
+  /**
+   * @return {number} info An unsigned 8-bit integer
+   */
+  readInfo() {
+    return readUint8(this.restDecoder);
+  }
+  /**
+   * @return {string}
+   */
+  readString() {
+    return readVarString(this.restDecoder);
+  }
+  /**
+   * @return {boolean} isKey
+   */
+  readParentInfo() {
+    return readVarUint(this.restDecoder) === 1;
+  }
+  /**
+   * @return {number} info An unsigned 8-bit integer
+   */
+  readTypeRef() {
+    return readVarUint(this.restDecoder);
+  }
+  /**
+   * Write len of a struct - well suited for Opt RLE encoder.
+   *
+   * @return {number} len
+   */
+  readLen() {
+    return readVarUint(this.restDecoder);
+  }
+  /**
+   * @return {any}
+   */
+  readAny() {
+    return readAny(this.restDecoder);
+  }
+  /**
+   * @return {Uint8Array}
+   */
+  readBuf() {
+    return copyUint8Array(readVarUint8Array(this.restDecoder));
+  }
+  /**
+   * Legacy implementation uses JSON parse. We use any-decoding in v2.
+   *
+   * @return {any}
+   */
+  readJSON() {
+    return JSON.parse(readVarString(this.restDecoder));
+  }
+  /**
+   * @return {string}
+   */
+  readKey() {
+    return readVarString(this.restDecoder);
+  }
+}
+class DSDecoderV22 {
+  /**
+   * @param {decoding.Decoder} decoder
+   */
+  constructor(decoder) {
+    this.dsCurrVal = 0;
+    this.restDecoder = decoder;
+  }
+  resetDsCurVal() {
+    this.dsCurrVal = 0;
+  }
+  /**
+   * @return {number}
+   */
+  readDsClock() {
+    this.dsCurrVal += readVarUint(this.restDecoder);
+    return this.dsCurrVal;
+  }
+  /**
+   * @return {number}
+   */
+  readDsLen() {
+    const diff = readVarUint(this.restDecoder) + 1;
+    this.dsCurrVal += diff;
+    return diff;
+  }
+}
+class UpdateDecoderV22 extends DSDecoderV22 {
+  /**
+   * @param {decoding.Decoder} decoder
+   */
+  constructor(decoder) {
+    super(decoder);
+    this.keys = [];
+    readVarUint(decoder);
+    this.keyClockDecoder = new IntDiffOptRleDecoder2(readVarUint8Array(decoder));
+    this.clientDecoder = new UintOptRleDecoder2(readVarUint8Array(decoder));
+    this.leftClockDecoder = new IntDiffOptRleDecoder2(readVarUint8Array(decoder));
+    this.rightClockDecoder = new IntDiffOptRleDecoder2(readVarUint8Array(decoder));
+    this.infoDecoder = new RleDecoder2(readVarUint8Array(decoder), readUint8);
+    this.stringDecoder = new StringDecoder2(readVarUint8Array(decoder));
+    this.parentInfoDecoder = new RleDecoder2(readVarUint8Array(decoder), readUint8);
+    this.typeRefDecoder = new UintOptRleDecoder2(readVarUint8Array(decoder));
+    this.lenDecoder = new UintOptRleDecoder2(readVarUint8Array(decoder));
+  }
+  /**
+   * @return {ID}
+   */
+  readLeftID() {
+    return new ID2(this.clientDecoder.read(), this.leftClockDecoder.read());
+  }
+  /**
+   * @return {ID}
+   */
+  readRightID() {
+    return new ID2(this.clientDecoder.read(), this.rightClockDecoder.read());
+  }
+  /**
+   * Read the next client id.
+   * Use this in favor of readID whenever possible to reduce the number of objects created.
+   */
+  readClient() {
+    return this.clientDecoder.read();
+  }
+  /**
+   * @return {number} info An unsigned 8-bit integer
+   */
+  readInfo() {
+    return (
+      /** @type {number} */
+      this.infoDecoder.read()
+    );
+  }
+  /**
+   * @return {string}
+   */
+  readString() {
+    return this.stringDecoder.read();
+  }
+  /**
+   * @return {boolean}
+   */
+  readParentInfo() {
+    return this.parentInfoDecoder.read() === 1;
+  }
+  /**
+   * @return {number} An unsigned 8-bit integer
+   */
+  readTypeRef() {
+    return this.typeRefDecoder.read();
+  }
+  /**
+   * Write len of a struct - well suited for Opt RLE encoder.
+   *
+   * @return {number}
+   */
+  readLen() {
+    return this.lenDecoder.read();
+  }
+  /**
+   * @return {any}
+   */
+  readAny() {
+    return readAny(this.restDecoder);
+  }
+  /**
+   * @return {Uint8Array}
+   */
+  readBuf() {
+    return readVarUint8Array(this.restDecoder);
+  }
+  /**
+   * This is mainly here for legacy purposes.
+   *
+   * Initial we incoded objects using JSON. Now we use the much faster lib0/any-encoder. This method mainly exists for legacy purposes for the v1 encoder.
+   *
+   * @return {any}
+   */
+  readJSON() {
+    return readAny(this.restDecoder);
+  }
+  /**
+   * @return {string}
+   */
+  readKey() {
+    const keyClock = this.keyClockDecoder.read();
+    if (keyClock < this.keys.length) {
+      return this.keys[keyClock];
+    } else {
+      const key = this.stringDecoder.read();
+      this.keys.push(key);
+      return key;
+    }
+  }
+}
+class DSEncoderV12 {
+  constructor() {
+    this.restEncoder = createEncoder();
+  }
+  toUint8Array() {
+    return toUint8Array(this.restEncoder);
+  }
+  resetDsCurVal() {
+  }
+  /**
+   * @param {number} clock
+   */
+  writeDsClock(clock) {
+    writeVarUint(this.restEncoder, clock);
+  }
+  /**
+   * @param {number} len
+   */
+  writeDsLen(len) {
+    writeVarUint(this.restEncoder, len);
+  }
+}
+class UpdateEncoderV12 extends DSEncoderV12 {
+  /**
+   * @param {ID} id
+   */
+  writeLeftID(id2) {
+    writeVarUint(this.restEncoder, id2.client);
+    writeVarUint(this.restEncoder, id2.clock);
+  }
+  /**
+   * @param {ID} id
+   */
+  writeRightID(id2) {
+    writeVarUint(this.restEncoder, id2.client);
+    writeVarUint(this.restEncoder, id2.clock);
+  }
+  /**
+   * Use writeClient and writeClock instead of writeID if possible.
+   * @param {number} client
+   */
+  writeClient(client) {
+    writeVarUint(this.restEncoder, client);
+  }
+  /**
+   * @param {number} info An unsigned 8-bit integer
+   */
+  writeInfo(info) {
+    writeUint8(this.restEncoder, info);
+  }
+  /**
+   * @param {string} s
+   */
+  writeString(s) {
+    writeVarString(this.restEncoder, s);
+  }
+  /**
+   * @param {boolean} isYKey
+   */
+  writeParentInfo(isYKey) {
+    writeVarUint(this.restEncoder, isYKey ? 1 : 0);
+  }
+  /**
+   * @param {number} info An unsigned 8-bit integer
+   */
+  writeTypeRef(info) {
+    writeVarUint(this.restEncoder, info);
+  }
+  /**
+   * Write len of a struct - well suited for Opt RLE encoder.
+   *
+   * @param {number} len
+   */
+  writeLen(len) {
+    writeVarUint(this.restEncoder, len);
+  }
+  /**
+   * @param {any} any
+   */
+  writeAny(any2) {
+    writeAny(this.restEncoder, any2);
+  }
+  /**
+   * @param {Uint8Array} buf
+   */
+  writeBuf(buf) {
+    writeVarUint8Array(this.restEncoder, buf);
+  }
+  /**
+   * @param {any} embed
+   */
+  writeJSON(embed) {
+    writeVarString(this.restEncoder, JSON.stringify(embed));
+  }
+  /**
+   * @param {string} key
+   */
+  writeKey(key) {
+    writeVarString(this.restEncoder, key);
+  }
+}
+class DSEncoderV22 {
+  constructor() {
+    this.restEncoder = createEncoder();
+    this.dsCurrVal = 0;
+  }
+  toUint8Array() {
+    return toUint8Array(this.restEncoder);
+  }
+  resetDsCurVal() {
+    this.dsCurrVal = 0;
+  }
+  /**
+   * @param {number} clock
+   */
+  writeDsClock(clock) {
+    const diff = clock - this.dsCurrVal;
+    this.dsCurrVal = clock;
+    writeVarUint(this.restEncoder, diff);
+  }
+  /**
+   * @param {number} len
+   */
+  writeDsLen(len) {
+    if (len === 0) {
+      unexpectedCase();
+    }
+    writeVarUint(this.restEncoder, len - 1);
+    this.dsCurrVal += len;
+  }
+}
+class UpdateEncoderV22 extends DSEncoderV22 {
+  constructor() {
+    super();
+    this.keyMap = /* @__PURE__ */ new Map();
+    this.keyClock = 0;
+    this.keyClockEncoder = new IntDiffOptRleEncoder2();
+    this.clientEncoder = new UintOptRleEncoder2();
+    this.leftClockEncoder = new IntDiffOptRleEncoder2();
+    this.rightClockEncoder = new IntDiffOptRleEncoder2();
+    this.infoEncoder = new RleEncoder2(writeUint8);
+    this.stringEncoder = new StringEncoder2();
+    this.parentInfoEncoder = new RleEncoder2(writeUint8);
+    this.typeRefEncoder = new UintOptRleEncoder2();
+    this.lenEncoder = new UintOptRleEncoder2();
+  }
+  toUint8Array() {
+    const encoder = createEncoder();
+    writeVarUint(encoder, 0);
+    writeVarUint8Array(encoder, this.keyClockEncoder.toUint8Array());
+    writeVarUint8Array(encoder, this.clientEncoder.toUint8Array());
+    writeVarUint8Array(encoder, this.leftClockEncoder.toUint8Array());
+    writeVarUint8Array(encoder, this.rightClockEncoder.toUint8Array());
+    writeVarUint8Array(encoder, toUint8Array(this.infoEncoder));
+    writeVarUint8Array(encoder, this.stringEncoder.toUint8Array());
+    writeVarUint8Array(encoder, toUint8Array(this.parentInfoEncoder));
+    writeVarUint8Array(encoder, this.typeRefEncoder.toUint8Array());
+    writeVarUint8Array(encoder, this.lenEncoder.toUint8Array());
+    writeUint8Array(encoder, toUint8Array(this.restEncoder));
+    return toUint8Array(encoder);
+  }
+  /**
+   * @param {ID} id
+   */
+  writeLeftID(id2) {
+    this.clientEncoder.write(id2.client);
+    this.leftClockEncoder.write(id2.clock);
+  }
+  /**
+   * @param {ID} id
+   */
+  writeRightID(id2) {
+    this.clientEncoder.write(id2.client);
+    this.rightClockEncoder.write(id2.clock);
+  }
+  /**
+   * @param {number} client
+   */
+  writeClient(client) {
+    this.clientEncoder.write(client);
+  }
+  /**
+   * @param {number} info An unsigned 8-bit integer
+   */
+  writeInfo(info) {
+    this.infoEncoder.write(info);
+  }
+  /**
+   * @param {string} s
+   */
+  writeString(s) {
+    this.stringEncoder.write(s);
+  }
+  /**
+   * @param {boolean} isYKey
+   */
+  writeParentInfo(isYKey) {
+    this.parentInfoEncoder.write(isYKey ? 1 : 0);
+  }
+  /**
+   * @param {number} info An unsigned 8-bit integer
+   */
+  writeTypeRef(info) {
+    this.typeRefEncoder.write(info);
+  }
+  /**
+   * Write len of a struct - well suited for Opt RLE encoder.
+   *
+   * @param {number} len
+   */
+  writeLen(len) {
+    this.lenEncoder.write(len);
+  }
+  /**
+   * @param {any} any
+   */
+  writeAny(any2) {
+    writeAny(this.restEncoder, any2);
+  }
+  /**
+   * @param {Uint8Array} buf
+   */
+  writeBuf(buf) {
+    writeVarUint8Array(this.restEncoder, buf);
+  }
+  /**
+   * This is mainly here for legacy purposes.
+   *
+   * Initial we incoded objects using JSON. Now we use the much faster lib0/any-encoder. This method mainly exists for legacy purposes for the v1 encoder.
+   *
+   * @param {any} embed
+   */
+  writeJSON(embed) {
+    writeAny(this.restEncoder, embed);
+  }
+  /**
+   * Property keys are often reused. For example, in y-prosemirror the key `bold` might
+   * occur very often. For a 3d application, the key `position` might occur very often.
+   *
+   * We cache these keys in a Map and refer to them via a unique number.
+   *
+   * @param {string} key
+   */
+  writeKey(key) {
+    const clock = this.keyMap.get(key);
+    if (clock === void 0) {
+      this.keyClockEncoder.write(this.keyClock++);
+      this.stringEncoder.write(key);
+    } else {
+      this.keyClockEncoder.write(clock);
+    }
+  }
+}
+const writeStructs = (encoder, structs, client, clock) => {
+  clock = max(clock, structs[0].id.clock);
+  const startNewStructs = findIndexSS(structs, clock);
+  writeVarUint(encoder.restEncoder, structs.length - startNewStructs);
+  encoder.writeClient(client);
+  writeVarUint(encoder.restEncoder, clock);
+  const firstStruct = structs[startNewStructs];
+  firstStruct.write(encoder, clock - firstStruct.id.clock);
+  for (let i = startNewStructs + 1; i < structs.length; i++) {
+    structs[i].write(encoder, 0);
+  }
+};
+const writeClientsStructs = (encoder, store, _sm) => {
+  const sm = /* @__PURE__ */ new Map();
+  _sm.forEach((clock, client) => {
+    if (getState(store, client) > clock) {
+      sm.set(client, clock);
+    }
+  });
+  getStateVector(store).forEach((_clock, client) => {
+    if (!_sm.has(client)) {
+      sm.set(client, 0);
+    }
+  });
+  writeVarUint(encoder.restEncoder, sm.size);
+  from(sm.entries()).sort((a, b) => b[0] - a[0]).forEach(([client, clock]) => {
+    writeStructs(
+      encoder,
+      /** @type {Array<GC|Item>} */
+      store.clients.get(client),
+      client,
+      clock
+    );
+  });
+};
+const readClientsStructRefs = (decoder, doc) => {
+  const clientRefs = create$4();
+  const numOfStateUpdates = readVarUint(decoder.restDecoder);
+  for (let i = 0; i < numOfStateUpdates; i++) {
+    const numberOfStructs = readVarUint(decoder.restDecoder);
+    const refs = new Array(numberOfStructs);
+    const client = decoder.readClient();
+    let clock = readVarUint(decoder.restDecoder);
+    clientRefs.set(client, { i: 0, refs });
+    for (let i2 = 0; i2 < numberOfStructs; i2++) {
+      const info = decoder.readInfo();
+      switch (BITS5 & info) {
+        case 0: {
+          const len = decoder.readLen();
+          refs[i2] = new GC2(createID(client, clock), len);
+          clock += len;
+          break;
+        }
+        case 10: {
+          const len = readVarUint(decoder.restDecoder);
+          refs[i2] = new Skip2(createID(client, clock), len);
+          clock += len;
+          break;
+        }
+        default: {
+          const cantCopyParentInfo = (info & (BIT7 | BIT8)) === 0;
+          const struct = new Item2(
+            createID(client, clock),
+            null,
+            // left
+            (info & BIT8) === BIT8 ? decoder.readLeftID() : null,
+            // origin
+            null,
+            // right
+            (info & BIT7) === BIT7 ? decoder.readRightID() : null,
+            // right origin
+            cantCopyParentInfo ? decoder.readParentInfo() ? doc.get(decoder.readString()) : decoder.readLeftID() : null,
+            // parent
+            cantCopyParentInfo && (info & BIT6) === BIT6 ? decoder.readString() : null,
+            // parentSub
+            readItemContent(decoder, info)
+            // item content
+          );
+          refs[i2] = struct;
+          clock += struct.length;
+        }
+      }
+    }
+  }
+  return clientRefs;
+};
+const integrateStructs = (transaction, store, clientsStructRefs) => {
+  const stack = [];
+  let clientsStructRefsIds = from(clientsStructRefs.keys()).sort((a, b) => a - b);
+  if (clientsStructRefsIds.length === 0) {
+    return null;
+  }
+  const getNextStructTarget = () => {
+    if (clientsStructRefsIds.length === 0) {
+      return null;
+    }
+    let nextStructsTarget = (
+      /** @type {{i:number,refs:Array<GC|Item>}} */
+      clientsStructRefs.get(clientsStructRefsIds[clientsStructRefsIds.length - 1])
+    );
+    while (nextStructsTarget.refs.length === nextStructsTarget.i) {
+      clientsStructRefsIds.pop();
+      if (clientsStructRefsIds.length > 0) {
+        nextStructsTarget = /** @type {{i:number,refs:Array<GC|Item>}} */
+        clientsStructRefs.get(clientsStructRefsIds[clientsStructRefsIds.length - 1]);
+      } else {
+        return null;
+      }
+    }
+    return nextStructsTarget;
+  };
+  let curStructsTarget = getNextStructTarget();
+  if (curStructsTarget === null) {
+    return null;
+  }
+  const restStructs = new StructStore2();
+  const missingSV = /* @__PURE__ */ new Map();
+  const updateMissingSv = (client, clock) => {
+    const mclock = missingSV.get(client);
+    if (mclock == null || mclock > clock) {
+      missingSV.set(client, clock);
+    }
+  };
+  let stackHead = (
+    /** @type {any} */
+    curStructsTarget.refs[
+      /** @type {any} */
+      curStructsTarget.i++
+    ]
+  );
+  const state = /* @__PURE__ */ new Map();
+  const addStackToRestSS = () => {
+    for (const item of stack) {
+      const client = item.id.client;
+      const inapplicableItems = clientsStructRefs.get(client);
+      if (inapplicableItems) {
+        inapplicableItems.i--;
+        restStructs.clients.set(client, inapplicableItems.refs.slice(inapplicableItems.i));
+        clientsStructRefs.delete(client);
+        inapplicableItems.i = 0;
+        inapplicableItems.refs = [];
+      } else {
+        restStructs.clients.set(client, [item]);
+      }
+      clientsStructRefsIds = clientsStructRefsIds.filter((c) => c !== client);
+    }
+    stack.length = 0;
+  };
+  while (true) {
+    if (stackHead.constructor !== Skip2) {
+      const localClock = setIfUndefined(state, stackHead.id.client, () => getState(store, stackHead.id.client));
+      const offset = localClock - stackHead.id.clock;
+      if (offset < 0) {
+        stack.push(stackHead);
+        updateMissingSv(stackHead.id.client, stackHead.id.clock - 1);
+        addStackToRestSS();
+      } else {
+        const missing = stackHead.getMissing(transaction, store);
+        if (missing !== null) {
+          stack.push(stackHead);
+          const structRefs = clientsStructRefs.get(
+            /** @type {number} */
+            missing
+          ) || { refs: [], i: 0 };
+          if (structRefs.refs.length === structRefs.i) {
+            updateMissingSv(
+              /** @type {number} */
+              missing,
+              getState(store, missing)
+            );
+            addStackToRestSS();
+          } else {
+            stackHead = structRefs.refs[structRefs.i++];
+            continue;
+          }
+        } else if (offset === 0 || offset < stackHead.length) {
+          stackHead.integrate(transaction, offset);
+          state.set(stackHead.id.client, stackHead.id.clock + stackHead.length);
+        }
+      }
+    }
+    if (stack.length > 0) {
+      stackHead = /** @type {GC|Item} */
+      stack.pop();
+    } else if (curStructsTarget !== null && curStructsTarget.i < curStructsTarget.refs.length) {
+      stackHead = /** @type {GC|Item} */
+      curStructsTarget.refs[curStructsTarget.i++];
+    } else {
+      curStructsTarget = getNextStructTarget();
+      if (curStructsTarget === null) {
+        break;
+      } else {
+        stackHead = /** @type {GC|Item} */
+        curStructsTarget.refs[curStructsTarget.i++];
+      }
+    }
+  }
+  if (restStructs.clients.size > 0) {
+    const encoder = new UpdateEncoderV22();
+    writeClientsStructs(encoder, restStructs, /* @__PURE__ */ new Map());
+    writeVarUint(encoder.restEncoder, 0);
+    return { missing: missingSV, update: encoder.toUint8Array() };
+  }
+  return null;
+};
+const writeStructsFromTransaction = (encoder, transaction) => writeClientsStructs(encoder, transaction.doc.store, transaction.beforeState);
+const readUpdateV2 = (decoder, ydoc, transactionOrigin, structDecoder = new UpdateDecoderV22(decoder)) => transact(ydoc, (transaction) => {
+  transaction.local = false;
+  let retry = false;
+  const doc = transaction.doc;
+  const store = doc.store;
+  const ss = readClientsStructRefs(structDecoder, doc);
+  const restStructs = integrateStructs(transaction, store, ss);
+  const pending2 = store.pendingStructs;
+  if (pending2) {
+    for (const [client, clock] of pending2.missing) {
+      if (clock < getState(store, client)) {
+        retry = true;
+        break;
+      }
+    }
+    if (restStructs) {
+      for (const [client, clock] of restStructs.missing) {
+        const mclock = pending2.missing.get(client);
+        if (mclock == null || mclock > clock) {
+          pending2.missing.set(client, clock);
+        }
+      }
+      pending2.update = mergeUpdatesV2([pending2.update, restStructs.update]);
+    }
+  } else {
+    store.pendingStructs = restStructs;
+  }
+  const dsRest = readAndApplyDeleteSet(structDecoder, transaction, store);
+  if (store.pendingDs) {
+    const pendingDSUpdate = new UpdateDecoderV22(createDecoder(store.pendingDs));
+    readVarUint(pendingDSUpdate.restDecoder);
+    const dsRest2 = readAndApplyDeleteSet(pendingDSUpdate, transaction, store);
+    if (dsRest && dsRest2) {
+      store.pendingDs = mergeUpdatesV2([dsRest, dsRest2]);
+    } else {
+      store.pendingDs = dsRest || dsRest2;
+    }
+  } else {
+    store.pendingDs = dsRest;
+  }
+  if (retry) {
+    const update = (
+      /** @type {{update: Uint8Array}} */
+      store.pendingStructs.update
+    );
+    store.pendingStructs = null;
+    applyUpdateV2(transaction.doc, update);
+  }
+}, transactionOrigin, false);
+const applyUpdateV2 = (ydoc, update, transactionOrigin, YDecoder = UpdateDecoderV22) => {
+  const decoder = createDecoder(update);
+  readUpdateV2(decoder, ydoc, transactionOrigin, new YDecoder(decoder));
+};
+const applyUpdate = (ydoc, update, transactionOrigin) => applyUpdateV2(ydoc, update, transactionOrigin, UpdateDecoderV12);
+class EventHandler2 {
+  constructor() {
+    this.l = [];
+  }
+}
+const createEventHandler = () => new EventHandler2();
+const addEventHandlerListener = (eventHandler, f) => eventHandler.l.push(f);
+const removeEventHandlerListener = (eventHandler, f) => {
+  const l = eventHandler.l;
+  const len = l.length;
+  eventHandler.l = l.filter((g) => f !== g);
+  if (len === eventHandler.l.length) {
+    console.error("[yjs] Tried to remove event handler that doesn't exist.");
+  }
+};
+const callEventHandlerListeners = (eventHandler, arg0, arg1) => callAll(eventHandler.l, [arg0, arg1]);
+class ID2 {
+  /**
+   * @param {number} client client id
+   * @param {number} clock unique per client id, continuous number
+   */
+  constructor(client, clock) {
+    this.client = client;
+    this.clock = clock;
+  }
+}
+const compareIDs = (a, b) => a === b || a !== null && b !== null && a.client === b.client && a.clock === b.clock;
+const createID = (client, clock) => new ID2(client, clock);
+const findRootTypeKey = (type) => {
+  for (const [key, value] of type.doc.share.entries()) {
+    if (value === type) {
+      return key;
+    }
+  }
+  throw unexpectedCase();
+};
+const isVisible = (item, snapshot) => snapshot === void 0 ? !item.deleted : snapshot.sv.has(item.id.client) && (snapshot.sv.get(item.id.client) || 0) > item.id.clock && !isDeleted(snapshot.ds, item.id);
+const splitSnapshotAffectedStructs = (transaction, snapshot) => {
+  const meta = setIfUndefined(transaction.meta, splitSnapshotAffectedStructs, create$3);
+  const store = transaction.doc.store;
+  if (!meta.has(snapshot)) {
+    snapshot.sv.forEach((clock, client) => {
+      if (clock < getState(store, client)) {
+        getItemCleanStart(transaction, createID(client, clock));
+      }
+    });
+    iterateDeletedStructs(transaction, snapshot.ds, (_item) => {
+    });
+    meta.add(snapshot);
+  }
+};
+class StructStore2 {
+  constructor() {
+    this.clients = /* @__PURE__ */ new Map();
+    this.pendingStructs = null;
+    this.pendingDs = null;
+  }
+}
+const getStateVector = (store) => {
+  const sm = /* @__PURE__ */ new Map();
+  store.clients.forEach((structs, client) => {
+    const struct = structs[structs.length - 1];
+    sm.set(client, struct.id.clock + struct.length);
+  });
+  return sm;
+};
+const getState = (store, client) => {
+  const structs = store.clients.get(client);
+  if (structs === void 0) {
+    return 0;
+  }
+  const lastStruct = structs[structs.length - 1];
+  return lastStruct.id.clock + lastStruct.length;
+};
+const addStruct = (store, struct) => {
+  let structs = store.clients.get(struct.id.client);
+  if (structs === void 0) {
+    structs = [];
+    store.clients.set(struct.id.client, structs);
+  } else {
+    const lastStruct = structs[structs.length - 1];
+    if (lastStruct.id.clock + lastStruct.length !== struct.id.clock) {
+      throw unexpectedCase();
+    }
+  }
+  structs.push(struct);
+};
+const findIndexSS = (structs, clock) => {
+  let left = 0;
+  let right = structs.length - 1;
+  let mid = structs[right];
+  let midclock = mid.id.clock;
+  if (midclock === clock) {
+    return right;
+  }
+  let midindex = floor(clock / (midclock + mid.length - 1) * right);
+  while (left <= right) {
+    mid = structs[midindex];
+    midclock = mid.id.clock;
+    if (midclock <= clock) {
+      if (clock < midclock + mid.length) {
+        return midindex;
+      }
+      left = midindex + 1;
+    } else {
+      right = midindex - 1;
+    }
+    midindex = floor((left + right) / 2);
+  }
+  throw unexpectedCase();
+};
+const find = (store, id2) => {
+  const structs = store.clients.get(id2.client);
+  return structs[findIndexSS(structs, id2.clock)];
+};
+const getItem = (
+  /** @type {function(StructStore,ID):Item} */
+  find
+);
+const findIndexCleanStart = (transaction, structs, clock) => {
+  const index = findIndexSS(structs, clock);
+  const struct = structs[index];
+  if (struct.id.clock < clock && struct instanceof Item2) {
+    structs.splice(index + 1, 0, splitItem(transaction, struct, clock - struct.id.clock));
+    return index + 1;
+  }
+  return index;
+};
+const getItemCleanStart = (transaction, id2) => {
+  const structs = (
+    /** @type {Array<Item>} */
+    transaction.doc.store.clients.get(id2.client)
+  );
+  return structs[findIndexCleanStart(transaction, structs, id2.clock)];
+};
+const getItemCleanEnd = (transaction, store, id2) => {
+  const structs = store.clients.get(id2.client);
+  const index = findIndexSS(structs, id2.clock);
+  const struct = structs[index];
+  if (id2.clock !== struct.id.clock + struct.length - 1 && struct.constructor !== GC2) {
+    structs.splice(index + 1, 0, splitItem(transaction, struct, id2.clock - struct.id.clock + 1));
+  }
+  return struct;
+};
+const replaceStruct = (store, struct, newStruct) => {
+  const structs = (
+    /** @type {Array<GC|Item>} */
+    store.clients.get(struct.id.client)
+  );
+  structs[findIndexSS(structs, struct.id.clock)] = newStruct;
+};
+const iterateStructs = (transaction, structs, clockStart, len, f) => {
+  if (len === 0) {
+    return;
+  }
+  const clockEnd = clockStart + len;
+  let index = findIndexCleanStart(transaction, structs, clockStart);
+  let struct;
+  do {
+    struct = structs[index++];
+    if (clockEnd < struct.id.clock + struct.length) {
+      findIndexCleanStart(transaction, structs, clockEnd);
+    }
+    f(struct);
+  } while (index < structs.length && structs[index].id.clock < clockEnd);
+};
+class Transaction2 {
+  /**
+   * @param {Doc} doc
+   * @param {any} origin
+   * @param {boolean} local
+   */
+  constructor(doc, origin, local) {
+    this.doc = doc;
+    this.deleteSet = new DeleteSet2();
+    this.beforeState = getStateVector(doc.store);
+    this.afterState = /* @__PURE__ */ new Map();
+    this.changed = /* @__PURE__ */ new Map();
+    this.changedParentTypes = /* @__PURE__ */ new Map();
+    this._mergeStructs = [];
+    this.origin = origin;
+    this.meta = /* @__PURE__ */ new Map();
+    this.local = local;
+    this.subdocsAdded = /* @__PURE__ */ new Set();
+    this.subdocsRemoved = /* @__PURE__ */ new Set();
+    this.subdocsLoaded = /* @__PURE__ */ new Set();
+    this._needFormattingCleanup = false;
+  }
+}
+const writeUpdateMessageFromTransaction = (encoder, transaction) => {
+  if (transaction.deleteSet.clients.size === 0 && !any(transaction.afterState, (clock, client) => transaction.beforeState.get(client) !== clock)) {
+    return false;
+  }
+  sortAndMergeDeleteSet(transaction.deleteSet);
+  writeStructsFromTransaction(encoder, transaction);
+  writeDeleteSet(encoder, transaction.deleteSet);
+  return true;
+};
+const addChangedTypeToTransaction = (transaction, type, parentSub) => {
+  const item = type._item;
+  if (item === null || item.id.clock < (transaction.beforeState.get(item.id.client) || 0) && !item.deleted) {
+    setIfUndefined(transaction.changed, type, create$3).add(parentSub);
+  }
+};
+const tryToMergeWithLefts = (structs, pos) => {
+  let right = structs[pos];
+  let left = structs[pos - 1];
+  let i = pos;
+  for (; i > 0; right = left, left = structs[--i - 1]) {
+    if (left.deleted === right.deleted && left.constructor === right.constructor) {
+      if (left.mergeWith(right)) {
+        if (right instanceof Item2 && right.parentSub !== null && /** @type {AbstractType<any>} */
+        right.parent._map.get(right.parentSub) === right) {
+          right.parent._map.set(
+            right.parentSub,
+            /** @type {Item} */
+            left
+          );
+        }
+        continue;
+      }
+    }
+    break;
+  }
+  const merged = pos - i;
+  if (merged) {
+    structs.splice(pos + 1 - merged, merged);
+  }
+  return merged;
+};
+const tryGcDeleteSet = (ds, store, gcFilter) => {
+  for (const [client, deleteItems] of ds.clients.entries()) {
+    const structs = (
+      /** @type {Array<GC|Item>} */
+      store.clients.get(client)
+    );
+    for (let di = deleteItems.length - 1; di >= 0; di--) {
+      const deleteItem = deleteItems[di];
+      const endDeleteItemClock = deleteItem.clock + deleteItem.len;
+      for (let si = findIndexSS(structs, deleteItem.clock), struct = structs[si]; si < structs.length && struct.id.clock < endDeleteItemClock; struct = structs[++si]) {
+        const struct2 = structs[si];
+        if (deleteItem.clock + deleteItem.len <= struct2.id.clock) {
+          break;
+        }
+        if (struct2 instanceof Item2 && struct2.deleted && !struct2.keep && gcFilter(struct2)) {
+          struct2.gc(store, false);
+        }
+      }
+    }
+  }
+};
+const tryMergeDeleteSet = (ds, store) => {
+  ds.clients.forEach((deleteItems, client) => {
+    const structs = (
+      /** @type {Array<GC|Item>} */
+      store.clients.get(client)
+    );
+    for (let di = deleteItems.length - 1; di >= 0; di--) {
+      const deleteItem = deleteItems[di];
+      const mostRightIndexToCheck = min(structs.length - 1, 1 + findIndexSS(structs, deleteItem.clock + deleteItem.len - 1));
+      for (let si = mostRightIndexToCheck, struct = structs[si]; si > 0 && struct.id.clock >= deleteItem.clock; struct = structs[si]) {
+        si -= 1 + tryToMergeWithLefts(structs, si);
+      }
+    }
+  });
+};
+const cleanupTransactions = (transactionCleanups, i) => {
+  if (i < transactionCleanups.length) {
+    const transaction = transactionCleanups[i];
+    const doc = transaction.doc;
+    const store = doc.store;
+    const ds = transaction.deleteSet;
+    const mergeStructs = transaction._mergeStructs;
+    try {
+      sortAndMergeDeleteSet(ds);
+      transaction.afterState = getStateVector(transaction.doc.store);
+      doc.emit("beforeObserverCalls", [transaction, doc]);
+      const fs2 = [];
+      transaction.changed.forEach(
+        (subs, itemtype) => fs2.push(() => {
+          if (itemtype._item === null || !itemtype._item.deleted) {
+            itemtype._callObserver(transaction, subs);
+          }
+        })
+      );
+      fs2.push(() => {
+        transaction.changedParentTypes.forEach((events2, type) => {
+          if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
+            events2 = events2.filter(
+              (event) => event.target._item === null || !event.target._item.deleted
+            );
+            events2.forEach((event) => {
+              event.currentTarget = type;
+              event._path = null;
+            });
+            events2.sort((event1, event2) => event1.path.length - event2.path.length);
+            fs2.push(() => {
+              callEventHandlerListeners(type._dEH, events2, transaction);
+            });
+          }
+        });
+        fs2.push(() => doc.emit("afterTransaction", [transaction, doc]));
+        fs2.push(() => {
+          if (transaction._needFormattingCleanup) {
+            cleanupYTextAfterTransaction(transaction);
+          }
+        });
+      });
+      callAll(fs2, []);
+    } finally {
+      if (doc.gc) {
+        tryGcDeleteSet(ds, store, doc.gcFilter);
+      }
+      tryMergeDeleteSet(ds, store);
+      transaction.afterState.forEach((clock, client) => {
+        const beforeClock = transaction.beforeState.get(client) || 0;
+        if (beforeClock !== clock) {
+          const structs = (
+            /** @type {Array<GC|Item>} */
+            store.clients.get(client)
+          );
+          const firstChangePos = max(findIndexSS(structs, beforeClock), 1);
+          for (let i2 = structs.length - 1; i2 >= firstChangePos; ) {
+            i2 -= 1 + tryToMergeWithLefts(structs, i2);
+          }
+        }
+      });
+      for (let i2 = mergeStructs.length - 1; i2 >= 0; i2--) {
+        const { client, clock } = mergeStructs[i2].id;
+        const structs = (
+          /** @type {Array<GC|Item>} */
+          store.clients.get(client)
+        );
+        const replacedStructPos = findIndexSS(structs, clock);
+        if (replacedStructPos + 1 < structs.length) {
+          if (tryToMergeWithLefts(structs, replacedStructPos + 1) > 1) {
+            continue;
+          }
+        }
+        if (replacedStructPos > 0) {
+          tryToMergeWithLefts(structs, replacedStructPos);
+        }
+      }
+      if (!transaction.local && transaction.afterState.get(doc.clientID) !== transaction.beforeState.get(doc.clientID)) {
+        print(ORANGE, BOLD, "[yjs] ", UNBOLD, RED, "Changed the client-id because another client seems to be using it.");
+        doc.clientID = generateNewClientId();
+      }
+      doc.emit("afterTransactionCleanup", [transaction, doc]);
+      if (doc._observers.has("update")) {
+        const encoder = new UpdateEncoderV12();
+        const hasContent2 = writeUpdateMessageFromTransaction(encoder, transaction);
+        if (hasContent2) {
+          doc.emit("update", [encoder.toUint8Array(), transaction.origin, doc, transaction]);
+        }
+      }
+      if (doc._observers.has("updateV2")) {
+        const encoder = new UpdateEncoderV22();
+        const hasContent2 = writeUpdateMessageFromTransaction(encoder, transaction);
+        if (hasContent2) {
+          doc.emit("updateV2", [encoder.toUint8Array(), transaction.origin, doc, transaction]);
+        }
+      }
+      const { subdocsAdded, subdocsLoaded, subdocsRemoved } = transaction;
+      if (subdocsAdded.size > 0 || subdocsRemoved.size > 0 || subdocsLoaded.size > 0) {
+        subdocsAdded.forEach((subdoc) => {
+          subdoc.clientID = doc.clientID;
+          if (subdoc.collectionid == null) {
+            subdoc.collectionid = doc.collectionid;
+          }
+          doc.subdocs.add(subdoc);
+        });
+        subdocsRemoved.forEach((subdoc) => doc.subdocs.delete(subdoc));
+        doc.emit("subdocs", [{ loaded: subdocsLoaded, added: subdocsAdded, removed: subdocsRemoved }, doc, transaction]);
+        subdocsRemoved.forEach((subdoc) => subdoc.destroy());
+      }
+      if (transactionCleanups.length <= i + 1) {
+        doc._transactionCleanups = [];
+        doc.emit("afterAllTransactions", [doc, transactionCleanups]);
+      } else {
+        cleanupTransactions(transactionCleanups, i + 1);
+      }
+    }
+  }
+};
+const transact = (doc, f, origin = null, local = true) => {
+  const transactionCleanups = doc._transactionCleanups;
+  let initialCall = false;
+  let result = null;
+  if (doc._transaction === null) {
+    initialCall = true;
+    doc._transaction = new Transaction2(doc, origin, local);
+    transactionCleanups.push(doc._transaction);
+    if (transactionCleanups.length === 1) {
+      doc.emit("beforeAllTransactions", [doc]);
+    }
+    doc.emit("beforeTransaction", [doc._transaction, doc]);
+  }
+  try {
+    result = f(doc._transaction);
+  } finally {
+    if (initialCall) {
+      const finishCleanup = doc._transaction === transactionCleanups[0];
+      doc._transaction = null;
+      if (finishCleanup) {
+        cleanupTransactions(transactionCleanups, 0);
+      }
+    }
+  }
+  return result;
+};
+function* lazyStructReaderGenerator(decoder) {
+  const numOfStateUpdates = readVarUint(decoder.restDecoder);
+  for (let i = 0; i < numOfStateUpdates; i++) {
+    const numberOfStructs = readVarUint(decoder.restDecoder);
+    const client = decoder.readClient();
+    let clock = readVarUint(decoder.restDecoder);
+    for (let i2 = 0; i2 < numberOfStructs; i2++) {
+      const info = decoder.readInfo();
+      if (info === 10) {
+        const len = readVarUint(decoder.restDecoder);
+        yield new Skip2(createID(client, clock), len);
+        clock += len;
+      } else if ((BITS5 & info) !== 0) {
+        const cantCopyParentInfo = (info & (BIT7 | BIT8)) === 0;
+        const struct = new Item2(
+          createID(client, clock),
+          null,
+          // left
+          (info & BIT8) === BIT8 ? decoder.readLeftID() : null,
+          // origin
+          null,
+          // right
+          (info & BIT7) === BIT7 ? decoder.readRightID() : null,
+          // right origin
+          // @ts-ignore Force writing a string here.
+          cantCopyParentInfo ? decoder.readParentInfo() ? decoder.readString() : decoder.readLeftID() : null,
+          // parent
+          cantCopyParentInfo && (info & BIT6) === BIT6 ? decoder.readString() : null,
+          // parentSub
+          readItemContent(decoder, info)
+          // item content
+        );
+        yield struct;
+        clock += struct.length;
+      } else {
+        const len = decoder.readLen();
+        yield new GC2(createID(client, clock), len);
+        clock += len;
+      }
+    }
+  }
+}
+class LazyStructReader2 {
+  /**
+   * @param {UpdateDecoderV1 | UpdateDecoderV2} decoder
+   * @param {boolean} filterSkips
+   */
+  constructor(decoder, filterSkips) {
+    this.gen = lazyStructReaderGenerator(decoder);
+    this.curr = null;
+    this.done = false;
+    this.filterSkips = filterSkips;
+    this.next();
+  }
+  /**
+   * @return {Item | GC | Skip |null}
+   */
+  next() {
+    do {
+      this.curr = this.gen.next().value || null;
+    } while (this.filterSkips && this.curr !== null && this.curr.constructor === Skip2);
+    return this.curr;
+  }
+}
+class LazyStructWriter2 {
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   */
+  constructor(encoder) {
+    this.currClient = 0;
+    this.startClock = 0;
+    this.written = 0;
+    this.encoder = encoder;
+    this.clientStructs = [];
+  }
+}
+const sliceStruct = (left, diff) => {
+  if (left.constructor === GC2) {
+    const { client, clock } = left.id;
+    return new GC2(createID(client, clock + diff), left.length - diff);
+  } else if (left.constructor === Skip2) {
+    const { client, clock } = left.id;
+    return new Skip2(createID(client, clock + diff), left.length - diff);
+  } else {
+    const leftItem = (
+      /** @type {Item} */
+      left
+    );
+    const { client, clock } = leftItem.id;
+    return new Item2(
+      createID(client, clock + diff),
+      null,
+      createID(client, clock + diff - 1),
+      null,
+      leftItem.rightOrigin,
+      leftItem.parent,
+      leftItem.parentSub,
+      leftItem.content.splice(diff)
+    );
+  }
+};
+const mergeUpdatesV2 = (updates, YDecoder = UpdateDecoderV22, YEncoder = UpdateEncoderV22) => {
+  if (updates.length === 1) {
+    return updates[0];
+  }
+  const updateDecoders = updates.map((update) => new YDecoder(createDecoder(update)));
+  let lazyStructDecoders = updateDecoders.map((decoder) => new LazyStructReader2(decoder, true));
+  let currWrite = null;
+  const updateEncoder = new YEncoder();
+  const lazyStructEncoder = new LazyStructWriter2(updateEncoder);
+  while (true) {
+    lazyStructDecoders = lazyStructDecoders.filter((dec) => dec.curr !== null);
+    lazyStructDecoders.sort(
+      /** @type {function(any,any):number} */
+      (dec1, dec2) => {
+        if (dec1.curr.id.client === dec2.curr.id.client) {
+          const clockDiff = dec1.curr.id.clock - dec2.curr.id.clock;
+          if (clockDiff === 0) {
+            return dec1.curr.constructor === dec2.curr.constructor ? 0 : dec1.curr.constructor === Skip2 ? 1 : -1;
+          } else {
+            return clockDiff;
+          }
+        } else {
+          return dec2.curr.id.client - dec1.curr.id.client;
+        }
+      }
+    );
+    if (lazyStructDecoders.length === 0) {
+      break;
+    }
+    const currDecoder = lazyStructDecoders[0];
+    const firstClient = (
+      /** @type {Item | GC} */
+      currDecoder.curr.id.client
+    );
+    if (currWrite !== null) {
+      let curr = (
+        /** @type {Item | GC | null} */
+        currDecoder.curr
+      );
+      let iterated = false;
+      while (curr !== null && curr.id.clock + curr.length <= currWrite.struct.id.clock + currWrite.struct.length && curr.id.client >= currWrite.struct.id.client) {
+        curr = currDecoder.next();
+        iterated = true;
+      }
+      if (curr === null || // current decoder is empty
+      curr.id.client !== firstClient || // check whether there is another decoder that has has updates from `firstClient`
+      iterated && curr.id.clock > currWrite.struct.id.clock + currWrite.struct.length) {
+        continue;
+      }
+      if (firstClient !== currWrite.struct.id.client) {
+        writeStructToLazyStructWriter(lazyStructEncoder, currWrite.struct, currWrite.offset);
+        currWrite = { struct: curr, offset: 0 };
+        currDecoder.next();
+      } else {
+        if (currWrite.struct.id.clock + currWrite.struct.length < curr.id.clock) {
+          if (currWrite.struct.constructor === Skip2) {
+            currWrite.struct.length = curr.id.clock + curr.length - currWrite.struct.id.clock;
+          } else {
+            writeStructToLazyStructWriter(lazyStructEncoder, currWrite.struct, currWrite.offset);
+            const diff = curr.id.clock - currWrite.struct.id.clock - currWrite.struct.length;
+            const struct = new Skip2(createID(firstClient, currWrite.struct.id.clock + currWrite.struct.length), diff);
+            currWrite = { struct, offset: 0 };
+          }
+        } else {
+          const diff = currWrite.struct.id.clock + currWrite.struct.length - curr.id.clock;
+          if (diff > 0) {
+            if (currWrite.struct.constructor === Skip2) {
+              currWrite.struct.length -= diff;
+            } else {
+              curr = sliceStruct(curr, diff);
+            }
+          }
+          if (!currWrite.struct.mergeWith(
+            /** @type {any} */
+            curr
+          )) {
+            writeStructToLazyStructWriter(lazyStructEncoder, currWrite.struct, currWrite.offset);
+            currWrite = { struct: curr, offset: 0 };
+            currDecoder.next();
+          }
+        }
+      }
+    } else {
+      currWrite = { struct: (
+        /** @type {Item | GC} */
+        currDecoder.curr
+      ), offset: 0 };
+      currDecoder.next();
+    }
+    for (let next = currDecoder.curr; next !== null && next.id.client === firstClient && next.id.clock === currWrite.struct.id.clock + currWrite.struct.length && next.constructor !== Skip2; next = currDecoder.next()) {
+      writeStructToLazyStructWriter(lazyStructEncoder, currWrite.struct, currWrite.offset);
+      currWrite = { struct: next, offset: 0 };
+    }
+  }
+  if (currWrite !== null) {
+    writeStructToLazyStructWriter(lazyStructEncoder, currWrite.struct, currWrite.offset);
+    currWrite = null;
+  }
+  finishLazyStructWriting(lazyStructEncoder);
+  const dss = updateDecoders.map((decoder) => readDeleteSet(decoder));
+  const ds = mergeDeleteSets(dss);
+  writeDeleteSet(updateEncoder, ds);
+  return updateEncoder.toUint8Array();
+};
+const flushLazyStructWriter = (lazyWriter) => {
+  if (lazyWriter.written > 0) {
+    lazyWriter.clientStructs.push({ written: lazyWriter.written, restEncoder: toUint8Array(lazyWriter.encoder.restEncoder) });
+    lazyWriter.encoder.restEncoder = createEncoder();
+    lazyWriter.written = 0;
+  }
+};
+const writeStructToLazyStructWriter = (lazyWriter, struct, offset) => {
+  if (lazyWriter.written > 0 && lazyWriter.currClient !== struct.id.client) {
+    flushLazyStructWriter(lazyWriter);
+  }
+  if (lazyWriter.written === 0) {
+    lazyWriter.currClient = struct.id.client;
+    lazyWriter.encoder.writeClient(struct.id.client);
+    writeVarUint(lazyWriter.encoder.restEncoder, struct.id.clock + offset);
+  }
+  struct.write(lazyWriter.encoder, offset);
+  lazyWriter.written++;
+};
+const finishLazyStructWriting = (lazyWriter) => {
+  flushLazyStructWriter(lazyWriter);
+  const restEncoder = lazyWriter.encoder.restEncoder;
+  writeVarUint(restEncoder, lazyWriter.clientStructs.length);
+  for (let i = 0; i < lazyWriter.clientStructs.length; i++) {
+    const partStructs = lazyWriter.clientStructs[i];
+    writeVarUint(restEncoder, partStructs.written);
+    writeUint8Array(restEncoder, partStructs.restEncoder);
+  }
+};
+const errorComputeChanges = "You must not compute changes after the event-handler fired.";
+class YEvent2 {
+  /**
+   * @param {T} target The changed type.
+   * @param {Transaction} transaction
+   */
+  constructor(target, transaction) {
+    this.target = target;
+    this.currentTarget = target;
+    this.transaction = transaction;
+    this._changes = null;
+    this._keys = null;
+    this._delta = null;
+    this._path = null;
+  }
+  /**
+   * Computes the path from `y` to the changed type.
+   *
+   * @todo v14 should standardize on path: Array<{parent, index}> because that is easier to work with.
+   *
+   * The following property holds:
+   * @example
+   *   let type = y
+   *   event.path.forEach(dir => {
+   *     type = type.get(dir)
+   *   })
+   *   type === event.target // => true
+   */
+  get path() {
+    return this._path || (this._path = getPathTo(this.currentTarget, this.target));
+  }
+  /**
+   * Check if a struct is deleted by this event.
+   *
+   * In contrast to change.deleted, this method also returns true if the struct was added and then deleted.
+   *
+   * @param {AbstractStruct} struct
+   * @return {boolean}
+   */
+  deletes(struct) {
+    return isDeleted(this.transaction.deleteSet, struct.id);
+  }
+  /**
+   * @type {Map<string, { action: 'add' | 'update' | 'delete', oldValue: any }>}
+   */
+  get keys() {
+    if (this._keys === null) {
+      if (this.transaction.doc._transactionCleanups.length === 0) {
+        throw create$2(errorComputeChanges);
+      }
+      const keys2 = /* @__PURE__ */ new Map();
+      const target = this.target;
+      const changed = (
+        /** @type Set<string|null> */
+        this.transaction.changed.get(target)
+      );
+      changed.forEach((key) => {
+        if (key !== null) {
+          const item = (
+            /** @type {Item} */
+            target._map.get(key)
+          );
+          let action;
+          let oldValue;
+          if (this.adds(item)) {
+            let prev = item.left;
+            while (prev !== null && this.adds(prev)) {
+              prev = prev.left;
+            }
+            if (this.deletes(item)) {
+              if (prev !== null && this.deletes(prev)) {
+                action = "delete";
+                oldValue = last(prev.content.getContent());
+              } else {
+                return;
+              }
+            } else {
+              if (prev !== null && this.deletes(prev)) {
+                action = "update";
+                oldValue = last(prev.content.getContent());
+              } else {
+                action = "add";
+                oldValue = void 0;
+              }
+            }
+          } else {
+            if (this.deletes(item)) {
+              action = "delete";
+              oldValue = last(
+                /** @type {Item} */
+                item.content.getContent()
+              );
+            } else {
+              return;
+            }
+          }
+          keys2.set(key, { action, oldValue });
+        }
+      });
+      this._keys = keys2;
+    }
+    return this._keys;
+  }
+  /**
+   * This is a computed property. Note that this can only be safely computed during the
+   * event call. Computing this property after other changes happened might result in
+   * unexpected behavior (incorrect computation of deltas). A safe way to collect changes
+   * is to store the `changes` or the `delta` object. Avoid storing the `transaction` object.
+   *
+   * @type {Array<{insert?: string | Array<any> | object | AbstractType<any>, retain?: number, delete?: number, attributes?: Object<string, any>}>}
+   */
+  get delta() {
+    return this.changes.delta;
+  }
+  /**
+   * Check if a struct is added by this event.
+   *
+   * In contrast to change.deleted, this method also returns true if the struct was added and then deleted.
+   *
+   * @param {AbstractStruct} struct
+   * @return {boolean}
+   */
+  adds(struct) {
+    return struct.id.clock >= (this.transaction.beforeState.get(struct.id.client) || 0);
+  }
+  /**
+   * This is a computed property. Note that this can only be safely computed during the
+   * event call. Computing this property after other changes happened might result in
+   * unexpected behavior (incorrect computation of deltas). A safe way to collect changes
+   * is to store the `changes` or the `delta` object. Avoid storing the `transaction` object.
+   *
+   * @type {{added:Set<Item>,deleted:Set<Item>,keys:Map<string,{action:'add'|'update'|'delete',oldValue:any}>,delta:Array<{insert?:Array<any>|string, delete?:number, retain?:number}>}}
+   */
+  get changes() {
+    let changes = this._changes;
+    if (changes === null) {
+      if (this.transaction.doc._transactionCleanups.length === 0) {
+        throw create$2(errorComputeChanges);
+      }
+      const target = this.target;
+      const added = create$3();
+      const deleted = create$3();
+      const delta = [];
+      changes = {
+        added,
+        deleted,
+        delta,
+        keys: this.keys
+      };
+      const changed = (
+        /** @type Set<string|null> */
+        this.transaction.changed.get(target)
+      );
+      if (changed.has(null)) {
+        let lastOp = null;
+        const packOp = () => {
+          if (lastOp) {
+            delta.push(lastOp);
+          }
+        };
+        for (let item = target._start; item !== null; item = item.right) {
+          if (item.deleted) {
+            if (this.deletes(item) && !this.adds(item)) {
+              if (lastOp === null || lastOp.delete === void 0) {
+                packOp();
+                lastOp = { delete: 0 };
+              }
+              lastOp.delete += item.length;
+              deleted.add(item);
+            }
+          } else {
+            if (this.adds(item)) {
+              if (lastOp === null || lastOp.insert === void 0) {
+                packOp();
+                lastOp = { insert: [] };
+              }
+              lastOp.insert = lastOp.insert.concat(item.content.getContent());
+              added.add(item);
+            } else {
+              if (lastOp === null || lastOp.retain === void 0) {
+                packOp();
+                lastOp = { retain: 0 };
+              }
+              lastOp.retain += item.length;
+            }
+          }
+        }
+        if (lastOp !== null && lastOp.retain === void 0) {
+          packOp();
+        }
+      }
+      this._changes = changes;
+    }
+    return (
+      /** @type {any} */
+      changes
+    );
+  }
+}
+const getPathTo = (parent, child) => {
+  const path2 = [];
+  while (child._item !== null && child !== parent) {
+    if (child._item.parentSub !== null) {
+      path2.unshift(child._item.parentSub);
+    } else {
+      let i = 0;
+      let c = (
+        /** @type {AbstractType<any>} */
+        child._item.parent._start
+      );
+      while (c !== child._item && c !== null) {
+        if (!c.deleted && c.countable) {
+          i += c.length;
+        }
+        c = c.right;
+      }
+      path2.unshift(i);
+    }
+    child = /** @type {AbstractType<any>} */
+    child._item.parent;
+  }
+  return path2;
+};
+const warnPrematureAccess = () => {
+  warn("Invalid access: Add Yjs type to a document before reading data.");
+};
+const maxSearchMarker = 80;
+let globalSearchMarkerTimestamp = 0;
+class ArraySearchMarker2 {
+  /**
+   * @param {Item} p
+   * @param {number} index
+   */
+  constructor(p, index) {
+    p.marker = true;
+    this.p = p;
+    this.index = index;
+    this.timestamp = globalSearchMarkerTimestamp++;
+  }
+}
+const refreshMarkerTimestamp = (marker) => {
+  marker.timestamp = globalSearchMarkerTimestamp++;
+};
+const overwriteMarker = (marker, p, index) => {
+  marker.p.marker = false;
+  marker.p = p;
+  p.marker = true;
+  marker.index = index;
+  marker.timestamp = globalSearchMarkerTimestamp++;
+};
+const markPosition = (searchMarker, p, index) => {
+  if (searchMarker.length >= maxSearchMarker) {
+    const marker = searchMarker.reduce((a, b) => a.timestamp < b.timestamp ? a : b);
+    overwriteMarker(marker, p, index);
+    return marker;
+  } else {
+    const pm = new ArraySearchMarker2(p, index);
+    searchMarker.push(pm);
+    return pm;
+  }
+};
+const findMarker = (yarray, index) => {
+  if (yarray._start === null || index === 0 || yarray._searchMarker === null) {
+    return null;
+  }
+  const marker = yarray._searchMarker.length === 0 ? null : yarray._searchMarker.reduce((a, b) => abs(index - a.index) < abs(index - b.index) ? a : b);
+  let p = yarray._start;
+  let pindex = 0;
+  if (marker !== null) {
+    p = marker.p;
+    pindex = marker.index;
+    refreshMarkerTimestamp(marker);
+  }
+  while (p.right !== null && pindex < index) {
+    if (!p.deleted && p.countable) {
+      if (index < pindex + p.length) {
+        break;
+      }
+      pindex += p.length;
+    }
+    p = p.right;
+  }
+  while (p.left !== null && pindex > index) {
+    p = p.left;
+    if (!p.deleted && p.countable) {
+      pindex -= p.length;
+    }
+  }
+  while (p.left !== null && p.left.id.client === p.id.client && p.left.id.clock + p.left.length === p.id.clock) {
+    p = p.left;
+    if (!p.deleted && p.countable) {
+      pindex -= p.length;
+    }
+  }
+  if (marker !== null && abs(marker.index - pindex) < /** @type {YText|YArray<any>} */
+  p.parent.length / maxSearchMarker) {
+    overwriteMarker(marker, p, pindex);
+    return marker;
+  } else {
+    return markPosition(yarray._searchMarker, p, pindex);
+  }
+};
+const updateMarkerChanges = (searchMarker, index, len) => {
+  for (let i = searchMarker.length - 1; i >= 0; i--) {
+    const m = searchMarker[i];
+    if (len > 0) {
+      let p = m.p;
+      p.marker = false;
+      while (p && (p.deleted || !p.countable)) {
+        p = p.left;
+        if (p && !p.deleted && p.countable) {
+          m.index -= p.length;
+        }
+      }
+      if (p === null || p.marker === true) {
+        searchMarker.splice(i, 1);
+        continue;
+      }
+      m.p = p;
+      p.marker = true;
+    }
+    if (index < m.index || len > 0 && index === m.index) {
+      m.index = max(index, m.index + len);
+    }
+  }
+};
+const callTypeObservers = (type, transaction, event) => {
+  const changedType = type;
+  const changedParentTypes = transaction.changedParentTypes;
+  while (true) {
+    setIfUndefined(changedParentTypes, type, () => []).push(event);
+    if (type._item === null) {
+      break;
+    }
+    type = /** @type {AbstractType<any>} */
+    type._item.parent;
+  }
+  callEventHandlerListeners(changedType._eH, event, transaction);
+};
+class AbstractType2 {
+  constructor() {
+    this._item = null;
+    this._map = /* @__PURE__ */ new Map();
+    this._start = null;
+    this.doc = null;
+    this._length = 0;
+    this._eH = createEventHandler();
+    this._dEH = createEventHandler();
+    this._searchMarker = null;
+  }
+  /**
+   * @return {AbstractType<any>|null}
+   */
+  get parent() {
+    return this._item ? (
+      /** @type {AbstractType<any>} */
+      this._item.parent
+    ) : null;
+  }
+  /**
+   * Integrate this type into the Yjs instance.
+   *
+   * * Save this struct in the os
+   * * This type is sent to other client
+   * * Observer functions are fired
+   *
+   * @param {Doc} y The Yjs instance
+   * @param {Item|null} item
+   */
+  _integrate(y, item) {
+    this.doc = y;
+    this._item = item;
+  }
+  /**
+   * @return {AbstractType<EventType>}
+   */
+  _copy() {
+    throw methodUnimplemented();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {AbstractType<EventType>}
+   */
+  clone() {
+    throw methodUnimplemented();
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} _encoder
+   */
+  _write(_encoder) {
+  }
+  /**
+   * The first non-deleted item
+   */
+  get _first() {
+    let n = this._start;
+    while (n !== null && n.deleted) {
+      n = n.right;
+    }
+    return n;
+  }
+  /**
+   * Creates YEvent and calls all type observers.
+   * Must be implemented by each type.
+   *
+   * @param {Transaction} transaction
+   * @param {Set<null|string>} _parentSubs Keys changed on this type. `null` if list was modified.
+   */
+  _callObserver(transaction, _parentSubs) {
+    if (!transaction.local && this._searchMarker) {
+      this._searchMarker.length = 0;
+    }
+  }
+  /**
+   * Observe all events that are created on this type.
+   *
+   * @param {function(EventType, Transaction):void} f Observer function
+   */
+  observe(f) {
+    addEventHandlerListener(this._eH, f);
+  }
+  /**
+   * Observe all events that are created by this type and its children.
+   *
+   * @param {function(Array<YEvent<any>>,Transaction):void} f Observer function
+   */
+  observeDeep(f) {
+    addEventHandlerListener(this._dEH, f);
+  }
+  /**
+   * Unregister an observer function.
+   *
+   * @param {function(EventType,Transaction):void} f Observer function
+   */
+  unobserve(f) {
+    removeEventHandlerListener(this._eH, f);
+  }
+  /**
+   * Unregister an observer function.
+   *
+   * @param {function(Array<YEvent<any>>,Transaction):void} f Observer function
+   */
+  unobserveDeep(f) {
+    removeEventHandlerListener(this._dEH, f);
+  }
+  /**
+   * @abstract
+   * @return {any}
+   */
+  toJSON() {
+  }
+}
+const typeListSlice = (type, start, end) => {
+  type.doc ?? warnPrematureAccess();
+  if (start < 0) {
+    start = type._length + start;
+  }
+  if (end < 0) {
+    end = type._length + end;
+  }
+  let len = end - start;
+  const cs = [];
+  let n = type._start;
+  while (n !== null && len > 0) {
+    if (n.countable && !n.deleted) {
+      const c = n.content.getContent();
+      if (c.length <= start) {
+        start -= c.length;
+      } else {
+        for (let i = start; i < c.length && len > 0; i++) {
+          cs.push(c[i]);
+          len--;
+        }
+        start = 0;
+      }
+    }
+    n = n.right;
+  }
+  return cs;
+};
+const typeListToArray = (type) => {
+  type.doc ?? warnPrematureAccess();
+  const cs = [];
+  let n = type._start;
+  while (n !== null) {
+    if (n.countable && !n.deleted) {
+      const c = n.content.getContent();
+      for (let i = 0; i < c.length; i++) {
+        cs.push(c[i]);
+      }
+    }
+    n = n.right;
+  }
+  return cs;
+};
+const typeListForEach = (type, f) => {
+  let index = 0;
+  let n = type._start;
+  type.doc ?? warnPrematureAccess();
+  while (n !== null) {
+    if (n.countable && !n.deleted) {
+      const c = n.content.getContent();
+      for (let i = 0; i < c.length; i++) {
+        f(c[i], index++, type);
+      }
+    }
+    n = n.right;
+  }
+};
+const typeListMap = (type, f) => {
+  const result = [];
+  typeListForEach(type, (c, i) => {
+    result.push(f(c, i, type));
+  });
+  return result;
+};
+const typeListCreateIterator = (type) => {
+  let n = type._start;
+  let currentContent = null;
+  let currentContentIndex = 0;
+  return {
+    [Symbol.iterator]() {
+      return this;
+    },
+    next: () => {
+      if (currentContent === null) {
+        while (n !== null && n.deleted) {
+          n = n.right;
+        }
+        if (n === null) {
+          return {
+            done: true,
+            value: void 0
+          };
+        }
+        currentContent = n.content.getContent();
+        currentContentIndex = 0;
+        n = n.right;
+      }
+      const value = currentContent[currentContentIndex++];
+      if (currentContent.length <= currentContentIndex) {
+        currentContent = null;
+      }
+      return {
+        done: false,
+        value
+      };
+    }
+  };
+};
+const typeListGet = (type, index) => {
+  type.doc ?? warnPrematureAccess();
+  const marker = findMarker(type, index);
+  let n = type._start;
+  if (marker !== null) {
+    n = marker.p;
+    index -= marker.index;
+  }
+  for (; n !== null; n = n.right) {
+    if (!n.deleted && n.countable) {
+      if (index < n.length) {
+        return n.content.getContent()[index];
+      }
+      index -= n.length;
+    }
+  }
+};
+const typeListInsertGenericsAfter = (transaction, parent, referenceItem, content) => {
+  let left = referenceItem;
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  const store = doc.store;
+  const right = referenceItem === null ? parent._start : referenceItem.right;
+  let jsonContent = [];
+  const packJsonContent = () => {
+    if (jsonContent.length > 0) {
+      left = new Item2(createID(ownClientId, getState(store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentAny2(jsonContent));
+      left.integrate(transaction, 0);
+      jsonContent = [];
+    }
+  };
+  content.forEach((c) => {
+    if (c === null) {
+      jsonContent.push(c);
+    } else {
+      switch (c.constructor) {
+        case Number:
+        case Object:
+        case Boolean:
+        case Array:
+        case String:
+          jsonContent.push(c);
+          break;
+        default:
+          packJsonContent();
+          switch (c.constructor) {
+            case Uint8Array:
+            case ArrayBuffer:
+              left = new Item2(createID(ownClientId, getState(store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentBinary2(new Uint8Array(
+                /** @type {Uint8Array} */
+                c
+              )));
+              left.integrate(transaction, 0);
+              break;
+            case Doc2:
+              left = new Item2(createID(ownClientId, getState(store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentDoc2(
+                /** @type {Doc} */
+                c
+              ));
+              left.integrate(transaction, 0);
+              break;
+            default:
+              if (c instanceof AbstractType2) {
+                left = new Item2(createID(ownClientId, getState(store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentType2(c));
+                left.integrate(transaction, 0);
+              } else {
+                throw new Error("Unexpected content type in insert operation");
+              }
+          }
+      }
+    }
+  });
+  packJsonContent();
+};
+const lengthExceeded = () => create$2("Length exceeded!");
+const typeListInsertGenerics = (transaction, parent, index, content) => {
+  if (index > parent._length) {
+    throw lengthExceeded();
+  }
+  if (index === 0) {
+    if (parent._searchMarker) {
+      updateMarkerChanges(parent._searchMarker, index, content.length);
+    }
+    return typeListInsertGenericsAfter(transaction, parent, null, content);
+  }
+  const startIndex = index;
+  const marker = findMarker(parent, index);
+  let n = parent._start;
+  if (marker !== null) {
+    n = marker.p;
+    index -= marker.index;
+    if (index === 0) {
+      n = n.prev;
+      index += n && n.countable && !n.deleted ? n.length : 0;
+    }
+  }
+  for (; n !== null; n = n.right) {
+    if (!n.deleted && n.countable) {
+      if (index <= n.length) {
+        if (index < n.length) {
+          getItemCleanStart(transaction, createID(n.id.client, n.id.clock + index));
+        }
+        break;
+      }
+      index -= n.length;
+    }
+  }
+  if (parent._searchMarker) {
+    updateMarkerChanges(parent._searchMarker, startIndex, content.length);
+  }
+  return typeListInsertGenericsAfter(transaction, parent, n, content);
+};
+const typeListPushGenerics = (transaction, parent, content) => {
+  const marker = (parent._searchMarker || []).reduce((maxMarker, currMarker) => currMarker.index > maxMarker.index ? currMarker : maxMarker, { index: 0, p: parent._start });
+  let n = marker.p;
+  if (n) {
+    while (n.right) {
+      n = n.right;
+    }
+  }
+  return typeListInsertGenericsAfter(transaction, parent, n, content);
+};
+const typeListDelete = (transaction, parent, index, length2) => {
+  if (length2 === 0) {
+    return;
+  }
+  const startIndex = index;
+  const startLength = length2;
+  const marker = findMarker(parent, index);
+  let n = parent._start;
+  if (marker !== null) {
+    n = marker.p;
+    index -= marker.index;
+  }
+  for (; n !== null && index > 0; n = n.right) {
+    if (!n.deleted && n.countable) {
+      if (index < n.length) {
+        getItemCleanStart(transaction, createID(n.id.client, n.id.clock + index));
+      }
+      index -= n.length;
+    }
+  }
+  while (length2 > 0 && n !== null) {
+    if (!n.deleted) {
+      if (length2 < n.length) {
+        getItemCleanStart(transaction, createID(n.id.client, n.id.clock + length2));
+      }
+      n.delete(transaction);
+      length2 -= n.length;
+    }
+    n = n.right;
+  }
+  if (length2 > 0) {
+    throw lengthExceeded();
+  }
+  if (parent._searchMarker) {
+    updateMarkerChanges(
+      parent._searchMarker,
+      startIndex,
+      -startLength + length2
+      /* in case we remove the above exception */
+    );
+  }
+};
+const typeMapDelete = (transaction, parent, key) => {
+  const c = parent._map.get(key);
+  if (c !== void 0) {
+    c.delete(transaction);
+  }
+};
+const typeMapSet = (transaction, parent, key, value) => {
+  const left = parent._map.get(key) || null;
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  let content;
+  if (value == null) {
+    content = new ContentAny2([value]);
+  } else {
+    switch (value.constructor) {
+      case Number:
+      case Object:
+      case Boolean:
+      case Array:
+      case String:
+      case Date:
+      case BigInt:
+        content = new ContentAny2([value]);
+        break;
+      case Uint8Array:
+        content = new ContentBinary2(
+          /** @type {Uint8Array} */
+          value
+        );
+        break;
+      case Doc2:
+        content = new ContentDoc2(
+          /** @type {Doc} */
+          value
+        );
+        break;
+      default:
+        if (value instanceof AbstractType2) {
+          content = new ContentType2(value);
+        } else {
+          throw new Error("Unexpected content type");
+        }
+    }
+  }
+  new Item2(createID(ownClientId, getState(doc.store, ownClientId)), left, left && left.lastId, null, null, parent, key, content).integrate(transaction, 0);
+};
+const typeMapGet = (parent, key) => {
+  parent.doc ?? warnPrematureAccess();
+  const val = parent._map.get(key);
+  return val !== void 0 && !val.deleted ? val.content.getContent()[val.length - 1] : void 0;
+};
+const typeMapGetAll = (parent) => {
+  const res = {};
+  parent.doc ?? warnPrematureAccess();
+  parent._map.forEach((value, key) => {
+    if (!value.deleted) {
+      res[key] = value.content.getContent()[value.length - 1];
+    }
+  });
+  return res;
+};
+const typeMapHas = (parent, key) => {
+  parent.doc ?? warnPrematureAccess();
+  const val = parent._map.get(key);
+  return val !== void 0 && !val.deleted;
+};
+const typeMapGetAllSnapshot = (parent, snapshot) => {
+  const res = {};
+  parent._map.forEach((value, key) => {
+    let v = value;
+    while (v !== null && (!snapshot.sv.has(v.id.client) || v.id.clock >= (snapshot.sv.get(v.id.client) || 0))) {
+      v = v.left;
+    }
+    if (v !== null && isVisible(v, snapshot)) {
+      res[key] = v.content.getContent()[v.length - 1];
+    }
+  });
+  return res;
+};
+const createMapIterator = (type) => {
+  type.doc ?? warnPrematureAccess();
+  return iteratorFilter(
+    type._map.entries(),
+    /** @param {any} entry */
+    (entry) => !entry[1].deleted
+  );
+};
+class YArrayEvent2 extends YEvent2 {
+}
+class YArray2 extends AbstractType2 {
+  constructor() {
+    super();
+    this._prelimContent = [];
+    this._searchMarker = [];
+  }
+  /**
+   * Construct a new YArray containing the specified items.
+   * @template {Object<string,any>|Array<any>|number|null|string|Uint8Array} T
+   * @param {Array<T>} items
+   * @return {YArray<T>}
+   */
+  static from(items) {
+    const a = new YArray2();
+    a.push(items);
+    return a;
+  }
+  /**
+   * Integrate this type into the Yjs instance.
+   *
+   * * Save this struct in the os
+   * * This type is sent to other client
+   * * Observer functions are fired
+   *
+   * @param {Doc} y The Yjs instance
+   * @param {Item} item
+   */
+  _integrate(y, item) {
+    super._integrate(y, item);
+    this.insert(
+      0,
+      /** @type {Array<any>} */
+      this._prelimContent
+    );
+    this._prelimContent = null;
+  }
+  /**
+   * @return {YArray<T>}
+   */
+  _copy() {
+    return new YArray2();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YArray<T>}
+   */
+  clone() {
+    const arr = new YArray2();
+    arr.insert(0, this.toArray().map(
+      (el) => el instanceof AbstractType2 ? (
+        /** @type {typeof el} */
+        el.clone()
+      ) : el
+    ));
+    return arr;
+  }
+  get length() {
+    this.doc ?? warnPrematureAccess();
+    return this._length;
+  }
+  /**
+   * Creates YArrayEvent and calls observers.
+   *
+   * @param {Transaction} transaction
+   * @param {Set<null|string>} parentSubs Keys changed on this type. `null` if list was modified.
+   */
+  _callObserver(transaction, parentSubs) {
+    super._callObserver(transaction, parentSubs);
+    callTypeObservers(this, transaction, new YArrayEvent2(this, transaction));
+  }
+  /**
+   * Inserts new content at an index.
+   *
+   * Important: This function expects an array of content. Not just a content
+   * object. The reason for this "weirdness" is that inserting several elements
+   * is very efficient when it is done as a single operation.
+   *
+   * @example
+   *  // Insert character 'a' at position 0
+   *  yarray.insert(0, ['a'])
+   *  // Insert numbers 1, 2 at position 1
+   *  yarray.insert(1, [1, 2])
+   *
+   * @param {number} index The index to insert content at.
+   * @param {Array<T>} content The array of content
+   */
+  insert(index, content) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        typeListInsertGenerics(
+          transaction,
+          this,
+          index,
+          /** @type {any} */
+          content
+        );
+      });
+    } else {
+      this._prelimContent.splice(index, 0, ...content);
+    }
+  }
+  /**
+   * Appends content to this YArray.
+   *
+   * @param {Array<T>} content Array of content to append.
+   *
+   * @todo Use the following implementation in all types.
+   */
+  push(content) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        typeListPushGenerics(
+          transaction,
+          this,
+          /** @type {any} */
+          content
+        );
+      });
+    } else {
+      this._prelimContent.push(...content);
+    }
+  }
+  /**
+   * Prepends content to this YArray.
+   *
+   * @param {Array<T>} content Array of content to prepend.
+   */
+  unshift(content) {
+    this.insert(0, content);
+  }
+  /**
+   * Deletes elements starting from an index.
+   *
+   * @param {number} index Index at which to start deleting elements
+   * @param {number} length The number of elements to remove. Defaults to 1.
+   */
+  delete(index, length2 = 1) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        typeListDelete(transaction, this, index, length2);
+      });
+    } else {
+      this._prelimContent.splice(index, length2);
+    }
+  }
+  /**
+   * Returns the i-th element from a YArray.
+   *
+   * @param {number} index The index of the element to return from the YArray
+   * @return {T}
+   */
+  get(index) {
+    return typeListGet(this, index);
+  }
+  /**
+   * Transforms this YArray to a JavaScript Array.
+   *
+   * @return {Array<T>}
+   */
+  toArray() {
+    return typeListToArray(this);
+  }
+  /**
+   * Returns a portion of this YArray into a JavaScript Array selected
+   * from start to end (end not included).
+   *
+   * @param {number} [start]
+   * @param {number} [end]
+   * @return {Array<T>}
+   */
+  slice(start = 0, end = this.length) {
+    return typeListSlice(this, start, end);
+  }
+  /**
+   * Transforms this Shared Type to a JSON object.
+   *
+   * @return {Array<any>}
+   */
+  toJSON() {
+    return this.map((c) => c instanceof AbstractType2 ? c.toJSON() : c);
+  }
+  /**
+   * Returns an Array with the result of calling a provided function on every
+   * element of this YArray.
+   *
+   * @template M
+   * @param {function(T,number,YArray<T>):M} f Function that produces an element of the new Array
+   * @return {Array<M>} A new array with each element being the result of the
+   *                 callback function
+   */
+  map(f) {
+    return typeListMap(
+      this,
+      /** @type {any} */
+      f
+    );
+  }
+  /**
+   * Executes a provided function once on every element of this YArray.
+   *
+   * @param {function(T,number,YArray<T>):void} f A function to execute on every element of this YArray.
+   */
+  forEach(f) {
+    typeListForEach(this, f);
+  }
+  /**
+   * @return {IterableIterator<T>}
+   */
+  [Symbol.iterator]() {
+    return typeListCreateIterator(this);
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YArrayRefID);
+  }
+}
+const readYArray = (_decoder) => new YArray2();
+class YMapEvent2 extends YEvent2 {
+  /**
+   * @param {YMap<T>} ymap The YArray that changed.
+   * @param {Transaction} transaction
+   * @param {Set<any>} subs The keys that changed.
+   */
+  constructor(ymap, transaction, subs) {
+    super(ymap, transaction);
+    this.keysChanged = subs;
+  }
+}
+class YMap2 extends AbstractType2 {
+  /**
+   *
+   * @param {Iterable<readonly [string, any]>=} entries - an optional iterable to initialize the YMap
+   */
+  constructor(entries) {
+    super();
+    this._prelimContent = null;
+    if (entries === void 0) {
+      this._prelimContent = /* @__PURE__ */ new Map();
+    } else {
+      this._prelimContent = new Map(entries);
+    }
+  }
+  /**
+   * Integrate this type into the Yjs instance.
+   *
+   * * Save this struct in the os
+   * * This type is sent to other client
+   * * Observer functions are fired
+   *
+   * @param {Doc} y The Yjs instance
+   * @param {Item} item
+   */
+  _integrate(y, item) {
+    super._integrate(y, item);
+    this._prelimContent.forEach((value, key) => {
+      this.set(key, value);
+    });
+    this._prelimContent = null;
+  }
+  /**
+   * @return {YMap<MapType>}
+   */
+  _copy() {
+    return new YMap2();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YMap<MapType>}
+   */
+  clone() {
+    const map = new YMap2();
+    this.forEach((value, key) => {
+      map.set(key, value instanceof AbstractType2 ? (
+        /** @type {typeof value} */
+        value.clone()
+      ) : value);
+    });
+    return map;
+  }
+  /**
+   * Creates YMapEvent and calls observers.
+   *
+   * @param {Transaction} transaction
+   * @param {Set<null|string>} parentSubs Keys changed on this type. `null` if list was modified.
+   */
+  _callObserver(transaction, parentSubs) {
+    callTypeObservers(this, transaction, new YMapEvent2(this, transaction, parentSubs));
+  }
+  /**
+   * Transforms this Shared Type to a JSON object.
+   *
+   * @return {Object<string,any>}
+   */
+  toJSON() {
+    this.doc ?? warnPrematureAccess();
+    const map = {};
+    this._map.forEach((item, key) => {
+      if (!item.deleted) {
+        const v = item.content.getContent()[item.length - 1];
+        map[key] = v instanceof AbstractType2 ? v.toJSON() : v;
+      }
+    });
+    return map;
+  }
+  /**
+   * Returns the size of the YMap (count of key/value pairs)
+   *
+   * @return {number}
+   */
+  get size() {
+    return [...createMapIterator(this)].length;
+  }
+  /**
+   * Returns the keys for each element in the YMap Type.
+   *
+   * @return {IterableIterator<string>}
+   */
+  keys() {
+    return iteratorMap(
+      createMapIterator(this),
+      /** @param {any} v */
+      (v) => v[0]
+    );
+  }
+  /**
+   * Returns the values for each element in the YMap Type.
+   *
+   * @return {IterableIterator<MapType>}
+   */
+  values() {
+    return iteratorMap(
+      createMapIterator(this),
+      /** @param {any} v */
+      (v) => v[1].content.getContent()[v[1].length - 1]
+    );
+  }
+  /**
+   * Returns an Iterator of [key, value] pairs
+   *
+   * @return {IterableIterator<[string, MapType]>}
+   */
+  entries() {
+    return iteratorMap(
+      createMapIterator(this),
+      /** @param {any} v */
+      (v) => (
+        /** @type {any} */
+        [v[0], v[1].content.getContent()[v[1].length - 1]]
+      )
+    );
+  }
+  /**
+   * Executes a provided function on once on every key-value pair.
+   *
+   * @param {function(MapType,string,YMap<MapType>):void} f A function to execute on every element of this YArray.
+   */
+  forEach(f) {
+    this.doc ?? warnPrematureAccess();
+    this._map.forEach((item, key) => {
+      if (!item.deleted) {
+        f(item.content.getContent()[item.length - 1], key, this);
+      }
+    });
+  }
+  /**
+   * Returns an Iterator of [key, value] pairs
+   *
+   * @return {IterableIterator<[string, MapType]>}
+   */
+  [Symbol.iterator]() {
+    return this.entries();
+  }
+  /**
+   * Remove a specified element from this YMap.
+   *
+   * @param {string} key The key of the element to remove.
+   */
+  delete(key) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        typeMapDelete(transaction, this, key);
+      });
+    } else {
+      this._prelimContent.delete(key);
+    }
+  }
+  /**
+   * Adds or updates an element with a specified key and value.
+   * @template {MapType} VAL
+   *
+   * @param {string} key The key of the element to add to this YMap
+   * @param {VAL} value The value of the element to add
+   * @return {VAL}
+   */
+  set(key, value) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        typeMapSet(
+          transaction,
+          this,
+          key,
+          /** @type {any} */
+          value
+        );
+      });
+    } else {
+      this._prelimContent.set(key, value);
+    }
+    return value;
+  }
+  /**
+   * Returns a specified element from this YMap.
+   *
+   * @param {string} key
+   * @return {MapType|undefined}
+   */
+  get(key) {
+    return (
+      /** @type {any} */
+      typeMapGet(this, key)
+    );
+  }
+  /**
+   * Returns a boolean indicating whether the specified key exists or not.
+   *
+   * @param {string} key The key to test.
+   * @return {boolean}
+   */
+  has(key) {
+    return typeMapHas(this, key);
+  }
+  /**
+   * Removes all elements from this YMap.
+   */
+  clear() {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        this.forEach(function(_value, key, map) {
+          typeMapDelete(transaction, map, key);
+        });
+      });
+    } else {
+      this._prelimContent.clear();
+    }
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YMapRefID);
+  }
+}
+const readYMap = (_decoder) => new YMap2();
+const equalAttrs = (a, b) => a === b || typeof a === "object" && typeof b === "object" && a && b && equalFlat(a, b);
+class ItemTextListPosition2 {
+  /**
+   * @param {Item|null} left
+   * @param {Item|null} right
+   * @param {number} index
+   * @param {Map<string,any>} currentAttributes
+   */
+  constructor(left, right, index, currentAttributes) {
+    this.left = left;
+    this.right = right;
+    this.index = index;
+    this.currentAttributes = currentAttributes;
+  }
+  /**
+   * Only call this if you know that this.right is defined
+   */
+  forward() {
+    if (this.right === null) {
+      unexpectedCase();
+    }
+    switch (this.right.content.constructor) {
+      case ContentFormat2:
+        if (!this.right.deleted) {
+          updateCurrentAttributes(
+            this.currentAttributes,
+            /** @type {ContentFormat} */
+            this.right.content
+          );
+        }
+        break;
+      default:
+        if (!this.right.deleted) {
+          this.index += this.right.length;
+        }
+        break;
+    }
+    this.left = this.right;
+    this.right = this.right.right;
+  }
+}
+const findNextPosition = (transaction, pos, count) => {
+  while (pos.right !== null && count > 0) {
+    switch (pos.right.content.constructor) {
+      case ContentFormat2:
+        if (!pos.right.deleted) {
+          updateCurrentAttributes(
+            pos.currentAttributes,
+            /** @type {ContentFormat} */
+            pos.right.content
+          );
+        }
+        break;
+      default:
+        if (!pos.right.deleted) {
+          if (count < pos.right.length) {
+            getItemCleanStart(transaction, createID(pos.right.id.client, pos.right.id.clock + count));
+          }
+          pos.index += pos.right.length;
+          count -= pos.right.length;
+        }
+        break;
+    }
+    pos.left = pos.right;
+    pos.right = pos.right.right;
+  }
+  return pos;
+};
+const findPosition = (transaction, parent, index, useSearchMarker) => {
+  const currentAttributes = /* @__PURE__ */ new Map();
+  const marker = useSearchMarker ? findMarker(parent, index) : null;
+  if (marker) {
+    const pos = new ItemTextListPosition2(marker.p.left, marker.p, marker.index, currentAttributes);
+    return findNextPosition(transaction, pos, index - marker.index);
+  } else {
+    const pos = new ItemTextListPosition2(null, parent._start, 0, currentAttributes);
+    return findNextPosition(transaction, pos, index);
+  }
+};
+const insertNegatedAttributes = (transaction, parent, currPos, negatedAttributes) => {
+  while (currPos.right !== null && (currPos.right.deleted === true || currPos.right.content.constructor === ContentFormat2 && equalAttrs(
+    negatedAttributes.get(
+      /** @type {ContentFormat} */
+      currPos.right.content.key
+    ),
+    /** @type {ContentFormat} */
+    currPos.right.content.value
+  ))) {
+    if (!currPos.right.deleted) {
+      negatedAttributes.delete(
+        /** @type {ContentFormat} */
+        currPos.right.content.key
+      );
+    }
+    currPos.forward();
+  }
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  negatedAttributes.forEach((val, key) => {
+    const left = currPos.left;
+    const right = currPos.right;
+    const nextFormat = new Item2(createID(ownClientId, getState(doc.store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentFormat2(key, val));
+    nextFormat.integrate(transaction, 0);
+    currPos.right = nextFormat;
+    currPos.forward();
+  });
+};
+const updateCurrentAttributes = (currentAttributes, format) => {
+  const { key, value } = format;
+  if (value === null) {
+    currentAttributes.delete(key);
+  } else {
+    currentAttributes.set(key, value);
+  }
+};
+const minimizeAttributeChanges = (currPos, attributes) => {
+  while (true) {
+    if (currPos.right === null) {
+      break;
+    } else if (currPos.right.deleted || currPos.right.content.constructor === ContentFormat2 && equalAttrs(
+      attributes[
+        /** @type {ContentFormat} */
+        currPos.right.content.key
+      ] ?? null,
+      /** @type {ContentFormat} */
+      currPos.right.content.value
+    )) ;
+    else {
+      break;
+    }
+    currPos.forward();
+  }
+};
+const insertAttributes = (transaction, parent, currPos, attributes) => {
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  const negatedAttributes = /* @__PURE__ */ new Map();
+  for (const key in attributes) {
+    const val = attributes[key];
+    const currentVal = currPos.currentAttributes.get(key) ?? null;
+    if (!equalAttrs(currentVal, val)) {
+      negatedAttributes.set(key, currentVal);
+      const { left, right } = currPos;
+      currPos.right = new Item2(createID(ownClientId, getState(doc.store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, new ContentFormat2(key, val));
+      currPos.right.integrate(transaction, 0);
+      currPos.forward();
+    }
+  }
+  return negatedAttributes;
+};
+const insertText = (transaction, parent, currPos, text, attributes) => {
+  currPos.currentAttributes.forEach((_val, key) => {
+    if (attributes[key] === void 0) {
+      attributes[key] = null;
+    }
+  });
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  minimizeAttributeChanges(currPos, attributes);
+  const negatedAttributes = insertAttributes(transaction, parent, currPos, attributes);
+  const content = text.constructor === String ? new ContentString2(
+    /** @type {string} */
+    text
+  ) : text instanceof AbstractType2 ? new ContentType2(text) : new ContentEmbed2(text);
+  let { left, right, index } = currPos;
+  if (parent._searchMarker) {
+    updateMarkerChanges(parent._searchMarker, currPos.index, content.getLength());
+  }
+  right = new Item2(createID(ownClientId, getState(doc.store, ownClientId)), left, left && left.lastId, right, right && right.id, parent, null, content);
+  right.integrate(transaction, 0);
+  currPos.right = right;
+  currPos.index = index;
+  currPos.forward();
+  insertNegatedAttributes(transaction, parent, currPos, negatedAttributes);
+};
+const formatText = (transaction, parent, currPos, length2, attributes) => {
+  const doc = transaction.doc;
+  const ownClientId = doc.clientID;
+  minimizeAttributeChanges(currPos, attributes);
+  const negatedAttributes = insertAttributes(transaction, parent, currPos, attributes);
+  iterationLoop: while (currPos.right !== null && (length2 > 0 || negatedAttributes.size > 0 && (currPos.right.deleted || currPos.right.content.constructor === ContentFormat2))) {
+    if (!currPos.right.deleted) {
+      switch (currPos.right.content.constructor) {
+        case ContentFormat2: {
+          const { key, value } = (
+            /** @type {ContentFormat} */
+            currPos.right.content
+          );
+          const attr = attributes[key];
+          if (attr !== void 0) {
+            if (equalAttrs(attr, value)) {
+              negatedAttributes.delete(key);
+            } else {
+              if (length2 === 0) {
+                break iterationLoop;
+              }
+              negatedAttributes.set(key, value);
+            }
+            currPos.right.delete(transaction);
+          } else {
+            currPos.currentAttributes.set(key, value);
+          }
+          break;
+        }
+        default:
+          if (length2 < currPos.right.length) {
+            getItemCleanStart(transaction, createID(currPos.right.id.client, currPos.right.id.clock + length2));
+          }
+          length2 -= currPos.right.length;
+          break;
+      }
+    }
+    currPos.forward();
+  }
+  if (length2 > 0) {
+    let newlines = "";
+    for (; length2 > 0; length2--) {
+      newlines += "\n";
+    }
+    currPos.right = new Item2(createID(ownClientId, getState(doc.store, ownClientId)), currPos.left, currPos.left && currPos.left.lastId, currPos.right, currPos.right && currPos.right.id, parent, null, new ContentString2(newlines));
+    currPos.right.integrate(transaction, 0);
+    currPos.forward();
+  }
+  insertNegatedAttributes(transaction, parent, currPos, negatedAttributes);
+};
+const cleanupFormattingGap = (transaction, start, curr, startAttributes, currAttributes) => {
+  let end = start;
+  const endFormats = create$4();
+  while (end && (!end.countable || end.deleted)) {
+    if (!end.deleted && end.content.constructor === ContentFormat2) {
+      const cf = (
+        /** @type {ContentFormat} */
+        end.content
+      );
+      endFormats.set(cf.key, cf);
+    }
+    end = end.right;
+  }
+  let cleanups = 0;
+  let reachedCurr = false;
+  while (start !== end) {
+    if (curr === start) {
+      reachedCurr = true;
+    }
+    if (!start.deleted) {
+      const content = start.content;
+      switch (content.constructor) {
+        case ContentFormat2: {
+          const { key, value } = (
+            /** @type {ContentFormat} */
+            content
+          );
+          const startAttrValue = startAttributes.get(key) ?? null;
+          if (endFormats.get(key) !== content || startAttrValue === value) {
+            start.delete(transaction);
+            cleanups++;
+            if (!reachedCurr && (currAttributes.get(key) ?? null) === value && startAttrValue !== value) {
+              if (startAttrValue === null) {
+                currAttributes.delete(key);
+              } else {
+                currAttributes.set(key, startAttrValue);
+              }
+            }
+          }
+          if (!reachedCurr && !start.deleted) {
+            updateCurrentAttributes(
+              currAttributes,
+              /** @type {ContentFormat} */
+              content
+            );
+          }
+          break;
+        }
+      }
+    }
+    start = /** @type {Item} */
+    start.right;
+  }
+  return cleanups;
+};
+const cleanupContextlessFormattingGap = (transaction, item) => {
+  while (item && item.right && (item.right.deleted || !item.right.countable)) {
+    item = item.right;
+  }
+  const attrs = /* @__PURE__ */ new Set();
+  while (item && (item.deleted || !item.countable)) {
+    if (!item.deleted && item.content.constructor === ContentFormat2) {
+      const key = (
+        /** @type {ContentFormat} */
+        item.content.key
+      );
+      if (attrs.has(key)) {
+        item.delete(transaction);
+      } else {
+        attrs.add(key);
+      }
+    }
+    item = item.left;
+  }
+};
+const cleanupYTextFormatting = (type) => {
+  let res = 0;
+  transact(
+    /** @type {Doc} */
+    type.doc,
+    (transaction) => {
+      let start = (
+        /** @type {Item} */
+        type._start
+      );
+      let end = type._start;
+      let startAttributes = create$4();
+      const currentAttributes = copy(startAttributes);
+      while (end) {
+        if (end.deleted === false) {
+          switch (end.content.constructor) {
+            case ContentFormat2:
+              updateCurrentAttributes(
+                currentAttributes,
+                /** @type {ContentFormat} */
+                end.content
+              );
+              break;
+            default:
+              res += cleanupFormattingGap(transaction, start, end, startAttributes, currentAttributes);
+              startAttributes = copy(currentAttributes);
+              start = end;
+              break;
+          }
+        }
+        end = end.right;
+      }
+    }
+  );
+  return res;
+};
+const cleanupYTextAfterTransaction = (transaction) => {
+  const needFullCleanup = /* @__PURE__ */ new Set();
+  const doc = transaction.doc;
+  for (const [client, afterClock] of transaction.afterState.entries()) {
+    const clock = transaction.beforeState.get(client) || 0;
+    if (afterClock === clock) {
+      continue;
+    }
+    iterateStructs(
+      transaction,
+      /** @type {Array<Item|GC>} */
+      doc.store.clients.get(client),
+      clock,
+      afterClock,
+      (item) => {
+        if (!item.deleted && /** @type {Item} */
+        item.content.constructor === ContentFormat2 && item.constructor !== GC2) {
+          needFullCleanup.add(
+            /** @type {any} */
+            item.parent
+          );
+        }
+      }
+    );
+  }
+  transact(doc, (t) => {
+    iterateDeletedStructs(transaction, transaction.deleteSet, (item) => {
+      if (item instanceof GC2 || !/** @type {YText} */
+      item.parent._hasFormatting || needFullCleanup.has(
+        /** @type {YText} */
+        item.parent
+      )) {
+        return;
+      }
+      const parent = (
+        /** @type {YText} */
+        item.parent
+      );
+      if (item.content.constructor === ContentFormat2) {
+        needFullCleanup.add(parent);
+      } else {
+        cleanupContextlessFormattingGap(t, item);
+      }
+    });
+    for (const yText of needFullCleanup) {
+      cleanupYTextFormatting(yText);
+    }
+  });
+};
+const deleteText = (transaction, currPos, length2) => {
+  const startLength = length2;
+  const startAttrs = copy(currPos.currentAttributes);
+  const start = currPos.right;
+  while (length2 > 0 && currPos.right !== null) {
+    if (currPos.right.deleted === false) {
+      switch (currPos.right.content.constructor) {
+        case ContentType2:
+        case ContentEmbed2:
+        case ContentString2:
+          if (length2 < currPos.right.length) {
+            getItemCleanStart(transaction, createID(currPos.right.id.client, currPos.right.id.clock + length2));
+          }
+          length2 -= currPos.right.length;
+          currPos.right.delete(transaction);
+          break;
+      }
+    }
+    currPos.forward();
+  }
+  if (start) {
+    cleanupFormattingGap(transaction, start, currPos.right, startAttrs, currPos.currentAttributes);
+  }
+  const parent = (
+    /** @type {AbstractType<any>} */
+    /** @type {Item} */
+    (currPos.left || currPos.right).parent
+  );
+  if (parent._searchMarker) {
+    updateMarkerChanges(parent._searchMarker, currPos.index, -startLength + length2);
+  }
+  return currPos;
+};
+class YTextEvent2 extends YEvent2 {
+  /**
+   * @param {YText} ytext
+   * @param {Transaction} transaction
+   * @param {Set<any>} subs The keys that changed
+   */
+  constructor(ytext, transaction, subs) {
+    super(ytext, transaction);
+    this.childListChanged = false;
+    this.keysChanged = /* @__PURE__ */ new Set();
+    subs.forEach((sub) => {
+      if (sub === null) {
+        this.childListChanged = true;
+      } else {
+        this.keysChanged.add(sub);
+      }
+    });
+  }
+  /**
+   * @type {{added:Set<Item>,deleted:Set<Item>,keys:Map<string,{action:'add'|'update'|'delete',oldValue:any}>,delta:Array<{insert?:Array<any>|string, delete?:number, retain?:number}>}}
+   */
+  get changes() {
+    if (this._changes === null) {
+      const changes = {
+        keys: this.keys,
+        delta: this.delta,
+        added: /* @__PURE__ */ new Set(),
+        deleted: /* @__PURE__ */ new Set()
+      };
+      this._changes = changes;
+    }
+    return (
+      /** @type {any} */
+      this._changes
+    );
+  }
+  /**
+   * Compute the changes in the delta format.
+   * A {@link https://quilljs.com/docs/delta/|Quill Delta}) that represents the changes on the document.
+   *
+   * @type {Array<{insert?:string|object|AbstractType<any>, delete?:number, retain?:number, attributes?: Object<string,any>}>}
+   *
+   * @public
+   */
+  get delta() {
+    if (this._delta === null) {
+      const y = (
+        /** @type {Doc} */
+        this.target.doc
+      );
+      const delta = [];
+      transact(y, (transaction) => {
+        const currentAttributes = /* @__PURE__ */ new Map();
+        const oldAttributes = /* @__PURE__ */ new Map();
+        let item = this.target._start;
+        let action = null;
+        const attributes = {};
+        let insert = "";
+        let retain = 0;
+        let deleteLen = 0;
+        const addOp = () => {
+          if (action !== null) {
+            let op = null;
+            switch (action) {
+              case "delete":
+                if (deleteLen > 0) {
+                  op = { delete: deleteLen };
+                }
+                deleteLen = 0;
+                break;
+              case "insert":
+                if (typeof insert === "object" || insert.length > 0) {
+                  op = { insert };
+                  if (currentAttributes.size > 0) {
+                    op.attributes = {};
+                    currentAttributes.forEach((value, key) => {
+                      if (value !== null) {
+                        op.attributes[key] = value;
+                      }
+                    });
+                  }
+                }
+                insert = "";
+                break;
+              case "retain":
+                if (retain > 0) {
+                  op = { retain };
+                  if (!isEmpty(attributes)) {
+                    op.attributes = assign({}, attributes);
+                  }
+                }
+                retain = 0;
+                break;
+            }
+            if (op) delta.push(op);
+            action = null;
+          }
+        };
+        while (item !== null) {
+          switch (item.content.constructor) {
+            case ContentType2:
+            case ContentEmbed2:
+              if (this.adds(item)) {
+                if (!this.deletes(item)) {
+                  addOp();
+                  action = "insert";
+                  insert = item.content.getContent()[0];
+                  addOp();
+                }
+              } else if (this.deletes(item)) {
+                if (action !== "delete") {
+                  addOp();
+                  action = "delete";
+                }
+                deleteLen += 1;
+              } else if (!item.deleted) {
+                if (action !== "retain") {
+                  addOp();
+                  action = "retain";
+                }
+                retain += 1;
+              }
+              break;
+            case ContentString2:
+              if (this.adds(item)) {
+                if (!this.deletes(item)) {
+                  if (action !== "insert") {
+                    addOp();
+                    action = "insert";
+                  }
+                  insert += /** @type {ContentString} */
+                  item.content.str;
+                }
+              } else if (this.deletes(item)) {
+                if (action !== "delete") {
+                  addOp();
+                  action = "delete";
+                }
+                deleteLen += item.length;
+              } else if (!item.deleted) {
+                if (action !== "retain") {
+                  addOp();
+                  action = "retain";
+                }
+                retain += item.length;
+              }
+              break;
+            case ContentFormat2: {
+              const { key, value } = (
+                /** @type {ContentFormat} */
+                item.content
+              );
+              if (this.adds(item)) {
+                if (!this.deletes(item)) {
+                  const curVal = currentAttributes.get(key) ?? null;
+                  if (!equalAttrs(curVal, value)) {
+                    if (action === "retain") {
+                      addOp();
+                    }
+                    if (equalAttrs(value, oldAttributes.get(key) ?? null)) {
+                      delete attributes[key];
+                    } else {
+                      attributes[key] = value;
+                    }
+                  } else if (value !== null) {
+                    item.delete(transaction);
+                  }
+                }
+              } else if (this.deletes(item)) {
+                oldAttributes.set(key, value);
+                const curVal = currentAttributes.get(key) ?? null;
+                if (!equalAttrs(curVal, value)) {
+                  if (action === "retain") {
+                    addOp();
+                  }
+                  attributes[key] = curVal;
+                }
+              } else if (!item.deleted) {
+                oldAttributes.set(key, value);
+                const attr = attributes[key];
+                if (attr !== void 0) {
+                  if (!equalAttrs(attr, value)) {
+                    if (action === "retain") {
+                      addOp();
+                    }
+                    if (value === null) {
+                      delete attributes[key];
+                    } else {
+                      attributes[key] = value;
+                    }
+                  } else if (attr !== null) {
+                    item.delete(transaction);
+                  }
+                }
+              }
+              if (!item.deleted) {
+                if (action === "insert") {
+                  addOp();
+                }
+                updateCurrentAttributes(
+                  currentAttributes,
+                  /** @type {ContentFormat} */
+                  item.content
+                );
+              }
+              break;
+            }
+          }
+          item = item.right;
+        }
+        addOp();
+        while (delta.length > 0) {
+          const lastOp = delta[delta.length - 1];
+          if (lastOp.retain !== void 0 && lastOp.attributes === void 0) {
+            delta.pop();
+          } else {
+            break;
+          }
+        }
+      });
+      this._delta = delta;
+    }
+    return (
+      /** @type {any} */
+      this._delta
+    );
+  }
+}
+class YText2 extends AbstractType2 {
+  /**
+   * @param {String} [string] The initial value of the YText.
+   */
+  constructor(string) {
+    super();
+    this._pending = string !== void 0 ? [() => this.insert(0, string)] : [];
+    this._searchMarker = [];
+    this._hasFormatting = false;
+  }
+  /**
+   * Number of characters of this text type.
+   *
+   * @type {number}
+   */
+  get length() {
+    this.doc ?? warnPrematureAccess();
+    return this._length;
+  }
+  /**
+   * @param {Doc} y
+   * @param {Item} item
+   */
+  _integrate(y, item) {
+    super._integrate(y, item);
+    try {
+      this._pending.forEach((f) => f());
+    } catch (e) {
+      console.error(e);
+    }
+    this._pending = null;
+  }
+  _copy() {
+    return new YText2();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YText}
+   */
+  clone() {
+    const text = new YText2();
+    text.applyDelta(this.toDelta());
+    return text;
+  }
+  /**
+   * Creates YTextEvent and calls observers.
+   *
+   * @param {Transaction} transaction
+   * @param {Set<null|string>} parentSubs Keys changed on this type. `null` if list was modified.
+   */
+  _callObserver(transaction, parentSubs) {
+    super._callObserver(transaction, parentSubs);
+    const event = new YTextEvent2(this, transaction, parentSubs);
+    callTypeObservers(this, transaction, event);
+    if (!transaction.local && this._hasFormatting) {
+      transaction._needFormattingCleanup = true;
+    }
+  }
+  /**
+   * Returns the unformatted string representation of this YText type.
+   *
+   * @public
+   */
+  toString() {
+    this.doc ?? warnPrematureAccess();
+    let str = "";
+    let n = this._start;
+    while (n !== null) {
+      if (!n.deleted && n.countable && n.content.constructor === ContentString2) {
+        str += /** @type {ContentString} */
+        n.content.str;
+      }
+      n = n.right;
+    }
+    return str;
+  }
+  /**
+   * Returns the unformatted string representation of this YText type.
+   *
+   * @return {string}
+   * @public
+   */
+  toJSON() {
+    return this.toString();
+  }
+  /**
+   * Apply a {@link Delta} on this shared YText type.
+   *
+   * @param {Array<any>} delta The changes to apply on this element.
+   * @param {object}  opts
+   * @param {boolean} [opts.sanitize] Sanitize input delta. Removes ending newlines if set to true.
+   *
+   *
+   * @public
+   */
+  applyDelta(delta, { sanitize = true } = {}) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        const currPos = new ItemTextListPosition2(null, this._start, 0, /* @__PURE__ */ new Map());
+        for (let i = 0; i < delta.length; i++) {
+          const op = delta[i];
+          if (op.insert !== void 0) {
+            const ins = !sanitize && typeof op.insert === "string" && i === delta.length - 1 && currPos.right === null && op.insert.slice(-1) === "\n" ? op.insert.slice(0, -1) : op.insert;
+            if (typeof ins !== "string" || ins.length > 0) {
+              insertText(transaction, this, currPos, ins, op.attributes || {});
+            }
+          } else if (op.retain !== void 0) {
+            formatText(transaction, this, currPos, op.retain, op.attributes || {});
+          } else if (op.delete !== void 0) {
+            deleteText(transaction, currPos, op.delete);
+          }
+        }
+      });
+    } else {
+      this._pending.push(() => this.applyDelta(delta));
+    }
+  }
+  /**
+   * Returns the Delta representation of this YText type.
+   *
+   * @param {Snapshot} [snapshot]
+   * @param {Snapshot} [prevSnapshot]
+   * @param {function('removed' | 'added', ID):any} [computeYChange]
+   * @return {any} The Delta representation of this type.
+   *
+   * @public
+   */
+  toDelta(snapshot, prevSnapshot, computeYChange) {
+    this.doc ?? warnPrematureAccess();
+    const ops = [];
+    const currentAttributes = /* @__PURE__ */ new Map();
+    const doc = (
+      /** @type {Doc} */
+      this.doc
+    );
+    let str = "";
+    let n = this._start;
+    function packStr() {
+      if (str.length > 0) {
+        const attributes = {};
+        let addAttributes = false;
+        currentAttributes.forEach((value, key) => {
+          addAttributes = true;
+          attributes[key] = value;
+        });
+        const op = { insert: str };
+        if (addAttributes) {
+          op.attributes = attributes;
+        }
+        ops.push(op);
+        str = "";
+      }
+    }
+    const computeDelta = () => {
+      while (n !== null) {
+        if (isVisible(n, snapshot) || prevSnapshot !== void 0 && isVisible(n, prevSnapshot)) {
+          switch (n.content.constructor) {
+            case ContentString2: {
+              const cur = currentAttributes.get("ychange");
+              if (snapshot !== void 0 && !isVisible(n, snapshot)) {
+                if (cur === void 0 || cur.user !== n.id.client || cur.type !== "removed") {
+                  packStr();
+                  currentAttributes.set("ychange", computeYChange ? computeYChange("removed", n.id) : { type: "removed" });
+                }
+              } else if (prevSnapshot !== void 0 && !isVisible(n, prevSnapshot)) {
+                if (cur === void 0 || cur.user !== n.id.client || cur.type !== "added") {
+                  packStr();
+                  currentAttributes.set("ychange", computeYChange ? computeYChange("added", n.id) : { type: "added" });
+                }
+              } else if (cur !== void 0) {
+                packStr();
+                currentAttributes.delete("ychange");
+              }
+              str += /** @type {ContentString} */
+              n.content.str;
+              break;
+            }
+            case ContentType2:
+            case ContentEmbed2: {
+              packStr();
+              const op = {
+                insert: n.content.getContent()[0]
+              };
+              if (currentAttributes.size > 0) {
+                const attrs = (
+                  /** @type {Object<string,any>} */
+                  {}
+                );
+                op.attributes = attrs;
+                currentAttributes.forEach((value, key) => {
+                  attrs[key] = value;
+                });
+              }
+              ops.push(op);
+              break;
+            }
+            case ContentFormat2:
+              if (isVisible(n, snapshot)) {
+                packStr();
+                updateCurrentAttributes(
+                  currentAttributes,
+                  /** @type {ContentFormat} */
+                  n.content
+                );
+              }
+              break;
+          }
+        }
+        n = n.right;
+      }
+      packStr();
+    };
+    if (snapshot || prevSnapshot) {
+      transact(doc, (transaction) => {
+        if (snapshot) {
+          splitSnapshotAffectedStructs(transaction, snapshot);
+        }
+        if (prevSnapshot) {
+          splitSnapshotAffectedStructs(transaction, prevSnapshot);
+        }
+        computeDelta();
+      }, "cleanup");
+    } else {
+      computeDelta();
+    }
+    return ops;
+  }
+  /**
+   * Insert text at a given index.
+   *
+   * @param {number} index The index at which to start inserting.
+   * @param {String} text The text to insert at the specified position.
+   * @param {TextAttributes} [attributes] Optionally define some formatting
+   *                                    information to apply on the inserted
+   *                                    Text.
+   * @public
+   */
+  insert(index, text, attributes) {
+    if (text.length <= 0) {
+      return;
+    }
+    const y = this.doc;
+    if (y !== null) {
+      transact(y, (transaction) => {
+        const pos = findPosition(transaction, this, index, !attributes);
+        if (!attributes) {
+          attributes = {};
+          pos.currentAttributes.forEach((v, k) => {
+            attributes[k] = v;
+          });
+        }
+        insertText(transaction, this, pos, text, attributes);
+      });
+    } else {
+      this._pending.push(() => this.insert(index, text, attributes));
+    }
+  }
+  /**
+   * Inserts an embed at a index.
+   *
+   * @param {number} index The index to insert the embed at.
+   * @param {Object | AbstractType<any>} embed The Object that represents the embed.
+   * @param {TextAttributes} [attributes] Attribute information to apply on the
+   *                                    embed
+   *
+   * @public
+   */
+  insertEmbed(index, embed, attributes) {
+    const y = this.doc;
+    if (y !== null) {
+      transact(y, (transaction) => {
+        const pos = findPosition(transaction, this, index, !attributes);
+        insertText(transaction, this, pos, embed, attributes || {});
+      });
+    } else {
+      this._pending.push(() => this.insertEmbed(index, embed, attributes || {}));
+    }
+  }
+  /**
+   * Deletes text starting from an index.
+   *
+   * @param {number} index Index at which to start deleting.
+   * @param {number} length The number of characters to remove. Defaults to 1.
+   *
+   * @public
+   */
+  delete(index, length2) {
+    if (length2 === 0) {
+      return;
+    }
+    const y = this.doc;
+    if (y !== null) {
+      transact(y, (transaction) => {
+        deleteText(transaction, findPosition(transaction, this, index, true), length2);
+      });
+    } else {
+      this._pending.push(() => this.delete(index, length2));
+    }
+  }
+  /**
+   * Assigns properties to a range of text.
+   *
+   * @param {number} index The position where to start formatting.
+   * @param {number} length The amount of characters to assign properties to.
+   * @param {TextAttributes} attributes Attribute information to apply on the
+   *                                    text.
+   *
+   * @public
+   */
+  format(index, length2, attributes) {
+    if (length2 === 0) {
+      return;
+    }
+    const y = this.doc;
+    if (y !== null) {
+      transact(y, (transaction) => {
+        const pos = findPosition(transaction, this, index, false);
+        if (pos.right === null) {
+          return;
+        }
+        formatText(transaction, this, pos, length2, attributes);
+      });
+    } else {
+      this._pending.push(() => this.format(index, length2, attributes));
+    }
+  }
+  /**
+   * Removes an attribute.
+   *
+   * @note Xml-Text nodes don't have attributes. You can use this feature to assign properties to complete text-blocks.
+   *
+   * @param {String} attributeName The attribute name that is to be removed.
+   *
+   * @public
+   */
+  removeAttribute(attributeName) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        typeMapDelete(transaction, this, attributeName);
+      });
+    } else {
+      this._pending.push(() => this.removeAttribute(attributeName));
+    }
+  }
+  /**
+   * Sets or updates an attribute.
+   *
+   * @note Xml-Text nodes don't have attributes. You can use this feature to assign properties to complete text-blocks.
+   *
+   * @param {String} attributeName The attribute name that is to be set.
+   * @param {any} attributeValue The attribute value that is to be set.
+   *
+   * @public
+   */
+  setAttribute(attributeName, attributeValue) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        typeMapSet(transaction, this, attributeName, attributeValue);
+      });
+    } else {
+      this._pending.push(() => this.setAttribute(attributeName, attributeValue));
+    }
+  }
+  /**
+   * Returns an attribute value that belongs to the attribute name.
+   *
+   * @note Xml-Text nodes don't have attributes. You can use this feature to assign properties to complete text-blocks.
+   *
+   * @param {String} attributeName The attribute name that identifies the
+   *                               queried value.
+   * @return {any} The queried attribute value.
+   *
+   * @public
+   */
+  getAttribute(attributeName) {
+    return (
+      /** @type {any} */
+      typeMapGet(this, attributeName)
+    );
+  }
+  /**
+   * Returns all attribute name/value pairs in a JSON Object.
+   *
+   * @note Xml-Text nodes don't have attributes. You can use this feature to assign properties to complete text-blocks.
+   *
+   * @return {Object<string, any>} A JSON Object that describes the attributes.
+   *
+   * @public
+   */
+  getAttributes() {
+    return typeMapGetAll(this);
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YTextRefID);
+  }
+}
+const readYText = (_decoder) => new YText2();
+class YXmlTreeWalker2 {
+  /**
+   * @param {YXmlFragment | YXmlElement} root
+   * @param {function(AbstractType<any>):boolean} [f]
+   */
+  constructor(root, f = () => true) {
+    this._filter = f;
+    this._root = root;
+    this._currentNode = /** @type {Item} */
+    root._start;
+    this._firstCall = true;
+    root.doc ?? warnPrematureAccess();
+  }
+  [Symbol.iterator]() {
+    return this;
+  }
+  /**
+   * Get the next node.
+   *
+   * @return {IteratorResult<YXmlElement|YXmlText|YXmlHook>} The next node.
+   *
+   * @public
+   */
+  next() {
+    let n = this._currentNode;
+    let type = n && n.content && /** @type {any} */
+    n.content.type;
+    if (n !== null && (!this._firstCall || n.deleted || !this._filter(type))) {
+      do {
+        type = /** @type {any} */
+        n.content.type;
+        if (!n.deleted && (type.constructor === YXmlElement2 || type.constructor === YXmlFragment2) && type._start !== null) {
+          n = type._start;
+        } else {
+          while (n !== null) {
+            const nxt = n.next;
+            if (nxt !== null) {
+              n = nxt;
+              break;
+            } else if (n.parent === this._root) {
+              n = null;
+            } else {
+              n = /** @type {AbstractType<any>} */
+              n.parent._item;
+            }
+          }
+        }
+      } while (n !== null && (n.deleted || !this._filter(
+        /** @type {ContentType} */
+        n.content.type
+      )));
+    }
+    this._firstCall = false;
+    if (n === null) {
+      return { value: void 0, done: true };
+    }
+    this._currentNode = n;
+    return { value: (
+      /** @type {any} */
+      n.content.type
+    ), done: false };
+  }
+}
+class YXmlFragment2 extends AbstractType2 {
+  constructor() {
+    super();
+    this._prelimContent = [];
+  }
+  /**
+   * @type {YXmlElement|YXmlText|null}
+   */
+  get firstChild() {
+    const first = this._first;
+    return first ? first.content.getContent()[0] : null;
+  }
+  /**
+   * Integrate this type into the Yjs instance.
+   *
+   * * Save this struct in the os
+   * * This type is sent to other client
+   * * Observer functions are fired
+   *
+   * @param {Doc} y The Yjs instance
+   * @param {Item} item
+   */
+  _integrate(y, item) {
+    super._integrate(y, item);
+    this.insert(
+      0,
+      /** @type {Array<any>} */
+      this._prelimContent
+    );
+    this._prelimContent = null;
+  }
+  _copy() {
+    return new YXmlFragment2();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YXmlFragment}
+   */
+  clone() {
+    const el = new YXmlFragment2();
+    el.insert(0, this.toArray().map((item) => item instanceof AbstractType2 ? item.clone() : item));
+    return el;
+  }
+  get length() {
+    this.doc ?? warnPrematureAccess();
+    return this._prelimContent === null ? this._length : this._prelimContent.length;
+  }
+  /**
+   * Create a subtree of childNodes.
+   *
+   * @example
+   * const walker = elem.createTreeWalker(dom => dom.nodeName === 'div')
+   * for (let node in walker) {
+   *   // `node` is a div node
+   *   nop(node)
+   * }
+   *
+   * @param {function(AbstractType<any>):boolean} filter Function that is called on each child element and
+   *                          returns a Boolean indicating whether the child
+   *                          is to be included in the subtree.
+   * @return {YXmlTreeWalker} A subtree and a position within it.
+   *
+   * @public
+   */
+  createTreeWalker(filter) {
+    return new YXmlTreeWalker2(this, filter);
+  }
+  /**
+   * Returns the first YXmlElement that matches the query.
+   * Similar to DOM's {@link querySelector}.
+   *
+   * Query support:
+   *   - tagname
+   * TODO:
+   *   - id
+   *   - attribute
+   *
+   * @param {CSS_Selector} query The query on the children.
+   * @return {YXmlElement|YXmlText|YXmlHook|null} The first element that matches the query or null.
+   *
+   * @public
+   */
+  querySelector(query) {
+    query = query.toUpperCase();
+    const iterator = new YXmlTreeWalker2(this, (element) => element.nodeName && element.nodeName.toUpperCase() === query);
+    const next = iterator.next();
+    if (next.done) {
+      return null;
+    } else {
+      return next.value;
+    }
+  }
+  /**
+   * Returns all YXmlElements that match the query.
+   * Similar to Dom's {@link querySelectorAll}.
+   *
+   * @todo Does not yet support all queries. Currently only query by tagName.
+   *
+   * @param {CSS_Selector} query The query on the children
+   * @return {Array<YXmlElement|YXmlText|YXmlHook|null>} The elements that match this query.
+   *
+   * @public
+   */
+  querySelectorAll(query) {
+    query = query.toUpperCase();
+    return from(new YXmlTreeWalker2(this, (element) => element.nodeName && element.nodeName.toUpperCase() === query));
+  }
+  /**
+   * Creates YXmlEvent and calls observers.
+   *
+   * @param {Transaction} transaction
+   * @param {Set<null|string>} parentSubs Keys changed on this type. `null` if list was modified.
+   */
+  _callObserver(transaction, parentSubs) {
+    callTypeObservers(this, transaction, new YXmlEvent2(this, parentSubs, transaction));
+  }
+  /**
+   * Get the string representation of all the children of this YXmlFragment.
+   *
+   * @return {string} The string representation of all children.
+   */
+  toString() {
+    return typeListMap(this, (xml) => xml.toString()).join("");
+  }
+  /**
+   * @return {string}
+   */
+  toJSON() {
+    return this.toString();
+  }
+  /**
+   * Creates a Dom Element that mirrors this YXmlElement.
+   *
+   * @param {Document} [_document=document] The document object (you must define
+   *                                        this when calling this method in
+   *                                        nodejs)
+   * @param {Object<string, any>} [hooks={}] Optional property to customize how hooks
+   *                                             are presented in the DOM
+   * @param {any} [binding] You should not set this property. This is
+   *                               used if DomBinding wants to create a
+   *                               association to the created DOM type.
+   * @return {Node} The {@link https://developer.mozilla.org/en-US/docs/Web/API/Element|Dom Element}
+   *
+   * @public
+   */
+  toDOM(_document = document, hooks = {}, binding) {
+    const fragment = _document.createDocumentFragment();
+    if (binding !== void 0) {
+      binding._createAssociation(fragment, this);
+    }
+    typeListForEach(this, (xmlType) => {
+      fragment.insertBefore(xmlType.toDOM(_document, hooks, binding), null);
+    });
+    return fragment;
+  }
+  /**
+   * Inserts new content at an index.
+   *
+   * @example
+   *  // Insert character 'a' at position 0
+   *  xml.insert(0, [new Y.XmlText('text')])
+   *
+   * @param {number} index The index to insert content at
+   * @param {Array<YXmlElement|YXmlText>} content The array of content
+   */
+  insert(index, content) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        typeListInsertGenerics(transaction, this, index, content);
+      });
+    } else {
+      this._prelimContent.splice(index, 0, ...content);
+    }
+  }
+  /**
+   * Inserts new content at an index.
+   *
+   * @example
+   *  // Insert character 'a' at position 0
+   *  xml.insert(0, [new Y.XmlText('text')])
+   *
+   * @param {null|Item|YXmlElement|YXmlText} ref The index to insert content at
+   * @param {Array<YXmlElement|YXmlText>} content The array of content
+   */
+  insertAfter(ref, content) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        const refItem = ref && ref instanceof AbstractType2 ? ref._item : ref;
+        typeListInsertGenericsAfter(transaction, this, refItem, content);
+      });
+    } else {
+      const pc = (
+        /** @type {Array<any>} */
+        this._prelimContent
+      );
+      const index = ref === null ? 0 : pc.findIndex((el) => el === ref) + 1;
+      if (index === 0 && ref !== null) {
+        throw create$2("Reference item not found");
+      }
+      pc.splice(index, 0, ...content);
+    }
+  }
+  /**
+   * Deletes elements starting from an index.
+   *
+   * @param {number} index Index at which to start deleting elements
+   * @param {number} [length=1] The number of elements to remove. Defaults to 1.
+   */
+  delete(index, length2 = 1) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        typeListDelete(transaction, this, index, length2);
+      });
+    } else {
+      this._prelimContent.splice(index, length2);
+    }
+  }
+  /**
+   * Transforms this YArray to a JavaScript Array.
+   *
+   * @return {Array<YXmlElement|YXmlText|YXmlHook>}
+   */
+  toArray() {
+    return typeListToArray(this);
+  }
+  /**
+   * Appends content to this YArray.
+   *
+   * @param {Array<YXmlElement|YXmlText>} content Array of content to append.
+   */
+  push(content) {
+    this.insert(this.length, content);
+  }
+  /**
+   * Prepends content to this YArray.
+   *
+   * @param {Array<YXmlElement|YXmlText>} content Array of content to prepend.
+   */
+  unshift(content) {
+    this.insert(0, content);
+  }
+  /**
+   * Returns the i-th element from a YArray.
+   *
+   * @param {number} index The index of the element to return from the YArray
+   * @return {YXmlElement|YXmlText}
+   */
+  get(index) {
+    return typeListGet(this, index);
+  }
+  /**
+   * Returns a portion of this YXmlFragment into a JavaScript Array selected
+   * from start to end (end not included).
+   *
+   * @param {number} [start]
+   * @param {number} [end]
+   * @return {Array<YXmlElement|YXmlText>}
+   */
+  slice(start = 0, end = this.length) {
+    return typeListSlice(this, start, end);
+  }
+  /**
+   * Executes a provided function on once on every child element.
+   *
+   * @param {function(YXmlElement|YXmlText,number, typeof self):void} f A function to execute on every element of this YArray.
+   */
+  forEach(f) {
+    typeListForEach(this, f);
+  }
+  /**
+   * Transform the properties of this type to binary and write it to an
+   * BinaryEncoder.
+   *
+   * This is called when this Item is sent to a remote peer.
+   *
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder The encoder to write data to.
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YXmlFragmentRefID);
+  }
+}
+const readYXmlFragment = (_decoder) => new YXmlFragment2();
+class YXmlElement2 extends YXmlFragment2 {
+  constructor(nodeName = "UNDEFINED") {
+    super();
+    this.nodeName = nodeName;
+    this._prelimAttrs = /* @__PURE__ */ new Map();
+  }
+  /**
+   * @type {YXmlElement|YXmlText|null}
+   */
+  get nextSibling() {
+    const n = this._item ? this._item.next : null;
+    return n ? (
+      /** @type {YXmlElement|YXmlText} */
+      /** @type {ContentType} */
+      n.content.type
+    ) : null;
+  }
+  /**
+   * @type {YXmlElement|YXmlText|null}
+   */
+  get prevSibling() {
+    const n = this._item ? this._item.prev : null;
+    return n ? (
+      /** @type {YXmlElement|YXmlText} */
+      /** @type {ContentType} */
+      n.content.type
+    ) : null;
+  }
+  /**
+   * Integrate this type into the Yjs instance.
+   *
+   * * Save this struct in the os
+   * * This type is sent to other client
+   * * Observer functions are fired
+   *
+   * @param {Doc} y The Yjs instance
+   * @param {Item} item
+   */
+  _integrate(y, item) {
+    super._integrate(y, item);
+    /** @type {Map<string, any>} */
+    this._prelimAttrs.forEach((value, key) => {
+      this.setAttribute(key, value);
+    });
+    this._prelimAttrs = null;
+  }
+  /**
+   * Creates an Item with the same effect as this Item (without position effect)
+   *
+   * @return {YXmlElement}
+   */
+  _copy() {
+    return new YXmlElement2(this.nodeName);
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YXmlElement<KV>}
+   */
+  clone() {
+    const el = new YXmlElement2(this.nodeName);
+    const attrs = this.getAttributes();
+    forEach(attrs, (value, key) => {
+      el.setAttribute(
+        key,
+        /** @type {any} */
+        value
+      );
+    });
+    el.insert(0, this.toArray().map((v) => v instanceof AbstractType2 ? v.clone() : v));
+    return el;
+  }
+  /**
+   * Returns the XML serialization of this YXmlElement.
+   * The attributes are ordered by attribute-name, so you can easily use this
+   * method to compare YXmlElements
+   *
+   * @return {string} The string representation of this type.
+   *
+   * @public
+   */
+  toString() {
+    const attrs = this.getAttributes();
+    const stringBuilder = [];
+    const keys2 = [];
+    for (const key in attrs) {
+      keys2.push(key);
+    }
+    keys2.sort();
+    const keysLen = keys2.length;
+    for (let i = 0; i < keysLen; i++) {
+      const key = keys2[i];
+      stringBuilder.push(key + '="' + attrs[key] + '"');
+    }
+    const nodeName = this.nodeName.toLocaleLowerCase();
+    const attrsString = stringBuilder.length > 0 ? " " + stringBuilder.join(" ") : "";
+    return `<${nodeName}${attrsString}>${super.toString()}</${nodeName}>`;
+  }
+  /**
+   * Removes an attribute from this YXmlElement.
+   *
+   * @param {string} attributeName The attribute name that is to be removed.
+   *
+   * @public
+   */
+  removeAttribute(attributeName) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        typeMapDelete(transaction, this, attributeName);
+      });
+    } else {
+      this._prelimAttrs.delete(attributeName);
+    }
+  }
+  /**
+   * Sets or updates an attribute.
+   *
+   * @template {keyof KV & string} KEY
+   *
+   * @param {KEY} attributeName The attribute name that is to be set.
+   * @param {KV[KEY]} attributeValue The attribute value that is to be set.
+   *
+   * @public
+   */
+  setAttribute(attributeName, attributeValue) {
+    if (this.doc !== null) {
+      transact(this.doc, (transaction) => {
+        typeMapSet(transaction, this, attributeName, attributeValue);
+      });
+    } else {
+      this._prelimAttrs.set(attributeName, attributeValue);
+    }
+  }
+  /**
+   * Returns an attribute value that belongs to the attribute name.
+   *
+   * @template {keyof KV & string} KEY
+   *
+   * @param {KEY} attributeName The attribute name that identifies the
+   *                               queried value.
+   * @return {KV[KEY]|undefined} The queried attribute value.
+   *
+   * @public
+   */
+  getAttribute(attributeName) {
+    return (
+      /** @type {any} */
+      typeMapGet(this, attributeName)
+    );
+  }
+  /**
+   * Returns whether an attribute exists
+   *
+   * @param {string} attributeName The attribute name to check for existence.
+   * @return {boolean} whether the attribute exists.
+   *
+   * @public
+   */
+  hasAttribute(attributeName) {
+    return (
+      /** @type {any} */
+      typeMapHas(this, attributeName)
+    );
+  }
+  /**
+   * Returns all attribute name/value pairs in a JSON Object.
+   *
+   * @param {Snapshot} [snapshot]
+   * @return {{ [Key in Extract<keyof KV,string>]?: KV[Key]}} A JSON Object that describes the attributes.
+   *
+   * @public
+   */
+  getAttributes(snapshot) {
+    return (
+      /** @type {any} */
+      snapshot ? typeMapGetAllSnapshot(this, snapshot) : typeMapGetAll(this)
+    );
+  }
+  /**
+   * Creates a Dom Element that mirrors this YXmlElement.
+   *
+   * @param {Document} [_document=document] The document object (you must define
+   *                                        this when calling this method in
+   *                                        nodejs)
+   * @param {Object<string, any>} [hooks={}] Optional property to customize how hooks
+   *                                             are presented in the DOM
+   * @param {any} [binding] You should not set this property. This is
+   *                               used if DomBinding wants to create a
+   *                               association to the created DOM type.
+   * @return {Node} The {@link https://developer.mozilla.org/en-US/docs/Web/API/Element|Dom Element}
+   *
+   * @public
+   */
+  toDOM(_document = document, hooks = {}, binding) {
+    const dom = _document.createElement(this.nodeName);
+    const attrs = this.getAttributes();
+    for (const key in attrs) {
+      const value = attrs[key];
+      if (typeof value === "string") {
+        dom.setAttribute(key, value);
+      }
+    }
+    typeListForEach(this, (yxml) => {
+      dom.appendChild(yxml.toDOM(_document, hooks, binding));
+    });
+    if (binding !== void 0) {
+      binding._createAssociation(dom, this);
+    }
+    return dom;
+  }
+  /**
+   * Transform the properties of this type to binary and write it to an
+   * BinaryEncoder.
+   *
+   * This is called when this Item is sent to a remote peer.
+   *
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder The encoder to write data to.
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YXmlElementRefID);
+    encoder.writeKey(this.nodeName);
+  }
+}
+const readYXmlElement = (decoder) => new YXmlElement2(decoder.readKey());
+class YXmlEvent2 extends YEvent2 {
+  /**
+   * @param {YXmlElement|YXmlText|YXmlFragment} target The target on which the event is created.
+   * @param {Set<string|null>} subs The set of changed attributes. `null` is included if the
+   *                   child list changed.
+   * @param {Transaction} transaction The transaction instance with which the
+   *                                  change was created.
+   */
+  constructor(target, subs, transaction) {
+    super(target, transaction);
+    this.childListChanged = false;
+    this.attributesChanged = /* @__PURE__ */ new Set();
+    subs.forEach((sub) => {
+      if (sub === null) {
+        this.childListChanged = true;
+      } else {
+        this.attributesChanged.add(sub);
+      }
+    });
+  }
+}
+class YXmlHook2 extends YMap2 {
+  /**
+   * @param {string} hookName nodeName of the Dom Node.
+   */
+  constructor(hookName) {
+    super();
+    this.hookName = hookName;
+  }
+  /**
+   * Creates an Item with the same effect as this Item (without position effect)
+   */
+  _copy() {
+    return new YXmlHook2(this.hookName);
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YXmlHook}
+   */
+  clone() {
+    const el = new YXmlHook2(this.hookName);
+    this.forEach((value, key) => {
+      el.set(key, value);
+    });
+    return el;
+  }
+  /**
+   * Creates a Dom Element that mirrors this YXmlElement.
+   *
+   * @param {Document} [_document=document] The document object (you must define
+   *                                        this when calling this method in
+   *                                        nodejs)
+   * @param {Object.<string, any>} [hooks] Optional property to customize how hooks
+   *                                             are presented in the DOM
+   * @param {any} [binding] You should not set this property. This is
+   *                               used if DomBinding wants to create a
+   *                               association to the created DOM type
+   * @return {Element} The {@link https://developer.mozilla.org/en-US/docs/Web/API/Element|Dom Element}
+   *
+   * @public
+   */
+  toDOM(_document = document, hooks = {}, binding) {
+    const hook = hooks[this.hookName];
+    let dom;
+    if (hook !== void 0) {
+      dom = hook.createDom(this);
+    } else {
+      dom = document.createElement(this.hookName);
+    }
+    dom.setAttribute("data-yjs-hook", this.hookName);
+    if (binding !== void 0) {
+      binding._createAssociation(dom, this);
+    }
+    return dom;
+  }
+  /**
+   * Transform the properties of this type to binary and write it to an
+   * BinaryEncoder.
+   *
+   * This is called when this Item is sent to a remote peer.
+   *
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder The encoder to write data to.
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YXmlHookRefID);
+    encoder.writeKey(this.hookName);
+  }
+}
+const readYXmlHook = (decoder) => new YXmlHook2(decoder.readKey());
+class YXmlText2 extends YText2 {
+  /**
+   * @type {YXmlElement|YXmlText|null}
+   */
+  get nextSibling() {
+    const n = this._item ? this._item.next : null;
+    return n ? (
+      /** @type {YXmlElement|YXmlText} */
+      /** @type {ContentType} */
+      n.content.type
+    ) : null;
+  }
+  /**
+   * @type {YXmlElement|YXmlText|null}
+   */
+  get prevSibling() {
+    const n = this._item ? this._item.prev : null;
+    return n ? (
+      /** @type {YXmlElement|YXmlText} */
+      /** @type {ContentType} */
+      n.content.type
+    ) : null;
+  }
+  _copy() {
+    return new YXmlText2();
+  }
+  /**
+   * Makes a copy of this data type that can be included somewhere else.
+   *
+   * Note that the content is only readable _after_ it has been included somewhere in the Ydoc.
+   *
+   * @return {YXmlText}
+   */
+  clone() {
+    const text = new YXmlText2();
+    text.applyDelta(this.toDelta());
+    return text;
+  }
+  /**
+   * Creates a Dom Element that mirrors this YXmlText.
+   *
+   * @param {Document} [_document=document] The document object (you must define
+   *                                        this when calling this method in
+   *                                        nodejs)
+   * @param {Object<string, any>} [hooks] Optional property to customize how hooks
+   *                                             are presented in the DOM
+   * @param {any} [binding] You should not set this property. This is
+   *                               used if DomBinding wants to create a
+   *                               association to the created DOM type.
+   * @return {Text} The {@link https://developer.mozilla.org/en-US/docs/Web/API/Element|Dom Element}
+   *
+   * @public
+   */
+  toDOM(_document = document, hooks, binding) {
+    const dom = _document.createTextNode(this.toString());
+    if (binding !== void 0) {
+      binding._createAssociation(dom, this);
+    }
+    return dom;
+  }
+  toString() {
+    return this.toDelta().map((delta) => {
+      const nestedNodes = [];
+      for (const nodeName in delta.attributes) {
+        const attrs = [];
+        for (const key in delta.attributes[nodeName]) {
+          attrs.push({ key, value: delta.attributes[nodeName][key] });
+        }
+        attrs.sort((a, b) => a.key < b.key ? -1 : 1);
+        nestedNodes.push({ nodeName, attrs });
+      }
+      nestedNodes.sort((a, b) => a.nodeName < b.nodeName ? -1 : 1);
+      let str = "";
+      for (let i = 0; i < nestedNodes.length; i++) {
+        const node = nestedNodes[i];
+        str += `<${node.nodeName}`;
+        for (let j = 0; j < node.attrs.length; j++) {
+          const attr = node.attrs[j];
+          str += ` ${attr.key}="${attr.value}"`;
+        }
+        str += ">";
+      }
+      str += delta.insert;
+      for (let i = nestedNodes.length - 1; i >= 0; i--) {
+        str += `</${nestedNodes[i].nodeName}>`;
+      }
+      return str;
+    }).join("");
+  }
+  /**
+   * @return {string}
+   */
+  toJSON() {
+    return this.toString();
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   */
+  _write(encoder) {
+    encoder.writeTypeRef(YXmlTextRefID);
+  }
+}
+const readYXmlText = (decoder) => new YXmlText2();
+class AbstractStruct2 {
+  /**
+   * @param {ID} id
+   * @param {number} length
+   */
+  constructor(id2, length2) {
+    this.id = id2;
+    this.length = length2;
+  }
+  /**
+   * @type {boolean}
+   */
+  get deleted() {
+    throw methodUnimplemented();
+  }
+  /**
+   * Merge this struct with the item to the right.
+   * This method is already assuming that `this.id.clock + this.length === this.id.clock`.
+   * Also this method does *not* remove right from StructStore!
+   * @param {AbstractStruct} right
+   * @return {boolean} whether this merged with right
+   */
+  mergeWith(right) {
+    return false;
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder The encoder to write data to.
+   * @param {number} offset
+   * @param {number} encodingRef
+   */
+  write(encoder, offset, encodingRef) {
+    throw methodUnimplemented();
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {number} offset
+   */
+  integrate(transaction, offset) {
+    throw methodUnimplemented();
+  }
+}
+const structGCRefNumber = 0;
+class GC2 extends AbstractStruct2 {
+  get deleted() {
+    return true;
+  }
+  delete() {
+  }
+  /**
+   * @param {GC} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    if (this.constructor !== right.constructor) {
+      return false;
+    }
+    this.length += right.length;
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {number} offset
+   */
+  integrate(transaction, offset) {
+    if (offset > 0) {
+      this.id.clock += offset;
+      this.length -= offset;
+    }
+    addStruct(transaction.doc.store, this);
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeInfo(structGCRefNumber);
+    encoder.writeLen(this.length - offset);
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {StructStore} store
+   * @return {null | number}
+   */
+  getMissing(transaction, store) {
+    return null;
+  }
+}
+class ContentBinary2 {
+  /**
+   * @param {Uint8Array} content
+   */
+  constructor(content) {
+    this.content = content;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return 1;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [this.content];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentBinary}
+   */
+  copy() {
+    return new ContentBinary2(this.content);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentBinary}
+   */
+  splice(offset) {
+    throw methodUnimplemented();
+  }
+  /**
+   * @param {ContentBinary} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    return false;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeBuf(this.content);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 3;
+  }
+}
+const readContentBinary = (decoder) => new ContentBinary2(decoder.readBuf());
+class ContentDeleted2 {
+  /**
+   * @param {number} len
+   */
+  constructor(len) {
+    this.len = len;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return this.len;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return false;
+  }
+  /**
+   * @return {ContentDeleted}
+   */
+  copy() {
+    return new ContentDeleted2(this.len);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentDeleted}
+   */
+  splice(offset) {
+    const right = new ContentDeleted2(this.len - offset);
+    this.len = offset;
+    return right;
+  }
+  /**
+   * @param {ContentDeleted} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    this.len += right.len;
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+    addToDeleteSet(transaction.deleteSet, item.id.client, item.id.clock, this.len);
+    item.markDeleted();
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeLen(this.len - offset);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 1;
+  }
+}
+const readContentDeleted = (decoder) => new ContentDeleted2(decoder.readLen());
+const createDocFromOpts = (guid, opts) => new Doc2({ guid, ...opts, shouldLoad: opts.shouldLoad || opts.autoLoad || false });
+class ContentDoc2 {
+  /**
+   * @param {Doc} doc
+   */
+  constructor(doc) {
+    if (doc._item) {
+      console.error("This document was already integrated as a sub-document. You should create a second instance instead with the same guid.");
+    }
+    this.doc = doc;
+    const opts = {};
+    this.opts = opts;
+    if (!doc.gc) {
+      opts.gc = false;
+    }
+    if (doc.autoLoad) {
+      opts.autoLoad = true;
+    }
+    if (doc.meta !== null) {
+      opts.meta = doc.meta;
+    }
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return 1;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [this.doc];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentDoc}
+   */
+  copy() {
+    return new ContentDoc2(createDocFromOpts(this.doc.guid, this.opts));
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentDoc}
+   */
+  splice(offset) {
+    throw methodUnimplemented();
+  }
+  /**
+   * @param {ContentDoc} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    return false;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+    this.doc._item = item;
+    transaction.subdocsAdded.add(this.doc);
+    if (this.doc.shouldLoad) {
+      transaction.subdocsLoaded.add(this.doc);
+    }
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+    if (transaction.subdocsAdded.has(this.doc)) {
+      transaction.subdocsAdded.delete(this.doc);
+    } else {
+      transaction.subdocsRemoved.add(this.doc);
+    }
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeString(this.doc.guid);
+    encoder.writeAny(this.opts);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 9;
+  }
+}
+const readContentDoc = (decoder) => new ContentDoc2(createDocFromOpts(decoder.readString(), decoder.readAny()));
+class ContentEmbed2 {
+  /**
+   * @param {Object} embed
+   */
+  constructor(embed) {
+    this.embed = embed;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return 1;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [this.embed];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentEmbed}
+   */
+  copy() {
+    return new ContentEmbed2(this.embed);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentEmbed}
+   */
+  splice(offset) {
+    throw methodUnimplemented();
+  }
+  /**
+   * @param {ContentEmbed} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    return false;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeJSON(this.embed);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 5;
+  }
+}
+const readContentEmbed = (decoder) => new ContentEmbed2(decoder.readJSON());
+class ContentFormat2 {
+  /**
+   * @param {string} key
+   * @param {Object} value
+   */
+  constructor(key, value) {
+    this.key = key;
+    this.value = value;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return 1;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return false;
+  }
+  /**
+   * @return {ContentFormat}
+   */
+  copy() {
+    return new ContentFormat2(this.key, this.value);
+  }
+  /**
+   * @param {number} _offset
+   * @return {ContentFormat}
+   */
+  splice(_offset) {
+    throw methodUnimplemented();
+  }
+  /**
+   * @param {ContentFormat} _right
+   * @return {boolean}
+   */
+  mergeWith(_right) {
+    return false;
+  }
+  /**
+   * @param {Transaction} _transaction
+   * @param {Item} item
+   */
+  integrate(_transaction, item) {
+    const p = (
+      /** @type {YText} */
+      item.parent
+    );
+    p._searchMarker = null;
+    p._hasFormatting = true;
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeKey(this.key);
+    encoder.writeJSON(this.value);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 6;
+  }
+}
+const readContentFormat = (decoder) => new ContentFormat2(decoder.readKey(), decoder.readJSON());
+class ContentJSON2 {
+  /**
+   * @param {Array<any>} arr
+   */
+  constructor(arr) {
+    this.arr = arr;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return this.arr.length;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return this.arr;
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentJSON}
+   */
+  copy() {
+    return new ContentJSON2(this.arr);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentJSON}
+   */
+  splice(offset) {
+    const right = new ContentJSON2(this.arr.slice(offset));
+    this.arr = this.arr.slice(0, offset);
+    return right;
+  }
+  /**
+   * @param {ContentJSON} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    this.arr = this.arr.concat(right.arr);
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    const len = this.arr.length;
+    encoder.writeLen(len - offset);
+    for (let i = offset; i < len; i++) {
+      const c = this.arr[i];
+      encoder.writeString(c === void 0 ? "undefined" : JSON.stringify(c));
+    }
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 2;
+  }
+}
+const readContentJSON = (decoder) => {
+  const len = decoder.readLen();
+  const cs = [];
+  for (let i = 0; i < len; i++) {
+    const c = decoder.readString();
+    if (c === "undefined") {
+      cs.push(void 0);
+    } else {
+      cs.push(JSON.parse(c));
+    }
+  }
+  return new ContentJSON2(cs);
+};
+const isDevMode = getVariable("node_env") === "development";
+class ContentAny2 {
+  /**
+   * @param {Array<any>} arr
+   */
+  constructor(arr) {
+    this.arr = arr;
+    isDevMode && deepFreeze(arr);
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return this.arr.length;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return this.arr;
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentAny}
+   */
+  copy() {
+    return new ContentAny2(this.arr);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentAny}
+   */
+  splice(offset) {
+    const right = new ContentAny2(this.arr.slice(offset));
+    this.arr = this.arr.slice(0, offset);
+    return right;
+  }
+  /**
+   * @param {ContentAny} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    this.arr = this.arr.concat(right.arr);
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    const len = this.arr.length;
+    encoder.writeLen(len - offset);
+    for (let i = offset; i < len; i++) {
+      const c = this.arr[i];
+      encoder.writeAny(c);
+    }
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 8;
+  }
+}
+const readContentAny = (decoder) => {
+  const len = decoder.readLen();
+  const cs = [];
+  for (let i = 0; i < len; i++) {
+    cs.push(decoder.readAny());
+  }
+  return new ContentAny2(cs);
+};
+class ContentString2 {
+  /**
+   * @param {string} str
+   */
+  constructor(str) {
+    this.str = str;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return this.str.length;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return this.str.split("");
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentString}
+   */
+  copy() {
+    return new ContentString2(this.str);
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentString}
+   */
+  splice(offset) {
+    const right = new ContentString2(this.str.slice(offset));
+    this.str = this.str.slice(0, offset);
+    const firstCharCode = this.str.charCodeAt(offset - 1);
+    if (firstCharCode >= 55296 && firstCharCode <= 56319) {
+      this.str = this.str.slice(0, offset - 1) + "�";
+      right.str = "�" + right.str.slice(1);
+    }
+    return right;
+  }
+  /**
+   * @param {ContentString} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    this.str += right.str;
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeString(offset === 0 ? this.str : this.str.slice(offset));
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 4;
+  }
+}
+const readContentString = (decoder) => new ContentString2(decoder.readString());
+const typeRefs = [
+  readYArray,
+  readYMap,
+  readYText,
+  readYXmlElement,
+  readYXmlFragment,
+  readYXmlHook,
+  readYXmlText
+];
+const YArrayRefID = 0;
+const YMapRefID = 1;
+const YTextRefID = 2;
+const YXmlElementRefID = 3;
+const YXmlFragmentRefID = 4;
+const YXmlHookRefID = 5;
+const YXmlTextRefID = 6;
+class ContentType2 {
+  /**
+   * @param {AbstractType<any>} type
+   */
+  constructor(type) {
+    this.type = type;
+  }
+  /**
+   * @return {number}
+   */
+  getLength() {
+    return 1;
+  }
+  /**
+   * @return {Array<any>}
+   */
+  getContent() {
+    return [this.type];
+  }
+  /**
+   * @return {boolean}
+   */
+  isCountable() {
+    return true;
+  }
+  /**
+   * @return {ContentType}
+   */
+  copy() {
+    return new ContentType2(this.type._copy());
+  }
+  /**
+   * @param {number} offset
+   * @return {ContentType}
+   */
+  splice(offset) {
+    throw methodUnimplemented();
+  }
+  /**
+   * @param {ContentType} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    return false;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {Item} item
+   */
+  integrate(transaction, item) {
+    this.type._integrate(transaction.doc, item);
+  }
+  /**
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+    let item = this.type._start;
+    while (item !== null) {
+      if (!item.deleted) {
+        item.delete(transaction);
+      } else if (item.id.clock < (transaction.beforeState.get(item.id.client) || 0)) {
+        transaction._mergeStructs.push(item);
+      }
+      item = item.right;
+    }
+    this.type._map.forEach((item2) => {
+      if (!item2.deleted) {
+        item2.delete(transaction);
+      } else if (item2.id.clock < (transaction.beforeState.get(item2.id.client) || 0)) {
+        transaction._mergeStructs.push(item2);
+      }
+    });
+    transaction.changed.delete(this.type);
+  }
+  /**
+   * @param {StructStore} store
+   */
+  gc(store) {
+    let item = this.type._start;
+    while (item !== null) {
+      item.gc(store, true);
+      item = item.right;
+    }
+    this.type._start = null;
+    this.type._map.forEach(
+      /** @param {Item | null} item */
+      (item2) => {
+        while (item2 !== null) {
+          item2.gc(store, true);
+          item2 = item2.left;
+        }
+      }
+    );
+    this.type._map = /* @__PURE__ */ new Map();
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    this.type._write(encoder);
+  }
+  /**
+   * @return {number}
+   */
+  getRef() {
+    return 7;
+  }
+}
+const readContentType = (decoder) => new ContentType2(typeRefs[decoder.readTypeRef()](decoder));
+const splitItem = (transaction, leftItem, diff) => {
+  const { client, clock } = leftItem.id;
+  const rightItem = new Item2(
+    createID(client, clock + diff),
+    leftItem,
+    createID(client, clock + diff - 1),
+    leftItem.right,
+    leftItem.rightOrigin,
+    leftItem.parent,
+    leftItem.parentSub,
+    leftItem.content.splice(diff)
+  );
+  if (leftItem.deleted) {
+    rightItem.markDeleted();
+  }
+  if (leftItem.keep) {
+    rightItem.keep = true;
+  }
+  if (leftItem.redone !== null) {
+    rightItem.redone = createID(leftItem.redone.client, leftItem.redone.clock + diff);
+  }
+  leftItem.right = rightItem;
+  if (rightItem.right !== null) {
+    rightItem.right.left = rightItem;
+  }
+  transaction._mergeStructs.push(rightItem);
+  if (rightItem.parentSub !== null && rightItem.right === null) {
+    rightItem.parent._map.set(rightItem.parentSub, rightItem);
+  }
+  leftItem.length = diff;
+  return rightItem;
+};
+class Item2 extends AbstractStruct2 {
+  /**
+   * @param {ID} id
+   * @param {Item | null} left
+   * @param {ID | null} origin
+   * @param {Item | null} right
+   * @param {ID | null} rightOrigin
+   * @param {AbstractType<any>|ID|null} parent Is a type if integrated, is null if it is possible to copy parent from left or right, is ID before integration to search for it.
+   * @param {string | null} parentSub
+   * @param {AbstractContent} content
+   */
+  constructor(id2, left, origin, right, rightOrigin, parent, parentSub, content) {
+    super(id2, content.getLength());
+    this.origin = origin;
+    this.left = left;
+    this.right = right;
+    this.rightOrigin = rightOrigin;
+    this.parent = parent;
+    this.parentSub = parentSub;
+    this.redone = null;
+    this.content = content;
+    this.info = this.content.isCountable() ? BIT2 : 0;
+  }
+  /**
+   * This is used to mark the item as an indexed fast-search marker
+   *
+   * @type {boolean}
+   */
+  set marker(isMarked) {
+    if ((this.info & BIT4) > 0 !== isMarked) {
+      this.info ^= BIT4;
+    }
+  }
+  get marker() {
+    return (this.info & BIT4) > 0;
+  }
+  /**
+   * If true, do not garbage collect this Item.
+   */
+  get keep() {
+    return (this.info & BIT1) > 0;
+  }
+  set keep(doKeep) {
+    if (this.keep !== doKeep) {
+      this.info ^= BIT1;
+    }
+  }
+  get countable() {
+    return (this.info & BIT2) > 0;
+  }
+  /**
+   * Whether this item was deleted or not.
+   * @type {Boolean}
+   */
+  get deleted() {
+    return (this.info & BIT3) > 0;
+  }
+  set deleted(doDelete) {
+    if (this.deleted !== doDelete) {
+      this.info ^= BIT3;
+    }
+  }
+  markDeleted() {
+    this.info |= BIT3;
+  }
+  /**
+   * Return the creator clientID of the missing op or define missing items and return null.
+   *
+   * @param {Transaction} transaction
+   * @param {StructStore} store
+   * @return {null | number}
+   */
+  getMissing(transaction, store) {
+    if (this.origin && this.origin.client !== this.id.client && this.origin.clock >= getState(store, this.origin.client)) {
+      return this.origin.client;
+    }
+    if (this.rightOrigin && this.rightOrigin.client !== this.id.client && this.rightOrigin.clock >= getState(store, this.rightOrigin.client)) {
+      return this.rightOrigin.client;
+    }
+    if (this.parent && this.parent.constructor === ID2 && this.id.client !== this.parent.client && this.parent.clock >= getState(store, this.parent.client)) {
+      return this.parent.client;
+    }
+    if (this.origin) {
+      this.left = getItemCleanEnd(transaction, store, this.origin);
+      this.origin = this.left.lastId;
+    }
+    if (this.rightOrigin) {
+      this.right = getItemCleanStart(transaction, this.rightOrigin);
+      this.rightOrigin = this.right.id;
+    }
+    if (this.left && this.left.constructor === GC2 || this.right && this.right.constructor === GC2) {
+      this.parent = null;
+    } else if (!this.parent) {
+      if (this.left && this.left.constructor === Item2) {
+        this.parent = this.left.parent;
+        this.parentSub = this.left.parentSub;
+      } else if (this.right && this.right.constructor === Item2) {
+        this.parent = this.right.parent;
+        this.parentSub = this.right.parentSub;
+      }
+    } else if (this.parent.constructor === ID2) {
+      const parentItem = getItem(store, this.parent);
+      if (parentItem.constructor === GC2) {
+        this.parent = null;
+      } else {
+        this.parent = /** @type {ContentType} */
+        parentItem.content.type;
+      }
+    }
+    return null;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {number} offset
+   */
+  integrate(transaction, offset) {
+    if (offset > 0) {
+      this.id.clock += offset;
+      this.left = getItemCleanEnd(transaction, transaction.doc.store, createID(this.id.client, this.id.clock - 1));
+      this.origin = this.left.lastId;
+      this.content = this.content.splice(offset);
+      this.length -= offset;
+    }
+    if (this.parent) {
+      if (!this.left && (!this.right || this.right.left !== null) || this.left && this.left.right !== this.right) {
+        let left = this.left;
+        let o;
+        if (left !== null) {
+          o = left.right;
+        } else if (this.parentSub !== null) {
+          o = /** @type {AbstractType<any>} */
+          this.parent._map.get(this.parentSub) || null;
+          while (o !== null && o.left !== null) {
+            o = o.left;
+          }
+        } else {
+          o = /** @type {AbstractType<any>} */
+          this.parent._start;
+        }
+        const conflictingItems = /* @__PURE__ */ new Set();
+        const itemsBeforeOrigin = /* @__PURE__ */ new Set();
+        while (o !== null && o !== this.right) {
+          itemsBeforeOrigin.add(o);
+          conflictingItems.add(o);
+          if (compareIDs(this.origin, o.origin)) {
+            if (o.id.client < this.id.client) {
+              left = o;
+              conflictingItems.clear();
+            } else if (compareIDs(this.rightOrigin, o.rightOrigin)) {
+              break;
+            }
+          } else if (o.origin !== null && itemsBeforeOrigin.has(getItem(transaction.doc.store, o.origin))) {
+            if (!conflictingItems.has(getItem(transaction.doc.store, o.origin))) {
+              left = o;
+              conflictingItems.clear();
+            }
+          } else {
+            break;
+          }
+          o = o.right;
+        }
+        this.left = left;
+      }
+      if (this.left !== null) {
+        const right = this.left.right;
+        this.right = right;
+        this.left.right = this;
+      } else {
+        let r;
+        if (this.parentSub !== null) {
+          r = /** @type {AbstractType<any>} */
+          this.parent._map.get(this.parentSub) || null;
+          while (r !== null && r.left !== null) {
+            r = r.left;
+          }
+        } else {
+          r = /** @type {AbstractType<any>} */
+          this.parent._start;
+          this.parent._start = this;
+        }
+        this.right = r;
+      }
+      if (this.right !== null) {
+        this.right.left = this;
+      } else if (this.parentSub !== null) {
+        this.parent._map.set(this.parentSub, this);
+        if (this.left !== null) {
+          this.left.delete(transaction);
+        }
+      }
+      if (this.parentSub === null && this.countable && !this.deleted) {
+        this.parent._length += this.length;
+      }
+      addStruct(transaction.doc.store, this);
+      this.content.integrate(transaction, this);
+      addChangedTypeToTransaction(
+        transaction,
+        /** @type {AbstractType<any>} */
+        this.parent,
+        this.parentSub
+      );
+      if (
+        /** @type {AbstractType<any>} */
+        this.parent._item !== null && /** @type {AbstractType<any>} */
+        this.parent._item.deleted || this.parentSub !== null && this.right !== null
+      ) {
+        this.delete(transaction);
+      }
+    } else {
+      new GC2(this.id, this.length).integrate(transaction, 0);
+    }
+  }
+  /**
+   * Returns the next non-deleted item
+   */
+  get next() {
+    let n = this.right;
+    while (n !== null && n.deleted) {
+      n = n.right;
+    }
+    return n;
+  }
+  /**
+   * Returns the previous non-deleted item
+   */
+  get prev() {
+    let n = this.left;
+    while (n !== null && n.deleted) {
+      n = n.left;
+    }
+    return n;
+  }
+  /**
+   * Computes the last content address of this Item.
+   */
+  get lastId() {
+    return this.length === 1 ? this.id : createID(this.id.client, this.id.clock + this.length - 1);
+  }
+  /**
+   * Try to merge two items
+   *
+   * @param {Item} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    if (this.constructor === right.constructor && compareIDs(right.origin, this.lastId) && this.right === right && compareIDs(this.rightOrigin, right.rightOrigin) && this.id.client === right.id.client && this.id.clock + this.length === right.id.clock && this.deleted === right.deleted && this.redone === null && right.redone === null && this.content.constructor === right.content.constructor && this.content.mergeWith(right.content)) {
+      const searchMarker = (
+        /** @type {AbstractType<any>} */
+        this.parent._searchMarker
+      );
+      if (searchMarker) {
+        searchMarker.forEach((marker) => {
+          if (marker.p === right) {
+            marker.p = this;
+            if (!this.deleted && this.countable) {
+              marker.index -= this.length;
+            }
+          }
+        });
+      }
+      if (right.keep) {
+        this.keep = true;
+      }
+      this.right = right.right;
+      if (this.right !== null) {
+        this.right.left = this;
+      }
+      this.length += right.length;
+      return true;
+    }
+    return false;
+  }
+  /**
+   * Mark this Item as deleted.
+   *
+   * @param {Transaction} transaction
+   */
+  delete(transaction) {
+    if (!this.deleted) {
+      const parent = (
+        /** @type {AbstractType<any>} */
+        this.parent
+      );
+      if (this.countable && this.parentSub === null) {
+        parent._length -= this.length;
+      }
+      this.markDeleted();
+      addToDeleteSet(transaction.deleteSet, this.id.client, this.id.clock, this.length);
+      addChangedTypeToTransaction(transaction, parent, this.parentSub);
+      this.content.delete(transaction);
+    }
+  }
+  /**
+   * @param {StructStore} store
+   * @param {boolean} parentGCd
+   */
+  gc(store, parentGCd) {
+    if (!this.deleted) {
+      throw unexpectedCase();
+    }
+    this.content.gc(store);
+    if (parentGCd) {
+      replaceStruct(store, this, new GC2(this.id, this.length));
+    } else {
+      this.content = new ContentDeleted2(this.length);
+    }
+  }
+  /**
+   * Transform the properties of this type to binary and write it to an
+   * BinaryEncoder.
+   *
+   * This is called when this Item is sent to a remote peer.
+   *
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder The encoder to write data to.
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    const origin = offset > 0 ? createID(this.id.client, this.id.clock + offset - 1) : this.origin;
+    const rightOrigin = this.rightOrigin;
+    const parentSub = this.parentSub;
+    const info = this.content.getRef() & BITS5 | (origin === null ? 0 : BIT8) | // origin is defined
+    (rightOrigin === null ? 0 : BIT7) | // right origin is defined
+    (parentSub === null ? 0 : BIT6);
+    encoder.writeInfo(info);
+    if (origin !== null) {
+      encoder.writeLeftID(origin);
+    }
+    if (rightOrigin !== null) {
+      encoder.writeRightID(rightOrigin);
+    }
+    if (origin === null && rightOrigin === null) {
+      const parent = (
+        /** @type {AbstractType<any>} */
+        this.parent
+      );
+      if (parent._item !== void 0) {
+        const parentItem = parent._item;
+        if (parentItem === null) {
+          const ykey = findRootTypeKey(parent);
+          encoder.writeParentInfo(true);
+          encoder.writeString(ykey);
+        } else {
+          encoder.writeParentInfo(false);
+          encoder.writeLeftID(parentItem.id);
+        }
+      } else if (parent.constructor === String) {
+        encoder.writeParentInfo(true);
+        encoder.writeString(parent);
+      } else if (parent.constructor === ID2) {
+        encoder.writeParentInfo(false);
+        encoder.writeLeftID(parent);
+      } else {
+        unexpectedCase();
+      }
+      if (parentSub !== null) {
+        encoder.writeString(parentSub);
+      }
+    }
+    this.content.write(encoder, offset);
+  }
+}
+const readItemContent = (decoder, info) => contentRefs[info & BITS5](decoder);
+const contentRefs = [
+  () => {
+    unexpectedCase();
+  },
+  // GC is not ItemContent
+  readContentDeleted,
+  // 1
+  readContentJSON,
+  // 2
+  readContentBinary,
+  // 3
+  readContentString,
+  // 4
+  readContentEmbed,
+  // 5
+  readContentFormat,
+  // 6
+  readContentType,
+  // 7
+  readContentAny,
+  // 8
+  readContentDoc,
+  // 9
+  () => {
+    unexpectedCase();
+  }
+  // 10 - Skip is not ItemContent
+];
+const structSkipRefNumber = 10;
+class Skip2 extends AbstractStruct2 {
+  get deleted() {
+    return true;
+  }
+  delete() {
+  }
+  /**
+   * @param {Skip} right
+   * @return {boolean}
+   */
+  mergeWith(right) {
+    if (this.constructor !== right.constructor) {
+      return false;
+    }
+    this.length += right.length;
+    return true;
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {number} offset
+   */
+  integrate(transaction, offset) {
+    unexpectedCase();
+  }
+  /**
+   * @param {UpdateEncoderV1 | UpdateEncoderV2} encoder
+   * @param {number} offset
+   */
+  write(encoder, offset) {
+    encoder.writeInfo(structSkipRefNumber);
+    writeVarUint(encoder.restEncoder, this.length - offset);
+  }
+  /**
+   * @param {Transaction} transaction
+   * @param {StructStore} store
+   * @return {null | number}
+   */
+  getMissing(transaction, store) {
+    return null;
+  }
+}
+const glo = (
+  /** @type {any} */
+  typeof globalThis !== "undefined" ? globalThis : typeof window !== "undefined" ? window : typeof global !== "undefined" ? global : {}
+);
+const importIdentifier = "__ $YJS$ __";
+if (glo[importIdentifier] === true) {
+  console.error("Yjs was already imported. This breaks constructor checks and will lead to issues! - https://github.com/yjs/yjs/issues/438");
+}
+glo[importIdentifier] = true;
+const DOC_DIR = path__namespace.join(process.cwd(), "shega-yjs-docs");
+const FLUSH_DEBOUNCE_MS = 800;
+const columnCache = /* @__PURE__ */ new Map();
+function tableColumns(table) {
+  let cols = columnCache.get(table);
+  if (!cols) {
+    cols = dbProxy.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    columnCache.set(table, cols);
+  }
+  return cols;
+}
+function rowToData(table, row) {
+  const cols = tableColumns(table);
+  const out = {};
+  for (const c of cols) {
+    if (c === "id" || c === "row_version" || c === "is_synced") continue;
+    const v = row[c];
+    if (v === void 0) continue;
+    out[c] = v === null ? null : typeof v === "object" ? JSON.stringify(v) : v;
+  }
+  return out;
+}
+class DesktopYjsManager {
+  docs = /* @__PURE__ */ new Map();
+  deviceId = "desktop-unknown";
+  userId = null;
+  listeners = /* @__PURE__ */ new Set();
+  pendingByBusiness = /* @__PURE__ */ new Map();
+  setDeviceId(id2) {
+    this.deviceId = id2 || this.deviceId;
+  }
+  setUserId(id2) {
+    this.userId = id2;
+  }
+  getDeviceId() {
+    return this.deviceId;
+  }
+  /** Subscribe to encoded updates originating from THIS device (to send to peers). */
+  onUpdate(fn) {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+  ensureDoc(businessId) {
+    let entry = this.docs.get(businessId);
+    if (entry) return entry;
+    const { doc, maps } = createBusinessDoc(businessId);
+    if (!fs__namespace.existsSync(DOC_DIR)) fs__namespace.mkdirSync(DOC_DIR, { recursive: true });
+    const file = path__namespace.join(DOC_DIR, `${businessId}.ydoc`);
+    try {
+      if (fs__namespace.existsSync(file)) applyUpdate(doc, new Uint8Array(fs__namespace.readFileSync(file)));
+    } catch {
+    }
+    doc.on("update", (update, origin) => {
+      const dir = origin === "remote" ? "remote" : "local";
+      this.pendingByBusiness.set(businessId, (this.pendingByBusiness.get(businessId) ?? 0) + 1);
+      for (const fn of this.listeners) fn(businessId, update, dir);
+      this.scheduleFlush(businessId);
+    });
+    entry = { doc, maps, flushTimer: null };
+    this.docs.set(businessId, entry);
+    return entry;
+  }
+  scheduleFlush(businessId) {
+    const entry = this.docs.get(businessId);
+    if (!entry) return;
+    if (entry.flushTimer) return;
+    entry.flushTimer = setTimeout(() => {
+      entry.flushTimer = null;
+      this.flush(businessId);
+    }, FLUSH_DEBOUNCE_MS);
+  }
+  flush(businessId) {
+    const entry = this.docs.get(businessId);
+    if (!entry) return;
+    try {
+      if (!fs__namespace.existsSync(DOC_DIR)) fs__namespace.mkdirSync(DOC_DIR, { recursive: true });
+      fs__namespace.writeFileSync(path__namespace.join(DOC_DIR, `${businessId}.ydoc`), encodeFullState(entry.doc));
+      this.pendingByBusiness.set(businessId, 0);
+    } catch (e) {
+      console.warn("[yjs] doc flush failed", e);
+    }
+  }
+  /** Bootstrap: pull all rows for this business into the doc (idempotent). */
+  bootstrapBusiness(businessId, businessUuid) {
+    const entry = this.ensureDoc(businessUuid);
+    for (const collection of YJS_COLLECTIONS) {
+      const table = COLLECTION_TABLE[collection];
+      let rows = [];
+      try {
+        const hasBiz = tableColumns(table).includes("businessId");
+        rows = hasBiz ? dbProxy.prepare(`SELECT * FROM ${table} WHERE businessId = ? AND is_deleted = 0 LIMIT 5000`).all(businessId) : dbProxy.prepare(`SELECT * FROM ${table} WHERE is_deleted = 0 LIMIT 5000`).all();
+      } catch {
+        continue;
+      }
+      const map = entry.maps[collection];
+      for (const row of rows) {
+        const uuid = String(row.uuid ?? row.id);
+        if (!uuid || map.has(uuid)) continue;
+        map.set(uuid, {
+          uuid,
+          businessId: businessUuid,
+          deviceId: this.deviceId,
+          createdAt: Date.parse(row.createdAt ?? row.created_at ?? "") || Date.now(),
+          rev: Number(row.row_version ?? 1),
+          deleted: false,
+          data: rowToData(table, row)
+        });
+      }
+    }
+    this.flush(businessUuid);
+  }
+  /** Push a local SQLite row change into the doc (called by the sync outbox watcher). */
+  recordLocalChange(businessUuid, collection, uuid, payload, deleted = false) {
+    if (!isYjsCollection(collection)) return;
+    const entry = this.ensureDoc(businessUuid);
+    entry.maps[collection].set(uuid, {
+      uuid,
+      businessId: businessUuid,
+      deviceId: this.deviceId,
+      userId: this.userId ?? void 0,
+      createdAt: Date.now(),
+      rev: (entry.maps[collection].get(uuid)?.rev ?? 0) + 1,
+      deleted,
+      data: payload
+    });
+  }
+  /** Apply a remote update coming from a peer; returns the change for SQLite apply. */
+  acceptRemoteUpdate(businessId, update) {
+    const entry = this.ensureDoc(businessId);
+    applyUpdate(entry.doc, update, "remote");
+  }
+  getFullState(businessId) {
+    const entry = this.docs.get(businessId);
+    return entry ? encodeFullState(entry.doc) : null;
+  }
+  /** Diffs records added/changed remotely since `sinceState`, for SQLite apply. */
+  collectRemoteChanges(businessId, sinceState) {
+    const entry = this.docs.get(businessId);
+    if (!entry) return [];
+    const out = [];
+    const seen = new Doc2();
+    applyUpdate(seen, sinceState);
+    const seenMaps = {};
+    for (const c of YJS_COLLECTIONS) seenMaps[c] = seen.getMap(c);
+    for (const c of YJS_COLLECTIONS) {
+      for (const [uuid, rec] of entry.maps[c].entries()) {
+        const prev = seenMaps[c].get(uuid);
+        if (!prev || prev.rev !== rec.rev || prev.deleted !== rec.deleted) {
+          out.push({ collection: c, record: rec });
+        }
+      }
+    }
+    return out;
+  }
+  pendingCount(businessId) {
+    if (businessId) return this.pendingByBusiness.get(businessId) ?? 0;
+    let total = 0;
+    for (const v of this.pendingByBusiness.values()) total += v;
+    return total;
+  }
+  closeBusiness(businessId) {
+    const entry = this.docs.get(businessId);
+    if (!entry) return;
+    if (entry.flushTimer) clearTimeout(entry.flushTimer);
+    this.flush(businessId);
+    entry.doc.destroy();
+    this.docs.delete(businessId);
+  }
+}
+const yjsManager = new DesktopYjsManager();
+class DesktopWebRtcManager {
+  sessions = /* @__PURE__ */ new Map();
+  signalingSend = null;
+  listeners = /* @__PURE__ */ new Map();
+  businessId = "";
+  /** Wire the signaling path (typically the WS hub relay). */
+  setSignalingSender(fn) {
+    this.signalingSend = fn;
+  }
+  on(event, fn) {
+    if (!this.listeners.has(event)) this.listeners.set(event, /* @__PURE__ */ new Set());
+    this.listeners.get(event).add(fn);
+    return () => this.listeners.get(event).delete(fn);
+  }
+  emit(event, ...args) {
+    this.listeners.get(event)?.forEach((fn) => fn(...args));
+  }
+  setBusinessId(businessId) {
+    this.businessId = businessId;
+  }
+  getPeers() {
+    return [...this.sessions.values()].map((s) => ({
+      deviceId: s.deviceId,
+      deviceType: s.deviceType,
+      businessId: s.businessId,
+      kind: s.kind,
+      connectedAt: s.connectedAt
+    }));
+  }
+  isConnectedToDevice(deviceId) {
+    const s = this.sessions.get(deviceId);
+    return !!s && !!s.dc;
+  }
+  /** Send a Yjs update binary to a connected peer. */
+  sendUpdate(deviceId, update) {
+    const s = this.sessions.get(deviceId);
+    if (!s?.dc || s.dc.readyState !== "open") return false;
+    try {
+      s.dc.sendMessage(Buffer.from(update));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  broadcastUpdate(businessId, update) {
+    for (const [deviceId, s] of this.sessions) {
+      if (s.businessId === businessId) this.sendUpdate(deviceId, update);
+    }
+  }
+  /** Handle a signaling message relayed by the hub. */
+  handleSignal(msg) {
+    switch (msg.t) {
+      case "hello":
+        if (msg.businessId !== this.businessId) return;
+        if (this.sessions.has(msg.deviceId)) return;
+        if (this.deviceIdRank() > this.rankOf(msg.deviceId, msg.deviceType)) {
+          this.createOffer(msg.deviceId, msg.deviceType);
+        }
+        break;
+      case "offer":
+        if (msg.to !== this.myId()) return;
+        this.acceptOffer(msg.from, msg.sdp);
+        break;
+      case "answer":
+        if (msg.to !== this.myId()) return;
+        this.acceptAnswer(msg.from, msg.sdp);
+        break;
+      case "ice":
+        if (msg.to !== this.myId()) return;
+        {
+          const s = this.sessions.get(msg.from);
+          if (s?.pc) {
+            try {
+              s.pc.addRemoteCandidate(msg.candidate, msg.sdpMid ?? "0");
+            } catch {
+            }
+          }
+        }
+        break;
+      case "bye": {
+        this.closePeer(msg.from);
+        break;
+      }
+    }
+  }
+  myId() {
+    return "desktop";
+  }
+  // replaced at init via setDeviceId
+  deviceIdRank() {
+    return this.rankOf(this.myId(), "desktop");
+  }
+  rankOf(id2, _t) {
+    let h = 0;
+    for (let i = 0; i < id2.length; i++) h = h * 31 + id2.charCodeAt(i) >>> 0;
+    return h;
+  }
+  setDeviceId(id2) {
+    this.myId = () => id2;
+  }
+  init(deviceId, businessId) {
+    this.setDeviceId(deviceId);
+    this.businessId = businessId;
+  }
+  createPeer(deviceId, deviceType, polite) {
+    const pc = new (require("node-datachannel")).PeerConnection(`shega-${deviceId}`, {
+      iceServers: DEFAULT_ICE_SERVERS.map((s) => ({
+        urls: Array.isArray(s.urls) ? s.urls : [s.urls],
+        username: s.username,
+        credential: s.credential
+      }))
+    });
+    const session = {
+      deviceId,
+      deviceType,
+      pc,
+      dc: null,
+      businessId: this.businessId,
+      kind: "p2p-direct",
+      connectedAt: 0,
+      polite
+    };
+    this.sessions.set(deviceId, session);
+    pc.on("localDescription", (sdp) => {
+      const isOffer = sdp.type === "offer";
+      const m = isOffer ? { t: "offer", from: this.myId(), to: deviceId, sdp: sdp.sdp } : { t: "answer", from: this.myId(), to: deviceId, sdp: sdp.sdp };
+      this.signalingSend?.(deviceId, m);
+    });
+    pc.on("localCandidate", (candidate, mid) => {
+      this.signalingSend?.(deviceId, { t: "ice", from: this.myId(), to: deviceId, candidate, sdpMid: mid });
+    });
+    pc.on("connectionStateChange", (state) => {
+      this.emit("status", `peer ${deviceId}: ${state}`);
+      if (state === "connected" || state === "completed") {
+        session.kind = "p2p-direct";
+      } else if (state === "failed" || state === "closed" || state === "disconnected") {
+        this.closePeer(deviceId);
+      }
+    });
+    pc.on("dataChannel", (dc) => this.attachChannel(session, dc));
+    return session;
+  }
+  attachChannel(session, dc) {
+    session.dc = dc;
+    dc.on("open", () => {
+      session.connectedAt = Date.now();
+      this.emit("peerConnected", {
+        deviceId: session.deviceId,
+        deviceType: session.deviceType,
+        businessId: session.businessId,
+        kind: session.kind,
+        connectedAt: session.connectedAt
+      });
+      this.emit("status", `peer ${session.deviceId}: datachannel open`);
+    });
+    dc.on("closed", () => this.closePeer(session.deviceId));
+    dc.on("message", (data) => {
+      if (typeof data === "string") return;
+      this.emit("update", session.businessId, session.deviceId, new Uint8Array(data));
+    });
+  }
+  createOffer(deviceId, deviceType) {
+    if (this.sessions.has(deviceId)) return;
+    const session = this.createPeer(deviceId, deviceType, false);
+    const dc = session.pc.createDataChannel("yjs", { ordered: true });
+    this.attachChannel(session, dc);
+  }
+  acceptOffer(deviceId, sdp) {
+    try {
+      let session = this.sessions.get(deviceId);
+      if (!session) session = this.createPeer(deviceId, "mobile", true);
+      session.pc.setRemoteDescription(sdp, "offer");
+    } catch (e) {
+      this.emit("status", `acceptOffer failed: ${String(e)}`);
+    }
+  }
+  acceptAnswer(deviceId, sdp) {
+    const session = this.sessions.get(deviceId);
+    if (!session) return;
+    try {
+      session.pc.setRemoteDescription(sdp, "answer");
+    } catch {
+    }
+  }
+  closePeer(deviceId) {
+    const s = this.sessions.get(deviceId);
+    if (!s) return;
+    try {
+      s.dc?.close();
+    } catch {
+    }
+    try {
+      s.pc.close();
+    } catch {
+    }
+    this.sessions.delete(deviceId);
+    this.emit("peerDisconnected", deviceId);
+  }
+  closeAll() {
+    for (const id2 of [...this.sessions.keys()]) this.closePeer(id2);
+  }
+}
+const desktopWebRtc = new DesktopWebRtcManager();
+class P2pSyncManager {
+  businessUuid = "";
+  lastSyncAt = null;
+  unsubs = [];
+  signalingRelay = null;
+  started = false;
+  outboxTimer = null;
+  lastOutboxSeq = 0;
+  businessRowId = 0;
+  /** Map relay entity names → Yjs collections. */
+  static ENTITY_TO_COLLECTION = {
+    items: "products",
+    categories: "categories",
+    sales: "sales",
+    sale_items: "saleItems",
+    stock_movements: "inventory",
+    payments: "payments",
+    debts: "debts",
+    debt_payments: "debtPayments",
+    customers: "customers",
+    suppliers: "suppliers",
+    returns: "returns",
+    businesses: "businesses",
+    locations: "locations",
+    registers: "registers",
+    audit_logs: "activities",
+    users: "users",
+    employees: "employees",
+    employee_roles: "employeeRoles"
+  };
+  /** Called from the WS hub when a signaling envelope arrives from a client. */
+  handleSignalEnvelope(fromDeviceId, msg) {
+    desktopWebRtc.handleSignal(msg);
+  }
+  /** Provide the function used to push signaling messages down to a client. */
+  setSignalingRelay(fn) {
+    this.signalingRelay = fn;
+    desktopWebRtc.setSignalingSender((to, msg) => this.signalingRelay?.(to, msg));
+  }
+  start(deviceId, businessUuid, businessRowId) {
+    if (this.started && this.businessUuid === businessUuid) return;
+    if (this.businessUuid && this.businessUuid !== businessUuid) {
+      yjsManager.closeBusiness(this.businessUuid);
+      desktopWebRtc.closeAll();
+    }
+    this.businessUuid = businessUuid;
+    this.businessRowId = businessRowId;
+    this.started = true;
+    yjsManager.setDeviceId(deviceId);
+    desktopWebRtc.init(deviceId, businessUuid);
+    yjsManager.bootstrapBusiness(businessRowId, businessUuid);
+    this.unsubs.push(
+      yjsManager.onUpdate((bizId, update, origin) => {
+        if (origin !== "local") return;
+        desktopWebRtc.broadcastUpdate(bizId, update);
+      })
+    );
+    this.unsubs.push(
+      desktopWebRtc.on("update", (bizId, _from, update) => {
+        const before = yjsManager.getFullState(bizId);
+        yjsManager.acceptRemoteUpdate(bizId, update);
+        const after = yjsManager.getFullState(bizId);
+        if (before && after) this.applyDocToSqlite(bizId, before, after);
+        this.lastSyncAt = Date.now();
+      })
+    );
+    this.unsubs.push(
+      desktopWebRtc.on("peerConnected", (peer) => {
+        this.sendFullState(peer.deviceId);
+        this.lastSyncAt = Date.now();
+      })
+    );
+    try {
+      this.lastOutboxSeq = dbProxy.prepare("SELECT COALESCE(MAX(seq),0) AS m FROM sync_outbox").get()?.m ?? 0;
+    } catch {
+      this.lastOutboxSeq = 0;
+    }
+    if (this.outboxTimer) clearInterval(this.outboxTimer);
+    this.outboxTimer = setInterval(() => this.pumpOutbox(), 1500);
+  }
+  pumpOutbox() {
+    if (!this.businessUuid) return;
+    try {
+      const rows = dbProxy.prepare("SELECT seq, entity, entity_uuid, op, payload FROM sync_outbox WHERE seq > ? ORDER BY seq ASC LIMIT 500").all(this.lastOutboxSeq);
+      for (const row of rows) {
+        this.lastOutboxSeq = row.seq;
+        const collection = P2pSyncManager.ENTITY_TO_COLLECTION[row.entity];
+        if (!collection) continue;
+        let payload = {};
+        try {
+          payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload || {};
+        } catch {
+          continue;
+        }
+        const data = detectPayloadPlatform(payload) === "mobile" ? normalizeToPlatform(payload, "desktop") : payload;
+        yjsManager.recordLocalChange(this.businessUuid, collection, row.entity_uuid, data, row.op === "DELETE");
+      }
+    } catch {
+    }
+  }
+  /** Record a local SQLite mutation into the Yjs doc (called from the outbox). */
+  recordLocalChange(collection, entityUuid, payload, deleted = false) {
+    if (!this.businessUuid || !isYjsCollection(collection)) return;
+    yjsManager.recordLocalChange(this.businessUuid, collection, entityUuid, payload, deleted);
+  }
+  /** Apply changed Yjs records into SQLite (append-only upsert / tombstone). */
+  applyDocToSqlite(businessId, before, _after) {
+    const changes = yjsManager.collectRemoteChanges(businessId, before);
+    for (const { collection, record } of changes) {
+      if (record.businessId !== businessId) continue;
+      this.applyRecord(collection, record);
+    }
+  }
+  applyRecord(collection, record) {
+    const table = COLLECTION_TABLE[collection];
+    try {
+      const cols = dbProxy.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+      const hasUuid = cols.includes("uuid");
+      const hasBiz = cols.includes("businessId");
+      const data = reconcileToColumns(
+        record.data,
+        new Set(cols),
+        "desktop"
+      );
+      if (hasUuid) data.uuid = record.uuid;
+      if (record.deleted) {
+        if (hasUuid) dbProxy.prepare(`UPDATE ${table} SET is_deleted = 1, is_synced = 1 WHERE uuid = ?`).run(record.uuid);
+        return;
+      }
+      let rowId;
+      if (hasUuid) {
+        rowId = dbProxy.prepare(`SELECT id FROM ${table} WHERE uuid = ?`).get(record.uuid);
+        if (rowId && APPEND_ONLY.has(collection)) return;
+      } else {
+        rowId = dbProxy.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(record.uuid);
+        if (rowId && APPEND_ONLY.has(collection)) return;
+      }
+      if (hasBiz) {
+        let biz = record.businessId;
+        if (biz != null && !/^[0-9]+$/.test(String(biz))) {
+          const row = dbProxy.prepare("SELECT id FROM businesses WHERE uuid = ?").get(String(biz));
+          biz = row?.id ?? null;
+        }
+        data.businessId = biz ?? null;
+      }
+      const keys2 = Object.keys(data).filter((k) => cols.includes(k));
+      if (keys2.length === 0) return;
+      if (rowId) {
+        const setSql = keys2.map((k) => `${k} = ?`).join(", ");
+        dbProxy.prepare(`UPDATE ${table} SET ${setSql}, is_synced = 1 WHERE id = ?`).run(...keys2.map((k) => data[k]), rowId.id);
+      } else {
+        const colSql = keys2.join(", ");
+        const ph = keys2.map(() => "?").join(", ");
+        dbProxy.prepare(`INSERT INTO ${table} (${colSql}, is_synced) VALUES (${ph}, 1)`).run(...keys2.map((k) => data[k]));
+      }
+      notifyDataApplied({ applied: 1, conflicts: 0, changes: 1, source: "p2p" });
+    } catch (e) {
+      console.warn(`[p2p] apply ${collection}/${record.uuid} failed:`, e);
+    }
+  }
+  getHealth() {
+    return {
+      businessId: this.businessUuid || null,
+      health: desktopWebRtc.getPeers().length > 0 ? "synced" : this.businessUuid ? "waiting" : "offline",
+      peers: desktopWebRtc.getPeers(),
+      lastSyncAt: this.lastSyncAt,
+      pendingUpdates: yjsManager.pendingCount()
+    };
+  }
+  getDevices() {
+    const rows = desktopWebRtc.getPeers().map((p) => ({
+      deviceId: p.deviceId,
+      deviceType: p.deviceType,
+      kind: p.kind,
+      connectedAt: p.connectedAt,
+      lastSyncAt: this.lastSyncAt,
+      online: true,
+      source: "webrtc"
+    }));
+    try {
+      const roster = dbProxy.prepare("SELECT uuid, device_id, name, model, platform, status, last_seen_at, last_sync_at FROM roster_devices WHERE is_deleted = 0").all();
+      for (const r of roster) {
+        if (rows.some((x) => x.deviceId === (r.uuid || r.device_id))) continue;
+        const status = String(r.status || "offline").toLowerCase();
+        rows.push({
+          deviceId: String(r.uuid || r.device_id || r.name),
+          deviceType: String(r.platform || "mobile").includes("desktop") ? "desktop" : "mobile",
+          kind: "lan",
+          connectedAt: Date.parse(r.last_seen_at || "") || 0,
+          lastSyncAt: Date.parse(r.last_sync_at || "") || null,
+          online: status === "online" || status === "active",
+          source: "roster",
+          name: r.name,
+          model: r.model
+        });
+      }
+    } catch {
+    }
+    return rows;
+  }
+  revokeDevice(deviceId) {
+    this.kickDevice(deviceId, "You were removed from this business by the owner.");
+    desktopWebRtc.closePeer(deviceId);
+    try {
+      dbProxy.prepare("UPDATE roster_devices SET status = ?, is_deleted = 1 WHERE uuid = ? OR id = ?").run("revoked", deviceId, deviceId);
+    } catch {
+    }
+  }
+  /** Owner: rename a device in the roster. */
+  renameDevice(deviceId, newName) {
+    try {
+      const r = dbProxy.prepare("UPDATE roster_devices SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE uuid = ? OR id = ?").run(newName, deviceId, deviceId);
+      return r.changes > 0;
+    } catch {
+      return false;
+    }
+  }
+  /** Per-collection record counts for the sync/bootstrap progress UI. */
+  getRecordCounts() {
+    const out = {};
+    try {
+      const bizRow = dbProxy.prepare("SELECT id FROM businesses WHERE uuid = ?").get(this.businessUuid);
+      const bizId = bizRow?.id ?? this.businessRowId;
+      const tableToLabel = [
+        ["items", "Products"],
+        ["categories", "Categories"],
+        ["sales", "Sales"],
+        ["customers", "Customers"],
+        ["suppliers", "Suppliers"],
+        ["debt_payments", "Payments"],
+        ["stock_movements", "Inventory"],
+        ["returns", "Returns"],
+        ["audit_logs", "Activities"]
+      ];
+      for (const [table, label] of tableToLabel) {
+        try {
+          const r = dbProxy.prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE businessId = ? AND is_deleted = 0`).get(bizId);
+          out[label] = r?.c ?? 0;
+        } catch {
+          out[label] = 0;
+        }
+      }
+    } catch {
+    }
+    return out;
+  }
+  /**
+   * Push a kick/lock message to a connected device over the signaling channel
+   * (small control message — fine to ride the relay; data channel may be gone).
+   */
+  kickDevice(deviceId, reason) {
+    try {
+      this.signalingRelay?.(deviceId, {
+        t: "error",
+        reason: "device-revoked"
+      });
+      desktopWebRtc.sendUpdate(deviceId, Buffer.from(JSON.stringify({ __shega_control__: "force-lock", reason })));
+    } catch {
+    }
+  }
+  /** Deactivate a user: push lock to any of their connected devices. */
+  kickUserDevices(userUuid, reason) {
+    try {
+      const rows = dbProxy.prepare("SELECT uuid, device_id FROM roster_devices WHERE userId = ? OR user_id = ?").all(userUuid, userUuid);
+      for (const r of rows) this.kickDevice(String(r.uuid || r.device_id), reason);
+    } catch {
+    }
+  }
+  announce() {
+    this.signalingRelay?.("__broadcast__", { t: "hello", deviceId: yjsManager.getDeviceId(), deviceType: "desktop", businessId: this.businessUuid });
+  }
+  /** Send our full doc state to a newly connected peer (initial catch-up). */
+  sendFullState(deviceId) {
+    if (!this.businessUuid) return;
+    const state = yjsManager.getFullState(this.businessUuid);
+    if (state) desktopWebRtc.sendUpdate(deviceId, state);
+  }
+  shutdown() {
+    this.unsubs.forEach((u) => u());
+    this.unsubs = [];
+    if (this.outboxTimer) {
+      clearInterval(this.outboxTimer);
+      this.outboxTimer = null;
+    }
+    desktopWebRtc.closeAll();
+    this.started = false;
+  }
+}
+const p2pSync = new P2pSyncManager();
 const APPROVER_ROLES = /* @__PURE__ */ new Set(["Owner", "Administrator", "Manager", "super_admin", "admin"]);
 function isApproverRole(role) {
   return !!role && APPROVER_ROLES.has(role);
@@ -6286,22 +22820,186 @@ function registerApprovalResolvers() {
 function promptForPin(webContents, ctx, approver, verifier = verifyStoredPin) {
   const requestId = crypto$1.randomUUID();
   return new Promise((resolveGate) => {
-    const timer2 = setTimeout(() => {
+    const timer = setTimeout(() => {
       if (pending.has(requestId)) {
         pending.delete(requestId);
         resolveGate("cancelled");
       }
     }, PROMPT_TIMEOUT_MS);
-    pending.set(requestId, { resolveGate, approver, verifier, timer: timer2 });
+    pending.set(requestId, { resolveGate, approver, verifier, timer });
     const payload = { ...ctx, requestId };
     try {
       webContents.send("approval:prompt", payload);
     } catch {
-      clearTimeout(timer2);
+      clearTimeout(timer);
       pending.delete(requestId);
       resolveGate("denied");
     }
   });
+}
+function bridgeUuid(source, sourceId) {
+  return `staff:${source === "admin" ? "admin" : "emp"}:${sourceId}`;
+}
+function splitPin(pin) {
+  if (!pin) return { pinHash: null, pinSalt: null };
+  const parts = pin.split(":");
+  if (parts.length === 2) return { pinHash: parts[1], pinSalt: parts[0] };
+  return { pinHash: pin, pinSalt: null };
+}
+function roleFromName(name) {
+  const n = (name || "").toLowerCase();
+  if (!n) return "cashier";
+  if (n.includes("owner") || n.includes("super")) return "owner";
+  if (n.includes("manager") || n.includes("supervisor") || n.includes("admin")) return "manager";
+  return "cashier";
+}
+function safePermissions(raw) {
+  if (!raw) return "{}";
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return JSON.stringify(parsed);
+    if (Array.isArray(parsed)) {
+      const obj = {};
+      for (const k of parsed) if (typeof k === "string") obj[k] = true;
+      return JSON.stringify(obj);
+    }
+    return "{}";
+  } catch {
+    return "{}";
+  }
+}
+function bridgeAdminUser(adminId) {
+  const admin = dbProxy.prepare("SELECT id, businessId, name, username, role, permissions, isActive, avatar, pin FROM admins WHERE id = ?").get(adminId);
+  if (!admin) return;
+  const isOwner = admin.role === "super_admin" || admin.role === "admin";
+  const role = isOwner ? "owner" : roleFromName(admin.role);
+  const { pinHash, pinSalt } = splitPin(admin.pin);
+  (/* @__PURE__ */ new Date()).toISOString();
+  const payload = {
+    id: admin.id,
+    businessId: admin.businessId ?? null,
+    name: admin.name || admin.username || "Owner",
+    email: admin.email ?? null,
+    username: admin.username ?? null,
+    avatar: admin.avatar ?? null,
+    role,
+    roleName: isOwner ? "Owner" : admin.role || role,
+    permissions: safePermissions(admin.permissions),
+    isActive: admin.isActive == null ? 1 : admin.isActive ? 1 : 0,
+    isOwner: isOwner ? 1 : 0,
+    pinHash,
+    pinSalt,
+    uuid: bridgeUuid("admin", admin.id),
+    device_id: ensureHubDeviceId()
+  };
+  upsertSyncUser("admin", admin.id, payload);
+}
+function bridgeEmployeeUser(employeeId) {
+  const emp = dbProxy.prepare(
+    `SELECT e.*, a.username, a.pin, a.isActive AS accountActive, a.forcePasswordChange,
+              r.name AS roleName, r.permissions AS rolePermissions
+       FROM employees e
+       LEFT JOIN employee_accounts a ON a.employeeId = e.id
+       LEFT JOIN employee_roles r ON e.roleId = r.id
+       WHERE e.id = ?`
+  ).get(employeeId);
+  if (!emp) return;
+  const roleKey = emp.role_key || roleFromName(emp.roleName || emp.role);
+  const isOwnerRole = roleKey === "owner";
+  const { pinHash, pinSalt } = splitPin(emp.pin);
+  (/* @__PURE__ */ new Date()).toISOString();
+  const payload = {
+    id: emp.id,
+    businessId: emp.businessId ?? null,
+    name: `${emp.firstName || ""} ${emp.lastName || ""}`.trim() || emp.username || `Employee ${emp.id}`,
+    phone: emp.phone ?? null,
+    email: emp.email ?? null,
+    username: emp.username ?? null,
+    avatar: emp.avatar ?? null,
+    role: roleKey,
+    roleName: emp.roleName || roleKey,
+    // Owners always carry the full owner permission set, equal on every device.
+    permissions: isOwnerRole ? JSON.stringify(DEFAULT_ROLE_SETS.owner) : safePermissions(emp.permissions_json || (Array.isArray(emp.rolePermissions) ? JSON.stringify(emp.rolePermissions) : emp.rolePermissions)),
+    isActive: emp.isActive == null ? 1 : emp.isActive ? 1 : 0,
+    isOwner: isOwnerRole ? 1 : 0,
+    pinHash,
+    pinSalt,
+    uuid: bridgeUuid("employee", emp.id),
+    device_id: ensureHubDeviceId()
+  };
+  upsertSyncUser("employee", emp.id, payload);
+}
+function upsertSyncUser(source, sourceId, payload) {
+  const existing = dbProxy.prepare("SELECT id FROM users WHERE sourceType = ? AND sourceId = ?").get(source, sourceId);
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
+  if (existing) {
+    dbProxy.prepare(
+      `UPDATE users SET businessId = ?, name = ?, phone = ?, email = ?, username = ?, avatar = ?,
+         role = ?, roleName = ?, permissions = ?, isActive = ?, isOwner = ?, pinHash = ?, pinSalt = ?,
+         updated_at = ?, is_deleted = 0 WHERE id = ?`
+    ).run(
+      payload.businessId,
+      payload.name,
+      payload.phone,
+      payload.email,
+      payload.username,
+      payload.avatar,
+      payload.role,
+      payload.roleName,
+      payload.permissions,
+      payload.isActive,
+      payload.isOwner,
+      payload.pinHash,
+      payload.pinSalt,
+      now2,
+      existing.id
+    );
+  } else {
+    dbProxy.prepare(
+      `INSERT INTO users (businessId, name, phone, email, username, avatar, role, roleName, permissions,
+         isActive, isOwner, pinHash, pinSalt, uuid, device_id, sourceType, sourceId, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      payload.businessId,
+      payload.name,
+      payload.phone,
+      payload.email,
+      payload.username,
+      payload.avatar,
+      payload.role,
+      payload.roleName,
+      payload.permissions,
+      payload.isActive,
+      payload.isOwner,
+      payload.pinHash,
+      payload.pinSalt,
+      payload.uuid,
+      payload.device_id,
+      source,
+      sourceId,
+      now2,
+      now2
+    );
+  }
+}
+function bridgeDeleteBySource(source, sourceId) {
+  dbProxy.prepare("UPDATE users SET is_deleted = 1, updated_at = ? WHERE sourceType = ? AND sourceId = ?").run((/* @__PURE__ */ new Date()).toISOString(), source, sourceId);
+}
+function reconcileUserBridge() {
+  const admins = dbProxy.prepare("SELECT id FROM admins").all();
+  const emps = dbProxy.prepare("SELECT id FROM employees").all();
+  for (const a of admins) bridgeAdminUser(a.id);
+  for (const e of emps) bridgeEmployeeUser(e.id);
+  return admins.length + emps.length;
+}
+function findRosterLogin(username) {
+  const row = dbProxy.prepare(
+    `SELECT id, businessId, name, email, phone, username, role, roleName, permissions, isActive, isOwner, pinHash, pinSalt, avatar
+       FROM users WHERE is_deleted = 0 AND isActive = 1
+         AND (LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?) OR LOWER(name) = LOWER(?))
+       LIMIT 1`
+  ).get(username.trim(), username.trim(), username.trim());
+  return row ?? null;
 }
 function getActiveBusinessId$1() {
   const row = dbProxy.prepare("SELECT value FROM settings WHERE key = 'active_business_id'").get();
@@ -6494,52 +23192,6 @@ function importItems(rows) {
   }
   return result;
 }
-function importExpenses(rows) {
-  const result = { success: true, imported: 0, errors: [], skipped: 0 };
-  const bizId = getActiveBusinessId$1();
-  const transaction = dbProxy.transaction(() => {
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      try {
-        const name = r.name?.trim();
-        if (!name) {
-          result.errors.push({ row: i + 1, message: "Expense name is required" });
-          continue;
-        }
-        const amount = parseFloat(r.amount);
-        if (isNaN(amount) || amount < 0) {
-          result.errors.push({ row: i + 1, message: `Invalid amount: "${r.amount}"` });
-          continue;
-        }
-        const date = r.date || (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-        if (!date) {
-          result.errors.push({ row: i + 1, message: "Date is required" });
-          continue;
-        }
-        dbProxy.prepare("INSERT INTO expenses (businessId, name, amount, category, date, isRecurring, frequency, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
-          bizId,
-          name,
-          amount,
-          r.category || null,
-          date,
-          r.isRecurring === "true" || r.isRecurring === "1" ? 1 : 0,
-          r.frequency || null,
-          r.notes || null
-        );
-        result.imported++;
-      } catch (e) {
-        result.errors.push({ row: i + 1, message: e.message || "Unknown error" });
-      }
-    }
-  });
-  try {
-    transaction();
-  } catch (e) {
-    result.success = false;
-    result.errors.push({ row: 0, message: `Transaction failed: ${e.message}` });
-  }
-  return result;
-}
 function importCustomers(rows) {
   const result = { success: true, imported: 0, errors: [], skipped: 0 };
   const bizId = getActiveBusinessId$1();
@@ -6654,122 +23306,6 @@ function importShipments(rows) {
           r.vehicleInfo?.trim() || null,
           status,
           r.scheduledDate || null,
-          r.notes?.trim() || null
-        );
-        result.imported++;
-      } catch (e) {
-        result.errors.push({ row: i + 1, message: e.message || "Unknown error" });
-      }
-    }
-  });
-  try {
-    transaction();
-  } catch (e) {
-    result.success = false;
-    result.errors.push({ row: 0, message: `Transaction failed: ${e.message}` });
-  }
-  return result;
-}
-function importAdjustments(rows) {
-  const result = { success: true, imported: 0, errors: [], skipped: 0 };
-  const bizId = getActiveBusinessId$1();
-  const validTypes = ["damage", "loss", "add_stock", "price_increase", "price_decrease"];
-  const transaction = dbProxy.transaction(() => {
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      try {
-        const itemName = r.itemName?.trim();
-        if (!itemName) {
-          result.errors.push({ row: i + 1, message: "Item name is required" });
-          continue;
-        }
-        const itemId = resolveItemId(itemName);
-        if (!itemId) {
-          result.errors.push({ row: i + 1, message: `Item "${itemName}" not found` });
-          continue;
-        }
-        const type = r.type?.trim();
-        if (!type || !validTypes.includes(type)) {
-          result.errors.push({ row: i + 1, message: `Invalid type "${type}". Must be one of: ${validTypes.join(", ")}` });
-          continue;
-        }
-        const quantity = parseFloat(r.quantity);
-        if (isNaN(quantity) || quantity < 0) {
-          result.errors.push({ row: i + 1, message: `Invalid quantity: "${r.quantity}"` });
-          continue;
-        }
-        const date = r.date || (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-        const unitType = r.unitType || "base";
-        dbProxy.prepare("INSERT INTO adjustments (businessId, itemId, type, oldValue, newValue, quantity, unitType, reason, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-          bizId,
-          itemId,
-          type,
-          null,
-          null,
-          quantity,
-          unitType,
-          r.reason?.trim() || null,
-          date
-        );
-        if (type === "damage" || type === "loss") {
-          const item = dbProxy.prepare("SELECT unitsPerPack FROM items WHERE id = ?").get(itemId);
-          let baseDeduction = quantity;
-          if (unitType === "pack") baseDeduction = quantity * (item?.unitsPerPack || 1);
-          const itemResult = dbProxy.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?").run(baseDeduction, itemId, baseDeduction);
-          if (itemResult.changes === 0) throw new Error(`Insufficient stock: item "${itemName}" has less than ${baseDeduction} units available`);
-          const defWhId = getDefaultWarehouseId$1();
-          const whRow = dbProxy.prepare("SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(defWhId, itemId);
-          if (whRow) {
-            const whAdjustResult = dbProxy.prepare("UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND quantity >= ?").run(baseDeduction, whRow.id, baseDeduction);
-            if (whAdjustResult.changes === 0) throw new Error(`Insufficient warehouse stock for item "${itemName}"`);
-          }
-        } else if (type === "add_stock") {
-          const item = dbProxy.prepare("SELECT unitsPerPack FROM items WHERE id = ?").get(itemId);
-          let baseAddition = quantity;
-          if (unitType === "pack") baseAddition = quantity * (item?.unitsPerPack || 1);
-          dbProxy.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity + ? WHERE id = ?").run(baseAddition, itemId);
-          const defWhId = getDefaultWarehouseId$1();
-          const whRow = dbProxy.prepare("SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(defWhId, itemId);
-          if (whRow) {
-            dbProxy.prepare("UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(baseAddition, whRow.id);
-          }
-        }
-        result.imported++;
-      } catch (e) {
-        result.errors.push({ row: i + 1, message: e.message || "Unknown error" });
-      }
-    }
-  });
-  try {
-    transaction();
-  } catch (e) {
-    result.success = false;
-    result.errors.push({ row: 0, message: `Transaction failed: ${e.message}` });
-  }
-  return result;
-}
-function importContacts(rows) {
-  const result = { success: true, imported: 0, errors: [], skipped: 0 };
-  const bizId = getActiveBusinessId$1();
-  const transaction = dbProxy.transaction(() => {
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      try {
-        const name = r.name?.trim();
-        if (!name) {
-          result.errors.push({ row: i + 1, message: "Name is required" });
-          continue;
-        }
-        const phone = r.phone?.trim();
-        if (!phone) {
-          result.errors.push({ row: i + 1, message: "Phone is required" });
-          continue;
-        }
-        dbProxy.prepare("INSERT INTO contacts (businessId, name, phone, category, notes) VALUES (?, ?, ?, ?, ?)").run(
-          bizId,
-          name,
-          phone,
-          r.category?.trim() || "other",
           r.notes?.trim() || null
         );
         result.imported++;
@@ -7021,12 +23557,9 @@ function importOrders(rows) {
 const IMPORTERS = {
   sales: importSales,
   inventory: importItems,
-  expenses: importExpenses,
   customers: importCustomers,
   suppliers: importSuppliers,
   shipments: importShipments,
-  adjustments: importAdjustments,
-  contacts: importContacts,
   warehouses: importWarehouses,
   employees: importEmployees,
   "supplier-purchases": importSupplierPurchases,
@@ -7116,12 +23649,9 @@ const PERMISSION_MODULE = {
   orders: "sales",
   payments: "sales",
   expenses: "expenses",
-  budgets: "expenses",
   customers: "customers",
-  contacts: "customers",
   analytics: "analytics",
   reports: "analytics",
-  adjustments: "adjustments",
   settings: "settings",
   notifications: "settings",
   employees: "employees",
@@ -7145,9 +23675,40 @@ function resolveSharedPermissions(roleKey, permissionsJson) {
   }
   return mergePermissionSets(base.permissions, overrides);
 }
+function resolveRosterIdentity() {
+  if (!currentUserName) return null;
+  const roster = dbProxy.prepare(
+    `SELECT id, businessId, name, email, phone, role, roleName, permissions,
+              isActive, isOwner, pinHash
+       FROM users
+       WHERE is_deleted = 0 AND isActive = 1
+         AND (email = ? OR name = ? OR phone = ?)
+       ORDER BY CASE WHEN isOwner = 1 THEN 0 ELSE 1 END
+       LIMIT 1`
+  ).get(currentUserName, currentUserName, currentUserName);
+  if (!roster) return null;
+  const isOwner = !!roster.isOwner || roster.role === "owner" || roster.role === "super_admin";
+  const rawPerms = {};
+  try {
+    const parsed = JSON.parse(roster.permissions || "{}");
+    if (parsed && typeof parsed === "object") Object.assign(rawPerms, parsed);
+  } catch (e) {
+  }
+  const legacyPerms = Object.keys(rawPerms).filter((k) => !["*"].includes(k));
+  const sharedPerms = resolveSharedPermissions(roster.role, roster.permissions);
+  return {
+    role: isOwner ? "owner" : roster.roleName || roster.role || "cashier",
+    permissions: isOwner ? ["*"] : legacyPerms.length ? legacyPerms : ["*"],
+    sharedPerms,
+    businessId: roster.businessId ?? null,
+    isOwner,
+    rosterUserId: roster.id ?? null
+  };
+}
 function requirePermission(perm) {
   if (currentUserRole === "super_admin") return;
   if (currentUserPermissions.includes(perm) || currentUserPermissions.includes("*")) return;
+  if (currentUserSharedPerms && currentUserSharedPerms[perm] === true) return;
   const prefix = perm.split(".")[0];
   const modulePerm = PERMISSION_MODULE[prefix] || prefix;
   const effective = new Set(
@@ -7188,9 +23749,9 @@ function getActiveBusinessId() {
   }
   return activeBusinessId;
 }
-function setActiveBusinessId(id) {
-  activeBusinessId = id;
-  dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('active_business_id', ?)").run(String(id));
+function setActiveBusinessId(id2) {
+  activeBusinessId = id2;
+  dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('active_business_id', ?)").run(String(id2));
 }
 function clearActiveBusinessCache() {
   activeBusinessId = null;
@@ -7238,18 +23799,30 @@ function registerIPCHandlers() {
   console.log("[Handlers] registerIPCHandlers called");
   registerApprovalResolvers();
   electron.ipcMain.handle("get-active-business", () => {
-    const id = getActiveBusinessId();
-    return dbProxy.prepare("SELECT * FROM businesses WHERE id = ?").get(id);
+    const id2 = getActiveBusinessId();
+    return dbProxy.prepare("SELECT * FROM businesses WHERE id = ?").get(id2);
   });
-  electron.ipcMain.handle("update-business", (_, id, biz) => {
+  electron.ipcMain.handle("update-business", (_, id2, biz) => {
     requirePermission("settings");
     if (!biz.businessName?.trim()) throw new Error("Business name is required");
     const stmt = dbProxy.prepare("UPDATE businesses SET businessName = ?, storeName = ?, logo = ?, address = ?, phone = ?, email = ?, currency = ? WHERE id = ?");
-    return stmt.run(biz.businessName, biz.storeName, biz.logo, biz.address, biz.phone, biz.email, biz.currency, id);
+    return stmt.run(biz.businessName, biz.storeName, biz.logo, biz.address, biz.phone, biz.email, biz.currency, id2);
   });
+  electron.ipcMain.handle("p2p:health", () => p2pSync.getHealth());
+  electron.ipcMain.handle("p2p:devices", () => p2pSync.getDevices());
+  electron.ipcMain.handle("p2p:announce", () => {
+    p2pSync.announce();
+    return true;
+  });
+  electron.ipcMain.handle("p2p:revoke-device", (_, deviceId) => {
+    p2pSync.revokeDevice(deviceId);
+    return true;
+  });
+  electron.ipcMain.handle("p2p:rename-device", (_, deviceId, name) => p2pSync.renameDevice(deviceId, name));
+  electron.ipcMain.handle("p2p:record-counts", () => p2pSync.getRecordCounts());
   electron.ipcMain.handle("business:list", () => {
-    requirePermission("settings");
     const totalBiz = dbProxy.prepare("SELECT COUNT(*) c FROM businesses WHERE is_deleted = 0").get().c;
+    const activeId = getActiveBusinessId();
     return dbProxy.prepare(`
       SELECT b.*,
         (SELECT COUNT(*) FROM employees e WHERE e.businessId = b.id AND e.isActive = 1 AND e.is_deleted = 0) as employeeCount,
@@ -7259,7 +23832,7 @@ function registerIPCHandlers() {
       FROM businesses b
       WHERE b.is_deleted = 0
       ORDER BY CASE WHEN b.isDefault = 1 THEN 0 ELSE 1 END, b.createdAt
-    `).all().map((b) => ({ ...b, totalBusinesses: totalBiz }));
+    `).all().map((b) => ({ ...b, totalBusinesses: totalBiz, isActive: b.id === activeId }));
   });
   electron.ipcMain.handle("business:create", (_, data) => {
     if (!data?.businessName?.trim()) throw new Error("Business name is required");
@@ -7272,33 +23845,62 @@ function registerIPCHandlers() {
     if (isFirst) {
       dbProxy.prepare("UPDATE businesses SET isDefault = 1 WHERE id = ?").run(bizId);
     }
-    if (isFirst || !currentUserBusinessId) setActiveBusinessId(bizId);
+    try {
+      dbProxy.prepare(`
+        INSERT INTO users (businessId, name, username, email, role, roleName, permissions, isActive, isOwner, sourceType, sourceId, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'owner', 'Owner', ?, 1, 1, 'admin', ?, ?, ?)
+      `).run(
+        bizId,
+        currentUserName || "Owner",
+        null,
+        null,
+        JSON.stringify(["*"]),
+        currentAdminId ?? null,
+        (/* @__PURE__ */ new Date()).toISOString(),
+        (/* @__PURE__ */ new Date()).toISOString()
+      );
+    } catch {
+    }
+    setActiveBusinessId(bizId);
     insertAuditLog("business_created", "business", bizId, "businessName", null, data.businessName.trim(), `Business "${data.businessName.trim()}" created by ${currentUserName || "unknown"} (wh #${whRes.lastInsertRowid})`);
     return dbProxy.prepare("SELECT * FROM businesses WHERE id = ?").get(bizId);
   });
-  electron.ipcMain.handle("business:switch", (_, id) => {
-    if (!Number.isInteger(+id)) throw new Error("Invalid business id");
-    if (currentUserBusinessId && currentUserBusinessId !== +id) {
-      throw new Error("You are signed in as an employee of another business and cannot switch businesses.");
+  electron.ipcMain.handle("business:switch", (_, id2) => {
+    if (!Number.isInteger(+id2)) throw new Error("Invalid business id");
+    if (currentUserBusinessId && currentUserBusinessId !== +id2) {
+      const isOperator = currentUserRole === "super_admin" || currentUserRole === "admin" || currentUserRole === "owner";
+      const membership = dbProxy.prepare("SELECT id FROM users WHERE businessId = ? AND (id = ? OR username = ? OR name = ?) AND is_deleted = 0 AND isActive = 1").get(+id2, currentAdminId ?? -1, currentUserName ?? "", currentUserName ?? "");
+      if (!isOperator && !membership) {
+        throw new Error("You are signed in as an employee of another business and cannot switch businesses.");
+      }
     }
-    const biz = dbProxy.prepare("SELECT * FROM businesses WHERE id = ? AND is_deleted = 0").get(+id);
+    const biz = dbProxy.prepare("SELECT * FROM businesses WHERE id = ? AND is_deleted = 0").get(+id2);
     if (!biz) throw new Error("Business not found");
-    setActiveBusinessId(+id);
+    setActiveBusinessId(+id2);
+    try {
+      const { reScopePeerSync } = require("./peer-sync");
+      reScopePeerSync(+id2);
+    } catch {
+    }
+    const { BrowserWindow: BrowserWindow2 } = require("electron");
+    for (const w of BrowserWindow2.getAllWindows()) {
+      w.webContents.send("business-changed", { businessId: +id2, name: biz.businessName });
+    }
     return biz;
   });
-  electron.ipcMain.handle("business:set-default", (_, id) => {
+  electron.ipcMain.handle("business:set-default", (_, id2) => {
     requirePermission("settings");
     if (currentUserRole !== "super_admin" && currentUserRole !== "admin") throw new Error("Only platform administrators can set the default business");
-    const biz = dbProxy.prepare("SELECT id FROM businesses WHERE id = ? AND is_deleted = 0").get(+id);
+    const biz = dbProxy.prepare("SELECT id FROM businesses WHERE id = ? AND is_deleted = 0").get(+id2);
     if (!biz) throw new Error("Business not found");
     dbProxy.prepare("UPDATE businesses SET isDefault = 0").run();
-    dbProxy.prepare("UPDATE businesses SET isDefault = 1 WHERE id = ?").run(+id);
-    insertAuditLog("business_set_default", "business", +id, "isDefault", null, "1", `Business #${id} set as default by ${currentUserName || "unknown"}`);
+    dbProxy.prepare("UPDATE businesses SET isDefault = 1 WHERE id = ?").run(+id2);
+    insertAuditLog("business_set_default", "business", +id2, "isDefault", null, "1", `Business #${id2} set as default by ${currentUserName || "unknown"}`);
     return { success: true };
   });
-  electron.ipcMain.handle("business:archive", (_, id) => {
+  electron.ipcMain.handle("business:archive", (_, id2) => {
     requirePermission("settings");
-    const bizId = +id;
+    const bizId = +id2;
     const biz = dbProxy.prepare("SELECT * FROM businesses WHERE id = ? AND is_deleted = 0").get(bizId);
     if (!biz) throw new Error("Business not found");
     const active = getActiveBusinessId();
@@ -7310,10 +23912,10 @@ function registerIPCHandlers() {
     insertAuditLog("business_archived", "business", bizId, "is_deleted", "0", "1", `Business "${biz.businessName}" archived by ${currentUserName || "unknown"}`);
     return { success: true };
   });
-  electron.ipcMain.handle("business:leave", (_, id) => {
+  electron.ipcMain.handle("business:leave", (_, id2) => {
     if (currentUserBusinessId) throw new Error("Employees cannot leave a business. Contact a platform administrator.");
     if (!currentAdminId) throw new Error("Not signed in");
-    const bizId = +id;
+    const bizId = +id2;
     if (getActiveBusinessId() === bizId) throw new Error("Switch to another business before leaving this one.");
     const remaining = dbProxy.prepare("SELECT COUNT(*) c FROM businesses WHERE is_deleted = 0 AND id != ?").get(bizId).c;
     if (remaining === 0) throw new Error("Cannot leave the last business.");
@@ -7331,45 +23933,45 @@ function registerIPCHandlers() {
     const result = dbProxy.prepare("INSERT INTO categories (businessId, name, icon, isCustom) VALUES (?, ?, ?, 1)").run(bizId, name, icon || "tag");
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("delete-category", (_, id) => {
+  electron.ipcMain.handle("delete-category", (_, id2) => {
     requirePermission("settings.manage");
     const bizId = getActiveBusinessId();
-    dbProxy.prepare("SELECT name FROM categories WHERE id = ?").get(id);
-    dbProxy.prepare("DELETE FROM categories WHERE id = ? AND businessId = ? AND isCustom = 1").run(id, bizId);
+    dbProxy.prepare("SELECT name FROM categories WHERE id = ?").get(id2);
+    dbProxy.prepare("DELETE FROM categories WHERE id = ? AND businessId = ? AND isCustom = 1").run(id2, bizId);
   });
   electron.ipcMain.handle("get-items", (_, options = {}) => {
     requirePermission("inventory.view");
     const bizId = getActiveBusinessId();
     let query = "SELECT items.*, categories.name as categoryName, suppliers.supplierName FROM items LEFT JOIN categories ON items.categoryId = categories.id LEFT JOIN suppliers ON items.supplierId = suppliers.id";
-    const params = [];
+    const params2 = [];
     const conditions = ["items.businessId = ?", "items.is_deleted = 0"];
-    params.push(bizId);
+    params2.push(bizId);
     if (options.search) {
       conditions.push("(LOWER(items.name) LIKE LOWER(?) OR LOWER(items.companyName) LIKE LOWER(?))");
-      params.push(`%${options.search}%`, `%${options.search}%`);
+      params2.push(`%${options.search}%`, `%${options.search}%`);
     }
     if (options.category && options.category !== "All") {
       conditions.push("categories.name = ?");
-      params.push(options.category);
+      params2.push(options.category);
     }
     if (options.supplierId) {
       conditions.push("items.supplierId = ?");
-      params.push(options.supplierId);
+      params2.push(options.supplierId);
     }
     if (options.startDate && options.endDate) {
       if (options.startDate === options.endDate) {
         conditions.push("items.createdAt >= ? AND items.createdAt < ?");
-        params.push(options.startDate, options.startDate + "T23:59:59.999Z");
+        params2.push(options.startDate, options.startDate + "T23:59:59.999Z");
       } else {
         conditions.push("items.createdAt >= ? AND items.createdAt <= ?");
-        params.push(options.startDate, options.endDate + "T23:59:59.999Z");
+        params2.push(options.startDate, options.endDate + "T23:59:59.999Z");
       }
     } else if (options.startDate) {
       conditions.push("items.createdAt >= ?");
-      params.push(options.startDate);
+      params2.push(options.startDate);
     } else if (options.endDate) {
       conditions.push("items.createdAt <= ?");
-      params.push(options.endDate + "T23:59:59.999Z");
+      params2.push(options.endDate + "T23:59:59.999Z");
     }
     if (conditions.length > 0) {
       query += " WHERE " + conditions.join(" AND ");
@@ -7378,10 +23980,10 @@ function registerIPCHandlers() {
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
-  electron.ipcMain.handle("get-item", (_, id) => {
+  electron.ipcMain.handle("get-item", (_, id2) => {
     requirePermission("inventory.view");
     const bizId = getActiveBusinessId();
     const item = dbProxy.prepare(`
@@ -7390,14 +23992,14 @@ function registerIPCHandlers() {
       LEFT JOIN categories ON items.categoryId = categories.id
       LEFT JOIN suppliers ON items.supplierId = suppliers.id
       WHERE items.id = ? AND items.businessId = ? AND items.is_deleted = 0
-    `).get(id, bizId);
+    `).get(id2, bizId);
     if (!item) return null;
     const totalPurchased = dbProxy.prepare(`
       SELECT COALESCE(SUM(spi.quantity), 0) AS totalPurchasedQuantity
       FROM supplier_purchase_items spi
       JOIN supplier_purchases sp ON sp.id = spi.purchaseId
       WHERE spi.itemId = ?
-    `).get(id);
+    `).get(id2);
     const lastPO = dbProxy.prepare(`
       SELECT sp.purchaseNumber AS lastPurchaseOrderRef, sp.purchaseDate AS lastPurchaseOrderDate
       FROM supplier_purchase_items spi
@@ -7405,7 +24007,7 @@ function registerIPCHandlers() {
       WHERE spi.itemId = ?
       ORDER BY sp.purchaseDate DESC
       LIMIT 1
-    `).get(id);
+    `).get(id2);
     return { ...item, ...totalPurchased, ...lastPO };
   });
   electron.ipcMain.handle("get-item-by-barcode", (_, code) => {
@@ -7432,9 +24034,13 @@ function registerIPCHandlers() {
         businessId, name, categoryId, sku, barcode, companyName, purchaseUnit, baseUnit, unitsPerPack,
         totalPackQuantity, totalBaseQuantity, packPurchasePrice, basePurchasePrice,
         baseSellingPrice, packSellingPrice, allowSellByBaseUnit, allowSellByPackUnit,
-        expiryDate, qualityGrade, notes, isCredit, supplierPhone, supplierId,
-        reorderPoint, reorderQty, autoReorder, createdAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        expiryDate, qualityGrade, taxType, taxTreatment, notes, isCredit, supplierPhone, supplierId,
+        reorderPoint, reorderQty, autoReorder, createdAt,
+        image, wholesaleSellingPrice, minWholesaleQty,
+        transportCost, importCost, packagingCost, handlingCost, otherCost, targetMargin,
+        supplierAccount, supplierCallEnabled, warehouseId, isActive, quickProduct
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const newBaseQty = item.totalBaseQuantity || 0;
     const newPackQty = item.totalPackQuantity || 0;
@@ -7458,6 +24064,8 @@ function registerIPCHandlers() {
       item.allowSellByPackUnit ? 1 : 0,
       item.expiryDate || null,
       item.qualityGrade,
+      item.taxType || null,
+      item.taxTreatment || null,
       item.notes,
       item.isCredit ? 1 : 0,
       item.supplierPhone,
@@ -7465,7 +24073,21 @@ function registerIPCHandlers() {
       item.reorderPoint ?? 10,
       item.reorderQty ?? 0,
       item.autoReorder ? 1 : 0,
-      purchaseDate
+      purchaseDate,
+      item.image || null,
+      item.wholesaleSellingPrice ?? null,
+      item.minWholesaleQty ?? null,
+      item.transportCost ?? 0,
+      item.importCost ?? 0,
+      item.packagingCost ?? 0,
+      item.handlingCost ?? 0,
+      item.otherCost ?? 0,
+      item.targetMargin ?? null,
+      item.supplierAccount || null,
+      item.supplierCallEnabled ? 1 : 0,
+      item.warehouseId ?? null,
+      item.isActive ?? 1,
+      item.quickProduct ? 1 : 0
     );
     const newId = result.lastInsertRowid;
     if (item.supplierId && newBaseQty > 0) {
@@ -7510,7 +24132,7 @@ function registerIPCHandlers() {
     }
     return newId;
   });
-  electron.ipcMain.handle("update-item", (_, id, item) => {
+  electron.ipcMain.handle("update-item", (_, id2, item) => {
     requirePermission("inventory.edit");
     if (!item.name || !item.name.trim()) throw new Error("Product name is required");
     const unitsPerPack = validatePositive(item.unitsPerPack ?? 1, "Units per pack");
@@ -7521,8 +24143,11 @@ function registerIPCHandlers() {
           name = ?, categoryId = ?, sku = ?, barcode = ?, companyName = ?, purchaseUnit = ?, baseUnit = ?, unitsPerPack = ?,
           totalPackQuantity = ?, totalBaseQuantity = ?, packPurchasePrice = ?, basePurchasePrice = ?,
           baseSellingPrice = ?, packSellingPrice = ?, allowSellByBaseUnit = ?, allowSellByPackUnit = ?,
-          expiryDate = ?, qualityGrade = ?, notes = ?, isCredit = ?, supplierPhone = ?,
-          supplierId = ?, reorderPoint = ?, reorderQty = ?, autoReorder = ?
+          expiryDate = ?, qualityGrade = ?, taxType = ?, taxTreatment = ?, notes = ?, isCredit = ?, supplierPhone = ?,
+          supplierId = ?, reorderPoint = ?, reorderQty = ?, autoReorder = ?,
+          image = ?, wholesaleSellingPrice = ?, minWholesaleQty = ?,
+          transportCost = ?, importCost = ?, packagingCost = ?, handlingCost = ?, otherCost = ?, targetMargin = ?,
+          supplierAccount = ?, supplierCallEnabled = ?, warehouseId = ?, isActive = ?, quickProduct = ?
         WHERE id = ? AND businessId = ?
       `);
       const result2 = stmt.run(
@@ -7544,6 +24169,8 @@ function registerIPCHandlers() {
         item.allowSellByPackUnit ? 1 : 0,
         item.expiryDate || null,
         item.qualityGrade,
+        item.taxType || null,
+        item.taxTreatment || null,
         item.notes,
         item.isCredit ? 1 : 0,
         item.supplierPhone,
@@ -7551,18 +24178,90 @@ function registerIPCHandlers() {
         item.reorderPoint ?? 10,
         item.reorderQty ?? 0,
         item.autoReorder ? 1 : 0,
-        id,
+        item.image || null,
+        item.wholesaleSellingPrice ?? null,
+        item.minWholesaleQty ?? null,
+        item.transportCost ?? 0,
+        item.importCost ?? 0,
+        item.packagingCost ?? 0,
+        item.handlingCost ?? 0,
+        item.otherCost ?? 0,
+        item.targetMargin ?? null,
+        item.supplierAccount || null,
+        item.supplierCallEnabled ? 1 : 0,
+        item.warehouseId ?? null,
+        item.isActive ?? 1,
+        item.quickProduct ? 1 : 0,
+        id2,
         bizId
       );
       return result2;
     })();
     return result;
   });
-  electron.ipcMain.handle("delete-item", (_, id) => {
+  electron.ipcMain.handle("delete-item", (_, id2) => {
     requirePermission("inventory.delete");
-    dbProxy.prepare("SELECT name FROM items WHERE id = ?").get(id);
-    dbProxy.prepare("UPDATE items SET is_deleted = 1, deleted_by = ?, deleted_at = CURRENT_TIMESTAMP WHERE id = ?").run(currentUserName || "unknown", id);
+    dbProxy.prepare("SELECT name FROM items WHERE id = ?").get(id2);
+    dbProxy.prepare("UPDATE items SET is_deleted = 1, deleted_by = ?, deleted_at = CURRENT_TIMESTAMP WHERE id = ?").run(currentUserName || "unknown", id2);
     return { success: true };
+  });
+  electron.ipcMain.handle("generate-shega-code", () => {
+    requirePermission("inventory.add");
+    const bizId = getActiveBusinessId();
+    const seqRow = dbProxy.prepare(`SELECT value FROM app_settings WHERE key = 'shega_barcode_seq'`).get();
+    let seq = seqRow ? parseInt(seqRow.value, 10) || 0 : 0;
+    for (let i = 0; i < 100; i++) {
+      seq += 1;
+      const code = "SHG-" + String(seq).padStart(6, "0");
+      const clash = dbProxy.prepare(
+        `SELECT COUNT(*) as n FROM items WHERE (barcode = ? OR sku = ?) AND is_deleted = 0 AND businessId = ?`
+      ).get(code, code, bizId);
+      if (!clash || clash.n === 0) {
+        dbProxy.prepare(`INSERT OR REPLACE INTO app_settings (key, value) VALUES ('shega_barcode_seq', ?)`).run(String(seq));
+        return code;
+      }
+    }
+    return "SHG-" + String(Date.now()).slice(-6);
+  });
+  electron.ipcMain.handle("item-barcodes:list", (_, itemId) => {
+    return dbProxy.prepare(
+      `SELECT * FROM item_barcodes WHERE itemId = ? AND is_deleted = 0 ORDER BY isPrimary DESC, id ASC`
+    ).all(itemId);
+  });
+  electron.ipcMain.handle("item-barcodes:add", (_, itemId, barcode) => {
+    requirePermission("inventory.edit");
+    if (!barcode || !barcode.trim()) throw new Error("Barcode is required");
+    const existing = dbProxy.prepare(
+      `SELECT id FROM item_barcodes WHERE itemId = ? AND barcode = ? AND is_deleted = 0`
+    ).get(itemId, barcode.trim());
+    if (existing) throw new Error("Barcode already exists for this item");
+    const hasAny = dbProxy.prepare(
+      `SELECT COUNT(*) as n FROM item_barcodes WHERE itemId = ? AND is_deleted = 0`
+    ).get(itemId);
+    const isPrimary = hasAny.n === 0 ? 1 : 0;
+    const result = dbProxy.prepare(
+      `INSERT INTO item_barcodes (itemId, barcode, isPrimary) VALUES (?, ?, ?)`
+    ).run(itemId, barcode.trim(), isPrimary);
+    return result.lastInsertRowid;
+  });
+  electron.ipcMain.handle("item-barcodes:remove", (_, barcodeId) => {
+    requirePermission("inventory.edit");
+    const row = dbProxy.prepare(`SELECT itemId, isPrimary FROM item_barcodes WHERE id = ? AND is_deleted = 0`).get(barcodeId);
+    if (!row) return;
+    dbProxy.prepare(`UPDATE item_barcodes SET is_deleted = 1, deleted_at = CURRENT_TIMESTAMP WHERE id = ?`).run(barcodeId);
+    if (row.isPrimary) {
+      const next = dbProxy.prepare(
+        `SELECT id FROM item_barcodes WHERE itemId = ? AND is_deleted = 0 ORDER BY id ASC LIMIT 1`
+      ).get(row.itemId);
+      if (next) dbProxy.prepare(`UPDATE item_barcodes SET isPrimary = 1 WHERE id = ?`).run(next.id);
+    }
+  });
+  electron.ipcMain.handle("item-barcodes:set-primary", (_, barcodeId) => {
+    requirePermission("inventory.edit");
+    const row = dbProxy.prepare(`SELECT itemId FROM item_barcodes WHERE id = ? AND is_deleted = 0`).get(barcodeId);
+    if (!row) return;
+    dbProxy.prepare(`UPDATE item_barcodes SET isPrimary = 0 WHERE itemId = ? AND is_deleted = 0`).run(row.itemId);
+    dbProxy.prepare(`UPDATE item_barcodes SET isPrimary = 1 WHERE id = ?`).run(barcodeId);
   });
   electron.ipcMain.handle("get-low-stock-items", () => {
     requirePermission("inventory.view");
@@ -7604,57 +24303,68 @@ function registerIPCHandlers() {
       ORDER BY items.name ASC
     `).all(supplierId, bizId);
   });
-  electron.ipcMain.handle("restock-item", (_, id, quantity) => {
+  electron.ipcMain.handle("restock-item", (_, id2, quantity, unit) => {
     requirePermission("inventory.adjust");
     const bizId = getActiveBusinessId();
-    const item = dbProxy.prepare("SELECT name, unitsPerPack FROM items WHERE id = ? AND businessId = ?").get(id, bizId);
+    const item = dbProxy.prepare("SELECT name, unitsPerPack FROM items WHERE id = ? AND businessId = ?").get(id2, bizId);
     if (!item) throw new Error("Item not found");
     const qty = validatePositive(quantity, "Restock quantity");
-    const packQty = Math.round(qty / (item.unitsPerPack || 1) * 1e6) / 1e6;
-    dbProxy.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity + ?, totalPackQuantity = totalPackQuantity + ? WHERE id = ?").run(qty, packQty, id);
+    const unitsPerPack = item.unitsPerPack || 1;
+    const baseQty = unit === "pack" ? Math.round(qty * unitsPerPack * 1e6) / 1e6 : qty;
+    const packQty = Math.round(baseQty / unitsPerPack * 1e6) / 1e6;
+    dbProxy.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity + ?, totalPackQuantity = totalPackQuantity + ? WHERE id = ?").run(baseQty, packQty, id2);
     const defWhId = getDefaultWarehouseId();
-    const whRow = dbProxy.prepare("SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(defWhId, id);
+    const whRow = dbProxy.prepare("SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(defWhId, id2);
     if (whRow) {
-      dbProxy.prepare("UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(qty, whRow.id);
+      dbProxy.prepare("UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(baseQty, whRow.id);
     } else {
-      dbProxy.prepare("INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)").run(defWhId, id, qty);
+      dbProxy.prepare("INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)").run(defWhId, id2, baseQty);
     }
-    dbProxy.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)").run(defWhId, id, "restock_in", qty, "restock", `Restocked ${qty} ${item.name}`);
+    const unitLabel = unit === "pack" ? `pack(s) of ${unitsPerPack}` : "unit(s)";
+    dbProxy.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)").run(defWhId, id2, "restock_in", baseQty, "restock", `Restocked ${qty} ${unitLabel} of ${item.name}`);
     return { success: true };
   });
   electron.ipcMain.handle("get-sales", (_, options = {}) => {
     requirePermission("sales.view");
     const bizId = getActiveBusinessId();
-    let query = "SELECT sales.*, items.name as itemName, items.basePurchasePrice, items.unitsPerPack, categories.name as categoryName FROM sales LEFT JOIN items ON sales.itemId = items.id LEFT JOIN categories ON items.categoryId = categories.id";
-    const params = [];
+    let query = "SELECT sales.*, items.name as itemName, items.basePurchasePrice, items.unitsPerPack, items.image as itemImage, categories.name as categoryName FROM sales LEFT JOIN items ON sales.itemId = items.id LEFT JOIN categories ON items.categoryId = categories.id";
+    const params2 = [];
     const conditions = ["sales.businessId = ?"];
-    params.push(bizId);
+    params2.push(bizId);
     if (options.search) {
       conditions.push("(LOWER(items.name) LIKE LOWER(?) OR LOWER(sales.customerName) LIKE LOWER(?))");
-      params.push(`%${options.search}%`, `%${options.search}%`);
+      params2.push(`%${options.search}%`, `%${options.search}%`);
     }
     if (options.paymentStatus) {
       conditions.push("sales.paymentStatus = ?");
-      params.push(options.paymentStatus);
+      params2.push(options.paymentStatus);
+    }
+    if (options.createdBy) {
+      conditions.push("sales.createdBy = ?");
+      params2.push(options.createdBy);
+    }
+    if (options.cashier) {
+      conditions.push("sales.createdBy = ?");
+      params2.push(options.cashier);
     }
     if (options.category && options.category !== "All") {
       conditions.push("categories.name = ?");
-      params.push(options.category);
+      params2.push(options.category);
     }
     if (options.startDate && options.endDate) {
       if (options.startDate === options.endDate) {
         conditions.push("sales.createdAt >= ? AND sales.createdAt < ?");
-        params.push(options.startDate, options.startDate + "T23:59:59.999Z");
+        params2.push(options.startDate, options.startDate + "T23:59:59.999Z");
       } else {
         conditions.push("sales.createdAt >= ? AND sales.createdAt <= ?");
-        params.push(options.startDate, options.endDate + "T23:59:59.999Z");
+        params2.push(options.startDate, options.endDate + "T23:59:59.999Z");
       }
     } else if (options.startDate) {
       conditions.push("sales.createdAt >= ?");
-      params.push(options.startDate);
+      params2.push(options.startDate);
     } else if (options.endDate) {
       conditions.push("sales.createdAt <= ?");
-      params.push(options.endDate + "T23:59:59.999Z");
+      params2.push(options.endDate + "T23:59:59.999Z");
     }
     if (conditions.length > 0) {
       query += " WHERE " + conditions.join(" AND ");
@@ -7663,12 +24373,12 @@ function registerIPCHandlers() {
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
-  electron.ipcMain.handle("get-sale", (_, id) => {
+  electron.ipcMain.handle("get-sale", (_, id2) => {
     requirePermission("sales.view");
-    return dbProxy.prepare("SELECT sales.*, items.name as itemName FROM sales LEFT JOIN items ON sales.itemId = items.id WHERE sales.id = ?").get(id);
+    return dbProxy.prepare("SELECT sales.*, items.name as itemName FROM sales LEFT JOIN items ON sales.itemId = items.id WHERE sales.id = ?").get(id2);
   });
   electron.ipcMain.handle("insert-sales-batch", async (event, sales) => {
     requirePermission("sales.create");
@@ -7690,8 +24400,8 @@ function registerIPCHandlers() {
           INSERT INTO sales (
             businessId, itemId, quantity, unit, unitType, discount, vat, totalPrice, 
             paymentMethod, paymentStatus, customerName, customerPhone, packId, dueDate, paidAmount,
-            overrideBy, overrideReason
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            createdBy, overrideBy, overrideReason
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         const result = stmt.run(
           bizId,
@@ -7709,6 +24419,7 @@ function registerIPCHandlers() {
           sale.packId || null,
           sale.dueDate || null,
           sale.paidAmount || 0,
+          currentUserName || null,
           gate.requiresOverride && gate.approved ? currentUserName || "unknown" : null,
           gate.requiresOverride && gate.approved ? gate.overrideReason || overrideReason : null
         );
@@ -7820,11 +24531,11 @@ function registerIPCHandlers() {
     });
     return transaction();
   });
-  electron.ipcMain.handle("update-sale", (_, id, sale) => {
+  electron.ipcMain.handle("update-sale", (_, id2, sale) => {
     requirePermission("sales.edit");
     sale = validate(saleUpdateSchema, sale, "sale update");
     const bizId = getActiveBusinessId();
-    const original = dbProxy.prepare("SELECT * FROM sales WHERE id = ? AND businessId = ?").get(id, bizId);
+    const original = dbProxy.prepare("SELECT * FROM sales WHERE id = ? AND businessId = ?").get(id2, bizId);
     if (!original) throw new Error("Sale not found");
     const item = dbProxy.prepare("SELECT * FROM items WHERE id = ?").get(sale.itemId || original.itemId);
     if (!item) throw new Error("Item not found");
@@ -7884,16 +24595,16 @@ function registerIPCHandlers() {
         sale.dueDate,
         sale.paidAmount,
         costAtTimeOfSale,
-        id,
+        id2,
         bizId
       );
     });
     transaction();
     return { success: true };
   });
-  electron.ipcMain.handle("delete-sale", (_, id) => {
+  electron.ipcMain.handle("delete-sale", (_, id2) => {
     requirePermission("sales.cancel");
-    const sale = dbProxy.prepare("SELECT * FROM sales WHERE id = ?").get(id);
+    const sale = dbProxy.prepare("SELECT * FROM sales WHERE id = ?").get(id2);
     if (!sale) return { success: false };
     const item = dbProxy.prepare("SELECT * FROM items WHERE id = ?").get(sale.itemId);
     const transaction = dbProxy.transaction(() => {
@@ -7919,10 +24630,10 @@ function registerIPCHandlers() {
         } else {
           dbProxy.prepare("INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)").run(defWhId, sale.itemId, baseRestore);
         }
-        dbProxy.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)").run(defWhId, sale.itemId, "sale_restore", baseRestore, "sale", `Sale #${id} deleted — stock restored`);
+        dbProxy.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)").run(defWhId, sale.itemId, "sale_restore", baseRestore, "sale", `Sale #${id2} deleted — stock restored`);
       }
-      dbProxy.prepare("DELETE FROM returns WHERE saleId = ?").run(id);
-      dbProxy.prepare("DELETE FROM sales WHERE id = ?").run(id);
+      dbProxy.prepare("DELETE FROM returns WHERE saleId = ?").run(id2);
+      dbProxy.prepare("DELETE FROM sales WHERE id = ?").run(id2);
     });
     transaction();
     return { success: true };
@@ -7987,20 +24698,20 @@ function registerIPCHandlers() {
       LEFT JOIN items i ON r.itemId = i.id
       WHERE r.businessId = ?
     `;
-    const params = [bizId];
+    const params2 = [bizId];
     if (options?.startDate) {
       query += ` AND r.createdAt >= ?`;
-      params.push(options.startDate);
+      params2.push(options.startDate);
     }
     if (options?.endDate) {
       query += ` AND r.createdAt <= ?`;
-      params.push(options.endDate);
+      params2.push(options.endDate);
     }
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options?.offset ?? 0;
     query += " ORDER BY r.createdAt DESC LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("get-debt-sales", () => {
     requirePermission("sales.view");
@@ -8026,16 +24737,16 @@ function registerIPCHandlers() {
     requirePermission("expenses.view");
     const bizId = getActiveBusinessId();
     let query = "SELECT * FROM expenses";
-    const params = [];
+    const params2 = [];
     const conditions = ["businessId = ?"];
-    params.push(bizId);
+    params2.push(bizId);
     if (options.category) {
       conditions.push("category = ?");
-      params.push(options.category);
+      params2.push(options.category);
     }
     if (options.startDate && options.endDate) {
       conditions.push("date BETWEEN ? AND ?");
-      params.push(options.startDate, options.endDate);
+      params2.push(options.startDate, options.endDate);
     }
     if (conditions.length > 0) {
       query += " WHERE " + conditions.join(" AND ");
@@ -8044,167 +24755,8 @@ function registerIPCHandlers() {
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
-  });
-  electron.ipcMain.handle("insert-expense", (_, expense) => {
-    requirePermission("expenses.add");
-    const bizId = getActiveBusinessId();
-    const result = dbProxy.prepare("INSERT INTO expenses (businessId, name, amount, category, date, isRecurring, frequency, nextBillingDate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
-      bizId,
-      expense.name,
-      expense.amount,
-      expense.category,
-      expense.date,
-      expense.isRecurring ? 1 : 0,
-      expense.frequency,
-      expense.nextBillingDate
-    );
-    try {
-      const expenseDate = new Date(expense.date || /* @__PURE__ */ new Date());
-      const month = String(expenseDate.getMonth() + 1).padStart(2, "0");
-      const year = String(expenseDate.getFullYear());
-      const startDate = `${year}-${month}-01`;
-      const endDate = new Date(expenseDate.getFullYear(), expenseDate.getMonth() + 1, 0).toISOString().split("T")[0];
-      const budget = dbProxy.prepare("SELECT id, amount FROM budgets WHERE businessId = ? AND category = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)").get(bizId, expense.category, month, year);
-      if (budget && budget.amount > 0) {
-        const spentRow = dbProxy.prepare("SELECT SUM(amount) as total FROM expenses WHERE businessId = ? AND category = ? AND date >= ? AND date <= ? AND is_deleted = 0").get(bizId, expense.category, startDate, endDate);
-        const totalSpent = spentRow?.total || 0;
-        const usagePercent = totalSpent / budget.amount * 100;
-        if (totalSpent >= budget.amount) {
-          const existingAlert = dbProxy.prepare("SELECT id FROM budget_alerts WHERE businessId = ? AND category = ? AND alertType = ? AND month = ? AND year = ?").get(bizId, expense.category, "budget_exceeded", month, year);
-          if (!existingAlert) {
-            dbProxy.prepare("INSERT INTO budget_alerts (businessId, category, alertType, threshold, message, month, year) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
-              bizId,
-              expense.category,
-              "budget_exceeded",
-              100,
-              `${expense.category} budget of ETB ${budget.amount.toLocaleString()} has been exceeded (Total: ETB ${totalSpent.toLocaleString()})`,
-              month,
-              year
-            );
-          }
-        } else if (usagePercent >= 80) {
-          const existingAlert = dbProxy.prepare("SELECT id FROM budget_alerts WHERE businessId = ? AND category = ? AND alertType = ? AND month = ? AND year = ?").get(bizId, expense.category, "budget_warning", month, year);
-          if (!existingAlert) {
-            dbProxy.prepare("INSERT INTO budget_alerts (businessId, category, alertType, threshold, message, month, year) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
-              bizId,
-              expense.category,
-              "budget_warning",
-              80,
-              `${expense.category} has reached ${Math.round(usagePercent)}% of its ETB ${budget.amount.toLocaleString()} budget`,
-              month,
-              year
-            );
-          }
-        }
-      }
-    } catch (err) {
-      console.error("Budget alert check failed:", err);
-    }
-    return result.lastInsertRowid;
-  });
-  electron.ipcMain.handle("update-expense", (_, id, expense) => {
-    requirePermission("expenses.add");
-    const result = dbProxy.prepare("UPDATE expenses SET name = ?, amount = ?, category = ?, date = ?, isRecurring = ?, frequency = ?, nextBillingDate = ? WHERE id = ?").run(
-      expense.name,
-      expense.amount,
-      expense.category,
-      expense.date,
-      expense.isRecurring ? 1 : 0,
-      expense.frequency,
-      expense.nextBillingDate,
-      id
-    );
-    return result;
-  });
-  electron.ipcMain.handle("delete-expense", (_, id) => {
-    requirePermission("expenses.delete");
-    dbProxy.prepare("SELECT name FROM expenses WHERE id = ?").get(id);
-    dbProxy.prepare("DELETE FROM expenses WHERE id = ?").run(id);
-  });
-  electron.ipcMain.handle("get-adjustments", (_, options = {}) => {
-    requirePermission("inventory.view");
-    const bizId = getActiveBusinessId();
-    let query = "SELECT adjustments.*, items.name as itemName FROM adjustments LEFT JOIN items ON adjustments.itemId = items.id";
-    const params = [];
-    const conditions = ["adjustments.businessId = ?"];
-    params.push(bizId);
-    if (options.itemId) {
-      conditions.push("adjustments.itemId = ?");
-      params.push(options.itemId);
-    }
-    if (conditions.length > 0) {
-      query += " WHERE " + conditions.join(" AND ");
-    }
-    query += " ORDER BY adjustments.createdAt DESC";
-    const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
-    const offset = options.offset ?? 0;
-    query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
-  });
-  electron.ipcMain.handle("insert-adjustment", async (event, adjustment) => {
-    requirePermission("inventory.adjust");
-    if (!await gateSensitiveAction(event.sender, { context: `Stock/price adjustment (${adjustment?.type ?? "unknown"})` })) {
-      throw new Error("Manager approval required — action not executed");
-    }
-    const validTypes = ["damage", "loss", "add_stock", "price_increase", "price_decrease"];
-    if (!validTypes.includes(adjustment.type)) throw new Error(`Invalid adjustment type: ${adjustment.type}`);
-    if (["damage", "loss", "add_stock"].includes(adjustment.type)) {
-      validatePositive(adjustment.quantity, "Adjustment quantity");
-    }
-    const bizId = getActiveBusinessId();
-    const transaction = dbProxy.transaction(() => {
-      const result = dbProxy.prepare("INSERT INTO adjustments (businessId, itemId, type, oldValue, newValue, quantity, unitType, reason, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-        bizId,
-        adjustment.itemId,
-        adjustment.type,
-        adjustment.oldValue,
-        adjustment.newValue,
-        adjustment.quantity,
-        adjustment.unitType,
-        adjustment.reason,
-        adjustment.date
-      );
-      let invDelta = 0;
-      if (adjustment.type === "damage" && adjustment.quantity) {
-        const adjResult = dbProxy.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?").run(adjustment.quantity, adjustment.itemId, adjustment.quantity);
-        if (adjResult.changes === 0) throw new Error(`Insufficient stock for damage adjustment: item has less than ${adjustment.quantity} units`);
-        invDelta = -adjustment.quantity;
-      }
-      if (adjustment.type === "loss" && adjustment.quantity) {
-        const adjResult = dbProxy.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?").run(adjustment.quantity, adjustment.itemId, adjustment.quantity);
-        if (adjResult.changes === 0) throw new Error(`Insufficient stock for loss adjustment: item has less than ${adjustment.quantity} units`);
-        invDelta = -adjustment.quantity;
-      }
-      if (adjustment.type === "add_stock" && adjustment.quantity) {
-        dbProxy.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity + ? WHERE id = ?").run(adjustment.quantity, adjustment.itemId);
-        invDelta = adjustment.quantity;
-      }
-      if (invDelta !== 0) {
-        const defWhId = getDefaultWarehouseId();
-        const whRow = dbProxy.prepare("SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(defWhId, adjustment.itemId);
-        if (whRow) {
-          dbProxy.prepare("UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(invDelta, whRow.id);
-        } else if (invDelta > 0) {
-          dbProxy.prepare("INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)").run(defWhId, adjustment.itemId, invDelta);
-        }
-        dbProxy.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)").run(defWhId, adjustment.itemId, `adj_${adjustment.type}`, Math.abs(invDelta), "adjustment", adjustment.reason || null);
-      }
-      if (adjustment.type === "price_increase" || adjustment.type === "price_decrease") {
-        if (adjustment.unitType === "base") {
-          dbProxy.prepare("UPDATE items SET baseSellingPrice = ? WHERE id = ?").run(adjustment.newValue, adjustment.itemId);
-        } else {
-          dbProxy.prepare("UPDATE items SET packSellingPrice = ? WHERE id = ?").run(adjustment.newValue, adjustment.itemId);
-        }
-      }
-      const adjustmentId = result.lastInsertRowid;
-      dbProxy.prepare("SELECT name FROM items WHERE id = ?").get(adjustment.itemId);
-      adjustment.type.replace("_", " ");
-      return adjustmentId;
-    });
-    return transaction();
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("check-notifications", () => {
     const bizId = getActiveBusinessId();
@@ -8330,22 +24882,22 @@ function registerIPCHandlers() {
   electron.ipcMain.handle("get-notifications", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     let query = "SELECT * FROM notifications WHERE businessId = ?";
-    const params = [bizId];
+    const params2 = [bizId];
     if (options.unreadOnly) query += " AND isRead = 0";
     if (options.dismissedOnly) query += " AND isDismissed = 1";
     if (!options.includeDismissed) query += " AND isDismissed = 0";
     if (options.category) {
       query += " AND category = ?";
-      params.push(options.category);
+      params2.push(options.category);
     }
     if (options.severity) {
       query += " AND severity = ?";
-      params.push(options.severity);
+      params2.push(options.severity);
     }
     if (options.search) {
       query += " AND (LOWER(title) LIKE LOWER(?) OR LOWER(message) LIKE LOWER(?))";
       const s = `%${options.search}%`;
-      params.push(s, s);
+      params2.push(s, s);
     }
     query += " AND (snoozedUntil IS NULL OR snoozedUntil <= CURRENT_TIMESTAMP)";
     query += " AND (expiresAt IS NULL OR expiresAt > CURRENT_TIMESTAMP)";
@@ -8353,8 +24905,8 @@ function registerIPCHandlers() {
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("get-unread-notification-count", () => {
     const bizId = getActiveBusinessId();
@@ -8400,18 +24952,18 @@ function registerIPCHandlers() {
       notification.requiresAction ? 1 : 0
     ).lastInsertRowid;
   });
-  electron.ipcMain.handle("mark-notification-read", (_, id) => {
-    return dbProxy.prepare("UPDATE notifications SET isRead = 1 WHERE id = ?").run(id);
+  electron.ipcMain.handle("mark-notification-read", (_, id2) => {
+    return dbProxy.prepare("UPDATE notifications SET isRead = 1 WHERE id = ?").run(id2);
   });
   electron.ipcMain.handle("mark-all-notifications-read", () => {
     const bizId = getActiveBusinessId();
     return dbProxy.prepare("UPDATE notifications SET isRead = 1 WHERE businessId = ?").run(bizId);
   });
-  electron.ipcMain.handle("dismiss-notification", (_, id) => {
-    return dbProxy.prepare("UPDATE notifications SET isDismissed = 1, isRead = 1 WHERE id = ?").run(id);
+  electron.ipcMain.handle("dismiss-notification", (_, id2) => {
+    return dbProxy.prepare("UPDATE notifications SET isDismissed = 1, isRead = 1 WHERE id = ?").run(id2);
   });
-  electron.ipcMain.handle("snooze-notification", (_, id, untilIso) => {
-    return dbProxy.prepare("UPDATE notifications SET snoozedUntil = ? WHERE id = ?").run(untilIso, id);
+  electron.ipcMain.handle("snooze-notification", (_, id2, untilIso) => {
+    return dbProxy.prepare("UPDATE notifications SET snoozedUntil = ? WHERE id = ?").run(untilIso, id2);
   });
   electron.ipcMain.handle("clear-notifications", (_, options = {}) => {
     requirePermission("notifications.manage");
@@ -8453,8 +25005,8 @@ function registerIPCHandlers() {
       ORDER BY createdAt DESC
     `).all(bizId);
   });
-  electron.ipcMain.handle("dismiss-banner", (_, id) => {
-    return dbProxy.prepare("UPDATE notification_banners SET dismissedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+  electron.ipcMain.handle("dismiss-banner", (_, id2) => {
+    return dbProxy.prepare("UPDATE notification_banners SET dismissedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id2);
   });
   electron.ipcMain.handle("create-banner", (_, data) => {
     requirePermission("settings.manage");
@@ -8477,14 +25029,14 @@ function registerIPCHandlers() {
   electron.ipcMain.handle("get-reminders", (_, options = {}) => {
     const bizId = getActiveBusinessId();
     let q = "SELECT * FROM notification_reminders WHERE businessId = ?";
-    const params = [bizId];
+    const params2 = [bizId];
     if (options.status) {
       q += " AND status = ?";
-      params.push(options.status);
+      params2.push(options.status);
     }
     q += " ORDER BY triggerDate ASC LIMIT ? OFFSET ?";
-    params.push(options.limit ?? DEFAULT_LIST_LIMIT, options.offset ?? 0);
-    return dbProxy.prepare(q).all(...params);
+    params2.push(options.limit ?? DEFAULT_LIST_LIMIT, options.offset ?? 0);
+    return dbProxy.prepare(q).all(...params2);
   });
   electron.ipcMain.handle("create-reminder", (_, data) => {
     requirePermission("settings.manage");
@@ -8505,42 +25057,42 @@ function registerIPCHandlers() {
       data.relatedEntityId || null
     ).lastInsertRowid;
   });
-  electron.ipcMain.handle("update-reminder", (_, id, data) => {
+  electron.ipcMain.handle("update-reminder", (_, id2, data) => {
     const fields = [];
-    const params = [];
+    const params2 = [];
     if (data.title !== void 0) {
       fields.push("title = ?");
-      params.push(data.title);
+      params2.push(data.title);
     }
     if (data.message !== void 0) {
       fields.push("message = ?");
-      params.push(data.message);
+      params2.push(data.message);
     }
     if (data.triggerDate !== void 0) {
       fields.push("triggerDate = ?");
-      params.push(data.triggerDate);
+      params2.push(data.triggerDate);
     }
     if (data.repeatInterval !== void 0) {
       fields.push("repeatInterval = ?");
-      params.push(data.repeatInterval);
+      params2.push(data.repeatInterval);
     }
     if (data.category !== void 0) {
       fields.push("category = ?");
-      params.push(data.category);
+      params2.push(data.category);
     }
     if (fields.length === 0) throw new Error("No fields to update");
-    params.push(id);
-    return dbProxy.prepare(`UPDATE notification_reminders SET ${fields.join(", ")} WHERE id = ?`).run(...params);
+    params2.push(id2);
+    return dbProxy.prepare(`UPDATE notification_reminders SET ${fields.join(", ")} WHERE id = ?`).run(...params2);
   });
-  electron.ipcMain.handle("snooze-reminder", (_, id, untilIso) => {
-    return dbProxy.prepare("UPDATE notification_reminders SET snoozedUntil = ?, status = 'snoozed' WHERE id = ?").run(untilIso, id);
+  electron.ipcMain.handle("snooze-reminder", (_, id2, untilIso) => {
+    return dbProxy.prepare("UPDATE notification_reminders SET snoozedUntil = ?, status = 'snoozed' WHERE id = ?").run(untilIso, id2);
   });
-  electron.ipcMain.handle("complete-reminder", (_, id) => {
-    return dbProxy.prepare(`UPDATE notification_reminders SET status = 'completed', completedAt = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+  electron.ipcMain.handle("complete-reminder", (_, id2) => {
+    return dbProxy.prepare(`UPDATE notification_reminders SET status = 'completed', completedAt = CURRENT_TIMESTAMP WHERE id = ?`).run(id2);
   });
-  electron.ipcMain.handle("delete-reminder", (_, id) => {
+  electron.ipcMain.handle("delete-reminder", (_, id2) => {
     requirePermission("settings.manage");
-    return dbProxy.prepare("DELETE FROM notification_reminders WHERE id = ?").run(id);
+    return dbProxy.prepare("DELETE FROM notification_reminders WHERE id = ?").run(id2);
   });
   electron.ipcMain.handle("run-reminder-engine", () => {
     const bizId = getActiveBusinessId();
@@ -8854,37 +25406,54 @@ function registerIPCHandlers() {
     const bizId = getActiveBusinessId();
     let dateFilter = "WHERE s.businessId = ?";
     let expDateFilter = "WHERE businessId = ?";
-    let params = [bizId];
+    let params2 = [bizId];
     let expParams = [bizId];
     if (dateRange?.start && dateRange?.end) {
       dateFilter = "WHERE DATE(s.createdAt) >= ? AND DATE(s.createdAt) <= ? AND s.businessId = ?";
       expDateFilter = "WHERE date >= ? AND date <= ? AND businessId = ?";
-      params = [dateRange.start, dateRange.end, bizId];
+      params2 = [dateRange.start, dateRange.end, bizId];
       expParams = [dateRange.start, dateRange.end, bizId];
     } else if (dateRange?.start) {
       dateFilter = "WHERE DATE(s.createdAt) = ? AND s.businessId = ?";
       expDateFilter = "WHERE date = ? AND businessId = ?";
-      params = [dateRange.start, bizId];
+      params2 = [dateRange.start, bizId];
       expParams = [dateRange.start, bizId];
     }
     const sales = dbProxy.prepare(`
-      SELECT 'sale' as type, 'sale-' || s.id as id, s.totalPrice as amount, s.createdAt as date, i.name as description, s.customerName as extra
+      SELECT 'sale' as type, 'sale-' || s.id as id, s.totalPrice as amount, s.createdAt as date, i.name as description, s.customerName as extra, i.image as itemImage,
+        COALESCE(e.firstName || ' ' || e.lastName, u.name) as userName,
+        COALESCE(e.avatar, u.avatar) as userAvatar
       FROM sales s LEFT JOIN items i ON s.itemId = i.id
+      LEFT JOIN employees e ON s.createdBy = e.id
+      LEFT JOIN users u ON s.createdBy = u.id
       ${dateFilter}
       ORDER BY s.createdAt DESC LIMIT ?
-    `).all(...params, limit);
+    `).all(...params2, limit);
     const expenses = dbProxy.prepare(`
       SELECT 'expense' as type, 'expense-' || id as id, amount, date, name as description, category as extra
       FROM expenses ${expDateFilter} ORDER BY date DESC LIMIT ?
     `).all(...expParams, limit);
     const adjFilter = dateFilter.replace(/s\.createdAt/g, "a.createdAt").replace(/s\.businessId/g, "a.businessId");
     const adjustments = dbProxy.prepare(`
-      SELECT 'adjustment' as type, 'adj-' || a.id as id, a.newValue as amount, a.createdAt as date, i.name as description, a.type as extra
+      SELECT 'adjustment' as type, 'adj-' || a.id as id, a.newValue as amount, a.createdAt as date, i.name as description, a.type as extra, i.image as itemImage,
+        COALESCE(e.avatar, u.avatar) as userAvatar, COALESCE(e.firstName || ' ' || e.lastName, u.name) as userName
       FROM adjustments a LEFT JOIN items i ON a.itemId = i.id
+      LEFT JOIN employees e ON a.user_id = e.id
+      LEFT JOIN users u ON a.user_id = u.id
       ${adjFilter}
       ORDER BY a.createdAt DESC LIMIT ?
-    `).all(...params, limit);
-    const all = [...sales, ...expenses, ...adjustments];
+    `).all(...params2, limit);
+    const attendance = dbProxy.prepare(`
+      SELECT CASE WHEN a.clockOut IS NOT NULL THEN 'clock_out' ELSE 'clock_in' END as type,
+             'att-' || a.id as id, 0 as amount,
+             CASE WHEN a.clockOut IS NOT NULL THEN a.clockOut ELSE a.clockIn END as date,
+             e.firstName || ' ' || e.lastName as userName,
+             a.status as description
+      FROM attendance a LEFT JOIN employees e ON a.employeeId = e.id
+      WHERE e.businessId = ?
+      ORDER BY date DESC LIMIT ?
+    `).all(bizId, limit);
+    const all = [...sales, ...expenses, ...adjustments, ...attendance];
     all.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     return all.slice(0, limit);
   });
@@ -9161,75 +25730,6 @@ function registerIPCHandlers() {
     }, { debit: 0, credit: 0 });
     return { startDate, endDate, lines: sorted, totals };
   });
-  const giftCode = () => `GC-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-  electron.ipcMain.handle("get-gift-cards", () => {
-    requirePermission("inventory.view");
-    const bizId = getActiveBusinessId();
-    return dbProxy.prepare("SELECT * FROM gift_cards WHERE businessId = ? AND (is_deleted = 0 OR is_deleted IS NULL) ORDER BY createdAt DESC LIMIT ?").all(bizId, DEFAULT_LIST_LIMIT);
-  });
-  electron.ipcMain.handle("issue-gift-card", (_, data) => {
-    requirePermission("inventory.edit");
-    const bizId = getActiveBusinessId();
-    const balance = validatePositive(data.balance, "Card balance");
-    const code = data.code?.trim() || giftCode();
-    const result = dbProxy.transaction(() => {
-      const r = dbProxy.prepare(`
-        INSERT INTO gift_cards (businessId, code, cardName, initialBalance, balance, issuedTo, issuedBy, expiryDate, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(bizId, code, data.cardName || null, balance, balance, data.issuedTo || null, currentUserName || null, data.expiryDate || null, data.notes || null);
-      const id = r.lastInsertRowid;
-      dbProxy.prepare("INSERT INTO gift_card_transactions (giftCardId, type, amount, note, createdBy) VALUES (?, ?, ?, ?, ?)").run(id, "issue", balance, data.notes || "Gift card issued", currentUserName || null);
-      insertAuditLog("issue_gift_card", "gift_cards", id, "balance", "0", String(balance), `Gift card ${code} issued`);
-      return { id, code };
-    })();
-    return result;
-  });
-  electron.ipcMain.handle("redeem-gift-card", (_, data) => {
-    requirePermission("sales.create");
-    const bizId = getActiveBusinessId();
-    const code = (data.code || "").trim();
-    const amount = validatePositive(data.amount, "Redeem amount");
-    const card = dbProxy.prepare("SELECT * FROM gift_cards WHERE code = ? AND businessId = ? AND (is_deleted = 0 OR is_deleted IS NULL)").get(code, bizId);
-    if (!card) throw new Error("Gift card not found");
-    if (card.status !== "active") throw new Error("Gift card is not active");
-    if (card.expiryDate && card.expiryDate < (/* @__PURE__ */ new Date()).toISOString().split("T")[0]) throw new Error("Gift card has expired");
-    if ((card.balance || 0) < amount) throw new Error(`Insufficient gift card balance (${card.balance})`);
-    const result = dbProxy.transaction(() => {
-      dbProxy.prepare("UPDATE gift_cards SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(amount, card.id);
-      dbProxy.prepare("INSERT INTO gift_card_transactions (giftCardId, type, amount, refType, refId, note, createdBy) VALUES (?, ?, ?, ?, ?, ?, ?)").run(card.id, "redeem", amount, data.refType || null, data.refId || null, data.note || "Gift card redeemed", currentUserName || null);
-      insertAuditLog("redeem_gift_card", "gift_cards", card.id, "balance", String(card.balance), String(card.balance - amount), `Gift card ${code} redeemed ${amount}`);
-      return { success: true, balance: card.balance - amount };
-    })();
-    return result;
-  });
-  electron.ipcMain.handle("topup-gift-card", (_, data) => {
-    requirePermission("inventory.edit");
-    const bizId = getActiveBusinessId();
-    const card = dbProxy.prepare("SELECT * FROM gift_cards WHERE id = ? AND businessId = ? AND (is_deleted = 0 OR is_deleted IS NULL)").get(data.id, bizId);
-    if (!card) throw new Error("Gift card not found");
-    const amount = validatePositive(data.amount, "Top-up amount");
-    const result = dbProxy.transaction(() => {
-      dbProxy.prepare("UPDATE gift_cards SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(amount, card.id);
-      dbProxy.prepare("INSERT INTO gift_card_transactions (giftCardId, type, amount, note, createdBy) VALUES (?, ?, ?, ?, ?)").run(card.id, "topup", amount, data.note || "Gift card top-up", currentUserName || null);
-      insertAuditLog("topup_gift_card", "gift_cards", card.id, "balance", String(card.balance), String(card.balance + amount), `Gift card top-up ${amount}`);
-      return { success: true, balance: card.balance + amount };
-    })();
-    return result;
-  });
-  electron.ipcMain.handle("void-gift-card", (_, id) => {
-    requirePermission("inventory.delete");
-    const bizId = getActiveBusinessId();
-    const card = dbProxy.prepare("SELECT * FROM gift_cards WHERE id = ? AND businessId = ?").get(id, bizId);
-    if (!card) throw new Error("Gift card not found");
-    dbProxy.prepare("UPDATE gift_cards SET status = 'void', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
-    dbProxy.prepare("INSERT INTO gift_card_transactions (giftCardId, type, amount, note, createdBy) VALUES (?, ?, ?, ?, ?)").run(id, "void", 0, "Gift card voided", currentUserName || null);
-    insertAuditLog("void_gift_card", "gift_cards", id, "status", card.status, "void", `Gift card ${card.code} voided`);
-    return { success: true };
-  });
-  electron.ipcMain.handle("get-gift-card-transactions", (_, cardId) => {
-    requirePermission("inventory.view");
-    return dbProxy.prepare("SELECT * FROM gift_card_transactions WHERE giftCardId = ? ORDER BY createdAt DESC LIMIT ?").all(cardId, DEFAULT_LIST_LIMIT);
-  });
   electron.ipcMain.handle("get-customers", (_, options) => {
     requirePermission("customers.view");
     const bizId = getActiveBusinessId();
@@ -9480,6 +25980,219 @@ function registerIPCHandlers() {
     }
     return { success: true, mode, message: mode === "factory" ? "Factory reset complete. This will log you out." : void 0 };
   });
+  electron.ipcMain.handle("get-login-users", () => {
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    const push = (u) => {
+      const dupKey = (u.username || u.name || "").toLowerCase();
+      if (!dupKey || seen.has(dupKey)) return;
+      seen.add(dupKey);
+      out.push(u);
+    };
+    try {
+      const admins = dbProxy.prepare("SELECT id, name, username, role, roleName, avatar, isActive FROM admins WHERE isActive = 1").all();
+      for (const a of admins) {
+        push({
+          key: `admin:${a.id}`,
+          source: "admin",
+          id: a.id,
+          name: a.name || a.username || "User",
+          username: a.username ?? null,
+          role: a.role === "super_admin" || a.role === "admin" ? "owner" : a.role || "staff",
+          roleName: a.roleName || (a.role === "super_admin" || a.role === "admin" ? "Owner" : a.role || "Staff"),
+          avatar: a.avatar ?? null,
+          isOwner: a.role === "super_admin" || a.role === "admin"
+        });
+      }
+    } catch {
+    }
+    try {
+      const emps = dbProxy.prepare(`
+        SELECT e.id, e.firstName, e.lastName, e.avatar, ea.username, ea.isActive,
+               e.role_key, r.name as roleName
+        FROM employees e
+        LEFT JOIN employee_accounts ea ON ea.employeeId = e.id
+        LEFT JOIN employee_roles r ON r.id = e.roleId
+        WHERE ea.isActive = 1
+      `).all();
+      for (const e of emps) {
+        const name = `${e.firstName || ""} ${e.lastName || ""}`.trim() || e.username || `Employee ${e.id}`;
+        push({
+          key: `employee:${e.id}`,
+          source: "employee",
+          id: e.id,
+          name,
+          username: e.username ?? null,
+          role: e.role_key || "cashier",
+          roleName: e.roleName || "Cashier",
+          avatar: e.avatar ?? null,
+          isOwner: e.role_key === "owner"
+        });
+      }
+    } catch {
+    }
+    try {
+      const roster = dbProxy.prepare("SELECT id, name, username, email, role, roleName, avatar, isOwner FROM users WHERE is_deleted = 0 AND isActive = 1 AND (pinHash IS NOT NULL AND pinHash != ''')").all();
+      for (const u of roster) {
+        push({
+          key: `roster:${u.id}`,
+          source: "roster",
+          id: u.id,
+          name: u.name || u.username || "User",
+          username: u.username ?? u.email ?? null,
+          role: u.role || "cashier",
+          roleName: u.roleName || u.role || "Cashier",
+          avatar: u.avatar ?? null,
+          isOwner: !!u.isOwner || u.role === "owner"
+        });
+      }
+    } catch {
+    }
+    return out;
+  });
+  electron.ipcMain.handle("login-by-user", (_e, source, id2, pin) => {
+    if (!pin || !/^\d{4}$/.test(String(pin))) return { success: false, error: "Enter your 4-digit PIN" };
+    if (source === "admin") {
+      const admin = dbProxy.prepare("SELECT id, name, username, role, permissions, isActive, businessId, avatar, pin FROM admins WHERE id = ?").get(id2);
+      if (!admin) return { success: false, error: "User not found" };
+      if (!admin.isActive) return { success: false, error: "Account deactivated" };
+      if (admin.lockedUntil && new Date(admin.lockedUntil) > /* @__PURE__ */ new Date()) return { success: false, error: "Account is locked. Try again later." };
+      if (!verifyPin(pin, admin.pin)) {
+        const attempts = (admin.failedLoginAttempts || 0) + 1;
+        if (attempts >= 5) {
+          const lockUntil = new Date(Date.now() + 30 * 60 * 1e3).toISOString();
+          dbProxy.prepare("UPDATE admins SET failedLoginAttempts = ?, lockedUntil = ? WHERE id = ?").run(attempts, lockUntil, admin.id);
+          return { success: false, error: "Account locked due to too many failed attempts." };
+        }
+        dbProxy.prepare("UPDATE admins SET failedLoginAttempts = ? WHERE id = ?").run(attempts, admin.id);
+        return { success: false, error: "Wrong PIN" };
+      }
+      dbProxy.prepare("UPDATE admins SET lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL WHERE id = ?").run(admin.id);
+      dbProxy.prepare("INSERT INTO login_history (action) VALUES (?)").run(`login: admin ${admin.id}`);
+      currentAdminId = admin.id;
+      currentUserName = admin.name;
+      currentUserRole = admin.role || "admin";
+      currentUserPermissions = admin.permissions ? JSON.parse(admin.permissions) : ["*"];
+      currentUserBusinessId = admin.businessId ?? null;
+      currentUserSharedPerms = null;
+      const rosterId = resolveRosterIdentity();
+      if (rosterId) {
+        currentUserRole = rosterId.isOwner ? "super_admin" : rosterId.role;
+        currentUserPermissions = rosterId.permissions;
+        currentUserSharedPerms = rosterId.isOwner ? null : rosterId.sharedPerms;
+        if (rosterId.businessId) {
+          currentUserBusinessId = rosterId.businessId;
+          setActiveBusinessId(rosterId.businessId);
+        }
+      }
+      return {
+        success: true,
+        admin: {
+          ...admin,
+          pin: void 0,
+          role: currentUserRole,
+          permissions: currentUserPermissions,
+          isEmployee: rosterId ? !rosterId.isOwner : false,
+          roleKey: rosterId?.role ?? null,
+          sharedPermissions: currentUserSharedPerms
+        }
+      };
+    }
+    if (source === "roster") {
+      const roster = dbProxy.prepare("SELECT * FROM users WHERE id = ? AND is_deleted = 0 AND isActive = 1").get(id2);
+      if (!roster) return { success: false, error: "User not found or deactivated" };
+      const hasPin = !!roster.pinHash;
+      if (hasPin && !verifyPin(pin, `${roster.pinSalt ?? ""}:${roster.pinHash}`)) {
+        dbProxy.prepare("INSERT INTO login_history (action) VALUES (?)").run(`failed_login: roster ${roster.id} wrong pin`);
+        return { success: false, error: "Wrong PIN" };
+      }
+      const isOwner = !!roster.isOwner || roster.role === "owner" || roster.role === "super_admin";
+      const rawPerms = {};
+      try {
+        const parsed = JSON.parse(roster.permissions || "{}");
+        if (parsed && typeof parsed === "object") Object.assign(rawPerms, parsed);
+        if (Array.isArray(parsed)) {
+          for (const k of parsed) if (typeof k === "string") rawPerms[k] = true;
+        }
+      } catch {
+      }
+      const legacyPerms = Object.keys(rawPerms).filter((k) => !["*"].includes(k));
+      currentAdminId = roster.id;
+      currentUserName = roster.name;
+      currentUserRole = isOwner ? "super_admin" : roster.roleName || roster.role || "cashier";
+      currentUserPermissions = isOwner ? ["*"] : legacyPerms.length ? legacyPerms : ["*"];
+      currentUserSharedPerms = isOwner ? null : resolveSharedPermissions(roster.role, roster.permissions);
+      currentUserBusinessId = roster.businessId ?? null;
+      if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
+      dbProxy.prepare("INSERT INTO login_history (action) VALUES (?)").run(`login: roster ${roster.id}`);
+      return {
+        success: true,
+        admin: {
+          id: roster.id,
+          name: roster.name,
+          username: roster.username,
+          role: currentUserRole,
+          permissions: currentUserPermissions,
+          isActive: roster.isActive,
+          avatar: roster.avatar || void 0,
+          isEmployee: !isOwner,
+          roleKey: roster.role,
+          sharedPermissions: currentUserSharedPerms
+        }
+      };
+    }
+    const account = dbProxy.prepare(`
+      SELECT ea.*, e.firstName, e.lastName, e.id as employeeId, e.roleId,
+        e.businessId as employeeBusinessId, e.avatar as employeeAvatar,
+        e.role_key as roleKey, e.permissions_json as permissionsJson,
+        r.name as roleName, r.permissions as rolePermissions
+      FROM employee_accounts ea
+      LEFT JOIN employees e ON ea.employeeId = e.id
+      LEFT JOIN employee_roles r ON e.roleId = r.id
+      WHERE ea.employeeId = ?
+    `).get(id2);
+    if (!account) return { success: false, error: "User not found" };
+    if (account.lockedUntil && new Date(account.lockedUntil) > /* @__PURE__ */ new Date()) return { success: false, error: "Account is locked. Try again later." };
+    if (!account.isActive) return { success: false, error: "Account deactivated" };
+    if (!verifyPin(pin, account.pin)) {
+      const attempts = (account.failedLoginAttempts || 0) + 1;
+      if (attempts >= 5) {
+        const lockUntil = new Date(Date.now() + 30 * 60 * 1e3).toISOString();
+        dbProxy.prepare("UPDATE employee_accounts SET failedLoginAttempts = ?, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(attempts, lockUntil, account.id);
+        return { success: false, error: "Account locked due to too many failed attempts." };
+      }
+      dbProxy.prepare("UPDATE employee_accounts SET failedLoginAttempts = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(attempts, account.id);
+      return { success: false, error: "Wrong PIN" };
+    }
+    dbProxy.prepare("UPDATE employee_accounts SET lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(account.id);
+    dbProxy.prepare("INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)").run(account.id, account.employeeId, "login");
+    currentAdminId = account.id;
+    currentUserName = `${account.firstName} ${account.lastName}`.trim();
+    currentUserRole = account.roleName || "employee";
+    const rolePerms = account.rolePermissions ? JSON.parse(account.rolePermissions) : [];
+    currentUserPermissions = rolePerms.length > 0 ? rolePerms : ["*"];
+    currentUserBusinessId = account.employeeBusinessId ?? null;
+    currentUserSharedPerms = resolveSharedPermissions(account.roleKey, account.permissionsJson);
+    if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
+    return {
+      success: true,
+      admin: {
+        id: account.employeeId,
+        accountId: account.id,
+        username: account.username,
+        firstName: account.firstName,
+        lastName: account.lastName,
+        avatar: account.employeeAvatar || void 0,
+        businessId: account.employeeBusinessId ?? null,
+        roleName: account.roleName,
+        roleId: account.roleId,
+        permissions: rolePerms,
+        roleKey: account.roleKey || null,
+        sharedPermissions: currentUserSharedPerms,
+        forcePasswordChange: account.forcePasswordChange
+      }
+    };
+  });
   electron.ipcMain.handle("login", (_, username, pin) => {
     const admin = dbProxy.prepare(
       "SELECT id, name, username, role, permissions, isActive, businessId, avatar, pin FROM admins WHERE username = ?"
@@ -9506,17 +26219,32 @@ function registerIPCHandlers() {
       currentUserPermissions = admin.permissions ? JSON.parse(admin.permissions) : ["*"];
       currentUserBusinessId = null;
       currentUserSharedPerms = null;
+      const rosterId = resolveRosterIdentity();
+      if (rosterId) {
+        currentUserRole = rosterId.isOwner ? "super_admin" : rosterId.role;
+        currentUserPermissions = rosterId.permissions;
+        currentUserSharedPerms = rosterId.isOwner ? null : rosterId.sharedPerms;
+        if (rosterId.businessId) {
+          currentUserBusinessId = rosterId.businessId;
+          setActiveBusinessId(rosterId.businessId);
+        }
+      }
       return {
         success: true,
         admin: {
           ...admin,
-          permissions: admin.permissions ? JSON.parse(admin.permissions) : []
+          role: currentUserRole,
+          permissions: currentUserPermissions,
+          isEmployee: rosterId ? !rosterId.isOwner : false,
+          roleKey: rosterId?.role ?? null,
+          sharedPermissions: currentUserSharedPerms
         }
       };
     }
     const account = dbProxy.prepare(`
       SELECT ea.*, e.id as employeeId, e.firstName, e.lastName,
         e.businessId as employeeBusinessId,
+        e.avatar as employeeAvatar,
         e.role_key as roleKey, e.permissions_json as permissionsJson,
         r.name as roleName, r.permissions as rolePermissions
       FROM employee_accounts ea
@@ -9525,6 +26253,48 @@ function registerIPCHandlers() {
       WHERE ea.username = ?
     `).get(username);
     if (!account) {
+      const roster = findRosterLogin(username);
+      if (roster) {
+        const hasPin = !!roster.pinHash;
+        if (hasPin && !verifyPin(pin, `${roster.pinSalt ?? ""}:${roster.pinHash}`)) {
+          dbProxy.prepare("INSERT INTO login_history (action) VALUES (?)").run("failed_login: roster wrong pin");
+          return { success: false, error: "Invalid credentials" };
+        }
+        const isOwner = !!roster.isOwner || roster.role === "owner" || roster.role === "super_admin";
+        const rawPerms = {};
+        try {
+          const parsed = JSON.parse(roster.permissions || "{}");
+          if (parsed && typeof parsed === "object") Object.assign(rawPerms, parsed);
+          if (Array.isArray(parsed)) {
+            for (const k of parsed) if (typeof k === "string") rawPerms[k] = true;
+          }
+        } catch (e) {
+        }
+        const legacyPerms = Object.keys(rawPerms).filter((k) => !["*"].includes(k));
+        currentAdminId = roster.id;
+        currentUserName = roster.name;
+        currentUserRole = isOwner ? "super_admin" : roster.roleName || roster.role || "cashier";
+        currentUserPermissions = isOwner ? ["*"] : legacyPerms.length ? legacyPerms : ["*"];
+        currentUserSharedPerms = isOwner ? null : resolveSharedPermissions(roster.role, roster.permissions);
+        currentUserBusinessId = roster.businessId ?? null;
+        if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
+        return {
+          success: true,
+          admin: {
+            id: roster.id,
+            name: roster.name,
+            username: roster.username,
+            role: currentUserRole,
+            permissions: currentUserPermissions,
+            isActive: roster.isActive,
+            avatar: roster.avatar || void 0,
+            isEmployee: !isOwner,
+            roleKey: roster.role,
+            sharedPermissions: currentUserSharedPerms,
+            forcePasswordChange: hasPin ? 0 : 1
+          }
+        };
+      }
       dbProxy.prepare("INSERT INTO login_history (action) VALUES (?)").run("failed_login: employee not found");
       return { success: false, error: "Invalid credentials" };
     }
@@ -9567,7 +26337,7 @@ function registerIPCHandlers() {
         role: account.roleName || "employee",
         permissions: account.rolePermissions ? JSON.parse(account.rolePermissions) : [],
         isActive: account.isActive,
-        avatar: void 0,
+        avatar: account.employeeAvatar || void 0,
         isEmployee: true,
         roleKey: account.roleKey || null,
         sharedPermissions: currentUserSharedPerms
@@ -9581,13 +26351,40 @@ function registerIPCHandlers() {
       permissions: a.permissions ? JSON.parse(a.permissions) : []
     }));
   });
-  electron.ipcMain.handle("get-current-admin", (_, id) => {
-    const admin = dbProxy.prepare("SELECT id, name, username, role, permissions, isActive, avatar FROM admins WHERE id = ?").get(id);
-    if (!admin) return null;
-    return {
-      ...admin,
-      permissions: admin.permissions ? JSON.parse(admin.permissions) : []
-    };
+  electron.ipcMain.handle("get-current-admin", (_, id2, isEmployee) => {
+    if (isEmployee) {
+      const account = dbProxy.prepare(`
+        SELECT ea.*, e.id as employeeId, e.firstName, e.lastName,
+          e.businessId as employeeBusinessId, e.avatar as employeeAvatar,
+          e.role_key as roleKey, e.permissions_json as permissionsJson,
+          r.name as roleName, r.permissions as rolePermissions
+        FROM employee_accounts ea
+        LEFT JOIN employees e ON ea.employeeId = e.id
+        LEFT JOIN employee_roles r ON e.roleId = r.id
+        WHERE ea.employeeId = ?
+      `).get(id2);
+      if (!account) return null;
+      return {
+        id: account.employeeId,
+        name: `${account.firstName || ""} ${account.lastName || ""}`.trim() || account.username,
+        username: account.username,
+        role: account.roleName || "employee",
+        permissions: account.rolePermissions ? JSON.parse(account.rolePermissions) : [],
+        isActive: account.isActive,
+        avatar: account.employeeAvatar || void 0,
+        isEmployee: true,
+        roleKey: account.roleKey || null,
+        sharedPermissions: resolveSharedPermissions(account.roleKey, account.permissionsJson)
+      };
+    }
+    const admin = dbProxy.prepare("SELECT id, name, username, role, permissions, isActive, avatar FROM admins WHERE id = ?").get(id2);
+    if (admin) {
+      return {
+        ...admin,
+        permissions: admin.permissions ? JSON.parse(admin.permissions) : []
+      };
+    }
+    return null;
   });
   electron.ipcMain.handle("insert-admin", (_, admin) => {
     requirePermission("settings.users");
@@ -9604,27 +26401,28 @@ function registerIPCHandlers() {
       JSON.stringify(admin.permissions || []),
       admin.businessId || null
     );
+    bridgeAdminUser(Number(result.lastInsertRowid));
     return { success: true, id: result.lastInsertRowid };
   });
-  electron.ipcMain.handle("update-admin", (_, id, admin) => {
-    const isSelf = id === currentAdminId;
+  electron.ipcMain.handle("update-admin", (_, id2, admin) => {
+    const isSelf = id2 === currentAdminId;
     const sensitiveFields = ["username", "pin", "role", "permissions", "isActive", "businessId"];
     const updatingSensitive = sensitiveFields.some((f) => admin[f] !== void 0);
     if (!isSelf || updatingSensitive) {
       requirePermission("settings.users");
     }
-    if (admin.pin !== void 0 && id === currentAdminId) {
-      const stored = dbProxy.prepare("SELECT pin FROM admins WHERE id = ?").get(id);
+    if (admin.pin !== void 0 && id2 === currentAdminId) {
+      const stored = dbProxy.prepare("SELECT pin FROM admins WHERE id = ?").get(id2);
       if (!stored || !admin.currentPin || !verifyPin(admin.currentPin, stored.pin)) {
         return { success: false, error: "Current PIN is required to change your PIN" };
       }
       delete admin.currentPin;
     }
     if (admin.username) {
-      const existing = dbProxy.prepare("SELECT id FROM admins WHERE username = ? AND id != ?").get(admin.username, id);
+      const existing = dbProxy.prepare("SELECT id FROM admins WHERE username = ? AND id != ?").get(admin.username, id2);
       if (existing) return { success: false, error: "Username already exists" };
     }
-    const existingAdmin = dbProxy.prepare("SELECT id FROM admins WHERE id = ?").get(id);
+    const existingAdmin = dbProxy.prepare("SELECT id FROM admins WHERE id = ?").get(id2);
     if (!existingAdmin) {
       const empFields = [];
       const empValues = [];
@@ -9637,9 +26435,10 @@ function registerIPCHandlers() {
         empValues.push(admin.name);
       }
       if (empFields.length > 0) {
-        empValues.push(id);
+        empValues.push(id2);
         dbProxy.prepare(`UPDATE employees SET ${empFields.join(", ")}, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`).run(...empValues);
       }
+      bridgeEmployeeUser(id2);
       return { success: true };
     }
     const fields = [];
@@ -9678,97 +26477,48 @@ function registerIPCHandlers() {
       values.push(admin.avatar);
     }
     if (fields.length === 0) return { success: false, error: "No fields to update" };
-    values.push(id);
+    values.push(id2);
     dbProxy.prepare(`UPDATE admins SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+    bridgeAdminUser(id2);
     return { success: true };
   });
-  electron.ipcMain.handle("delete-admin", (_, id) => {
+  electron.ipcMain.handle("delete-admin", (_, id2) => {
     requirePermission("settings.users");
-    const admin = dbProxy.prepare("SELECT role FROM admins WHERE id = ?").get(id);
+    const admin = dbProxy.prepare("SELECT role FROM admins WHERE id = ?").get(id2);
     if (admin?.role === "super_admin") {
       const superCount = dbProxy.prepare("SELECT COUNT(*) as count FROM admins WHERE role = 'super_admin'").get();
       if (superCount.count <= 1) {
         return { success: false, error: "Cannot delete the last super admin" };
       }
     }
-    dbProxy.prepare("DELETE FROM admins WHERE id = ?").run(id);
+    dbProxy.prepare("DELETE FROM admins WHERE id = ?").run(id2);
+    bridgeDeleteBySource("admin", id2);
     return { success: true };
-  });
-  electron.ipcMain.handle("insert-bulk-adjustments", async (event, adjustments) => {
-    requirePermission("inventory.adjust");
-    if (!await gateSensitiveAction(event.sender, { context: `Bulk stock/price adjustments (${Array.isArray(adjustments) ? adjustments.length : 0})` })) {
-      throw new Error("Manager approval required — action not executed");
-    }
-    const bizId = getActiveBusinessId();
-    const transaction = dbProxy.transaction(() => {
-      let count = 0;
-      for (const adj of adjustments) {
-        dbProxy.prepare("INSERT INTO adjustments (businessId, itemId, type, oldValue, newValue, quantity, unitType, reason, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-          bizId,
-          adj.itemId,
-          adj.type,
-          adj.oldValue,
-          adj.newValue,
-          adj.quantity,
-          adj.unitType,
-          adj.reason,
-          adj.date
-        );
-        if (adj.type === "damage" || adj.type === "loss") {
-          dbProxy.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ?").run(adj.quantity, adj.itemId);
-          const defWhId = getDefaultWarehouseId();
-          const whRow = dbProxy.prepare("SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(defWhId, adj.itemId);
-          if (whRow) {
-            dbProxy.prepare("UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(adj.quantity, whRow.id);
-          }
-          dbProxy.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)").run(defWhId, adj.itemId, `adj_${adj.type}`, adj.quantity, "adjustment", adj.reason || null);
-        } else if (adj.type === "add_stock") {
-          dbProxy.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity + ? WHERE id = ?").run(adj.quantity, adj.itemId);
-          const defWhId = getDefaultWarehouseId();
-          const whRow = dbProxy.prepare("SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(defWhId, adj.itemId);
-          if (whRow) {
-            dbProxy.prepare("UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(adj.quantity, whRow.id);
-          } else {
-            dbProxy.prepare("INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)").run(defWhId, adj.itemId, adj.quantity);
-          }
-          dbProxy.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)").run(defWhId, adj.itemId, `adj_${adj.type}`, adj.quantity, "adjustment", adj.reason || null);
-        } else if (adj.type === "price_increase" || adj.type === "price_decrease") {
-          if (adj.unitType === "base") {
-            dbProxy.prepare("UPDATE items SET baseSellingPrice = ? WHERE id = ?").run(adj.newValue, adj.itemId);
-          } else {
-            dbProxy.prepare("UPDATE items SET packSellingPrice = ? WHERE id = ?").run(adj.newValue, adj.itemId);
-          }
-        }
-        count++;
-      }
-      return count;
-    });
-    return transaction();
   });
   electron.ipcMain.handle("get-warehouses", () => {
     requirePermission("warehouses.view");
     const bizId = getActiveBusinessId();
     return dbProxy.prepare("SELECT * FROM warehouses WHERE businessId = ? ORDER BY name").all(bizId);
   });
-  electron.ipcMain.handle("get-warehouse", (_, id) => {
+  electron.ipcMain.handle("get-warehouse", (_, id2) => {
     requirePermission("warehouses.view");
-    return dbProxy.prepare("SELECT * FROM warehouses WHERE id = ?").get(id);
+    return dbProxy.prepare("SELECT * FROM warehouses WHERE id = ?").get(id2);
   });
   electron.ipcMain.handle("insert-warehouse", (_, wh) => {
     requirePermission("warehouses.create");
     const bizId = getActiveBusinessId();
     return dbProxy.prepare("INSERT INTO warehouses (businessId, name, location, managerName, managerPhone, email) VALUES (?, ?, ?, ?, ?, ?)").run(bizId, wh.name, wh.location, wh.managerName, wh.managerPhone, wh.email).lastInsertRowid;
   });
-  electron.ipcMain.handle("update-warehouse", (_, id, wh) => {
+  electron.ipcMain.handle("update-warehouse", (_, id2, wh) => {
     requirePermission("warehouses.create");
-    return dbProxy.prepare("UPDATE warehouses SET name = ?, location = ?, managerName = ?, managerPhone = ?, email = ?, isActive = ? WHERE id = ?").run(wh.name, wh.location, wh.managerName, wh.managerPhone, wh.email, wh.isActive ?? 1, id);
+    return dbProxy.prepare("UPDATE warehouses SET name = ?, location = ?, managerName = ?, managerPhone = ?, email = ?, isActive = ? WHERE id = ?").run(wh.name, wh.location, wh.managerName, wh.managerPhone, wh.email, wh.isActive ?? 1, id2);
   });
-  electron.ipcMain.handle("delete-warehouse", (_, id) => {
+  electron.ipcMain.handle("delete-warehouse", (_, id2) => {
     requirePermission("warehouses.edit");
     const tx = dbProxy.transaction(() => {
-      dbProxy.prepare("DELETE FROM stock_movements WHERE warehouseId = ?").run(id);
-      dbProxy.prepare("DELETE FROM warehouse_inventory WHERE warehouseId = ?").run(id);
-      dbProxy.prepare("DELETE FROM warehouses WHERE id = ?").run(id);
+      dbProxy.prepare("DELETE FROM stock_movements WHERE warehouseId = ?").run(id2);
+      dbProxy.prepare("DELETE FROM warehouse_inventory WHERE warehouseId = ?").run(id2);
+      dbProxy.prepare("DELETE FROM warehouses WHERE id = ?").run(id2);
     });
     return tx();
   });
@@ -9798,18 +26548,18 @@ function registerIPCHandlers() {
       LEFT JOIN categories ON items.categoryId = categories.id
       WHERE w.businessId = ?
     `;
-    const params = [bizId];
+    const params2 = [bizId];
     if (options.search) {
       query += " AND (LOWER(items.name) LIKE LOWER(?) OR LOWER(items.companyName) LIKE LOWER(?))";
-      params.push(`%${options.search}%`, `%${options.search}%`);
+      params2.push(`%${options.search}%`, `%${options.search}%`);
     }
     if (options.category && options.category !== "All") {
       query += " AND categories.name = ?";
-      params.push(options.category);
+      params2.push(options.category);
     }
     query += " ORDER BY w.name, items.name LIMIT ? OFFSET ?";
-    params.push(options.limit ?? DEFAULT_LIST_LIMIT, options.offset ?? 0);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(options.limit ?? DEFAULT_LIST_LIMIT, options.offset ?? 0);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("update-warehouse-inventory", (_, warehouseId, itemId, quantity) => {
     requirePermission("inventory.adjust");
@@ -9863,17 +26613,17 @@ function registerIPCHandlers() {
       LEFT JOIN items ON st.itemId = items.id
       WHERE st.businessId = ?
     `;
-    const params = [bizId];
+    const params2 = [bizId];
     if (options.startDate && options.endDate) {
       query += " AND DATE(st.createdAt) BETWEEN ? AND ?";
-      params.push(options.startDate, options.endDate);
+      params2.push(options.startDate, options.endDate);
     }
     query += " ORDER BY st.createdAt DESC";
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("get-stock-movements", (_, options = {}) => {
     const bizId = getActiveBusinessId();
@@ -9884,25 +26634,25 @@ function registerIPCHandlers() {
       LEFT JOIN items ON sm.itemId = items.id
       WHERE w.businessId = ?
     `;
-    const params = [bizId];
+    const params2 = [bizId];
     if (options.warehouseId) {
       query += " AND sm.warehouseId = ?";
-      params.push(options.warehouseId);
+      params2.push(options.warehouseId);
     }
     if (options.itemId) {
       query += " AND sm.itemId = ?";
-      params.push(options.itemId);
+      params2.push(options.itemId);
     }
     if (options.startDate && options.endDate) {
       query += " AND DATE(sm.createdAt) BETWEEN ? AND ?";
-      params.push(options.startDate, options.endDate);
+      params2.push(options.startDate, options.endDate);
     }
     query += " ORDER BY sm.createdAt DESC";
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("cleanup-stock-movements", () => {
     requirePermission("settings.manage");
@@ -9936,8 +26686,8 @@ function registerIPCHandlers() {
     const bizId = getActiveBusinessId();
     return dbProxy.prepare("SELECT * FROM employee_roles WHERE businessId = ? ORDER BY name").all(bizId);
   });
-  electron.ipcMain.handle("get-employee-role", (_, id) => {
-    return dbProxy.prepare("SELECT * FROM employee_roles WHERE id = ? AND businessId = ?").get(id, getActiveBusinessId());
+  electron.ipcMain.handle("get-employee-role", (_, id2) => {
+    return dbProxy.prepare("SELECT * FROM employee_roles WHERE id = ? AND businessId = ?").get(id2, getActiveBusinessId());
   });
   electron.ipcMain.handle("insert-employee-role", (_, data) => {
     requirePermission("settings.roles");
@@ -9945,26 +26695,26 @@ function registerIPCHandlers() {
     const result = dbProxy.prepare("INSERT INTO employee_roles (businessId, name, description, permissions, isSystem) VALUES (?, ?, ?, ?, ?)").run(getActiveBusinessId(), data.name, data.description || "", permissions, 0);
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("update-employee-role", (_, id, data) => {
+  electron.ipcMain.handle("update-employee-role", (_, id2, data) => {
     requirePermission("settings.roles");
     const permissions = JSON.stringify(data.permissions || []);
-    const result = dbProxy.prepare("UPDATE employee_roles SET name = ?, description = ?, permissions = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(data.name, data.description || "", permissions, id, getActiveBusinessId());
+    const result = dbProxy.prepare("UPDATE employee_roles SET name = ?, description = ?, permissions = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(data.name, data.description || "", permissions, id2, getActiveBusinessId());
     return result;
   });
-  electron.ipcMain.handle("duplicate-employee-role", (_, id) => {
+  electron.ipcMain.handle("duplicate-employee-role", (_, id2) => {
     requirePermission("settings.roles");
-    const original = dbProxy.prepare("SELECT * FROM employee_roles WHERE id = ? AND businessId = ?").get(id, getActiveBusinessId());
+    const original = dbProxy.prepare("SELECT * FROM employee_roles WHERE id = ? AND businessId = ?").get(id2, getActiveBusinessId());
     if (!original) throw new Error("Role not found");
     const result = dbProxy.prepare("INSERT INTO employee_roles (businessId, name, description, permissions, isSystem) VALUES (?, ?, ?, ?, 0)").run(getActiveBusinessId(), `${original.name} (Copy)`, original.description, original.permissions);
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("delete-employee-role", (_, id) => {
+  electron.ipcMain.handle("delete-employee-role", (_, id2) => {
     requirePermission("settings.roles");
     const bizId = getActiveBusinessId();
-    const role = dbProxy.prepare("SELECT name, isSystem FROM employee_roles WHERE id = ? AND businessId = ?").get(id, bizId);
+    const role = dbProxy.prepare("SELECT name, isSystem FROM employee_roles WHERE id = ? AND businessId = ?").get(id2, bizId);
     if (role?.isSystem) throw new Error("Cannot delete system role");
-    dbProxy.prepare("UPDATE employees SET roleId = NULL WHERE roleId = ? AND businessId = ?").run(id, bizId);
-    dbProxy.prepare("DELETE FROM employee_roles WHERE id = ? AND businessId = ?").run(id, bizId);
+    dbProxy.prepare("UPDATE employees SET roleId = NULL WHERE roleId = ? AND businessId = ?").run(id2, bizId);
+    dbProxy.prepare("DELETE FROM employee_roles WHERE id = ? AND businessId = ?").run(id2, bizId);
   });
   electron.ipcMain.handle("get-employees", (_, options) => {
     requirePermission("employees.view");
@@ -9979,44 +26729,44 @@ function registerIPCHandlers() {
       LEFT JOIN warehouses w ON e.warehouseId = w.id
     `;
     const conditions = ["e.businessId = ?"];
-    const params = [getActiveBusinessId()];
+    const params2 = [getActiveBusinessId()];
     if (options?.search) {
       conditions.push("(LOWER(e.firstName) LIKE LOWER(?) OR LOWER(e.lastName) LIKE LOWER(?) OR LOWER(e.phone) LIKE LOWER(?) OR LOWER(e.email) LIKE LOWER(?) OR LOWER(e.employeeCode) LIKE LOWER(?))");
       const s = `%${options.search}%`;
-      params.push(s, s, s, s, s);
+      params2.push(s, s, s, s, s);
     }
     if (options?.roleId) {
       conditions.push("e.roleId = ?");
-      params.push(options.roleId);
+      params2.push(options.roleId);
     }
     if (options?.department) {
       conditions.push("e.department = ?");
-      params.push(options.department);
+      params2.push(options.department);
     }
     if (options?.employmentStatus) {
       conditions.push("e.employmentStatus = ?");
-      params.push(options.employmentStatus);
+      params2.push(options.employmentStatus);
     }
     if (options?.warehouseId) {
       conditions.push("e.warehouseId = ?");
-      params.push(options.warehouseId);
+      params2.push(options.warehouseId);
     }
     if (options?.hasAccount !== void 0) {
       conditions.push(options.hasAccount ? "a.id IS NOT NULL" : "a.id IS NULL");
     }
     if (options?.isActive !== void 0) {
       conditions.push("e.isActive = ?");
-      params.push(options.isActive ? 1 : 0);
+      params2.push(options.isActive ? 1 : 0);
     }
     if (conditions.length) query += " WHERE " + conditions.join(" AND ");
     query += " ORDER BY e.firstName, e.lastName";
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options?.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
-  electron.ipcMain.handle("get-employee", (_, id) => {
+  electron.ipcMain.handle("get-employee", (_, id2) => {
     requirePermission("employees.view");
     return dbProxy.prepare(`
       SELECT e.*, r.name as roleName, r.permissions as rolePermissions,
@@ -10025,7 +26775,7 @@ function registerIPCHandlers() {
       LEFT JOIN employee_roles r ON e.roleId = r.id
       LEFT JOIN warehouses w ON e.warehouseId = w.id
       WHERE e.id = ? AND e.businessId = ?
-    `).get(id, getActiveBusinessId());
+    `).get(id2, getActiveBusinessId());
   });
   electron.ipcMain.handle("insert-employee", (_, data) => {
     requirePermission("employees.add");
@@ -10053,9 +26803,10 @@ function registerIPCHandlers() {
       data.hireDate || null,
       data.notes || null
     );
+    bridgeEmployeeUser(Number(result.lastInsertRowid));
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("update-employee", (_, id, data) => {
+  electron.ipcMain.handle("update-employee", (_, id2, data) => {
     requirePermission("employees.add");
     const result = dbProxy.prepare(`
       UPDATE employees SET
@@ -10083,29 +26834,38 @@ function registerIPCHandlers() {
       data.avatar || null,
       data.hireDate || null,
       data.notes || null,
-      id,
+      id2,
       getActiveBusinessId()
     );
+    bridgeEmployeeUser(id2);
     return result;
   });
-  electron.ipcMain.handle("delete-employee", (_, id) => {
+  electron.ipcMain.handle("delete-employee", (_, id2) => {
     requirePermission("employees.delete");
-    dbProxy.prepare("DELETE FROM employees WHERE id = ? AND businessId = ?").run(id, getActiveBusinessId());
+    dbProxy.prepare("DELETE FROM employees WHERE id = ? AND businessId = ?").run(id2, getActiveBusinessId());
+    bridgeDeleteBySource("employee", id2);
   });
-  electron.ipcMain.handle("archive-employee", (_, id) => {
+  electron.ipcMain.handle("archive-employee", (_, id2) => {
     requirePermission("employees.delete");
-    const result = dbProxy.prepare("UPDATE employees SET employmentStatus = 'inactive', isActive = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(id, getActiveBusinessId());
+    const result = dbProxy.prepare("UPDATE employees SET employmentStatus = 'inactive', isActive = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(id2, getActiveBusinessId());
+    bridgeEmployeeUser(id2);
+    try {
+      const emp = dbProxy.prepare("SELECT uuid FROM employees WHERE id = ?").get(id2);
+      if (emp?.uuid) p2pSync.kickUserDevices(String(emp.uuid), "Your access was deactivated by the owner.");
+    } catch {
+    }
     return result;
   });
-  electron.ipcMain.handle("reactivate-employee", (_, id) => {
+  electron.ipcMain.handle("reactivate-employee", (_, id2) => {
     requirePermission("employees.delete");
-    const result = dbProxy.prepare("UPDATE employees SET employmentStatus = 'active', isActive = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(id, getActiveBusinessId());
+    const result = dbProxy.prepare("UPDATE employees SET employmentStatus = 'active', isActive = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(id2, getActiveBusinessId());
+    bridgeEmployeeUser(id2);
     return result;
   });
   electron.ipcMain.handle("get-employee-accounts", () => {
     requirePermission("settings.users");
     return dbProxy.prepare(`
-      SELECT ea.*, e.firstName, e.lastName, e.employeeCode, r.name as roleName
+      SELECT ea.*, e.firstName, e.lastName, e.employeeCode, e.avatar as avatar, r.name as roleName
       FROM employee_accounts ea
       LEFT JOIN employees e ON ea.employeeId = e.id
       LEFT JOIN employee_roles r ON e.roleId = r.id
@@ -10121,47 +26881,53 @@ function registerIPCHandlers() {
     if (!empBiz || empBiz.businessId !== getActiveBusinessId()) throw new Error("Employee not found in this business");
     const hash = hashPin(data.pin);
     const result = dbProxy.prepare("INSERT INTO employee_accounts (employeeId, username, pin, forcePasswordChange) VALUES (?, ?, ?, ?)").run(data.employeeId, data.username, hash, data.forcePasswordChange ? 1 : 0);
+    bridgeEmployeeUser(data.employeeId);
     return result.lastInsertRowid;
   });
-  electron.ipcMain.handle("update-employee-account", (_, id, data) => {
+  electron.ipcMain.handle("update-employee-account", (_, id2, data) => {
     requirePermission("settings.users");
-    const acctBiz = dbProxy.prepare("SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id);
+    const acctBiz = dbProxy.prepare("SELECT e.businessId, ea.employeeId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id2);
     if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error("Account not found in this business");
     if (data.pin) {
       const hash = hashPin(data.pin);
-      dbProxy.prepare("UPDATE employee_accounts SET username = ?, pin = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(data.username, hash, data.isActive !== void 0 ? data.isActive ? 1 : 0 : 1, data.forcePasswordChange ? 1 : 0, id);
+      dbProxy.prepare("UPDATE employee_accounts SET username = ?, pin = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(data.username, hash, data.isActive !== void 0 ? data.isActive ? 1 : 0 : 1, data.forcePasswordChange ? 1 : 0, id2);
     } else {
-      dbProxy.prepare("UPDATE employee_accounts SET username = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(data.username, data.isActive !== void 0 ? data.isActive ? 1 : 0 : 1, data.forcePasswordChange ? 1 : 0, id);
+      dbProxy.prepare("UPDATE employee_accounts SET username = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(data.username, data.isActive !== void 0 ? data.isActive ? 1 : 0 : 1, data.forcePasswordChange ? 1 : 0, id2);
     }
+    bridgeEmployeeUser(acctBiz.employeeId);
   });
-  electron.ipcMain.handle("delete-employee-account", (_, id) => {
+  electron.ipcMain.handle("delete-employee-account", (_, id2) => {
     requirePermission("settings.users");
-    const acctBiz = dbProxy.prepare("SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id);
+    const acctBiz = dbProxy.prepare("SELECT e.businessId, ea.employeeId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id2);
     if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error("Account not found in this business");
-    dbProxy.prepare("DELETE FROM employee_accounts WHERE id = ?").run(id);
+    dbProxy.prepare("DELETE FROM employee_accounts WHERE id = ?").run(id2);
+    bridgeEmployeeUser(acctBiz.employeeId);
   });
-  electron.ipcMain.handle("lock-employee-account", (_, id) => {
+  electron.ipcMain.handle("lock-employee-account", (_, id2) => {
     requirePermission("settings.users");
-    const acctBiz = dbProxy.prepare("SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id);
+    const acctBiz = dbProxy.prepare("SELECT e.businessId, ea.employeeId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id2);
     if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error("Account not found in this business");
     const lockUntil = new Date(Date.now() + 30 * 60 * 1e3).toISOString();
-    dbProxy.prepare("UPDATE employee_accounts SET isActive = 0, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(lockUntil, id);
+    dbProxy.prepare("UPDATE employee_accounts SET isActive = 0, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(lockUntil, id2);
+    bridgeEmployeeUser(acctBiz.employeeId);
   });
-  electron.ipcMain.handle("unlock-employee-account", (_, id) => {
+  electron.ipcMain.handle("unlock-employee-account", (_, id2) => {
     requirePermission("settings.users");
-    const acctBiz = dbProxy.prepare("SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id);
+    const acctBiz = dbProxy.prepare("SELECT e.businessId, ea.employeeId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?").get(id2);
     if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error("Account not found in this business");
-    dbProxy.prepare("UPDATE employee_accounts SET isActive = 1, lockedUntil = NULL, failedLoginAttempts = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+    dbProxy.prepare("UPDATE employee_accounts SET isActive = 1, lockedUntil = NULL, failedLoginAttempts = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id2);
+    bridgeEmployeeUser(acctBiz.employeeId);
   });
-  electron.ipcMain.handle("reset-employee-password", (_, id, newPin) => {
+  electron.ipcMain.handle("reset-employee-password", (_, id2, newPin) => {
     requirePermission("settings.users");
-    const acct = dbProxy.prepare("SELECT ea.id, ea.employeeId, e.roleId, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ? AND e.businessId = ?").get(id, getActiveBusinessId());
+    const acct = dbProxy.prepare("SELECT ea.id, ea.employeeId, e.roleId, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ? AND e.businessId = ?").get(id2, getActiveBusinessId());
     if (!acct) return { success: false, error: "Account not found" };
     if (acct.roleName === "Owner") return { success: false, error: "Cannot reset PIN for Owner role" };
     const hash = hashPin(newPin);
-    dbProxy.prepare("UPDATE employee_accounts SET pin = ?, forcePasswordChange = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(hash, id);
-    dbProxy.prepare("INSERT INTO pin_history (entityType, entityId, action, performedBy, performedById, details) VALUES (?, ?, ?, ?, ?, ?)").run("employee_account", id, "pin_reset", currentUserName || "unknown", null, "PIN reset by super admin");
-    insertAuditLog("pin_reset", "employee_account", id, "pin", "REDACTED", "REDACTED", `PIN reset for account #${id} by ${currentUserName || "unknown"}`);
+    dbProxy.prepare("UPDATE employee_accounts SET pin = ?, forcePasswordChange = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(hash, id2);
+    bridgeEmployeeUser(acct.employeeId);
+    dbProxy.prepare("INSERT INTO pin_history (entityType, entityId, action, performedBy, performedById, details) VALUES (?, ?, ?, ?, ?, ?)").run("employee_account", id2, "pin_reset", currentUserName || "unknown", null, "PIN reset by super admin");
+    insertAuditLog("pin_reset", "employee_account", id2, "pin", "REDACTED", "REDACTED", `PIN reset for account #${id2} by ${currentUserName || "unknown"}`);
     return { success: true };
   });
   electron.ipcMain.handle("generate-recovery-key", (_, entityType, entityId) => {
@@ -10249,45 +27015,45 @@ function registerIPCHandlers() {
     insertAuditLog("pin_recovery_reset", "account", targetId ?? null, "pin", "REDACTED", "REDACTED", `PIN reset via recovery key for ${username}`);
     return { success: true };
   });
-  electron.ipcMain.handle("lock-user-account", (_, id) => {
+  electron.ipcMain.handle("lock-user-account", (_, id2) => {
     requirePermission("settings.users");
     const lockUntil = new Date(Date.now() + 365 * 24 * 60 * 60 * 1e3).toISOString();
-    const acct = dbProxy.prepare("SELECT ea.*, e.firstName, e.lastName, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ?").get(id);
+    const acct = dbProxy.prepare("SELECT ea.*, e.firstName, e.lastName, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ?").get(id2);
     if (!acct) return { success: false, error: "Account not found" };
     if (acct.roleName === "Owner") return { success: false, error: "Cannot lock an Owner account" };
-    dbProxy.prepare("UPDATE employee_accounts SET isActive = 0, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(lockUntil, id);
-    dbProxy.prepare("INSERT INTO pin_history (entityType, entityId, action, performedBy, performedById, details) VALUES (?, ?, ?, ?, ?, ?)").run("employee_account", id, "account_locked", currentUserName || "unknown", null, `Account locked`);
-    insertAuditLog("lock_account", "employee_account", id, "isActive", "1", "0", `Account #${id} locked by ${currentUserName || "unknown"}`);
+    dbProxy.prepare("UPDATE employee_accounts SET isActive = 0, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(lockUntil, id2);
+    dbProxy.prepare("INSERT INTO pin_history (entityType, entityId, action, performedBy, performedById, details) VALUES (?, ?, ?, ?, ?, ?)").run("employee_account", id2, "account_locked", currentUserName || "unknown", null, `Account locked`);
+    insertAuditLog("lock_account", "employee_account", id2, "isActive", "1", "0", `Account #${id2} locked by ${currentUserName || "unknown"}`);
     return { success: true };
   });
-  electron.ipcMain.handle("unlock-user-account", (_, id) => {
+  electron.ipcMain.handle("unlock-user-account", (_, id2) => {
     requirePermission("settings.users");
-    const acct = dbProxy.prepare("SELECT id FROM employee_accounts WHERE id = ?").get(id);
+    const acct = dbProxy.prepare("SELECT id FROM employee_accounts WHERE id = ?").get(id2);
     if (!acct) return { success: false, error: "Account not found" };
-    dbProxy.prepare("UPDATE employee_accounts SET isActive = 1, lockedUntil = NULL, failedLoginAttempts = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
-    dbProxy.prepare("INSERT INTO pin_history (entityType, entityId, action, performedBy, performedById, details) VALUES (?, ?, ?, ?, ?, ?)").run("employee_account", id, "account_unlocked", currentUserName || "unknown", null, `Account unlocked`);
-    insertAuditLog("unlock_account", "employee_account", id, "isActive", "0", "1", `Account #${id} unlocked by ${currentUserName || "unknown"}`);
+    dbProxy.prepare("UPDATE employee_accounts SET isActive = 1, lockedUntil = NULL, failedLoginAttempts = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id2);
+    dbProxy.prepare("INSERT INTO pin_history (entityType, entityId, action, performedBy, performedById, details) VALUES (?, ?, ?, ?, ?, ?)").run("employee_account", id2, "account_unlocked", currentUserName || "unknown", null, `Account unlocked`);
+    insertAuditLog("unlock_account", "employee_account", id2, "isActive", "0", "1", `Account #${id2} unlocked by ${currentUserName || "unknown"}`);
     return { success: true };
   });
-  electron.ipcMain.handle("force-pin-change", (_, id) => {
+  electron.ipcMain.handle("force-pin-change", (_, id2) => {
     requirePermission("settings.users");
-    const acct = dbProxy.prepare("SELECT ea.id, e.roleId, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ?").get(id);
+    const acct = dbProxy.prepare("SELECT ea.id, e.roleId, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ?").get(id2);
     if (!acct) return { success: false, error: "Account not found" };
     if (acct.roleName === "Owner") return { success: false, error: "Cannot force PIN change for Owner role" };
-    dbProxy.prepare("UPDATE employee_accounts SET forcePasswordChange = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id);
-    dbProxy.prepare("INSERT INTO pin_history (entityType, entityId, action, performedBy, performedById, details) VALUES (?, ?, ?, ?, ?, ?)").run("employee_account", id, "force_pin_change", currentUserName || "unknown", null, `Forced PIN change`);
-    insertAuditLog("force_pin_change", "employee_account", id, "forcePasswordChange", "0", "1", `Force PIN change set for account #${id} by ${currentUserName || "unknown"}`);
+    dbProxy.prepare("UPDATE employee_accounts SET forcePasswordChange = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(id2);
+    dbProxy.prepare("INSERT INTO pin_history (entityType, entityId, action, performedBy, performedById, details) VALUES (?, ?, ?, ?, ?, ?)").run("employee_account", id2, "force_pin_change", currentUserName || "unknown", null, `Forced PIN change`);
+    insertAuditLog("force_pin_change", "employee_account", id2, "forcePasswordChange", "0", "1", `Force PIN change set for account #${id2} by ${currentUserName || "unknown"}`);
     return { success: true };
   });
   electron.ipcMain.handle("get-pin-history", (_, entityType, entityId) => {
     let query = "SELECT * FROM pin_history";
-    const params = [];
+    const params2 = [];
     if (entityType && entityId) {
       query += " WHERE entityType = ? AND entityId = ?";
-      params.push(entityType, entityId);
+      params2.push(entityType, entityId);
     }
     query += " ORDER BY createdAt DESC LIMIT 100";
-    return dbProxy.prepare(query).all(...params);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("login-employee", (_, username, pin) => {
     const account = dbProxy.prepare(`
@@ -10356,30 +27122,30 @@ function registerIPCHandlers() {
       LEFT JOIN employees e ON lh.employeeId = e.id
     `;
     const conditions = [];
-    const params = [];
+    const params2 = [];
     if (options?.employeeId) {
       conditions.push("lh.employeeId = ?");
-      params.push(options.employeeId);
+      params2.push(options.employeeId);
     }
     if (options?.accountId) {
       conditions.push("lh.accountId = ?");
-      params.push(options.accountId);
+      params2.push(options.accountId);
     }
     if (options?.fromDate) {
       conditions.push("lh.createdAt >= ?");
-      params.push(options.fromDate);
+      params2.push(options.fromDate);
     }
     if (options?.toDate) {
       conditions.push("lh.createdAt <= ?");
-      params.push(options.toDate);
+      params2.push(options.toDate);
     }
     if (conditions.length) query += " WHERE " + conditions.join(" AND ");
     query += " ORDER BY lh.createdAt DESC";
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options?.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("clock-in", (_, employeeId, notes) => {
     const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
@@ -10403,41 +27169,41 @@ function registerIPCHandlers() {
   });
   electron.ipcMain.handle("get-attendance", (_, options) => {
     let query = `
-      SELECT a.*, e.firstName, e.lastName, e.employeeCode, r.name as roleName
+      SELECT a.*, e.firstName, e.lastName, e.employeeCode, e.avatar as avatar, r.name as roleName
       FROM attendance a
       LEFT JOIN employees e ON a.employeeId = e.id
       LEFT JOIN employee_roles r ON e.roleId = r.id
     `;
     const conditions = [];
-    const params = [];
+    const params2 = [];
     if (options?.employeeId) {
       conditions.push("a.employeeId = ?");
-      params.push(options.employeeId);
+      params2.push(options.employeeId);
     }
     if (options?.fromDate) {
       conditions.push("a.date >= ?");
-      params.push(options.fromDate);
+      params2.push(options.fromDate);
     }
     if (options?.toDate) {
       conditions.push("a.date <= ?");
-      params.push(options.toDate);
+      params2.push(options.toDate);
     }
     if (options?.status) {
       conditions.push("a.status = ?");
-      params.push(options.status);
+      params2.push(options.status);
     }
     if (conditions.length) query += " WHERE " + conditions.join(" AND ");
     query += " ORDER BY a.date DESC, a.clockIn DESC";
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options?.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("get-today-attendance", () => {
     const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
     return dbProxy.prepare(`
-      SELECT a.*, e.firstName, e.lastName, e.employeeCode, r.name as roleName
+      SELECT a.*, e.firstName, e.lastName, e.employeeCode, e.avatar as avatar, r.name as roleName
       FROM attendance a
       LEFT JOIN employees e ON a.employeeId = e.id
       LEFT JOIN employee_roles r ON e.roleId = r.id
@@ -10453,22 +27219,22 @@ function registerIPCHandlers() {
       LEFT JOIN employee_roles r ON e.roleId = r.id
     `;
     const conditions = [];
-    const params = [];
+    const params2 = [];
     if (options?.employeeId) {
       conditions.push("ep.employeeId = ?");
-      params.push(options.employeeId);
+      params2.push(options.employeeId);
     }
     if (options?.period) {
       conditions.push("ep.period = ?");
-      params.push(options.period);
+      params2.push(options.period);
     }
     if (conditions.length) query += " WHERE " + conditions.join(" AND ");
     query += " ORDER BY ep.period DESC, ep.salesAmount DESC";
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options?.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("update-employee-performance", (_, data) => {
     requirePermission("employees.edit");
@@ -10495,36 +27261,36 @@ function registerIPCHandlers() {
   electron.ipcMain.handle("get-shipments", (_, options) => {
     requirePermission("shipments");
     let query = `SELECT * FROM shipments WHERE businessId = ?`;
-    const params = [getActiveBusinessId()];
+    const params2 = [getActiveBusinessId()];
     if (options?.status) {
       query += " AND status = ?";
-      params.push(options.status);
+      params2.push(options.status);
     }
     if (options?.search) {
       query += " AND (LOWER(destination) LIKE LOWER(?) OR LOWER(driverName) LIKE LOWER(?) OR LOWER(notes) LIKE LOWER(?))";
       const s = `%${options.search}%`;
-      params.push(s, s, s);
+      params2.push(s, s, s);
     }
     if (options?.fromDate) {
       query += " AND createdAt >= ?";
-      params.push(options.fromDate);
+      params2.push(options.fromDate);
     }
     if (options?.toDate) {
       query += " AND createdAt <= ?";
-      params.push(options.toDate);
+      params2.push(options.toDate);
     }
     query += " ORDER BY createdAt DESC";
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options?.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
-  electron.ipcMain.handle("get-shipment", (_, id) => {
+  electron.ipcMain.handle("get-shipment", (_, id2) => {
     requirePermission("shipments");
-    const shipment = dbProxy.prepare("SELECT * FROM shipments WHERE id = ?").get(id);
-    const items = dbProxy.prepare("SELECT * FROM shipment_items WHERE shipmentId = ?").all(id);
-    const history = dbProxy.prepare("SELECT * FROM shipment_history WHERE shipmentId = ? ORDER BY createdAt DESC").all(id);
+    const shipment = dbProxy.prepare("SELECT * FROM shipments WHERE id = ?").get(id2);
+    const items = dbProxy.prepare("SELECT * FROM shipment_items WHERE shipmentId = ?").all(id2);
+    const history = dbProxy.prepare("SELECT * FROM shipment_history WHERE shipmentId = ? ORDER BY createdAt DESC").all(id2);
     return { ...shipment, items, history };
   });
   electron.ipcMain.handle("insert-shipment", (_, data) => {
@@ -10548,7 +27314,7 @@ function registerIPCHandlers() {
     dbProxy.prepare("INSERT INTO shipment_history (shipmentId, status, changedBy, notes) VALUES (?, ?, ?, ?)").run(shipmentId, "pending", data.createdBy || null, "Shipment created");
     return shipmentId;
   });
-  electron.ipcMain.handle("update-shipment", (_, id, data) => {
+  electron.ipcMain.handle("update-shipment", (_, id2, data) => {
     requirePermission("shipments");
     return dbProxy.prepare(`
       UPDATE shipments SET origin = ?, destination = ?, driverName = ?, driverPhone = ?,
@@ -10562,26 +27328,26 @@ function registerIPCHandlers() {
       data.vehicleInfo || null,
       data.notes || null,
       data.scheduledDate || null,
-      id
+      id2
     );
   });
-  electron.ipcMain.handle("update-shipment-status", (_, id, status, changedBy, notes) => {
+  electron.ipcMain.handle("update-shipment-status", (_, id2, status, changedBy, notes) => {
     requirePermission("shipments");
     const validStatuses = ["pending", "in_transit", "delivered", "cancelled"];
     if (!validStatuses.includes(status)) throw new Error("Invalid status");
     const updates = ["status = ?", "updatedAt = CURRENT_TIMESTAMP"];
-    const params = [status];
+    const params2 = [status];
     if (status === "delivered") {
       updates.push("deliveredAt = CURRENT_TIMESTAMP");
     }
-    params.push(id);
-    dbProxy.prepare(`UPDATE shipments SET ${updates.join(", ")} WHERE id = ?`).run(...params);
-    dbProxy.prepare("INSERT INTO shipment_history (shipmentId, status, changedBy, notes) VALUES (?, ?, ?, ?)").run(id, status, changedBy || null, notes || null);
+    params2.push(id2);
+    dbProxy.prepare(`UPDATE shipments SET ${updates.join(", ")} WHERE id = ?`).run(...params2);
+    dbProxy.prepare("INSERT INTO shipment_history (shipmentId, status, changedBy, notes) VALUES (?, ?, ?, ?)").run(id2, status, changedBy || null, notes || null);
     return { success: true };
   });
-  electron.ipcMain.handle("delete-shipment", (_, id) => {
+  electron.ipcMain.handle("delete-shipment", (_, id2) => {
     requirePermission("shipments");
-    return dbProxy.prepare("DELETE FROM shipments WHERE id = ?").run(id);
+    return dbProxy.prepare("DELETE FROM shipments WHERE id = ?").run(id2);
   });
   electron.ipcMain.handle("get-shipment-history", (_, shipmentId) => {
     requirePermission("shipments");
@@ -10595,10 +27361,10 @@ function registerIPCHandlers() {
     const search = options.search ? `%${options.search}%` : null;
     const status = options.status || null;
     let where = "s.businessId = ?";
-    const params = [bizId];
+    const params2 = [bizId];
     if (search) {
       where += " AND (LOWER(s.supplierName) LIKE LOWER(?) OR LOWER(s.companyName) LIKE LOWER(?) OR LOWER(s.phone) LIKE LOWER(?) OR LOWER(s.email) LIKE LOWER(?))";
-      params.push(search, search, search, search);
+      params2.push(search, search, search, search);
     }
     if (status === "active") where += " AND s.isActive = 1";
     if (status === "inactive") where += " AND s.isActive = 0";
@@ -10615,14 +27381,14 @@ function registerIPCHandlers() {
       GROUP BY s.id
       ORDER BY s.supplierName ASC
       LIMIT ? OFFSET ?
-    `).all(...params, limit, offset);
-    const total = dbProxy.prepare(`SELECT COUNT(*) AS c FROM suppliers s WHERE ${where}`).get(...params).c;
+    `).all(...params2, limit, offset);
+    const total = dbProxy.prepare(`SELECT COUNT(*) AS c FROM suppliers s WHERE ${where}`).get(...params2).c;
     return { rows, total };
   });
-  electron.ipcMain.handle("get-supplier", (_, id) => {
+  electron.ipcMain.handle("get-supplier", (_, id2) => {
     requirePermission("suppliers.view");
     getActiveBusinessId();
-    const supplier = dbProxy.prepare("SELECT * FROM suppliers WHERE id = ?").get(id);
+    const supplier = dbProxy.prepare("SELECT * FROM suppliers WHERE id = ?").get(id2);
     if (!supplier) return null;
     const stats = dbProxy.prepare(`
       SELECT
@@ -10636,7 +27402,7 @@ function registerIPCHandlers() {
          JOIN supplier_purchases sp ON spi.purchaseId = sp.id
          WHERE sp.supplierId = ? AND sp.status != 'cancelled') AS productCount
       FROM supplier_purchases WHERE supplierId = ?
-    `).get(id, id);
+    `).get(id2, id2);
     return { ...supplier, ...stats };
   });
   electron.ipcMain.handle("insert-supplier", (_, data) => {
@@ -10689,7 +27455,7 @@ function registerIPCHandlers() {
     );
     return { id: res.lastInsertRowid };
   });
-  electron.ipcMain.handle("update-supplier", (_, id, data) => {
+  electron.ipcMain.handle("update-supplier", (_, id2, data) => {
     requirePermission("suppliers.add");
     const name = data.supplierName?.trim();
     if (!name) throw new Error("Supplier name is required");
@@ -10708,7 +27474,7 @@ function registerIPCHandlers() {
     }
     const dup = dbProxy.prepare(`
       SELECT id FROM suppliers WHERE id != ? AND LOWER(supplierName) = LOWER(?)
-    `).get(id, data.supplierName);
+    `).get(id2, data.supplierName);
     if (dup) throw new Error("A supplier with this name already exists");
     const creditLimit = data.creditLimit != null ? validateNonNegative(data.creditLimit, "Credit limit") : 0;
     dbProxy.prepare(`
@@ -10734,25 +27500,25 @@ function registerIPCHandlers() {
       creditLimit,
       data.notes || null,
       data.status || "active",
-      id
+      id2
     );
     return { success: true };
   });
-  electron.ipcMain.handle("archive-supplier", (_, id) => {
-    dbProxy.prepare("UPDATE suppliers SET isActive = 0, status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run("inactive", id);
-    dbProxy.prepare("SELECT supplierName FROM suppliers WHERE id = ?").get(id);
+  electron.ipcMain.handle("archive-supplier", (_, id2) => {
+    dbProxy.prepare("UPDATE suppliers SET isActive = 0, status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run("inactive", id2);
+    dbProxy.prepare("SELECT supplierName FROM suppliers WHERE id = ?").get(id2);
     return { success: true };
   });
-  electron.ipcMain.handle("restore-supplier", (_, id) => {
-    dbProxy.prepare("UPDATE suppliers SET isActive = 1, status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run("active", id);
-    dbProxy.prepare("SELECT supplierName FROM suppliers WHERE id = ?").get(id);
+  electron.ipcMain.handle("restore-supplier", (_, id2) => {
+    dbProxy.prepare("UPDATE suppliers SET isActive = 1, status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run("active", id2);
+    dbProxy.prepare("SELECT supplierName FROM suppliers WHERE id = ?").get(id2);
     return { success: true };
   });
-  electron.ipcMain.handle("delete-supplier", (_, id) => {
-    const purchases = dbProxy.prepare("SELECT COUNT(*) AS c FROM supplier_purchases WHERE supplierId = ?").get(id);
+  electron.ipcMain.handle("delete-supplier", (_, id2) => {
+    const purchases = dbProxy.prepare("SELECT COUNT(*) AS c FROM supplier_purchases WHERE supplierId = ?").get(id2);
     if (purchases.c > 0) throw new Error("Cannot delete supplier with existing purchases. Archive instead.");
-    dbProxy.prepare("SELECT supplierName FROM suppliers WHERE id = ?").get(id);
-    dbProxy.prepare("DELETE FROM suppliers WHERE id = ?").run(id);
+    dbProxy.prepare("SELECT supplierName FROM suppliers WHERE id = ?").get(id2);
+    dbProxy.prepare("DELETE FROM suppliers WHERE id = ?").run(id2);
     return { success: true };
   });
   electron.ipcMain.handle("get-supplier-purchases", (_, options = {}) => {
@@ -10762,14 +27528,14 @@ function registerIPCHandlers() {
     const supplierId = options.supplierId || null;
     const status = options.status || null;
     let where = "sp.businessId = ?";
-    const params = [bizId];
+    const params2 = [bizId];
     if (supplierId) {
       where += " AND sp.supplierId = ?";
-      params.push(supplierId);
+      params2.push(supplierId);
     }
     if (status) {
       where += " AND sp.status = ?";
-      params.push(status);
+      params2.push(status);
     }
     const rows = dbProxy.prepare(`
       SELECT sp.*, s.supplierName, s.companyName,
@@ -10780,19 +27546,19 @@ function registerIPCHandlers() {
       WHERE ${where}
       ORDER BY sp.purchaseDate DESC, sp.id DESC
       LIMIT ? OFFSET ?
-    `).all(...params, limit, offset);
-    const total = dbProxy.prepare(`SELECT COUNT(*) AS c FROM supplier_purchases sp WHERE ${where}`).get(...params).c;
+    `).all(...params2, limit, offset);
+    const total = dbProxy.prepare(`SELECT COUNT(*) AS c FROM supplier_purchases sp WHERE ${where}`).get(...params2).c;
     return { rows, total };
   });
-  electron.ipcMain.handle("get-supplier-purchase", (_, id) => {
+  electron.ipcMain.handle("get-supplier-purchase", (_, id2) => {
     const purchase = dbProxy.prepare(`
       SELECT sp.*, s.supplierName, s.companyName
       FROM supplier_purchases sp
       JOIN suppliers s ON s.id = sp.supplierId
       WHERE sp.id = ?
-    `).get(id);
+    `).get(id2);
     if (!purchase) return null;
-    const items = dbProxy.prepare("SELECT * FROM supplier_purchase_items WHERE purchaseId = ?").all(id);
+    const items = dbProxy.prepare("SELECT * FROM supplier_purchase_items WHERE purchaseId = ?").all(id2);
     return { ...purchase, items };
   });
   function logSupplierActivity(supplierId, action, entityType, entityId, description) {
@@ -10879,26 +27645,26 @@ function registerIPCHandlers() {
       }
       return purchaseId;
     });
-    const id = insertPurchase();
-    logSupplierActivity(supplierId, "purchase_created", "supplier_purchase", id, `Purchase ${purchaseNumber} created for $${totalAmount}`);
+    const id2 = insertPurchase();
+    logSupplierActivity(supplierId, "purchase_created", "supplier_purchase", id2, `Purchase ${purchaseNumber} created for $${totalAmount}`);
     try {
       dbProxy.prepare(`INSERT INTO notifications (businessId, type, category, title, message, severity) VALUES (?, ?, ?, ?, ?, ?)`).run(bizId, "purchase_created", "suppliers", "New Purchase Created", `Purchase ${purchaseNumber} for supplier #${supplierId}`, "info");
     } catch (_2) {
     }
-    return { id };
+    return { id: id2 };
   });
-  electron.ipcMain.handle("update-supplier-purchase-status", (_, id, status, notes) => {
+  electron.ipcMain.handle("update-supplier-purchase-status", (_, id2, status, notes) => {
     requirePermission("purchases.create");
     const validStatuses = ["draft", "pending", "approved", "ordered", "received", "cancelled"];
     if (!validStatuses.includes(status)) throw new Error("Invalid status");
-    const prev = dbProxy.prepare("SELECT status, supplierId FROM supplier_purchases WHERE id = ?").get(id);
+    const prev = dbProxy.prepare("SELECT status, supplierId FROM supplier_purchases WHERE id = ?").get(id2);
     if (!prev) throw new Error("Purchase not found");
     const prevStatus = prev.status;
-    dbProxy.prepare("UPDATE supplier_purchases SET status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(status, id);
+    dbProxy.prepare("UPDATE supplier_purchases SET status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(status, id2);
     if (status === "received" && prevStatus !== "received") {
       const defWhId = getDefaultWarehouseId();
-      const items = dbProxy.prepare("SELECT * FROM supplier_purchase_items WHERE purchaseId = ?").all(id);
-      const purchase = dbProxy.prepare("SELECT purchaseNumber, supplierId FROM supplier_purchases WHERE id = ?").get(id);
+      const items = dbProxy.prepare("SELECT * FROM supplier_purchase_items WHERE purchaseId = ?").all(id2);
+      const purchase = dbProxy.prepare("SELECT purchaseNumber, supplierId FROM supplier_purchases WHERE id = ?").get(id2);
       const updateItemStock = dbProxy.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity + ?, lastPurchaseDate = CURRENT_TIMESTAMP, lastPurchasePrice = ? WHERE id = ?");
       const upsertWh = dbProxy.prepare("INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?) ON CONFLICT(warehouseId, itemId) DO UPDATE SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP");
       const insertSm = dbProxy.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceId, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?, ?)");
@@ -10911,31 +27677,31 @@ function registerIPCHandlers() {
           updateReceived.run(remaining, it.id);
           updateItemStock.run(remaining, it.unitPrice, it.itemId);
           upsertWh.run(defWhId, it.itemId, remaining, remaining);
-          insertSm.run(defWhId, it.itemId, "purchase_received", remaining, id, "supplier_purchase", `Received purchase #${id} - ${it.itemName}`);
+          insertSm.run(defWhId, it.itemId, "purchase_received", remaining, id2, "supplier_purchase", `Received purchase #${id2} - ${it.itemName}`);
         }
       });
       receiveTxn();
-      logSupplierActivity(purchase.supplierId, "purchase_received", "supplier_purchase", id, `Purchase order #${id} marked as received`);
+      logSupplierActivity(purchase.supplierId, "purchase_received", "supplier_purchase", id2, `Purchase order #${id2} marked as received`);
     }
     if (status === "received" || status === "approved") {
       try {
         const bizId2 = getActiveBusinessId();
-        dbProxy.prepare(`INSERT INTO notifications (businessId, type, category, title, message, severity) VALUES (?, ?, ?, ?, ?, ?)`).run(bizId2, "purchase_received", "suppliers", "Purchase Order Received", `Purchase order #${id} marked as ${status}`, "success");
+        dbProxy.prepare(`INSERT INTO notifications (businessId, type, category, title, message, severity) VALUES (?, ?, ?, ?, ?, ?)`).run(bizId2, "purchase_received", "suppliers", "Purchase Order Received", `Purchase order #${id2} marked as ${status}`, "success");
       } catch (_2) {
       }
     }
     return { success: true };
   });
-  electron.ipcMain.handle("delete-supplier-purchase", (_, id) => {
+  electron.ipcMain.handle("delete-supplier-purchase", (_, id2) => {
     requirePermission("purchases.create");
-    const row = dbProxy.prepare("SELECT purchaseNumber, supplierId FROM supplier_purchases WHERE id = ?").get(id);
+    const row = dbProxy.prepare("SELECT purchaseNumber, supplierId FROM supplier_purchases WHERE id = ?").get(id2);
     if (!row) throw new Error("Purchase not found");
-    const payCheck = dbProxy.prepare("SELECT paidAmount FROM supplier_purchases WHERE id = ?").get(id);
+    const payCheck = dbProxy.prepare("SELECT paidAmount FROM supplier_purchases WHERE id = ?").get(id2);
     if (payCheck && payCheck.paidAmount > 0) {
       throw new Error("Cannot delete a purchase with payments. Delete payments first.");
     }
     const transaction = dbProxy.transaction(() => {
-      const items = dbProxy.prepare("SELECT * FROM supplier_purchase_items WHERE purchaseId = ?").all(id);
+      const items = dbProxy.prepare("SELECT * FROM supplier_purchase_items WHERE purchaseId = ?").all(id2);
       const defWhId = getDefaultWarehouseId();
       for (const it of items) {
         if (!it.itemId) continue;
@@ -10943,14 +27709,14 @@ function registerIPCHandlers() {
         if (receivedQty > 0) {
           dbProxy.prepare("UPDATE items SET totalBaseQuantity = MAX(0, totalBaseQuantity - ?) WHERE id = ?").run(receivedQty, it.itemId);
           dbProxy.prepare("UPDATE warehouse_inventory SET quantity = MAX(0, quantity - ?) WHERE warehouseId = ? AND itemId = ?").run(receivedQty, defWhId, it.itemId);
-          dbProxy.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceId, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?, ?)").run(defWhId, it.itemId, "purchase_reversal", -receivedQty, id, "supplier_purchase", `Reversed purchase #${id} - ${it.itemName}`);
+          dbProxy.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceId, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?, ?)").run(defWhId, it.itemId, "purchase_reversal", -receivedQty, id2, "supplier_purchase", `Reversed purchase #${id2} - ${it.itemName}`);
         }
       }
-      dbProxy.prepare("DELETE FROM supplier_purchase_items WHERE purchaseId = ?").run(id);
-      dbProxy.prepare("DELETE FROM supplier_purchases WHERE id = ?").run(id);
+      dbProxy.prepare("DELETE FROM supplier_purchase_items WHERE purchaseId = ?").run(id2);
+      dbProxy.prepare("DELETE FROM supplier_purchases WHERE id = ?").run(id2);
     });
     transaction();
-    logSupplierActivity(row.supplierId, "purchase_deleted", "supplier_purchase", id, `Purchase ${row?.purchaseNumber || id} deleted`);
+    logSupplierActivity(row.supplierId, "purchase_deleted", "supplier_purchase", id2, `Purchase ${row?.purchaseNumber || id2} deleted`);
     return { success: true };
   });
   electron.ipcMain.handle("get-supplier-payments", (_, options = {}) => {
@@ -10959,10 +27725,10 @@ function registerIPCHandlers() {
     const offset = options.offset ?? 0;
     const supplierId = options.supplierId || null;
     let where = "s.businessId = ?";
-    const params = [bizId];
+    const params2 = [bizId];
     if (supplierId) {
       where += " AND pay.supplierId = ?";
-      params.push(supplierId);
+      params2.push(supplierId);
     }
     const rows = dbProxy.prepare(`
       SELECT pay.*, s.supplierName, sp.purchaseNumber
@@ -10972,8 +27738,8 @@ function registerIPCHandlers() {
       WHERE ${where}
       ORDER BY pay.paymentDate DESC, pay.id DESC
       LIMIT ? OFFSET ?
-    `).all(...params, limit, offset);
-    const total = dbProxy.prepare(`SELECT COUNT(*) AS c FROM supplier_payments pay JOIN suppliers s ON s.id = pay.supplierId WHERE ${where}`).get(...params).c;
+    `).all(...params2, limit, offset);
+    const total = dbProxy.prepare(`SELECT COUNT(*) AS c FROM supplier_payments pay JOIN suppliers s ON s.id = pay.supplierId WHERE ${where}`).get(...params2).c;
     return { rows, total };
   });
   electron.ipcMain.handle("insert-supplier-payment", (_, data) => {
@@ -11025,13 +27791,13 @@ function registerIPCHandlers() {
       }
       return res.lastInsertRowid;
     });
-    const id = insertTxn();
-    logSupplierActivity(data.supplierId, "payment_recorded", "supplier_payment", Number(id), `Payment of ${amount} recorded via ${data.paymentMethod}`);
-    return { id };
+    const id2 = insertTxn();
+    logSupplierActivity(data.supplierId, "payment_recorded", "supplier_payment", Number(id2), `Payment of ${amount} recorded via ${data.paymentMethod}`);
+    return { id: id2 };
   });
-  electron.ipcMain.handle("update-supplier-payment", (_, id, data) => {
+  electron.ipcMain.handle("update-supplier-payment", (_, id2, data) => {
     requirePermission("purchases.edit");
-    const oldPayment = dbProxy.prepare("SELECT * FROM supplier_payments WHERE id = ?").get(id);
+    const oldPayment = dbProxy.prepare("SELECT * FROM supplier_payments WHERE id = ?").get(id2);
     if (!oldPayment) throw new Error("Payment not found");
     const amount = validatePositive(data.amount, "Amount");
     const validMethods = ["cash", "bank_transfer", "mobile_money", "check", "other"];
@@ -11050,10 +27816,10 @@ function registerIPCHandlers() {
         data.paymentMethod,
         data.notes || null,
         purchaseId,
-        id
+        id2
       );
       if (purchaseId) {
-        const totalPaid = dbProxy.prepare("SELECT COALESCE(SUM(amount), 0) AS tp FROM supplier_payments WHERE purchaseId = ? AND id != ?").get(purchaseId, id).tp;
+        const totalPaid = dbProxy.prepare("SELECT COALESCE(SUM(amount), 0) AS tp FROM supplier_payments WHERE purchaseId = ? AND id != ?").get(purchaseId, id2).tp;
         const newPaid = totalPaid + amount;
         dbProxy.prepare("UPDATE supplier_purchases SET paidAmount = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(newPaid, purchaseId);
         const remaining = dbProxy.prepare("SELECT totalAmount - paidAmount AS r FROM supplier_purchases WHERE id = ?").get(purchaseId);
@@ -11067,12 +27833,12 @@ function registerIPCHandlers() {
     updateTxn();
     return { success: true };
   });
-  electron.ipcMain.handle("delete-supplier-payment", (_, id) => {
+  electron.ipcMain.handle("delete-supplier-payment", (_, id2) => {
     requirePermission("purchases.edit");
-    const payment = dbProxy.prepare("SELECT * FROM supplier_payments WHERE id = ?").get(id);
+    const payment = dbProxy.prepare("SELECT * FROM supplier_payments WHERE id = ?").get(id2);
     if (!payment) throw new Error("Payment not found");
     const reverse = dbProxy.transaction(() => {
-      dbProxy.prepare("DELETE FROM supplier_payments WHERE id = ?").run(id);
+      dbProxy.prepare("DELETE FROM supplier_payments WHERE id = ?").run(id2);
       if (payment.purchaseId) {
         const totalPaid = dbProxy.prepare("SELECT COALESCE(SUM(amount), 0) AS tp FROM supplier_payments WHERE purchaseId = ?").get(payment.purchaseId).tp;
         dbProxy.prepare("UPDATE supplier_purchases SET paidAmount = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(totalPaid, payment.purchaseId);
@@ -11112,11 +27878,11 @@ function registerIPCHandlers() {
     `).get(supplierId);
     return totals;
   });
-  electron.ipcMain.handle("toggle-supplier-favorite", (_, id) => {
+  electron.ipcMain.handle("toggle-supplier-favorite", (_, id2) => {
     requirePermission("suppliers.edit");
-    const current = dbProxy.prepare("SELECT isFavorite FROM suppliers WHERE id = ?").get(id);
+    const current = dbProxy.prepare("SELECT isFavorite FROM suppliers WHERE id = ?").get(id2);
     const newVal = current?.isFavorite ? 0 : 1;
-    dbProxy.prepare("UPDATE suppliers SET isFavorite = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(newVal, id);
+    dbProxy.prepare("UPDATE suppliers SET isFavorite = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(newVal, id2);
     return { success: true, isFavorite: !!newVal };
   });
   electron.ipcMain.handle("get-supplier-activity-log", (_, supplierId, limit = 20) => {
@@ -11243,8 +28009,8 @@ function registerIPCHandlers() {
     const bizId = getActiveBusinessId();
     return dbProxy.prepare("SELECT * FROM draft_sales WHERE businessId = ? ORDER BY createdAt DESC").all(bizId);
   });
-  electron.ipcMain.handle("get-draft-sale", (_, id) => {
-    return dbProxy.prepare("SELECT * FROM draft_sales WHERE id = ?").get(id);
+  electron.ipcMain.handle("get-draft-sale", (_, id2) => {
+    return dbProxy.prepare("SELECT * FROM draft_sales WHERE id = ?").get(id2);
   });
   electron.ipcMain.handle("save-draft-sale", (_, data) => {
     requirePermission("sales.create");
@@ -11261,226 +28027,10 @@ function registerIPCHandlers() {
     const r = dbProxy.prepare("INSERT INTO draft_sales (businessId, items, customerName, customerPhone, discount, vat, notes) VALUES (?, ?, ?, ?, ?, ?, ?)").run(bizId, JSON.stringify(data.items), data.customerName || null, data.customerPhone || null, data.discount || 0, data.vat || 0, data.notes || null);
     return { success: true, id: r.lastInsertRowid };
   });
-  electron.ipcMain.handle("delete-draft-sale", (_, id) => {
+  electron.ipcMain.handle("delete-draft-sale", (_, id2) => {
     requirePermission("sales.create");
     const bizId = getActiveBusinessId();
-    return dbProxy.prepare("DELETE FROM draft_sales WHERE id = ? AND businessId = ?").run(id, bizId);
-  });
-  electron.ipcMain.handle("get-contacts", (_, options) => {
-    const bizId = getActiveBusinessId();
-    let q = "SELECT * FROM contacts WHERE businessId = ?";
-    const params = [bizId];
-    if (options?.category) {
-      q += " AND category = ?";
-      params.push(options.category);
-    }
-    q += " ORDER BY name ASC";
-    return dbProxy.prepare(q).all(...params);
-  });
-  electron.ipcMain.handle("insert-contact", (_, data) => {
-    requirePermission("contacts.add");
-    const bizId = getActiveBusinessId();
-    const r = dbProxy.prepare("INSERT INTO contacts (businessId, name, phone, category, subCategory, notes) VALUES (?, ?, ?, ?, ?, ?)").run(bizId, data.name, data.phone, data.category || "other", data.subCategory || null, data.notes || null);
-    return { success: true, id: r.lastInsertRowid };
-  });
-  electron.ipcMain.handle("update-contact", (_, id, data) => {
-    requirePermission("contacts.edit");
-    const bizId = getActiveBusinessId();
-    dbProxy.prepare("UPDATE contacts SET name = ?, phone = ?, category = ?, subCategory = ?, notes = ? WHERE id = ? AND businessId = ?").run(data.name, data.phone, data.category || "other", data.subCategory || null, data.notes || null, id, bizId);
-    return { success: true };
-  });
-  electron.ipcMain.handle("delete-contact", (_, id) => {
-    requirePermission("contacts.delete");
-    const bizId = getActiveBusinessId();
-    dbProxy.prepare("DELETE FROM contacts WHERE id = ? AND businessId = ?").run(id, bizId);
-    return { success: true };
-  });
-  electron.ipcMain.handle("get-budgets", (_, options) => {
-    const bizId = getActiveBusinessId();
-    let q = "SELECT * FROM budgets WHERE businessId = ?";
-    const params = [bizId];
-    if (options?.period) {
-      q += " AND period = ?";
-      params.push(options.period);
-    }
-    if (options?.month) {
-      q += " AND month = ?";
-      params.push(options.month);
-    }
-    if (options?.year) {
-      q += " AND year = ?";
-      params.push(options.year);
-    }
-    if (options?.budgetType) {
-      q += " AND budgetType = ?";
-      params.push(options.budgetType);
-    }
-    if (options?.category) {
-      q += " AND category = ?";
-      params.push(options.category);
-    }
-    q += " ORDER BY category ASC";
-    const budgets = dbProxy.prepare(q).all(...params);
-    const targetMonth = options?.month || String((/* @__PURE__ */ new Date()).getMonth() + 1).padStart(2, "0");
-    const targetYear = options?.year || String((/* @__PURE__ */ new Date()).getFullYear());
-    const startDate = `${targetYear}-${targetMonth}-01`;
-    const endDate = new Date(parseInt(targetYear), parseInt(targetMonth), 0).toISOString().split("T")[0];
-    const expenses = dbProxy.prepare(
-      "SELECT category, SUM(amount) as spent FROM expenses WHERE businessId = ? AND date >= ? AND date <= ? AND is_deleted = 0 GROUP BY category"
-    ).all(bizId, startDate, endDate);
-    const spentMap = {};
-    for (const e of expenses) {
-      spentMap[e.category] = e.spent;
-    }
-    return budgets.map((b) => ({
-      ...b,
-      spent: spentMap[b.category] || 0,
-      remaining: b.amount - (spentMap[b.category] || 0),
-      usagePercent: b.amount > 0 ? Math.round((spentMap[b.category] || 0) / b.amount * 100) : 0
-    }));
-  });
-  electron.ipcMain.handle("set-budget", (_, data) => {
-    requirePermission("budgets.manage");
-    const bizId = getActiveBusinessId();
-    const existing = dbProxy.prepare(
-      "SELECT id FROM budgets WHERE businessId = ? AND category = ? AND period = ? AND budgetType = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)"
-    ).get(bizId, data.category, data.period || "monthly", data.budgetType || "business", data.month || null, data.year || null);
-    if (existing) {
-      dbProxy.prepare("UPDATE budgets SET amount = ?, notes = ?, isRecurring = ?, referenceName = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(data.amount, data.notes || null, data.isRecurring ? 1 : 0, data.referenceName || null, existing.id);
-      return { success: true, id: existing.id };
-    }
-    const r = dbProxy.prepare(
-      "INSERT INTO budgets (businessId, category, amount, period, month, year, budgetType, referenceName, isRecurring, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(bizId, data.category, data.amount, data.period || "monthly", data.month || null, data.year || null, data.budgetType || "business", data.referenceName || null, data.isRecurring ? 1 : 0, data.notes || null);
-    return { success: true, id: r.lastInsertRowid };
-  });
-  electron.ipcMain.handle("delete-budget", (_, id) => {
-    requirePermission("budgets.manage");
-    const bizId = getActiveBusinessId();
-    return dbProxy.prepare("DELETE FROM budgets WHERE id = ? AND businessId = ?").run(id, bizId);
-  });
-  electron.ipcMain.handle("get-budget-adjustments", (_, budgetId) => {
-    return dbProxy.prepare("SELECT * FROM budget_adjustments WHERE budgetId = ? ORDER BY createdAt DESC").all(budgetId);
-  });
-  electron.ipcMain.handle("create-budget-adjustment", (_, data) => {
-    requirePermission("budgets.manage");
-    const bizId = getActiveBusinessId();
-    const r = dbProxy.prepare(
-      "INSERT INTO budget_adjustments (budgetId, businessId, previousAmount, newAmount, reason, status, requestedBy) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    ).run(data.budgetId, bizId, data.previousAmount, data.newAmount, data.reason, data.status || "pending", data.requestedBy || null);
-    return { success: true, id: r.lastInsertRowid };
-  });
-  electron.ipcMain.handle("approve-budget-adjustment", (_, id, approvedBy) => {
-    requirePermission("budgets.manage");
-    const adj = dbProxy.prepare("SELECT * FROM budget_adjustments WHERE id = ?").get(id);
-    if (!adj) return { success: false, error: "Adjustment not found" };
-    dbProxy.prepare("UPDATE budget_adjustments SET status = 'approved', approvedBy = ?, approvedAt = CURRENT_TIMESTAMP WHERE id = ?").run(approvedBy, id);
-    dbProxy.prepare("UPDATE budgets SET amount = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(adj.newAmount, adj.budgetId);
-    return { success: true };
-  });
-  electron.ipcMain.handle("duplicate-budget", (_, fromData, toMonth, toYear) => {
-    requirePermission("budgets.manage");
-    const bizId = getActiveBusinessId();
-    const sourceBudgets = dbProxy.prepare(
-      "SELECT * FROM budgets WHERE businessId = ? AND month = ? AND year = ?"
-    ).all(bizId, fromData.month, fromData.year);
-    let count = 0;
-    for (const b of sourceBudgets) {
-      const existing = dbProxy.prepare(
-        "SELECT id FROM budgets WHERE businessId = ? AND category = ? AND period = ? AND month = ? AND year = ? AND budgetType = ?"
-      ).get(bizId, b.category, b.period, toMonth, toYear, b.budgetType);
-      if (!existing) {
-        dbProxy.prepare(
-          "INSERT INTO budgets (businessId, category, amount, period, month, year, budgetType, referenceName, isRecurring, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        ).run(bizId, b.category, b.amount, b.period, toMonth, toYear, b.budgetType, b.referenceName, b.isRecurring, b.notes);
-        count++;
-      }
-    }
-    return { success: true, count };
-  });
-  electron.ipcMain.handle("get-budget-alerts", (_, options) => {
-    const bizId = getActiveBusinessId();
-    let q = "SELECT * FROM budget_alerts WHERE businessId = ?";
-    const params = [bizId];
-    if (options?.acknowledged !== void 0) {
-      q += " AND acknowledged = ?";
-      params.push(options.acknowledged ? 1 : 0);
-    }
-    if (options?.alertType) {
-      q += " AND alertType = ?";
-      params.push(options.alertType);
-    }
-    q += " ORDER BY createdAt DESC";
-    if (options?.limit) {
-      q += " LIMIT ?";
-      params.push(options.limit);
-    }
-    return dbProxy.prepare(q).all(...params);
-  });
-  electron.ipcMain.handle("acknowledge-budget-alert", (_, id) => {
-    requirePermission("budgets.manage");
-    dbProxy.prepare("UPDATE budget_alerts SET acknowledged = 1 WHERE id = ?").run(id);
-    return { success: true };
-  });
-  electron.ipcMain.handle("get-budget-report", (_, options) => {
-    const bizId = getActiveBusinessId();
-    const month = options?.month || String((/* @__PURE__ */ new Date()).getMonth() + 1).padStart(2, "0");
-    const year = options?.year || String((/* @__PURE__ */ new Date()).getFullYear());
-    const startDate = `${year}-${month}-01`;
-    const endDate = new Date(parseInt(year), parseInt(month), 0).toISOString().split("T")[0];
-    const budgets = dbProxy.prepare("SELECT * FROM budgets WHERE businessId = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)").all(bizId, month, year);
-    const expenses = dbProxy.prepare("SELECT category, SUM(amount) as spent FROM expenses WHERE businessId = ? AND date >= ? AND date <= ? AND is_deleted = 0 GROUP BY category").all(bizId, startDate, endDate);
-    const totalExpenses = dbProxy.prepare("SELECT SUM(amount) as total FROM expenses WHERE businessId = ? AND date >= ? AND date <= ? AND is_deleted = 0").get(bizId, startDate, endDate);
-    const totalPlanned = budgets.reduce((s, b) => s + b.amount, 0);
-    const totalSpent = totalExpenses?.total || 0;
-    const spentMap = {};
-    for (const e of expenses) {
-      spentMap[e.category] = e.spent;
-    }
-    const categories = budgets.map((b) => ({
-      category: b.category,
-      planned: b.amount,
-      actual: spentMap[b.category] || 0,
-      remaining: b.amount - (spentMap[b.category] || 0),
-      usagePercent: b.amount > 0 ? Math.round((spentMap[b.category] || 0) / b.amount * 100) : 0,
-      status: (spentMap[b.category] || 0) > b.amount ? "exceeded" : (spentMap[b.category] || 0) > b.amount * 0.8 ? "warning" : "ok"
-    }));
-    return {
-      month,
-      year,
-      totalPlanned,
-      totalSpent,
-      remaining: totalPlanned - totalSpent,
-      usagePercent: totalPlanned > 0 ? Math.round(totalSpent / totalPlanned * 100) : 0,
-      categories,
-      health: totalPlanned > 0 ? totalSpent > totalPlanned ? "critical" : totalSpent > totalPlanned * 0.8 ? "warning" : "healthy" : "healthy"
-    };
-  });
-  electron.ipcMain.handle("get-budget-forecast", (_, options) => {
-    const bizId = getActiveBusinessId();
-    const months = options?.months || 3;
-    const now2 = /* @__PURE__ */ new Date();
-    const forecasts = [];
-    const sixMonthsAgo = new Date(now2.getFullYear(), now2.getMonth() - 6, 1).toISOString().split("T")[0];
-    const avgSpending = dbProxy.prepare(
-      "SELECT category, AVG(monthly) as avgMonthly FROM (SELECT category, strftime('%Y-%m', date) as ym, SUM(amount) as monthly FROM expenses WHERE businessId = ? AND date >= ? AND is_deleted = 0 GROUP BY category, ym) GROUP BY category"
-    ).all(bizId, sixMonthsAgo);
-    for (let i = 1; i <= months; i++) {
-      const forecastMonth = now2.getMonth() + i;
-      const forecastYear = now2.getFullYear() + Math.floor(forecastMonth / 12);
-      const m = String(forecastMonth % 12 + 1).padStart(2, "0");
-      const y = String(forecastYear);
-      const budgets = dbProxy.prepare("SELECT SUM(amount) as total FROM budgets WHERE businessId = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)").get(bizId, m, y);
-      const estimatedSpend = avgSpending.reduce((s, a) => s + a.avgMonthly, 0);
-      forecasts.push({
-        month: m,
-        year: y,
-        label: `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][parseInt(m) - 1]} ${y}`,
-        planned: budgets?.total || 0,
-        estimated: Math.round(estimatedSpend)
-      });
-    }
-    return forecasts;
+    return dbProxy.prepare("DELETE FROM draft_sales WHERE id = ? AND businessId = ?").run(id2, bizId);
   });
   electron.ipcMain.handle("get-supplier-price-checks", (_, supplierId) => {
     const bizId = getActiveBusinessId();
@@ -11489,13 +28039,13 @@ function registerIPCHandlers() {
       LEFT JOIN suppliers s ON spc.supplierId = s.id 
       LEFT JOIN items i ON spc.itemId = i.id 
       WHERE spc.businessId = ?`;
-    const params = [bizId];
+    const params2 = [bizId];
     if (supplierId) {
       q += " AND spc.supplierId = ?";
-      params.push(supplierId);
+      params2.push(supplierId);
     }
     q += " ORDER BY spc.nextCheck ASC";
-    return dbProxy.prepare(q).all(...params);
+    return dbProxy.prepare(q).all(...params2);
   });
   electron.ipcMain.handle("save-supplier-price-check", (_, data) => {
     requirePermission("purchases.create");
@@ -11508,10 +28058,10 @@ function registerIPCHandlers() {
     const r = dbProxy.prepare("INSERT INTO supplier_price_checks (businessId, supplierId, itemId, frequency, lastChecked, nextCheck, notes, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(bizId, data.supplierId, data.itemId || null, data.frequency || "weekly", data.lastChecked || null, nextCheck, data.notes || null, data.active ?? 1);
     return { success: true, id: r.lastInsertRowid };
   });
-  electron.ipcMain.handle("delete-supplier-price-check", (_, id) => {
+  electron.ipcMain.handle("delete-supplier-price-check", (_, id2) => {
     requirePermission("purchases.create");
     const bizId = getActiveBusinessId();
-    return dbProxy.prepare("DELETE FROM supplier_price_checks WHERE id = ? AND businessId = ?").run(id, bizId);
+    return dbProxy.prepare("DELETE FROM supplier_price_checks WHERE id = ? AND businessId = ?").run(id2, bizId);
   });
   electron.ipcMain.handle("get-quiet-hours", () => {
     const bizId = getActiveBusinessId();
@@ -11548,6 +28098,7 @@ function registerIPCHandlers() {
         const paid = sale.paidAmount || sale.totalPrice;
         const change = sale.paymentMethod === "Cash" && sale.paymentStatus !== "Debt" && paid > sale.totalPrice ? paid - sale.totalPrice : 0;
         const commands = buildReceiptCommands({
+          paperWidth: cfg2.paperWidth,
           lines: [{ name: sale.itemName || "Item", quantity: sale.quantity, unit: sale.unit || "pcs", unitPrice, total: sale.totalPrice }],
           subtotal: sale.totalPrice + (sale.discount || 0) - (sale.vat || 0),
           discount: sale.discount || 0,
@@ -11638,9 +28189,51 @@ function registerIPCHandlers() {
       return { success: false, error: e.message };
     }
   });
+  electron.ipcMain.handle("barcode-png", async (_e, value) => {
+    try {
+      const { barcodePng: barcodePng2 } = await Promise.resolve().then(() => require("./index-DFBiSeBI.js"));
+      const png = barcodePng2(value);
+      if (!png) return { success: false, error: "Cannot encode barcode value" };
+      const { dialog } = await import("electron");
+      const { BrowserWindow: BrowserWindow2 } = await import("electron");
+      const win = BrowserWindow2.getAllWindows()[0];
+      const res = await dialog.showSaveDialog(win, {
+        defaultPath: `${value.replace(/[^0-9A-Za-z\-]/g, "_")}.png`,
+        filters: [{ name: "PNG image", extensions: ["png"] }]
+      });
+      if (res.canceled || !res.filePath) return { success: false, canceled: true };
+      const fs2 = await import("fs");
+      fs2.writeFileSync(res.filePath, Buffer.from(png));
+      return { success: true, path: res.filePath };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+  electron.ipcMain.handle("barcode-png-dataurl", async (_e, value) => {
+    try {
+      const { barcodePng: barcodePng2 } = await Promise.resolve().then(() => require("./index-DFBiSeBI.js"));
+      const png = barcodePng2(value);
+      if (!png) return { success: false, error: "Cannot encode barcode value" };
+      return { success: true, dataUrl: "data:image/png;base64," + Buffer.from(png).toString("base64") };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+  electron.ipcMain.handle("simulate-scan", async (_e, code) => {
+    try {
+      const value = code && code.trim() ? code.trim() : String(Math.floor(1e11 + Math.random() * 899999999999));
+      const win = (await import("electron")).BrowserWindow.getAllWindows()[0];
+      win?.webContents.executeJavaScript(
+        `window.dispatchEvent(new CustomEvent('shega:barcode-scan', { detail: ${JSON.stringify(value)} }))`
+      );
+      return { success: true, value };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
   electron.ipcMain.handle("print-test-page", async () => {
     try {
-      await printRaw(buildTestPageCommands());
+      await printRaw(buildTestPageCommands(getPrinterConfig().paperWidth));
       return { success: true };
     } catch (e) {
       return { success: false, error: e.message };
@@ -11702,43 +28295,6 @@ function registerIPCHandlers() {
     const rows = dbProxy.prepare("SELECT device_id, entity, entity_uuid, op, detail, created_at FROM sync_log ORDER BY id DESC LIMIT ?").all(limit);
     return rows;
   });
-  electron.ipcMain.handle("cloud:status", () => getCloudStatus());
-  electron.ipcMain.handle("cloud:sync", async () => {
-    return syncToCloud();
-  });
-  electron.ipcMain.handle("cloud:save-config", (_e, url, key) => {
-    const urlStr = typeof url === "string" ? url.trim() : "";
-    const keyStr = typeof key === "string" ? key.trim() : "";
-    let parsed;
-    try {
-      parsed = new URL(urlStr);
-    } catch {
-      return { ok: false, error: "invalid cloud URL", configured: false };
-    }
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-      return { ok: false, error: "cloud URL must be http(s)", configured: false };
-    }
-    if (urlStr.length > 512 || keyStr.length > 256) {
-      return { ok: false, error: "cloud config too long", configured: false };
-    }
-    if (!keyStr) {
-      return { ok: false, error: "device key is required", configured: false };
-    }
-    dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_url', ?)").run(urlStr);
-    dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_device_key', ?)").run(keyStr);
-    return { ok: true, configured: true };
-  });
-  electron.ipcMain.handle("cloud:set-enabled", (_e, enabled) => {
-    if (typeof enabled !== "boolean") return { ok: false, error: "expected boolean" };
-    dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_enabled', ?)").run(String(enabled));
-    return { ok: true, enabled };
-  });
-  electron.ipcMain.handle("cloud:self-status", async () => {
-    await refreshCloudStatus();
-    const status = dbProxy.prepare("SELECT value FROM settings WHERE key = 'cloud_device_status'").get()?.value ?? null;
-    const blocked = dbProxy.prepare("SELECT value FROM settings WHERE key = 'cloud_device_blocked'").get()?.value === "true";
-    return { status, blocked };
-  });
   const isDevBackup = !electron.app.isPackaged;
   const dbDir2 = isDevBackup ? path.join(process.cwd(), "db") : path.join(electron.app.getPath("userData"), "db");
   const backupDir = path.join(dbDir2, "backups");
@@ -11753,8 +28309,8 @@ function registerIPCHandlers() {
       const backupName = `shega-backup-${bizName}-${timestamp}.db`;
       const backupPath = path.join(backupDir, backupName);
       dbProxy.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
-      const size = fs.statSync(backupPath).size;
-      return { success: true, name: backupName, size, path: backupPath };
+      const size2 = fs.statSync(backupPath).size;
+      return { success: true, name: backupName, size: size2, path: backupPath };
     } catch (e) {
       return { success: false, error: e.message };
     }
@@ -11832,19 +28388,19 @@ function registerIPCHandlers() {
     const bizId = getActiveBusinessId();
     const limit = options.limit ?? 100;
     const offset = options.offset ?? 0;
-    const params = [bizId];
+    const params2 = [bizId];
     let where = "s.businessId = ?";
     if (options.supplierId) {
       where += " AND sp.supplierId = ?";
-      params.push(options.supplierId);
+      params2.push(options.supplierId);
     }
     if (options.startDate) {
       where += " AND sp.purchaseDate >= ?";
-      params.push(options.startDate);
+      params2.push(options.startDate);
     }
     if (options.endDate) {
       where += " AND sp.purchaseDate <= ?";
-      params.push(options.endDate);
+      params2.push(options.endDate);
     }
     const rows = dbProxy.prepare(`
       SELECT sp.id, sp.purchaseNumber, sp.purchaseDate, sp.totalAmount, sp.paidAmount,
@@ -11856,8 +28412,8 @@ function registerIPCHandlers() {
       WHERE ${where} AND sp.status != 'cancelled'
       ORDER BY sp.purchaseDate DESC
       LIMIT ? OFFSET ?
-    `).all(...params, limit, offset);
-    const total = dbProxy.prepare(`SELECT COUNT(*) AS c FROM supplier_purchases sp JOIN suppliers s ON s.id = sp.supplierId WHERE ${where} AND sp.status != 'cancelled'`).get(...params).c;
+    `).all(...params2, limit, offset);
+    const total = dbProxy.prepare(`SELECT COUNT(*) AS c FROM supplier_purchases sp JOIN suppliers s ON s.id = sp.supplierId WHERE ${where} AND sp.status != 'cancelled'`).get(...params2).c;
     const payments = dbProxy.prepare(`
       SELECT pay.id, pay.paymentDate, pay.amount, pay.paymentMethod, pay.referenceNumber, pay.notes,
         sp.purchaseNumber, s.supplierName
@@ -12010,88 +28566,36 @@ function registerIPCHandlers() {
     insertAuditLog("reverse_supplier_payment", "supplier_payment", data.paymentId, "reversalId", null, String(data.paymentId), `Supplier payment #${data.paymentId} reversed by ${currentUserName || "unknown"}. Reason: ${data.reason}`);
     return { success: true };
   });
-  electron.ipcMain.handle("reverse-adjustment", async (event, data) => {
-    requirePermission("adjustments.reverse");
-    if (!await gateSensitiveAction(event.sender, { context: `Reverse adjustment #${data.adjustmentId}` })) {
-      throw new Error("Manager approval required — action not executed");
-    }
-    const adjustment = dbProxy.prepare("SELECT * FROM adjustments WHERE id = ?").get(data.adjustmentId);
-    if (!adjustment) throw new Error("Adjustment not found");
-    if (adjustment.reversalId) throw new Error("Adjustment has already been reversed");
-    const bizId = getActiveBusinessId();
-    const transaction = dbProxy.transaction(() => {
-      dbProxy.prepare("UPDATE adjustments SET reversalId = id, reversalReason = ?, reversedBy = ?, reversalDate = CURRENT_TIMESTAMP WHERE id = ?").run(data.reason, currentUserName || "unknown", data.adjustmentId);
-      let compensationType = adjustment.type;
-      if (adjustment.type === "damage") compensationType = "add_stock";
-      else if (adjustment.type === "loss") compensationType = "add_stock";
-      else if (adjustment.type === "add_stock") compensationType = "damage";
-      else if (adjustment.type === "price_increase") compensationType = "price_decrease";
-      else if (adjustment.type === "price_decrease") compensationType = "price_increase";
-      dbProxy.prepare("INSERT INTO adjustments (businessId, itemId, type, oldValue, newValue, quantity, unitType, reason, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-        bizId,
-        adjustment.itemId,
-        compensationType,
-        adjustment.newValue,
-        adjustment.oldValue,
-        adjustment.quantity,
-        adjustment.unitType,
-        `Reversal of adjustment #${data.adjustmentId}: ${data.reason}`,
-        (/* @__PURE__ */ new Date()).toISOString().split("T")[0]
-      );
-      if (["damage", "loss", "add_stock"].includes(adjustment.type) && adjustment.quantity) {
-        const restoreQty = adjustment.type === "damage" || adjustment.type === "loss" ? adjustment.quantity : -adjustment.quantity;
-        dbProxy.prepare("UPDATE items SET totalBaseQuantity = totalBaseQuantity + ? WHERE id = ?").run(restoreQty, adjustment.itemId);
-        const defWhId = getDefaultWarehouseId();
-        const whRow = dbProxy.prepare("SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?").get(defWhId, adjustment.itemId);
-        if (whRow) {
-          dbProxy.prepare("UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").run(restoreQty, whRow.id);
-        } else if (restoreQty > 0) {
-          dbProxy.prepare("INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)").run(defWhId, adjustment.itemId, restoreQty);
-        }
-        dbProxy.prepare("INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)").run(defWhId, adjustment.itemId, `adj_reversal`, Math.abs(restoreQty), "adjustment", `Reversal of adjustment #${data.adjustmentId}: ${data.reason}`);
-      }
-      if (adjustment.type === "price_increase" || adjustment.type === "price_decrease") {
-        if (adjustment.unitType === "base") {
-          dbProxy.prepare("UPDATE items SET baseSellingPrice = ? WHERE id = ?").run(adjustment.oldValue, adjustment.itemId);
-        } else {
-          dbProxy.prepare("UPDATE items SET packSellingPrice = ? WHERE id = ?").run(adjustment.oldValue, adjustment.itemId);
-        }
-      }
-    });
-    transaction();
-    insertAuditLog("reverse_adjustment", "adjustment", data.adjustmentId, "reversalId", null, String(data.adjustmentId), `Adjustment #${data.adjustmentId} reversed by ${currentUserName || "unknown"}. Reason: ${data.reason}`);
-    return { success: true };
-  });
   electron.ipcMain.handle("get-audit-logs", (_, options) => {
     requirePermission("audit.view");
     let query = "SELECT * FROM audit_logs WHERE businessId = ?";
-    const params = [getActiveBusinessId()];
+    const params2 = [getActiveBusinessId()];
     if (options?.entityType) {
       query += " AND entityType = ?";
-      params.push(options.entityType);
+      params2.push(options.entityType);
     }
     if (options?.entityId) {
       query += " AND entityId = ?";
-      params.push(options.entityId);
+      params2.push(options.entityId);
     }
     if (options?.action) {
       query += " AND action = ?";
-      params.push(options.action);
+      params2.push(options.action);
     }
     if (options?.fromDate) {
       query += " AND createdAt >= ?";
-      params.push(options.fromDate + " 00:00:00");
+      params2.push(options.fromDate + " 00:00:00");
     }
     if (options?.toDate) {
       query += " AND createdAt <= ?";
-      params.push(options.toDate + " 23:59:59");
+      params2.push(options.toDate + " 23:59:59");
     }
     query += " ORDER BY createdAt DESC";
     const listLimit = options?.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options?.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("verify-audit-chain", () => {
     requirePermission("audit.view");
@@ -12137,17 +28641,17 @@ function registerIPCHandlers() {
     requirePermission("audit.view");
     const bizId = getActiveBusinessId();
     let query = `SELECT s.*, i.name as itemName FROM sales s LEFT JOIN items i ON s.itemId = i.id WHERE s.businessId = ? AND s.status = 'Voided'`;
-    const params = [bizId];
+    const params2 = [bizId];
     if (options?.fromDate) {
       query += " AND s.voidedAt >= ?";
-      params.push(options.fromDate + " 00:00:00");
+      params2.push(options.fromDate + " 00:00:00");
     }
     if (options?.toDate) {
       query += " AND s.voidedAt <= ?";
-      params.push(options.toDate + " 23:59:59");
+      params2.push(options.toDate + " 23:59:59");
     }
     query += " ORDER BY s.voidedAt DESC";
-    return dbProxy.prepare(query).all(...params);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("reverse-audit-log-entry", (_, data) => {
     requirePermission("audit.view");
@@ -12201,44 +28705,44 @@ function registerIPCHandlers() {
     requirePermission("orders.view");
     const bizId = getActiveBusinessId();
     let query = "SELECT * FROM orders WHERE businessId = ? AND is_deleted = 0";
-    const params = [bizId];
+    const params2 = [bizId];
     if (options.search) {
       query += " AND (LOWER(orderNumber) LIKE LOWER(?) OR LOWER(customerName) LIKE LOWER(?) OR LOWER(customerPhone) LIKE LOWER(?))";
-      params.push(`%${options.search}%`, `%${options.search}%`, `%${options.search}%`);
+      params2.push(`%${options.search}%`, `%${options.search}%`, `%${options.search}%`);
     }
     if (options.status && options.status !== "All") {
       query += " AND status = ?";
-      params.push(options.status);
+      params2.push(options.status);
     }
     if (options.startDate && options.endDate) {
       if (options.startDate === options.endDate) {
         query += " AND createdAt >= ? AND createdAt < ?";
-        params.push(options.startDate, options.startDate + "T23:59:59.999Z");
+        params2.push(options.startDate, options.startDate + "T23:59:59.999Z");
       } else {
         query += " AND createdAt >= ? AND createdAt <= ?";
-        params.push(options.startDate, options.endDate + "T23:59:59.999Z");
+        params2.push(options.startDate, options.endDate + "T23:59:59.999Z");
       }
     } else if (options.startDate) {
       query += " AND createdAt >= ?";
-      params.push(options.startDate);
+      params2.push(options.startDate);
     } else if (options.endDate) {
       query += " AND createdAt <= ?";
-      params.push(options.endDate + "T23:59:59.999Z");
+      params2.push(options.endDate + "T23:59:59.999Z");
     }
     query += " ORDER BY createdAt DESC";
     const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
     const offset = options.offset ?? 0;
     query += " LIMIT ? OFFSET ?";
-    params.push(listLimit, offset);
-    return dbProxy.prepare(query).all(...params);
+    params2.push(listLimit, offset);
+    return dbProxy.prepare(query).all(...params2);
   });
-  electron.ipcMain.handle("get-order", (_, id) => {
+  electron.ipcMain.handle("get-order", (_, id2) => {
     requirePermission("orders.view");
     const bizId = getActiveBusinessId();
-    const order = dbProxy.prepare("SELECT * FROM orders WHERE id = ? AND businessId = ? AND is_deleted = 0").get(id, bizId);
+    const order = dbProxy.prepare("SELECT * FROM orders WHERE id = ? AND businessId = ? AND is_deleted = 0").get(id2, bizId);
     if (!order) return null;
-    const items = dbProxy.prepare("SELECT * FROM order_items WHERE orderId = ?").all(id);
-    const history = dbProxy.prepare("SELECT * FROM order_history WHERE orderId = ? ORDER BY createdAt ASC").all(id);
+    const items = dbProxy.prepare("SELECT * FROM order_items WHERE orderId = ?").all(id2);
+    const history = dbProxy.prepare("SELECT * FROM order_history WHERE orderId = ? ORDER BY createdAt ASC").all(id2);
     return { ...order, items, history };
   });
   electron.ipcMain.handle("insert-order", (_, data) => {
@@ -12627,7 +29131,6 @@ function registerIPCHandlers() {
     const thirtyDaysAgo = new Date(now2.getTime() - 30 * 864e5).toISOString().split("T")[0];
     const sixtyDaysAgo = new Date(now2.getTime() - 60 * 864e5).toISOString().split("T")[0];
     const ninetyDaysAgo = new Date(now2.getTime() - 90 * 864e5).toISOString().split("T")[0];
-    const monthStart = `${now2.getFullYear()}-${String(now2.getMonth() + 1).padStart(2, "0")}-01`;
     const factors = [];
     const recommendations = [];
     try {
@@ -12678,26 +29181,6 @@ function registerIPCHandlers() {
       console.error("[Search]", e);
     }
     try {
-      const totalExpenses = dbProxy.prepare(
-        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND date <= ? AND businessId = ?"
-      ).get(thirtyDaysAgo, today, bizId);
-      const last30Rev = dbProxy.prepare(
-        "SELECT COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) >= ? AND DATE(createdAt) <= ? AND businessId = ?"
-      ).get(thirtyDaysAgo, today, bizId);
-      const expenseRatio = last30Rev.revenue > 0 ? totalExpenses.total / last30Rev.revenue * 100 : 0;
-      let expenseScore = Math.min(100, Math.max(0, 100 - expenseRatio * 2));
-      factors.push({
-        name: "Expense Control",
-        score: Math.round(expenseScore),
-        weight: 15,
-        status: expenseRatio <= 30 ? "good" : expenseRatio <= 60 ? "warning" : "critical",
-        detail: `Expenses are ${expenseRatio.toFixed(1)}% of revenue (ETB ${(totalExpenses.total || 0).toLocaleString()})`
-      });
-      if (expenseRatio > 50) recommendations.push("Expenses are eating into profits. Review and cut non-essential spending.");
-    } catch (e) {
-      console.error("[Search]", e);
-    }
-    try {
       const totalItems = dbProxy.prepare("SELECT COUNT(*) as count FROM items WHERE businessId = ? AND is_deleted = 0").get(bizId);
       const lowStock = dbProxy.prepare("SELECT COUNT(*) as count FROM items WHERE totalBaseQuantity < 10 AND businessId = ? AND is_deleted = 0").get(bizId);
       const outOfStock = dbProxy.prepare("SELECT COUNT(*) as count FROM items WHERE totalBaseQuantity <= 0 AND businessId = ? AND is_deleted = 0").get(bizId);
@@ -12737,29 +29220,6 @@ function registerIPCHandlers() {
         detail: `${slowMoving.count} items with no sales in 90 days, ${deadStock.count} with no sales in 60 days`
       });
       if (slowMoving.count > 5) recommendations.push("You have slow-moving inventory. Consider discounts or bundles to clear stagnant stock.");
-    } catch (e) {
-      console.error("[Search]", e);
-    }
-    try {
-      const budgets = dbProxy.prepare("SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total FROM budgets WHERE businessId = ? AND year = ? AND (month = ? OR month IS NULL)").get(bizId, String(now2.getFullYear()), String(now2.getMonth() + 1).padStart(2, "0"));
-      if (budgets.count > 0) {
-        const expenses = dbProxy.prepare(
-          "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE businessId = ? AND date >= ? AND date <= ?"
-        ).get(bizId, monthStart, today);
-        const budgetUsage = budgets.total > 0 ? expenses.total / budgets.total * 100 : 0;
-        let budgetScore = budgetUsage <= 100 ? Math.round(100 - Math.abs(budgetUsage - 50) * 0.5) : Math.max(0, Math.round(100 - (budgetUsage - 100) * 1.5));
-        factors.push({
-          name: "Budget Adherence",
-          score: budgetScore,
-          weight: 10,
-          status: budgetUsage <= 100 ? "good" : "critical",
-          detail: `${budgetUsage.toFixed(1)}% of budget used (ETB ${(expenses.total || 0).toLocaleString()} / ETB ${(budgets.total || 0).toLocaleString()})`
-        });
-        if (budgetUsage > 100) recommendations.push("You have exceeded your budget. Review spending and adjust budget allocations.");
-      } else {
-        factors.push({ name: "Budget Adherence", score: 50, weight: 10, status: "warning", detail: "No budgets set for this period. Set budgets to track spending." });
-        recommendations.push("Set up monthly budgets to better track and control your expenses.");
-      }
     } catch (e) {
       console.error("[Search]", e);
     }
@@ -12822,8 +29282,8 @@ function registerIPCHandlers() {
     const sevenDaysAgo = new Date(now2.getTime() - 7 * 864e5).toISOString().split("T")[0];
     const thirtyDaysAgo = new Date(now2.getTime() - 30 * 864e5).toISOString().split("T")[0];
     const ninetyDaysAgo = new Date(now2.getTime() - 90 * 864e5).toISOString().split("T")[0];
-    const sixtyDaysAgo = new Date(now2.getTime() - 60 * 864e5).toISOString().split("T")[0];
-    const monthStart = `${now2.getFullYear()}-${String(now2.getMonth() + 1).padStart(2, "0")}-01`;
+    new Date(now2.getTime() - 60 * 864e5).toISOString().split("T")[0];
+    `${now2.getFullYear()}-${String(now2.getMonth() + 1).padStart(2, "0")}-01`;
     const insights = [];
     try {
       const lowItems = dbProxy.prepare(`
@@ -12930,53 +29390,6 @@ function registerIPCHandlers() {
           severity: "info",
           title: "Overstocked Items",
           message: `${overstocked.map((i) => `${i.name} (${i.totalBaseQuantity} ${i.baseUnit})`).join(", ")}. Consider reducing future orders.`
-        });
-      }
-    } catch (e) {
-      console.error("[Search]", e);
-    }
-    try {
-      const currentExpenses = dbProxy.prepare(
-        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND businessId = ?"
-      ).get(thirtyDaysAgo, bizId);
-      const prevExpenses = dbProxy.prepare(
-        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND date < ? AND businessId = ?"
-      ).get(sixtyDaysAgo, thirtyDaysAgo, bizId);
-      if (prevExpenses.total > 0) {
-        const change = (currentExpenses.total - prevExpenses.total) / prevExpenses.total * 100;
-        if (change > 30) {
-          const topCategory = dbProxy.prepare(`
-            SELECT category, SUM(amount) as total FROM expenses
-            WHERE date >= ? AND businessId = ? GROUP BY category ORDER BY total DESC LIMIT 1
-          `).get(thirtyDaysAgo, bizId);
-          insights.push({
-            type: "expense_increase",
-            severity: "warning",
-            title: "Expenses Up Significantly",
-            message: `Expenses increased ${change.toFixed(0)}% vs last month${topCategory ? `. Top category: ${topCategory.category} (ETB ${(topCategory.total || 0).toLocaleString()})` : ""}. Review for potential savings.`,
-            action: { label: "View Expenses", route: "/expenses" }
-          });
-        }
-      }
-    } catch (e) {
-      console.error("[Search]", e);
-    }
-    try {
-      const overrunBudgets = dbProxy.prepare(`
-        SELECT b.category, b.amount as budgetAmount,
-          COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) as spent
-        FROM budgets b
-        WHERE b.businessId = ? AND b.month = ? AND b.year = ?
-          AND COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) > b.amount
-        ORDER BY (COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) - b.amount) DESC LIMIT 3
-      `).all(bizId, monthStart, today, bizId, String(now2.getMonth() + 1).padStart(2, "0"), String(now2.getFullYear()), bizId, monthStart, today, bizId, monthStart, today);
-      if (overrunBudgets.length > 0) {
-        insights.push({
-          type: "budget_overrun",
-          severity: "critical",
-          title: "Budget Overruns Detected",
-          message: overrunBudgets.map((b) => `${b.category}: ETB ${(b.spent || 0).toLocaleString()} / ETB ${(b.budgetAmount || 0).toLocaleString()}`).join(" · "),
-          action: { label: "View Budgets", route: "/budgets" }
         });
       }
     } catch (e) {
@@ -13226,24 +29639,24 @@ function registerIPCHandlers() {
   electron.ipcMain.handle("get-payment-transactions", (_, options) => {
     const bizId = getActiveBusinessId();
     let query = "SELECT * FROM payment_transactions WHERE businessId = ?";
-    const params = [bizId];
+    const params2 = [bizId];
     if (options?.status) {
       query += " AND status = ?";
-      params.push(options.status);
+      params2.push(options.status);
     }
     query += " ORDER BY createdAt DESC";
-    return dbProxy.prepare(query).all(...params);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("get-all-payment-transactions", (_, options) => {
     requirePermission("settings");
     let query = "SELECT pt.*, b.businessName as bizName FROM payment_transactions pt LEFT JOIN businesses b ON pt.businessId = b.id";
-    const params = [];
+    const params2 = [];
     if (options?.status) {
       query += " WHERE pt.status = ?";
-      params.push(options.status);
+      params2.push(options.status);
     }
     query += " ORDER BY pt.createdAt DESC";
-    return dbProxy.prepare(query).all(...params);
+    return dbProxy.prepare(query).all(...params2);
   });
   electron.ipcMain.handle("approve-payment", (_, data) => {
     requirePermission("settings");
@@ -13405,12 +29818,45 @@ function registerIPCHandlers() {
     fixTx();
     return { fixed: fixed.length, totalInconsistent: result.inconsistent.length };
   });
+  electron.ipcMain.handle("pos:products", () => {
+    requirePermission("sales.create");
+    const bizId = getActiveBusinessId();
+    return dbProxy.prepare(`
+      SELECT i.*, c.name as categoryName
+      FROM items i
+      LEFT JOIN categories c ON i.categoryId = c.id
+      WHERE i.businessId = ? AND i.is_deleted = 0 AND (i.isActive = 1 OR i.isActive IS NULL)
+      ORDER BY i.name COLLATE NOCASE
+    `).all(bizId);
+  });
+  electron.ipcMain.handle("pos:categories", () => {
+    requirePermission("sales.create");
+    const bizId = getActiveBusinessId();
+    return dbProxy.prepare(`
+      SELECT DISTINCT c.id, c.name, c.icon
+      FROM items i
+      LEFT JOIN categories c ON i.categoryId = c.id
+      WHERE i.businessId = ? AND i.is_deleted = 0 AND i.categoryId IS NOT NULL
+      ORDER BY c.name COLLATE NOCASE
+    `).all(bizId);
+  });
+  electron.ipcMain.handle("pos:shift-by-register", () => {
+    const bizId = getActiveBusinessId();
+    return dbProxy.prepare(`
+      SELECT r.id, r.name, s.id as shiftId, s.status, s.openedAt, s.openingFloat, s.expectedCash,
+        s.cashierId
+      FROM registers r
+      LEFT JOIN shifts s ON s.registerId = r.id AND s.status IN ('open', 'mid_audit', 'blind_count')
+      WHERE r.businessId = ? AND r.isActive = 1 AND r.is_deleted = 0
+      ORDER BY r.name COLLATE NOCASE
+    `).all(bizId);
+  });
   electron.ipcMain.handle("shift:open", (_, data) => {
     const bizId = getActiveBusinessId();
     return openShift(bizId, data.registerId, data.cashierId, data.openingFloat);
   });
   electron.ipcMain.handle("shift:close", (_, shiftId, data) => {
-    return closeShift$1(shiftId, data.closedBy, data.closingCash, data.notes);
+    return closeShift$1(shiftId, data.closingCash, data.cashDrawerCounts || [], data.notes);
   });
   electron.ipcMain.handle("shift:mid-audit", (_, shiftId, countedCash, notes) => {
     return recordMidShiftAudit(shiftId, countedCash, notes);
@@ -13424,6 +29870,9 @@ function registerIPCHandlers() {
   electron.ipcMain.handle("shift:by-id", (_, shiftId) => {
     return getShiftById$1(shiftId);
   });
+  electron.ipcMain.handle("shift:last-by-cashier", (_, cashierId) => {
+    return getLastShiftByCashier(cashierId);
+  });
   electron.ipcMain.handle("shift:transactions", (_, shiftId) => {
     return getShiftTransactions(shiftId);
   });
@@ -13431,7 +29880,7 @@ function registerIPCHandlers() {
     return generateShiftReport(shiftId);
   });
   electron.ipcMain.handle("shift:record-transaction", (_, data) => {
-    return addShiftTransaction(data.shiftId, data.type, data.amount, data.saleId, data.paymentMethod, data.notes);
+    return addShiftTransaction(data.shiftId, data.saleId ?? null, data.paymentMethod, data.amount);
   });
   electron.ipcMain.handle("reports:x-report", (_, registerId) => {
     const bizId = getActiveBusinessId();
@@ -13543,6 +29992,7 @@ function registerIPCHandlers() {
   registerBusinessDomainHandlers({
     getActiveBusinessId,
     isOwnerOrSuper: () => currentUserRole === "super_admin" || currentUserRole === "owner",
+    getUserRole: () => currentUserRole === "super_admin" ? "owner" : currentUserRole ?? "cashier",
     buildPermissionContext: () => {
       const canApprove = currentUserRole === "super_admin" || currentUserRole === "owner" || (currentUserPermissions ?? []).includes("*");
       if (currentUserSharedPerms) {
@@ -13698,13 +30148,13 @@ function rowToRecord(row) {
 function submitDeviceJoinRequest(req) {
   const existing = dbProxy.prepare("SELECT * FROM device_requests WHERE business_id = ? AND joiner_device_id = ? AND status = ?").get(req.businessId, req.joinerDeviceId, "pending");
   if (existing) return rowToRecord(existing);
-  const id = crypto$1.randomBytes(12).toString("hex");
+  const id2 = crypto$1.randomBytes(12).toString("hex");
   dbProxy.prepare(
     `INSERT INTO device_requests
        (id, business_id, code, joiner_device_id, joiner_name, joiner_model, joiner_user, role, platform, status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
   ).run(
-    id,
+    id2,
     req.businessId,
     req.code ?? null,
     req.joinerDeviceId,
@@ -13715,7 +30165,7 @@ function submitDeviceJoinRequest(req) {
     req.platform ?? "mobile",
     now()
   );
-  return rowToRecord(dbProxy.prepare("SELECT * FROM device_requests WHERE id = ?").get(id));
+  return rowToRecord(dbProxy.prepare("SELECT * FROM device_requests WHERE id = ?").get(id2));
 }
 function listDeviceJoinRequests(businessId, limit = 100) {
   const rows = dbProxy.prepare(
@@ -13775,14 +30225,126 @@ function resolveInvitation(code) {
     expiresAt: row.expires_at
   };
 }
+class PeripheralHub extends events.EventEmitter {
+  /** deviceId -> client */
+  phones = /* @__PURE__ */ new Map();
+  /** outstanding request ids we still expect answers for */
+  pending = /* @__PURE__ */ new Map();
+  /** last reported companion mode per phone ('idle' | 'scanner' | 'camera') */
+  modes = /* @__PURE__ */ new Map();
+  gcTimer = null;
+  constructor() {
+    super();
+    this.gcTimer = setInterval(() => this.gc(), 3e4);
+  }
+  gc() {
+    const now2 = Date.now();
+    for (const [id2, p] of this.pending) {
+      if (now2 - p.at > 12e4) this.pending.delete(id2);
+    }
+  }
+  /** Handle an incoming PERIPHERAL_REGISTER from a phone. */
+  register(socketClientId, payload) {
+    const { deviceId, name, model, kinds, platform } = payload || {};
+    if (!deviceId) return null;
+    const client = {
+      deviceId,
+      name: name || model || "Phone",
+      model: model || "",
+      info: {
+        deviceId,
+        name: name || model || "Phone",
+        model,
+        platform: platform || "mobile",
+        kinds: Array.isArray(kinds) && kinds.length ? kinds : ["scanner", "camera"]
+      },
+      registeredAt: Date.now(),
+      socketClientId
+    };
+    this.phones.set(deviceId, client);
+    logger.info(`[peripheral] phone registered: ${client.name} (${deviceId}) kinds=${client.info.kinds.join(",")}`);
+    this.emit("peripheralRegistered", client);
+    return client;
+  }
+  /** Socket dropped — forget any phone that lived on it. */
+  unregisterBySocket(socketClientId) {
+    for (const [id2, c] of this.phones) {
+      if (c.socketClientId === socketClientId) {
+        this.phones.delete(id2);
+        this.emit("peripheralDisconnected", id2);
+        logger.info(`[peripheral] phone disconnected: ${c.name}`);
+      }
+    }
+  }
+  list() {
+    return Array.from(this.phones.values());
+  }
+  /** Record a companion status report from a phone. */
+  ingestStatus(deviceId, payload) {
+    const mode = String(payload?.mode || "idle");
+    this.modes.set(deviceId, mode);
+    this.emit("status", { deviceId, mode, busy: !!payload?.busy });
+  }
+  /** Last known companion mode of a phone ('idle' if never reported). */
+  getMode(deviceId) {
+    return this.modes.get(deviceId) || "idle";
+  }
+  get(deviceId) {
+    return this.phones.get(deviceId);
+  }
+  /** True when this payload completes a request we issued. */
+  trackRequest(kind) {
+    const requestId = crypto$1.randomBytes(8).toString("hex");
+    this.pending.set(requestId, { kind, at: Date.now() });
+    return requestId;
+  }
+  consumeRequest(requestId, kind) {
+    const p = this.pending.get(requestId);
+    if (!p || p.kind !== kind) return false;
+    this.pending.delete(requestId);
+    return true;
+  }
+  /** Ingest a result message coming back from a phone. Returns true if accepted. */
+  ingestResult(msgType, payload) {
+    if (msgType === PERIPHERAL_MSG.SCAN_RESULT) {
+      const res = payload;
+      if (!res?.requestId || !res?.barcode) return false;
+      if (!this.consumeRequest(res.requestId, "scan")) {
+        logger.warn(`[peripheral] stale scan result ${res.requestId}`);
+        return false;
+      }
+      this.emit("scanResult", res);
+      return true;
+    }
+    if (msgType === PERIPHERAL_MSG.CAPTURE_RESULT) {
+      const res = payload;
+      if (!res?.requestId) return false;
+      if (!this.consumeRequest(res.requestId, "capture")) {
+        logger.warn(`[peripheral] stale capture result ${res.requestId}`);
+        return false;
+      }
+      this.emit("captureResult", res);
+      return true;
+    }
+    return false;
+  }
+}
+const peripheralHub = new PeripheralHub();
+function buildScanRequest(requestId) {
+  return { type: PERIPHERAL_MSG.SCAN_REQUEST, payload: { requestId } };
+}
+function buildCaptureRequest(requestId, mode) {
+  return { type: PERIPHERAL_MSG.CAPTURE_REQUEST, payload: { requestId, mode } };
+}
 const WS_SYNC_PORT = 5758;
 class WsSyncServer extends events.EventEmitter {
   wss = null;
   clients = /* @__PURE__ */ new Map();
   heartbeatInterval = null;
-  start() {
+  start(port = WS_SYNC_PORT) {
     if (this.wss) return;
-    this.wss = new ws.WebSocketServer({ port: WS_SYNC_PORT });
+    syncHubBus.on("applied", () => this.broadcastDataChanged());
+    this.wss = new ws.WebSocketServer({ port });
     this.wss.on("connection", (ws2, req) => {
       this.handleConnection(ws2, req);
     });
@@ -13804,6 +30366,7 @@ class WsSyncServer extends events.EventEmitter {
       lastHeartbeat: Date.now(),
       lastSeq: 0
     };
+    client.clientId = clientId;
     this.clients.set(clientId, client);
     logger.info(`[WS] Client connected: ${clientId}`);
     ws2.on("message", (data) => {
@@ -13862,6 +30425,37 @@ class WsSyncServer extends events.EventEmitter {
         break;
       case DEVICE_JOIN_MSG.STATUS:
         this.handleDeviceJoinStatus(clientId, client, msg);
+        break;
+      case PERIPHERAL_MSG.REGISTER:
+        this.handlePeripheralRegister(clientId, client, msg);
+        break;
+      case PERIPHERAL_MSG.SCAN_RESULT:
+      case PERIPHERAL_MSG.CAPTURE_RESULT:
+        peripheralHub.ingestResult(msg.type, msg.payload);
+        break;
+      case PERIPHERAL_MSG.STATUS:
+        peripheralHub.ingestStatus(client.deviceId, msg.payload);
+        break;
+      case "INVITE_CLAIM":
+        this.handleInviteClaim(ws$1, msg);
+        break;
+      case "INVITE_STATUS":
+        this.handleInviteStatusQuery(ws$1, msg);
+        break;
+      case "P2P_SIGNAL":
+        {
+          const payload = msg.payload || {};
+          const target = payload.to ? this.findByDeviceId(String(payload.to)) : null;
+          const envelope = payload.signal || payload;
+          if (target) {
+            this.send(target.ws, { type: "P2P_SIGNAL", payload: { from: clientId, signal: envelope } });
+          } else if (payload.to === "__broadcast__") {
+            for (const [id2, c] of this.clients) {
+              if (id2 !== clientId) this.send(c.ws, { type: "P2P_SIGNAL", payload: { from: clientId, signal: envelope } });
+            }
+          }
+          p2pSync.handleSignalEnvelope(client.deviceId, envelope);
+        }
         break;
       default:
         this.sendError(ws$1, "UNKNOWN_TYPE", `Unknown message type: ${msg.type}`);
@@ -13981,6 +30575,86 @@ class WsSyncServer extends events.EventEmitter {
     const rec = getDeviceJoinRequestBy(code, joinerDeviceId);
     this.send(ws2, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload: { record: rec } });
   }
+  // ---------- Phone-peripheral channel (scanner / camera) ----------
+  handlePeripheralRegister(clientId, client, msg) {
+    const ws2 = client.ws;
+    if (!client.paired) {
+      this.sendError(ws2, "NOT_PAIRED", "Device not paired");
+      return;
+    }
+    const reg = peripheralHub.register(client.clientId || clientId, { ...msg.payload || {}, platform: "mobile" });
+    if (!reg) {
+      this.sendError(ws2, "PERIPHERAL_FAILED", "deviceId required");
+      return;
+    }
+    this.send(ws2, { type: PERIPHERAL_MSG.ACK, requestId: msg.requestId, payload: { registered: true, hubId: ensureHubDeviceId() } });
+  }
+  /** IPC-facing: ask a connected phone to scan a barcode. */
+  requestScan(deviceId) {
+    const phone = peripheralHub.get(deviceId);
+    if (!phone) throw new Error("Phone not connected");
+    const req = buildScanRequest(peripheralHub.trackRequest("scan"));
+    this.sendToPhone(phone.socketClientId, req.type, req.payload);
+    return req.payload.requestId;
+  }
+  /** IPC-facing: ask a connected phone to capture a photo / scan with camera. */
+  requestCapture(deviceId, mode) {
+    const phone = peripheralHub.get(deviceId);
+    if (!phone) throw new Error("Phone not connected");
+    const req = buildCaptureRequest(peripheralHub.trackRequest("capture"), mode);
+    this.sendToPhone(phone.socketClientId, req.type, req.payload);
+    return req.payload.requestId;
+  }
+  /** IPC-facing: cancel an outstanding request (user gave up). */
+  cancelRequest(deviceId, requestId) {
+    const phone = peripheralHub.get(deviceId);
+    if (!phone) return;
+    this.sendToPhone(phone.socketClientId, PERIPHERAL_MSG.CANCEL, { requestId });
+  }
+  sendToPhone(socketClientId, type, payload) {
+    const client = this.clients.get(socketClientId);
+    if (client && client.ws.readyState === ws.WebSocket.OPEN) {
+      this.send(client.ws, { type, payload });
+    }
+  }
+  /** Notify every connected phone that this hub accepts peripherals. */
+  broadcastHello() {
+    for (const c of this.clients.values()) {
+      if (c.paired) this.send(c.ws, { type: PERIPHERAL_MSG.HELLO, payload: { hubId: ensureHubDeviceId() } });
+    }
+  }
+  /** Joiner claims an invite code and submits their name (LAN path). */
+  handleInviteClaim(ws2, msg) {
+    const { code, name, joinerDeviceId } = msg.payload || {};
+    if (!code || !joinerDeviceId) {
+      this.sendError(ws2, "INVITE_FAILED", "code and joinerDeviceId required");
+      return;
+    }
+    const { claimUserInvite } = require("./user-invites");
+    const rec = claimUserInvite(String(code).trim().toUpperCase(), String(name || "New user").trim(), joinerDeviceId);
+    if (!rec) {
+      this.sendError(ws2, "INVITE_INVALID", "Invitation not found or already used");
+      return;
+    }
+    const biz = dbProxy.prepare("SELECT businessName FROM businesses WHERE id = ?").get(rec.businessId);
+    this.send(ws2, { type: "INVITE_RESPONSE", requestId: msg.requestId, payload: { invite: { id: rec.id, status: rec.status, businessId: rec.businessId, suggestedRole: rec.suggestedRole, businessName: biz?.businessName || `Business ${rec.businessId}` } } });
+  }
+  /** Joiner polls the decision on their invite. */
+  handleInviteStatusQuery(ws2, msg) {
+    const { code } = msg.payload || {};
+    if (!code) {
+      this.sendError(ws2, "INVITE_FAILED", "code required");
+      return;
+    }
+    const { getUserInviteStatus: getUserInviteStatus2 } = require("./user-invites");
+    const rec = getUserInviteStatus2(String(code).trim().toUpperCase());
+    if (!rec) {
+      this.send(ws2, { type: "INVITE_RESPONSE", requestId: msg.requestId, payload: { invite: null } });
+      return;
+    }
+    const biz = dbProxy.prepare("SELECT businessName FROM businesses WHERE id = ?").get(rec.businessId);
+    this.send(ws2, { type: "INVITE_RESPONSE", requestId: msg.requestId, payload: { invite: { id: rec.id, status: rec.status, businessId: rec.businessId, suggestedRole: rec.suggestedRole, businessName: biz?.businessName || `Business ${rec.businessId}` } } });
+  }
   async handleSyncPush(clientId, client, msg) {
     const ws2 = client.ws;
     if (!client.paired) {
@@ -14003,6 +30677,7 @@ class WsSyncServer extends events.EventEmitter {
           conflicts: result.conflicts,
           skipped: result.skipped,
           pending: result.pending,
+          results: result.results,
           serverSeq: this.getMaxSeq()
         }
       });
@@ -14083,6 +30758,7 @@ class WsSyncServer extends events.EventEmitter {
   }
   handleDisconnect(clientId, client) {
     this.clients.delete(clientId);
+    peripheralHub.unregisterBySocket(clientId);
     logger.info(`[WS] Client disconnected: ${clientId} (${client.deviceId || "unpaired"})`);
     this.emit("clientDisconnected", client);
   }
@@ -14108,6 +30784,30 @@ class WsSyncServer extends events.EventEmitter {
       ws$1.send(JSON.stringify(msg));
     }
   }
+  findByDeviceId(deviceId) {
+    for (const c of this.clients.values()) if (c.deviceId === deviceId) return c;
+    return null;
+  }
+  /** Tell every paired client that new server data is available to pull. */
+  broadcastDataChanged() {
+    const news = {
+      type: "DATA_CHANGED",
+      payload: { at: (/* @__PURE__ */ new Date()).toISOString(), serverSeq: this.getMaxSeq() }
+    };
+    for (const c of this.clients.values()) {
+      if (c.paired) this.send(c.ws, news);
+    }
+  }
+  /** Push a signaling message to a connected client (or broadcast). */
+  sendSignal(toDeviceId, signal) {
+    const payload = { type: "P2P_SIGNAL", payload: { from: "desktop-hub", signal } };
+    if (toDeviceId === "__broadcast__") {
+      for (const c of this.clients.values()) this.send(c.ws, payload);
+    } else {
+      const target = this.findByDeviceId(toDeviceId);
+      if (target) this.send(target.ws, payload);
+    }
+  }
   sendError(ws2, code, message) {
     this.send(ws2, { type: "ERROR", payload: { code, message } });
   }
@@ -14120,6 +30820,7 @@ class WsSyncServer extends events.EventEmitter {
       this.wss.close();
       this.wss = null;
     }
+    syncHubBus.removeAllListeners("applied");
     this.clients.clear();
     logger.info("[WS] Server stopped");
   }
@@ -14131,6 +30832,9 @@ class WsSyncServer extends events.EventEmitter {
   }
 }
 const wsSyncServer = new WsSyncServer();
+p2pSync.setSignalingRelay((toDeviceId, signal) => {
+  wsSyncServer.sendSignal(toDeviceId, signal);
+});
 function startWsSyncServer() {
   wsSyncServer.start();
 }
@@ -14162,10 +30866,20 @@ let syncInterval = null;
 const LAN_SYNC_INTERVAL_MS = 3e4;
 function startPeerSync() {
   const hubId = ensureHubDeviceId();
-  const platform = process.platform === "darwin" ? "desktop" : "desktop";
+  const platform = "desktop";
   mdnsDiscovery.start();
   startWsSyncServer();
-  startCloudSyncTimer();
+  try {
+    const hubDevId = ensureHubDeviceId();
+    const bizId = getActiveBusinessId();
+    const biz = dbProxy.prepare("SELECT id, uuid FROM businesses WHERE id = ?").get(bizId);
+    if (biz?.uuid) {
+      p2pSync.start(hubDevId, String(biz.uuid), Number(biz.id));
+      setInterval(() => p2pSync.announce(), 3e4);
+    }
+  } catch (e) {
+    logger.warn("P2P sync start failed (continuing without it)", { error: e?.message });
+  }
   if (syncInterval) clearInterval(syncInterval);
   syncInterval = setInterval(async () => {
     try {
@@ -14187,9 +30901,13 @@ async function performLanSync() {
     }
   }
 }
+const peerCursors = /* @__PURE__ */ new Map();
+function peerCursorSeq(deviceId) {
+  return peerCursors.get(deviceId) ?? 0;
+}
 async function syncWithPeerHub(peer) {
   const hubId = ensureHubDeviceId();
-  const token = getPairingToken();
+  const token = peer.pairingToken;
   const peerUrl = `http://${peer.host}:${peer.port}`;
   try {
     const infoRes = await fetch(`${peerUrl}/sync/info`);
@@ -14203,7 +30921,8 @@ async function syncWithPeerHub(peer) {
   } catch {
     return;
   }
-  const pullUrl = `${peerUrl}/sync/pull?device=${encodeURIComponent(hubId)}&since=0&token=${encodeURIComponent(token)}`;
+  const since = peerCursorSeq(peer.deviceId);
+  const pullUrl = `${peerUrl}/sync/pull?device=${encodeURIComponent(hubId)}&since=${since}&token=${encodeURIComponent(token)}`;
   try {
     const pullRes = await fetch(pullUrl);
     const pullData = await pullRes.json();
@@ -14215,34 +30934,38 @@ async function syncWithPeerHub(peer) {
         peerId: peer.deviceId,
         pulled: changes.length,
         applied: result.applied,
-        conflicts: result.conflicts
+        conflicts: result.conflicts,
+        from: since
       });
     }
+    const lastSeq = Number(pullData?.lastSeq ?? since);
+    if (pullData.ok && lastSeq > since) peerCursors.set(peer.deviceId, lastSeq);
   } catch (e) {
     logger.warn("Peer pull failed", { peerId: peer.deviceId, error: e?.message });
   }
 }
-const DEFAULT_BASE = "https://shega-api-dah3.onrender.com";
-function getSetting(key) {
+const DEFAULT_BASE$1 = "https://shega-api-dah3.onrender.com";
+function getSetting$1(key) {
   const row = dbProxy.prepare("SELECT value FROM settings WHERE key = ?").get(key);
   return row?.value ?? null;
 }
 function setSetting(key, value) {
   dbProxy.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
 }
-function getBaseUrl() {
-  return (getSetting("cloud_sync_url") || process.env.SHEGA_API_URL || DEFAULT_BASE).replace(/\/+$/, "");
+function getBaseUrl$1() {
+  return (getSetting$1("cloud_sync_url") || process.env.SHEGA_API_URL || DEFAULT_BASE$1).replace(/\/+$/, "");
 }
 let authPromise = null;
 async function doAuthRequest(path2, body, {
   method = "GET",
   auth = false,
-  retried = false
+  retried = false,
+  tokenKey = "pairing_access_token"
 } = {}) {
   const headers = { Accept: "application/json", "Content-Type": "application/json" };
-  let token = auth ? getSetting("pairing_access_token") : null;
+  let token = auth ? getSetting$1(tokenKey) : null;
   if (auth && token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${getBaseUrl()}${path2}`, {
+  const res = await fetch(`${getBaseUrl$1()}${path2}`, {
     method,
     headers,
     body: body !== void 0 ? JSON.stringify(body) : void 0
@@ -14255,8 +30978,9 @@ async function doAuthRequest(path2, body, {
     data = text;
   }
   if (res.status === 401 && auth && !retried) {
-    const refreshed = await refreshPairingToken();
-    if (refreshed) return doAuthRequest(path2, body, { method, auth, retried: true });
+    const refreshKey = tokenKey.replace("_access_", "_refresh_");
+    const refreshed = await refreshAuthToken(refreshKey);
+    if (refreshed) return doAuthRequest(path2, body, { method, auth, retried: true, tokenKey });
   }
   if (!res.ok) {
     const msg = data?.detail ?? data?.error ?? (typeof data === "string" ? data : `HTTP ${res.status}`);
@@ -14267,13 +30991,13 @@ async function doAuthRequest(path2, body, {
   }
   return data;
 }
-async function refreshPairingToken() {
+async function refreshAuthToken(refreshKey) {
   if (authPromise) return authPromise;
   authPromise = (async () => {
     try {
-      const refresh = getSetting("pairing_refresh_token");
+      const refresh = getSetting$1(refreshKey);
       if (!refresh) return false;
-      const res = await fetch(`${getBaseUrl()}/api/auth/refresh/`, {
+      const res = await fetch(`${getBaseUrl$1()}/api/auth/refresh/`, {
         method: "POST",
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({ refresh })
@@ -14281,8 +31005,9 @@ async function refreshPairingToken() {
       if (!res.ok) return false;
       const data = await res.json();
       if (!data?.access) return false;
-      setSetting("pairing_access_token", data.access);
-      if (data.refresh) setSetting("pairing_refresh_token", data.refresh);
+      const accessKey = refreshKey.replace("_refresh_", "_access_");
+      setSetting(accessKey, data.access);
+      if (data.refresh) setSetting(refreshKey, data.refresh);
       return true;
     } catch {
       return false;
@@ -14294,11 +31019,11 @@ async function refreshPairingToken() {
 }
 function registerPairingCloudHandlers() {
   electron.ipcMain.handle("pairing:status", () => {
-    const linked = !!getSetting("pairing_access_token");
+    const linked = !!getSetting$1("pairing_access_token");
     return {
       linked,
-      email: getSetting("pairing_account_email") ?? null,
-      businessName: getSetting("pairing_business_name") ?? null
+      email: getSetting$1("pairing_account_email") ?? null,
+      businessName: getSetting$1("pairing_business_name") ?? null
     };
   });
   electron.ipcMain.handle("pairing:link-account", async (_e, email, password) => {
@@ -14328,15 +31053,472 @@ function registerPairingCloudHandlers() {
     if (input?.location) body.location = input.location;
     return doAuthRequest("/api/sync/pairing/invite/", body, { method: "POST", auth: true });
   });
-  electron.ipcMain.handle("pairing:revoke", async (_e, id) => {
-    return doAuthRequest(`/api/sync/pairing/${id}/revoke/`, {}, { method: "POST", auth: true });
+  electron.ipcMain.handle("pairing:revoke", async (_e, id2) => {
+    return doAuthRequest(`/api/sync/pairing/${id2}/revoke/`, {}, { method: "POST", auth: true });
   });
-  electron.ipcMain.handle("pairing:decide", async (_e, id, decision) => {
-    return doAuthRequest(`/api/sync/pairing/${id}/${decision}/`, {}, { method: "POST", auth: true });
+  electron.ipcMain.handle("pairing:decide", async (_e, id2, decision, role, permissions) => {
+    const body = {};
+    if (role) body.role = role;
+    if (permissions && typeof permissions === "object") body.permissions = permissions;
+    return doAuthRequest(`/api/sync/pairing/${id2}/${decision}/`, body, { method: "POST", auth: true });
   });
   electron.ipcMain.handle("pairing:qr-code", async (_e, text) => {
     if (!text?.trim()) throw new Error("Nothing to encode");
     return QRCode.toDataURL(text, { width: 340, margin: 2, errorCorrectionLevel: "M" });
+  });
+  electron.ipcMain.handle("join:lookup", async (_e, code) => {
+    const c = String(code ?? "").trim();
+    if (!c) throw new Error("Enter the 6-digit code");
+    return doAuthRequest("/api/sync/pairing/lookup/", { code: c }, { method: "POST" });
+  });
+  electron.ipcMain.handle("join:accept", async (_e, input) => {
+    const code = String(input?.code ?? "").trim();
+    const email = String(input?.email ?? "").trim().toLowerCase();
+    const password = String(input?.password ?? "");
+    if (!code || !email || !password) throw new Error("Code, email and password are required");
+    let preview;
+    try {
+      preview = await doAuthRequest("/api/sync/pairing/lookup/", { code }, { method: "POST" });
+    } catch (err) {
+      throw err;
+    }
+    let token = null;
+    let refreshToken = null;
+    try {
+      const loginData = await doAuthRequest("/api/auth/login/", { email, password }, { method: "POST" });
+      token = loginData?.access ?? loginData?.token ?? null;
+      refreshToken = loginData?.refresh ?? null;
+    } catch (err) {
+      if (err.status !== 400 && err.status !== 401) {
+        throw new Error(`Could not sign in: ${err.message || "network error"}`);
+      }
+    }
+    if (!token) {
+      try {
+        const regData = await doAuthRequest(
+          "/api/auth/register/",
+          { email, password, name: input?.name || email.split("@")[0] },
+          { method: "POST" }
+        );
+        token = regData?.access ?? regData?.token ?? null;
+        refreshToken = regData?.refresh ?? null;
+      } catch (err) {
+        if (/already exists/i.test(String(err.detail ?? err.message ?? ""))) {
+          throw new Error("An account already exists for that email — sign in with its password instead.");
+        }
+        throw new Error(`Could not create an account: ${err.message || "network error"}`);
+      }
+    }
+    if (!token) throw new Error("Could not obtain an access token");
+    setSetting("join_access_token", token);
+    if (refreshToken) setSetting("join_refresh_token", refreshToken);
+    const deviceName = String(input?.deviceName ?? "").trim() || "Shega Desktop";
+    const deviceId = ensureHubDeviceId();
+    const acc = await doAuthRequest(
+      "/api/sync/pairing/accept/",
+      { code, device_id: deviceId, device_name: deviceName, platform: "desktop" },
+      { method: "POST", auth: true, tokenKey: "join_access_token" }
+    );
+    setSetting("join_invitation_id", String(acc?.invitation_id ?? ""));
+    setSetting("join_device_id", deviceId);
+    if (acc?.device_key) setSetting("join_device_key", acc.device_key);
+    setSetting("join_business_name", String(preview?.business_name ?? ""));
+    setSetting("join_role", String(preview?.role ?? ""));
+    setSetting("join_account_email", email);
+    setSetting("join_display_name", String(input?.name || email.split("@")[0]));
+    return {
+      status: acc?.status ?? "pending",
+      invitation_id: acc?.invitation_id ?? null,
+      device_key: acc?.device_key ?? null,
+      device_id: deviceId,
+      business_name: preview?.business_name ?? null,
+      role: preview?.role ?? null,
+      email
+    };
+  });
+  electron.ipcMain.handle("join:status", async (_e, invitationId) => {
+    const id2 = invitationId ?? Number(getSetting$1("join_invitation_id") || 0);
+    const token = getSetting$1("join_access_token");
+    if (!id2 || !token) return { phase: "none", invitation: null };
+    const fetchOnce = async () => {
+      const data = await doAuthRequest(
+        `/api/sync/pairing/status/${id2}/`,
+        {},
+        { auth: true, tokenKey: "join_access_token" }
+      );
+      const status = data?.status ?? "pending";
+      return {
+        phase: status === "approved" ? "approved" : status === "rejected" || status === "cancelled" || status === "expired" ? status : "pending",
+        status,
+        business_name: data?.business_name ?? getSetting$1("join_business_name"),
+        role: data?.role ?? getSetting$1("join_role"),
+        device_status: data?.device_status ?? null,
+        email: getSetting$1("join_account_email")
+      };
+    };
+    try {
+      return await fetchOnce();
+    } catch (err) {
+      if (err?.status === 401) {
+        const ok = await refreshAuthToken("join_refresh_token");
+        if (ok) {
+          try {
+            return await fetchOnce();
+          } catch (err2) {
+            return { phase: "error", error: err2?.message ?? "network error" };
+          }
+        }
+      }
+      return { phase: "error", error: err?.message ?? "network error" };
+    }
+  });
+  electron.ipcMain.handle("join:activate", (_e, pin) => {
+    const key = getSetting$1("join_device_key");
+    const email = getSetting$1("join_account_email");
+    const id2 = getSetting$1("join_invitation_id");
+    if (!key || !email || !id2) throw new Error("No active join in progress");
+    const pinStr = String(pin ?? "");
+    if (!/^\d{4}$/.test(pinStr)) throw new Error("PIN must be 4 digits");
+    const base = getBaseUrl$1();
+    if (/^https?:\/\//.test(base)) {
+      setSetting("cloud_sync_url", base);
+    }
+    setSetting("cloud_sync_device_key", key);
+    setSetting("cloud_sync_enabled", "true");
+    const username = email;
+    const displayName = getSetting$1("join_display_name") || email.split("@")[0];
+    const existing = dbProxy.prepare("SELECT id FROM admins WHERE username = ?").get(username);
+    if (!existing) {
+      dbProxy.prepare("INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)").run(
+        displayName,
+        username,
+        joinHashPin(pinStr),
+        "admin",
+        JSON.stringify(["dashboard", "inventory", "sales", "expenses", "customers", "analytics", "adjustments", "warehouses", "shipments"]),
+        null
+      );
+    }
+    dbProxy.prepare("DELETE FROM settings WHERE key LIKE 'join_%'").run();
+    return { success: true, username };
+  });
+  electron.ipcMain.handle("join:cancel", () => {
+    dbProxy.prepare("DELETE FROM settings WHERE key LIKE 'join_%'").run();
+    return { cancelled: true };
+  });
+}
+function joinHashPin(pin) {
+  const salt = crypto$1.randomBytes(16).toString("hex");
+  const key = crypto$1.scryptSync(pin, salt, 64).toString("hex");
+  return `${salt}:${key}`;
+}
+const CODE_TTL_MS = 24 * 60 * 60 * 1e3;
+function ensureTable() {
+  dbProxy.exec(`
+    CREATE TABLE IF NOT EXISTS user_invites (
+      id TEXT PRIMARY KEY,
+      business_id INTEGER NOT NULL,
+      code TEXT UNIQUE NOT NULL,
+      suggested_role TEXT DEFAULT 'cashier',
+      status TEXT DEFAULT 'open',
+      joiner_name TEXT,
+      joiner_device_id TEXT,
+      created_by INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT,
+      decided_at TEXT
+    );
+  `);
+}
+function rowToInvite(row) {
+  return {
+    id: row.id,
+    businessId: row.business_id,
+    code: row.code,
+    suggestedRole: row.suggested_role || "cashier",
+    status: row.status,
+    joinerName: row.joiner_name,
+    joinerDeviceId: row.joiner_device_id,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    decidedAt: row.decided_at
+  };
+}
+function expireStale() {
+  dbProxy.prepare("UPDATE user_invites SET status = 'expired' WHERE status IN ('open','pending') AND expires_at IS NOT NULL AND expires_at < datetime('now')").run();
+}
+function createUserInvite(businessId, opts = {}) {
+  ensureTable();
+  expireStale();
+  const id2 = crypto$1.randomBytes(12).toString("hex");
+  const code = `SHG-${crypto$1.randomBytes(3).toString("hex").toUpperCase()}`;
+  const expiresAt = new Date(Date.now() + CODE_TTL_MS).toISOString();
+  dbProxy.prepare(
+    `INSERT INTO user_invites (id, business_id, code, suggested_role, status, created_by, expires_at)
+     VALUES (?, ?, ?, ?, 'open', ?, ?)`
+  ).run(id2, businessId, code, opts.suggestedRole || "cashier", opts.createdBy ?? null, expiresAt);
+  logger.info(`[invites] created ${code} for business ${businessId}`);
+  return rowToInvite(dbProxy.prepare("SELECT * FROM user_invites WHERE id = ?").get(id2));
+}
+function listUserInvites(businessId) {
+  ensureTable();
+  expireStale();
+  return dbProxy.prepare("SELECT * FROM user_invites WHERE business_id = ? ORDER BY created_at DESC LIMIT 100").all(businessId).map(rowToInvite);
+}
+function decideUserInvite(inviteId, decision, opts = {}) {
+  ensureTable();
+  const row = dbProxy.prepare("SELECT * FROM user_invites WHERE id = ?").get(inviteId);
+  if (!row) return null;
+  if (decision === "approved") {
+    try {
+      const name = row.joiner_name || "New user";
+      const [first, ...rest] = String(name).split(" ");
+      const username = `${String(first || "user").toLowerCase()}.${crypto$1.randomBytes(2).toString("hex")}`;
+      dbProxy.prepare(
+        `INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(name, username, "", opts.role || row.suggested_role || "cashier", "[]", row.business_id);
+    } catch (e) {
+      logger.warn("[invites] failed to materialize user", e);
+    }
+  }
+  dbProxy.prepare("UPDATE user_invites SET status = ?, decided_at = CURRENT_TIMESTAMP WHERE id = ?").run(decision, inviteId);
+  return rowToInvite(dbProxy.prepare("SELECT * FROM user_invites WHERE id = ?").get(inviteId));
+}
+function getUserInviteStatus(code) {
+  ensureTable();
+  expireStale();
+  const row = dbProxy.prepare("SELECT * FROM user_invites WHERE code = ? ORDER BY created_at DESC LIMIT 1").get(code);
+  return row ? rowToInvite(row) : null;
+}
+const waiters = /* @__PURE__ */ new Map();
+function failWaiter(requestId, err) {
+  const w = waiters.get(requestId);
+  if (!w) return;
+  clearTimeout(w.timer);
+  w.cleanup();
+  waiters.delete(requestId);
+  w.reject(new Error(err));
+}
+function completeWaiter(requestId, value) {
+  const w = waiters.get(requestId);
+  if (!w) return;
+  clearTimeout(w.timer);
+  w.cleanup();
+  waiters.delete(requestId);
+  w.resolve(value);
+}
+function registerPeripheralHandlers() {
+  peripheralHub.on("scanResult", (res) => completeWaiter(res.requestId, { barcode: res.barcode, symbology: res.symbology, deviceId: res.deviceId }));
+  peripheralHub.on("captureResult", (res) => {
+    if (res.cancelled) return failWaiter(res.requestId, "cancelled");
+    completeWaiter(res.requestId, { dataUrl: res.dataUrl, text: res.text, mode: res.mode, deviceId: res.deviceId });
+  });
+  electron.ipcMain.handle("peripheral:phones", () => peripheralHub.list().map((p) => ({
+    ...p.info,
+    mode: peripheralHub.getMode(p.deviceId),
+    connectedAt: p.registeredAt
+  })));
+  electron.ipcMain.handle("peripheral:scan", async (_, deviceId, timeoutMs = 6e4) => {
+    const requestId = wsSyncServer.requestScan(deviceId);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => failWaiter(requestId, "timeout"), timeoutMs);
+      const onReg = () => {
+      };
+      waiters.set(requestId, { resolve, reject, timer, cleanup: () => {
+        peripheralHub.off("peripheralRegistered", onReg);
+      } });
+    });
+  });
+  electron.ipcMain.handle("peripheral:capture", async (_, deviceId, mode, timeoutMs = 12e4) => {
+    const requestId = wsSyncServer.requestCapture(deviceId, mode);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => failWaiter(requestId, "timeout"), timeoutMs);
+      const noop = () => {
+      };
+      waiters.set(requestId, { resolve, reject, timer, cleanup: () => {
+        peripheralHub.off("peripheralRegistered", noop);
+      } });
+    });
+  });
+  electron.ipcMain.handle("peripheral:cancel", (_, deviceId, requestId) => {
+    wsSyncServer.cancelRequest(deviceId, requestId);
+    failWaiter(requestId, "cancelled");
+    return true;
+  });
+  electron.ipcMain.handle("invites:create", (_, opts = {}) => {
+    return createUserInvite(getActiveBusinessId() ?? 1, { suggestedRole: opts?.suggestedRole, createdBy: void 0 });
+  });
+  electron.ipcMain.handle("invites:list", () => listUserInvites(getActiveBusinessId() ?? 1));
+  electron.ipcMain.handle("invites:decide", (_, inviteId, decision, opts = {}) => {
+    return decideUserInvite(inviteId, decision, { role: opts?.role });
+  });
+  electron.ipcMain.handle("invites:status", (_, code) => getUserInviteStatus(code));
+}
+const DEFAULT_BASE = "https://shega-api-dah3.onrender.com";
+function getSetting(key) {
+  const row = dbProxy.prepare("SELECT value FROM settings WHERE key = ?").get(key);
+  return row?.value ?? null;
+}
+function getBaseUrl() {
+  return (getSetting("cloud_sync_url") || process.env.SHEGA_API_URL || DEFAULT_BASE).replace(/\/+$/, "");
+}
+function toRecord(row) {
+  return {
+    tin: row.tin,
+    subTin: row.sub_tin,
+    status: row.status,
+    taxpayerName: row.taxpayer_name,
+    taxpayerType: row.taxpayer_type,
+    registration: row.registration ? JSON.parse(row.registration) : null,
+    reference: row.reference,
+    verifiedAt: row.verified_at,
+    source: row.source === "mor" || row.source === "backend" ? row.source : "client-cache",
+    reason: row.reason,
+    cachedAt: row.cached_at,
+    cacheUntil: row.cache_until
+  };
+}
+function isBackendLinked() {
+  return !!getSetting("pairing_access_token");
+}
+function getCached(tin, subTin) {
+  const row = dbProxy.prepare('SELECT * FROM mor_verifications WHERE tin = ? AND COALESCE(sub_tin, "") = COALESCE(?, "")').get(tin, subTin ?? "");
+  return row ? toRecord(row) : null;
+}
+function upsert(record) {
+  dbProxy.prepare(
+    `INSERT INTO mor_verifications
+       (tin, sub_tin, status, taxpayer_name, taxpayer_type, registration, reference,
+        verified_at, source, reason, cached_at, cache_until, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(tin) DO UPDATE SET
+       status = excluded.status,
+       sub_tin = excluded.sub_tin,
+       taxpayer_name = excluded.taxpayer_name,
+       taxpayer_type = excluded.taxpayer_type,
+       registration = excluded.registration,
+       reference = excluded.reference,
+       verified_at = excluded.verified_at,
+       source = excluded.source,
+       reason = excluded.reason,
+       cached_at = excluded.cached_at,
+       cache_until = excluded.cache_until,
+       updated_at = CURRENT_TIMESTAMP`
+  ).run(
+    record.tin,
+    record.subTin ?? null,
+    record.status,
+    record.taxpayerName ?? null,
+    record.taxpayerType ?? null,
+    record.registration ? JSON.stringify(record.registration) : null,
+    record.reference ?? null,
+    record.verifiedAt ?? null,
+    record.source,
+    record.reason ?? null,
+    record.cachedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+    record.cacheUntil ?? new Date(Date.now() + 24 * 60 * 60 * 1e3).toISOString()
+  );
+}
+async function callBackend(tin, subTin, force) {
+  const token = getSetting("pairing_access_token");
+  const res = await fetch(`${getBaseUrl()}/api/mor/verify-tin/`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ tin, sub_tin: subTin ?? null, force })
+  });
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const msg = data?.detail ?? data?.error ?? (typeof data === "string" ? data : `HTTP ${res.status}`);
+    const err = new Error(typeof msg === "object" ? msg.detail ?? JSON.stringify(msg) : String(msg));
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+async function verifyTin(tin, subTin, force = false) {
+  const flat = tin.replace(/[\s-]/g, "").trim();
+  if (!/^\d{8,12}$/.test(flat)) {
+    return {
+      tin: flat,
+      subTin: subTin ?? null,
+      status: "unavailable",
+      reason: "invalid_tin",
+      source: "client-cache"
+    };
+  }
+  if (!force) {
+    const cached = getCached(flat, subTin);
+    if (cached && isFresh(cached)) return cached;
+  }
+  if (!isBackendLinked()) {
+    return {
+      tin: flat,
+      subTin: subTin ?? null,
+      status: "unavailable",
+      reason: "backend_link_required",
+      source: "client-cache"
+    };
+  }
+  try {
+    const res = await callBackend(flat, subTin ?? null, force);
+    const record = buildClientCacheRecord(fromMorBackendResponse(res));
+    upsert(record);
+    return record;
+  } catch (err) {
+    logger.warn("mor verify transport failure", { tin: flat.slice(0, 2) + "****", error: String(err) });
+    return {
+      tin: flat,
+      subTin: subTin ?? null,
+      status: "unavailable",
+      reason: err?.status ? "backend_rejected" : "backend_unreachable",
+      source: "client-cache"
+    };
+  }
+}
+function getVerification(tin, subTin) {
+  return getCached(tin.replace(/[\s-]/g, ""), subTin);
+}
+function listVerifications() {
+  const rows = dbProxy.prepare("SELECT * FROM mor_verifications ORDER BY updated_at DESC, cached_at DESC LIMIT 200").all();
+  return rows.map((row) => {
+    const verification = toRecord(row);
+    return { verification, fresh: isFresh(verification) };
+  });
+}
+function clearVerification(tin) {
+  dbProxy.prepare("DELETE FROM mor_verifications WHERE tin = ?").run(tin.replace(/[\s-]/g, ""));
+}
+function isFresh(v) {
+  if (!v.cacheUntil) return v.status !== "unavailable" && v.status !== "failed";
+  return Date.now() < new Date(v.cacheUntil).getTime();
+}
+function registerMorHandlers() {
+  electron.ipcMain.handle(
+    "mor:verify",
+    (_e, tin, subTin, force = false) => verifyTin(tin, subTin, force)
+  );
+  electron.ipcMain.handle(
+    "mor:get",
+    (_e, tin, subTin) => getVerification(tin, subTin)
+  );
+  electron.ipcMain.handle("mor:list", () => listVerifications());
+  electron.ipcMain.handle("mor:clear", (_e, tin) => {
+    clearVerification(tin);
+    return { cleared: true };
+  });
+  electron.ipcMain.handle("mor:is-verified", (_e, tin, subTin) => {
+    const v = getVerification(tin, subTin);
+    return { verified: isMorVerified(v) };
   });
 }
 const syncHub = new SyncHub();
@@ -14434,8 +31616,11 @@ function createWindow() {
 electron.app.whenReady().then(() => {
   try {
     initDB();
+    reconcileUserBridge();
     registerIPCHandlers();
     registerPairingCloudHandlers();
+    registerPeripheralHandlers();
+    registerMorHandlers();
     syncHub.start(SYNC_PORT);
     startPeerSync();
     createWindow();
@@ -14458,4 +31643,66 @@ electron.app.on("window-all-closed", () => {
     electron.app.quit();
   }
 });
+exports.APPEND_ONLY = APPEND_ONLY;
+exports.BUILTIN_ROLES = BUILTIN_ROLES;
+exports.BUSINESS_ADAPTER_ENTITIES = BUSINESS_ADAPTER_ENTITIES;
+exports.COLLECTION_TABLE = COLLECTION_TABLE;
+exports.DEFAULT_DISCOUNT_CAPS = DEFAULT_DISCOUNT_CAPS;
+exports.DEFAULT_ICE_SERVERS = DEFAULT_ICE_SERVERS;
+exports.DEFAULT_ROLE_SETS = DEFAULT_ROLE_SETS;
+exports.DEVICE_JOIN_MSG = DEVICE_JOIN_MSG;
+exports.DISCOUNT_APPROVED_MAX_PERCENT = DISCOUNT_APPROVED_MAX_PERCENT;
+exports.DISCOUNT_OVERRIDE_CEILING = DISCOUNT_OVERRIDE_CEILING;
+exports.FIELD_MAPS = FIELD_MAPS;
+exports.MOR_CACHE_TTL_MS = MOR_CACHE_TTL_MS;
+exports.OVERRIDE_REASONS = OVERRIDE_REASONS;
+exports.PERIPHERAL_MSG = PERIPHERAL_MSG;
+exports.PERMISSION_BY_KEY = PERMISSION_BY_KEY;
+exports.PERMISSION_CATALOG = PERMISSION_CATALOG;
+exports.RETURN_REASONS = RETURN_REASONS;
+exports.ROLE_DESCRIPTION = ROLE_DESCRIPTION;
+exports.ROLE_NAME = ROLE_NAME;
+exports.ROLE_ORDER = ROLE_ORDER;
+exports.SCOPE_LABELS = SCOPE_LABELS;
+exports.SURFACED_BUILTIN_ROLES = SURFACED_BUILTIN_ROLES;
+exports.VOID_REASONS = VOID_REASONS;
+exports.YJS_COLLECTIONS = YJS_COLLECTIONS;
+exports.applyUpdate = applyUpdate$1;
+exports.barcodeModules = barcodeModules;
+exports.barcodePng = barcodePng;
+exports.barcodeRaster = barcodeRaster;
+exports.buildClientCacheRecord = buildClientCacheRecord;
+exports.can = can;
+exports.checkPermission = checkPermission;
+exports.createBusinessDoc = createBusinessDoc;
+exports.describePermission = describePermission;
+exports.desktopTableName = desktopTableName;
+exports.desktopToMobileData = desktopToMobileData;
+exports.desktopToMobilePayload = desktopToMobilePayload;
+exports.detectPayloadPlatform = detectPayloadPlatform;
+exports.detectSymbology = detectSymbology;
+exports.encodeFullState = encodeFullState;
+exports.exceedsDiscountCap = exceedsDiscountCap;
+exports.fromMorBackendResponse = fromMorBackendResponse;
+exports.getBuiltinRole = getBuiltinRole;
+exports.getDiscountCap = getDiscountCap;
+exports.getPermissionDef = getPermissionDef;
+exports.getRoleName = getRoleName;
+exports.isMorVerified = isMorVerified;
+exports.isValidPermissionKey = isValidPermissionKey;
+exports.isVerificationFresh = isVerificationFresh;
+exports.isVerificationStale = isVerificationStale;
+exports.isYjsCollection = isYjsCollection;
+exports.mergePermissionSets = mergePermissionSets;
+exports.mobileToDesktopData = mobileToDesktopData;
+exports.mobileToDesktopPayload = mobileToDesktopPayload;
+exports.morStatusLabel = morStatusLabel;
+exports.normalizeSubTin = normalizeSubTin;
+exports.normalizeTin = normalizeTin;
+exports.normalizeToPlatform = normalizeToPlatform;
+exports.permissionsForScope = permissionsForScope;
+exports.reconcileToColumns = reconcileToColumns;
+exports.requiresApproval = requiresApproval;
 exports.syncHub = syncHub;
+exports.upceToUpca = upceToUpca;
+exports.verificationAgeLabel = verificationAgeLabel;

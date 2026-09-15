@@ -196,7 +196,7 @@ const Employees: React.FC = () => {
   ];
 
   const allPermissionOptions = [
-    'dashboard', 'inventory', 'sales', 'expenses',
+    'dashboard', 'inventory', 'sales',
     'customers', 'analytics', 'adjustments', 'settings',
     'warehouses', 'employees'
   ];

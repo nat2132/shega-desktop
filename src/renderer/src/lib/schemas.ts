@@ -28,12 +28,10 @@ export const MODULE_SCHEMAS: ModuleSchema[] = [
       { key: 'unitType', label: 'Unit Type', type: 'string', required: true, description: 'base or pack', example: 'base' },
       { key: 'totalPrice', label: 'Total Price', type: 'number', required: true, description: 'Total sale amount', example: '150.00' },
       { key: 'discount', label: 'Discount', type: 'number', description: 'Discount amount', example: '0' },
-      { key: 'vat', label: 'VAT', type: 'number', description: 'VAT amount', example: '0' },
       { key: 'paymentMethod', label: 'Payment Method', type: 'string', description: 'cash, bank_transfer, etc.', example: 'cash' },
       { key: 'paymentStatus', label: 'Payment Status', type: 'string', description: 'Paid, Debt, Partial', example: 'Paid' },
       { key: 'customerName', label: 'Customer Name', type: 'string', description: 'Customer name' },
       { key: 'customerPhone', label: 'Customer Phone', type: 'string', description: 'Customer phone number' },
-      { key: 'dueDate', label: 'Due Date', type: 'date', description: 'Due date for debt sales', example: '2025-12-31' },
       { key: 'paidAmount', label: 'Paid Amount', type: 'number', description: 'Amount already paid', example: '0' },
       { key: 'createdAt', label: 'Created At', type: 'date', description: 'Sale date', example: '2025-01-15' },
     ],
@@ -57,21 +55,6 @@ export const MODULE_SCHEMAS: ModuleSchema[] = [
       { key: 'totalPackQuantity', label: 'Pack Quantity', type: 'number', description: 'Current stock in packs', example: '5' },
       { key: 'supplierName', label: 'Supplier Name', type: 'string', description: 'Supplier name' },
       { key: 'expiryDate', label: 'Expiry Date', type: 'date', description: 'Expiry date', example: '2026-12-31' },
-      { key: 'notes', label: 'Notes', type: 'string', description: 'Additional notes' },
-    ],
-  },
-  {
-    module: 'expenses',
-    label: 'Expenses',
-    description: 'Business expenses',
-    uniqueKeys: ['id'],
-    fields: [
-      { key: 'name', label: 'Expense Name', type: 'string', required: true, description: 'Description of expense', example: 'Electricity Bill' },
-      { key: 'amount', label: 'Amount', type: 'number', required: true, description: 'Expense amount', example: '2500.00' },
-      { key: 'category', label: 'Category', type: 'string', description: 'Expense category', example: 'Utilities' },
-      { key: 'date', label: 'Date', type: 'date', required: true, description: 'Expense date', example: '2025-01-15' },
-      { key: 'isRecurring', label: 'Is Recurring', type: 'boolean', description: 'Is this a recurring expense', example: 'false' },
-      { key: 'frequency', label: 'Frequency', type: 'string', description: 'monthly, weekly, yearly', example: 'monthly' },
       { key: 'notes', label: 'Notes', type: 'string', description: 'Additional notes' },
     ],
   },
@@ -123,48 +106,6 @@ export const MODULE_SCHEMAS: ModuleSchema[] = [
       { key: 'vehicleInfo', label: 'Vehicle Info', type: 'string', description: 'License plate or vehicle details', example: 'AA-1234-AB' },
       { key: 'status', label: 'Status', type: 'string', description: 'pending, in_transit, delivered, cancelled', example: 'pending' },
       { key: 'scheduledDate', label: 'Scheduled Date', type: 'date', description: 'Scheduled date', example: '2025-01-20' },
-      { key: 'notes', label: 'Notes', type: 'string', description: 'Additional notes' },
-    ],
-  },
-  {
-    module: 'adjustments',
-    label: 'Stock Adjustments',
-    description: 'Inventory stock adjustments',
-    uniqueKeys: ['id'],
-    fields: [
-      { key: 'itemName', label: 'Item Name', type: 'string', required: true, description: 'Name of the item', example: 'Coffee Beans' },
-      { key: 'type', label: 'Adjustment Type', type: 'string', required: true, description: 'damage, loss, add_stock, price_increase, price_decrease', example: 'add_stock' },
-      { key: 'quantity', label: 'Quantity', type: 'number', required: true, description: 'Quantity adjusted', example: '100' },
-      { key: 'unitType', label: 'Unit Type', type: 'string', description: 'base or pack', example: 'base' },
-      { key: 'reason', label: 'Reason', type: 'string', description: 'Reason for adjustment', example: 'Damaged during transport' },
-      { key: 'date', label: 'Date', type: 'date', required: true, description: 'Adjustment date', example: '2025-01-15' },
-    ],
-  },
-  {
-    module: 'orders',
-    label: 'Customer Orders',
-    description: 'Customer orders and pre-orders',
-    uniqueKeys: ['id', 'orderNumber'],
-    fields: [
-      { key: 'orderNumber', label: 'Order Number', type: 'string', required: true, description: 'Unique order number', example: 'ORD-001' },
-      { key: 'customerName', label: 'Customer Name', type: 'string', description: 'Customer name' },
-      { key: 'customerPhone', label: 'Customer Phone', type: 'string', description: 'Customer phone' },
-      { key: 'status', label: 'Status', type: 'string', description: 'Order, Completed, Cancelled', example: 'Order' },
-      { key: 'itemName', label: 'Item Name', type: 'string', required: true, description: 'Name of ordered item' },
-      { key: 'quantity', label: 'Quantity', type: 'number', required: true, description: 'Ordered quantity', example: '10' },
-      { key: 'unitPrice', label: 'Unit Price', type: 'number', description: 'Price per unit', example: '50.00' },
-      { key: 'notes', label: 'Notes', type: 'string', description: 'Order notes' },
-    ],
-  },
-  {
-    module: 'contacts',
-    label: 'Contacts',
-    description: 'Business contacts',
-    uniqueKeys: ['id'],
-    fields: [
-      { key: 'name', label: 'Name', type: 'string', required: true, description: 'Contact name', example: 'Abebe Kebede' },
-      { key: 'phone', label: 'Phone', type: 'string', required: true, description: 'Phone number', example: '+251911000000' },
-      { key: 'category', label: 'Category', type: 'string', description: 'Contact category', example: 'supplier' },
       { key: 'notes', label: 'Notes', type: 'string', description: 'Additional notes' },
     ],
   },
@@ -222,16 +163,118 @@ export function getSchema(module: string): ModuleSchema | undefined {
   return MODULE_SCHEMAS.find(s => s.module === module)
 }
 
+const TEMPLATE_SAMPLE_ROWS: Record<string, Record<string, string[]>> = {
+  sales: {
+    itemName: ['Coffee Beans 250g', 'Tea Leaves 100g', 'Sugar 1kg', 'Milk 1L', 'Bread Loaf'],
+    quantity: ['2', '5', '10', '3', '12'],
+    unit: ['pcs', 'pcs', 'pcs', 'pcs', 'pcs'],
+    unitType: ['base', 'base', 'base', 'base', 'base'],
+    totalPrice: ['600.00', '400.00', '275.00', '240.00', '600.00'],
+    discount: ['0', '0', '25.00', '0', '60.00'],
+    paymentMethod: ['cash', 'cash', 'cash', 'bank_transfer', 'cash'],
+    paymentStatus: ['Paid', 'Paid', 'Paid', 'Paid', 'Paid'],
+    customerName: ['Abebe Kebede', 'Selam Tesfaye', '', 'Worku Alemu', 'Hanna Girma'],
+    customerPhone: ['+251911123456', '+251912234567', '', '+251913345678', '+251914456789'],
+    paidAmount: ['600.00', '400.00', '275.00', '240.00', '600.00'],
+    createdAt: ['2025-01-15', '2025-01-16', '2025-01-17', '2025-01-18', '2025-01-19'],
+  },
+  inventory: {
+    name: ['Coffee Beans 250g', 'Tea Leaves 100g', 'Sugar 1kg', 'Milk 1L', 'Bread Loaf'],
+    categoryName: ['Beverages', 'Beverages', 'Groceries', 'Dairy', 'Bakery'],
+    purchaseUnit: ['kg', 'kg', 'kg', 'L', 'pcs'],
+    baseUnit: ['g', 'g', 'g', 'ml', 'pcs'],
+    unitsPerPack: ['1000', '1000', '1000', '1000', '1'],
+    basePurchasePrice: ['180.00', '60.00', '22.00', '70.00', '40.00'],
+    baseSellingPrice: ['240.00', '80.00', '30.00', '80.00', '50.00'],
+    packPurchasePrice: ['1800.00', '600.00', '2200.00', '700.00', '0'],
+    packSellingPrice: ['2400.00', '800.00', '3000.00', '800.00', '0'],
+    totalBaseQuantity: ['25000', '8000', '15000', '2000', '500'],
+    totalPackQuantity: ['0', '0', '0', '0', '0'],
+    supplierName: ['Ethiopia Coffee Union', 'Lipton Tea', 'Wonji Sugar', 'Ethio Dairy', 'Addis Bakery'],
+    expiryDate: ['2026-06-30', '2026-03-31', '2027-01-15', '2025-03-10', '2025-02-05'],
+    notes: ['Imported arabica', 'Premium black tea', 'Refined sugar', 'Pasteurized', 'Fresh daily'],
+  },
+  customers: {
+    customerName: ['Abebe Kebede', 'Selam Tesfaye', 'Worku Alemu', 'Hanna Girma', 'Yonas Bekele'],
+    phone: ['+251911123456', '+251912234567', '+251913345678', '+251914456789', '+251915567890'],
+    email: ['abebe@example.com', 'selam@example.com', 'worku@example.com', 'hanna@example.com', 'yonas@example.com'],
+    address: ['Bole Road', 'Piassa', 'Megenagna', 'Kazanchis', 'Bole Bulbula'],
+    city: ['Addis Ababa', 'Addis Ababa', 'Addis Ababa', 'Addis Ababa', 'Addis Ababa'],
+    company: ['Kebede Enterprises', 'Selam Traders', '', 'Girma Retail', 'Bekele & Sons'],
+    groupName: ['general', 'general', 'wholesale', 'general', 'general'],
+    creditLimit: ['50000.00', '30000.00', '100000.00', '25000.00', '0'],
+    notes: ['Preferred customer', '', 'Bulk orders', '', 'Credit approved'],
+  },
+  suppliers: {
+    supplierName: ['Ethiopia Coffee Union', 'Lipton Tea Import', 'Wonji Sugar Factory', 'Ethio Dairy Products', 'Addis Bakery Supplies'],
+    companyName: ['ECU Plc', 'Lipton Tea Limited', 'Wonji Sugar SC', 'Ethio Dairy SC', 'Addis Bakery Plc'],
+    contactPerson: ['Alemayehu Tadesse', 'John Smith', 'Kebede Haile', 'Michael Johnson', 'Sara Mohammed'],
+    phone: ['+251911111111', '+251912222222', '+251913333333', '+251914444444', '+251915555555'],
+    email: ['sales@ecu.com', 'info@liptontea.com', 'contact@wonjisugar.com', 'orders@ethiodairy.com', 'info@addisbakery.com'],
+    address: ['Churchill Avenue', 'Mexico Square', 'Wonji Town', 'Kality', 'Ayer Tena'],
+    city: ['Addis Ababa', 'Addis Ababa', 'Oromia', 'Addis Ababa', 'Addis Ababa'],
+    paymentTerms: ['Net 30', 'Net 45', 'Net 15', 'Net 30', 'COD'],
+    creditLimit: ['200000.00', '150000.00', '250000.00', '100000.00', '50000.00'],
+    notes: ['Main coffee supplier', 'Tea supplier', 'Sugar supplier', 'Dairy supplier', 'Bakery supplies'],
+  },
+  shipments: {
+    destination: ['Addis Ababa', 'Bahir Dar', 'Hawassa', 'Dire Dawa', 'Mekelle'],
+    origin: ['Bishoftu', 'Addis Ababa', 'Addis Ababa', 'Nazareth', 'Addis Ababa'],
+    driverName: ['Getachew Mamo', 'Dawit Abebe', 'Solomon Tesfaye', 'Mekonnen Alemu', 'Tadesse Bekele'],
+    driverPhone: ['+251911000001', '+251911000002', '+251911000003', '+251911000004', '+251911000005'],
+    vehicleInfo: ['AA-1234-AB', 'AA-5678-CD', 'BA-9101-EF', 'DD-1121-GH', 'ME-3141-JK'],
+    status: ['delivered', 'in_transit', 'pending', 'delivered', 'in_transit'],
+    scheduledDate: ['2025-01-20', '2025-01-22', '2025-01-25', '2025-01-21', '2025-01-28'],
+    notes: ['Priority delivery', 'Partial load', 'Awaiting dispatch', 'Express', 'Fragile cargo'],
+  },
+  warehouses: {
+    name: ['Main Warehouse', 'Bole Storage', 'Piassa Depot', 'Kality Warehouse', 'Airport Hub'],
+    location: ['Bole', 'Bole', 'Piassa', 'Kality', 'Bole Airport'],
+    managerName: ['Alem Belay', 'Marta Worku', 'Fikru Lemma', 'Tsion Haile', 'Girma Mengistu'],
+    managerPhone: ['+251911222001', '+251911222002', '+251911222003', '+251911222004', '+251911222005'],
+    email: ['main@shega.com', 'bole@shega.com', 'piassa@shega.com', 'kality@shega.com', 'airport@shega.com'],
+  },
+  employees: {
+    firstName: ['Abebe', 'Selam', 'Worku', 'Hanna', 'Yonas'],
+    lastName: ['Kebede', 'Tesfaye', 'Alemu', 'Girma', 'Bekele'],
+    employeeCode: ['EMP-001', 'EMP-002', 'EMP-003', 'EMP-004', 'EMP-005'],
+    phone: ['+251911333001', '+251911333002', '+251911333003', '+251911333004', '+251911333005'],
+    email: ['abebe.k@shega.com', 'selam.t@shega.com', 'worku.a@shega.com', 'hanna.g@shega.com', 'yonas.b@shega.com'],
+    department: ['Sales', 'Finance', 'Inventory', 'Support', 'Management'],
+    roleName: ['Cashier', 'Accountant', 'Storekeeper', 'Customer Service', 'Manager'],
+    hireDate: ['2024-01-10', '2024-02-15', '2024-03-20', '2024-04-25', '2024-05-30'],
+    notes: ['Full time', 'Full time', 'Full time', 'Full time', 'Full time'],
+  },
+  'supplier-purchases': {
+    purchaseNumber: ['PO-001', 'PO-002', 'PO-003', 'PO-004', 'PO-005'],
+    supplierName: ['Ethiopia Coffee Union', 'Lipton Tea Import', 'Wonji Sugar Factory', 'Ethio Dairy Products', 'Addis Bakery Supplies'],
+    itemName: ['Coffee Beans 250g', 'Tea Leaves 100g', 'Sugar 1kg', 'Milk 1L', 'Bread Loaf'],
+    quantity: ['100', '50', '200', '30', '120'],
+    unitPrice: ['180.00', '60.00', '22.00', '70.00', '40.00'],
+    totalPrice: ['18000.00', '3000.00', '4400.00', '2100.00', '4800.00'],
+    purchaseDate: ['2025-01-05', '2025-01-08', '2025-01-10', '2025-01-12', '2025-01-14'],
+    dueDate: ['2025-02-05', '2025-02-08', '2025-01-25', '2025-02-12', '2025-01-14'],
+    status: ['received', 'received', 'received', 'received', 'pending'],
+    notes: ['Monthly order', 'Quarterly order', 'Sugar restock', 'Weekly delivery', 'Daily order'],
+  },
+}
+
+const TEMPLATE_SAMPLE_COUNT = 5
+
 export function generateCSVTemplate(module: string): string {
   const schema = getSchema(module)
   if (!schema) return ''
   const bom = '\uFEFF'
   const headers = schema.fields.map(f => `"${f.label}"`).join(',')
-  const examples = schema.fields.map(f => {
-    if (f.required) return `"${f.example || ''}"`
-    return '""'
-  }).join(',')
-  return `${bom}${headers}\n${examples}\n`
+  const samples = TEMPLATE_SAMPLE_ROWS[module] || {}
+  const rows: string[] = []
+  for (let i = 0; i < TEMPLATE_SAMPLE_COUNT; i++) {
+    rows.push(schema.fields.map(f => {
+      const value = (samples[f.key] && samples[f.key][i]) ?? f.example ?? ''
+      return `"${value.replace(/"/g, '""')}"`
+    }).join(','))
+  }
+  return `${bom}${headers}\n${rows.join('\n')}\n`
 }
 
 export function generateCSVExport(module: string, data: Record<string, any>[]): string {

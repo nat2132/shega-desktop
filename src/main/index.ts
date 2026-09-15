@@ -3,10 +3,13 @@ import { app, BrowserWindow, dialog, screen } from 'electron';
 import { join } from 'path';
 import { initDB } from './database';
 import { registerIPCHandlers } from './ipc-handlers';
+import { reconcileUserBridge } from './user-bridge';
 import { appUpdater } from './updater';
 import { SyncHub, SYNC_PORT } from './sync-hub';
 import { startPeerSync, stopPeerSync, getUnifiedSyncStatus } from './peer-sync';
 import { registerPairingCloudHandlers } from './pairing-cloud';
+import { registerPeripheralHandlers } from './sync/peripheral-ipc';
+import { registerMorHandlers } from './mor';
 import { logger } from './logger';
 
 export const syncHub = new SyncHub();
@@ -114,8 +117,11 @@ function createWindow() {
 app.whenReady().then(() => {
   try {
     initDB();
+  reconcileUserBridge();
   registerIPCHandlers();
   registerPairingCloudHandlers();
+  registerPeripheralHandlers();
+  registerMorHandlers();
   syncHub.start(SYNC_PORT);
   startPeerSync();
   createWindow();

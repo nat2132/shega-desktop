@@ -1,14 +1,11 @@
 import * as React from "react"
-import { motion, AnimatePresence } from "framer-motion"
+import { motion } from "framer-motion"
 import {
   LayoutDashboard,
-  Package,
   ShoppingCart,
-  ShoppingBag,
-  Receipt,
+  Package,
   Users,
   BarChart3,
-  SlidersHorizontal,
   Settings,
   HelpCircle,
   Warehouse,
@@ -16,20 +13,22 @@ import {
   Building2,
   Shield,
   PiggyBank,
-  Bell,
   FileText,
-  Contact,
-  PieChart,
   Sparkles,
   Crown,
   UserCog,
+  Plus,
+  ChevronDown,
+  History,
+  Boxes,
+  ShoppingBag,
+  type LucideIcon,
 } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 
 import { useAuth } from "../context/AuthContext"
 import { useSettings } from "../context/SettingsContext"
 import { useSubscription } from "../context/SubscriptionContext"
-import { NAV_ITEM_MODULE, NAV_ITEM_PREMIUM } from "../utils/feature-modules"
 import { NavUser } from "@renderer/components/nav-user"
 import PremiumBadge from "@renderer/components/PremiumBadge"
 import {
@@ -40,58 +39,160 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
+  useSidebar,
 } from "@renderer/components/ui/sidebar"
-
-const navMain = [
-  { title: "dashboard", url: "/", icon: LayoutDashboard, permission: "dashboard" },
-  { title: "inventory", url: "/inventory", icon: Package, permission: "inventory" },
-  { title: "sales", url: "/sales", icon: ShoppingCart, permission: "sales" },
-  { title: "expense", url: "/expenses", icon: Receipt, permission: "expenses" },
-  { title: "customers", url: "/customers", icon: Users, permission: "customers" },
-  { title: "orders", url: "/orders", icon: ShoppingBag, permission: "orders.view" },
-  { title: "debt_management", url: "/debt-management", icon: PiggyBank, permission: "customers" },
-  { title: "analytics", url: "/analytics", icon: BarChart3, permission: "analytics" },
-  { title: "warehouses", url: "/warehouses", icon: Warehouse, permission: "warehouses" },
-  { title: "users_employees", url: "/users", icon: Users, permission: "employees" },
-  { title: "employees", url: "/employees", icon: UserCog, permission: "employees" },
-  { title: "shipments", url: "/shipments", icon: Truck, permission: "shipments" },
-  { title: "suppliers", url: "/suppliers", icon: Building2, permission: "suppliers" },
-  { title: "logistics", url: "/adjustments", icon: SlidersHorizontal, permission: "adjustments" },
-  { title: "reports", url: "/reports", icon: FileText, permission: "analytics" },
-  { title: "budgets", url: "/budgets", icon: PieChart, permission: "expenses" },
-  { title: "contacts", url: "/contacts", icon: Contact, permission: "customers" },
-  { title: "subscription", url: "/subscription", icon: Crown, permission: "dashboard" },
-]
-
-const navSecondary = [
-  { title: "reminders", url: "/reminders", icon: Bell, permission: "dashboard" },
-  { title: "audit_logs", url: "/audit-logs", icon: Shield, permission: "audit.view" },
-  { title: "settings", url: "/settings", icon: Settings, permission: "settings" },
-  { title: "get_help", url: "https://shega.tech/support", icon: HelpCircle, permission: null },
-]
-
 import { BrandedLogo } from "./branded-logo"
+import { cn } from "@renderer/utils/shadcn"
+
+type NavLinkItem = {
+  title: string
+  url: string
+  icon: LucideIcon
+  permission: string | null
+  module?: string
+  premium?: string
+  superAdminOnly?: boolean
+  adminOrEmployees?: boolean
+  external?: boolean
+}
+
+type NavSection = {
+  id: string
+  title: string
+  icon: LucideIcon
+  defaultUrl: string
+  items: NavLinkItem[]
+}
+
+const navSections: NavSection[] = [
+  {
+    id: 'home',
+    title: 'home',
+    icon: LayoutDashboard,
+    defaultUrl: '/',
+    items: [{ title: 'business', url: '/', icon: LayoutDashboard, permission: 'dashboard' }],
+  },
+  {
+    id: 'sales',
+    title: 'sales',
+    icon: ShoppingCart,
+    defaultUrl: '/sales',
+    items: [
+      { title: 'new_sale', url: '/register', icon: Plus, permission: 'sales.create', module: 'sales' },
+      { title: 'sales_history', url: '/sales', icon: History, permission: 'sales', module: 'sales' },
+    ],
+  },
+  {
+    id: 'inventory',
+    title: 'inventory',
+    icon: Package,
+    defaultUrl: '/inventory',
+    items: [
+      { title: 'products', url: '/inventory', icon: Boxes, permission: 'inventory', module: 'inventory' },
+      { title: 'warehouses', url: '/warehouses', icon: Warehouse, permission: 'warehouses', module: 'warehouses' },
+      { title: 'shipments', url: '/shipments', icon: Truck, permission: 'shipments', module: 'shipments', premium: 'shipments' },
+      { title: 'suppliers', url: '/suppliers', icon: Building2, permission: 'suppliers', module: 'suppliers', premium: 'suppliers' },
+    ],
+  },
+  {
+    id: 'customers',
+    title: 'customers',
+    icon: Users,
+    defaultUrl: '/customers',
+    items: [
+      { title: 'customers', url: '/customers', icon: Users, permission: 'customers', module: 'customers' },
+      { title: 'debt_management', url: '/debt-management', icon: PiggyBank, permission: 'customers', module: 'customers' },
+    ],
+  },
+  {
+    id: 'reports',
+    title: 'reports',
+    icon: FileText,
+    defaultUrl: '/reports',
+    items: [
+      { title: 'reports', url: '/reports', icon: FileText, permission: 'analytics', module: 'analytics', premium: 'reports' },
+      { title: 'analytics', url: '/analytics', icon: BarChart3, permission: 'analytics', module: 'analytics' },
+    ],
+  },
+  {
+    id: 'settings',
+    title: 'settings',
+    icon: Settings,
+    defaultUrl: '/settings',
+    items: [
+      { title: 'team', url: '/users', icon: UserCog, permission: 'employees', module: 'employees', premium: 'users', adminOrEmployees: true },
+      { title: 'app_settings', url: '/settings', icon: Settings, permission: 'settings' },
+      { title: 'subscription', url: '/subscription', icon: Crown, permission: 'dashboard' },
+      { title: 'audit_logs', url: '/audit-logs', icon: Shield, permission: 'audit.view', premium: 'audit' },
+      { title: 'get_help', url: 'https://shega.tech/support', icon: HelpCircle, permission: null, external: true },
+    ],
+  },
+]
+
+const GROUPS_STORAGE_KEY = 'shega.sidebar.groups'
+
+function loadCollapsed(): string[] {
+  try {
+    const raw = localStorage.getItem(GROUPS_STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as string[]) : []
+  } catch {
+    return []
+  }
+}
+
+const isRouteActive = (url: string, pathname: string) =>
+  url === '/' ? pathname === '/' : pathname === url || pathname.startsWith(url + '/')
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const location = useLocation();
-  const { currentAdmin, hasPermission } = useAuth();
+  const { state } = useSidebar();
+  const { currentAdmin, hasPermission, isSuperAdmin } = useAuth();
   const { t, currentBusiness, isModuleEnabled } = useSettings();
   const { isPremium, isTrial } = useSubscription();
 
+  const [collapsedIds, setCollapsedIds] = React.useState<string[]>(loadCollapsed);
   const [appVersion, setAppVersion] = React.useState('');
+
   React.useEffect(() => {
     window.api?.getAppVersion().then(setAppVersion).catch(() => {});
   }, []);
 
-  const filteredMain = navMain.filter(item => {
-    if (!hasPermission(item.permission)) return false;
-    const moduleId = NAV_ITEM_MODULE[item.title];
-    return !moduleId || isModuleEnabled(moduleId);
-  });
-  const filteredSecondary = navSecondary.filter(item => {
-    if (item.permission && !hasPermission(item.permission)) return false;
-    return true;
-  });
+  React.useEffect(() => {
+    localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(collapsedIds));
+  }, [collapsedIds]);
+
+  // Auto-expand the section that contains the active route.
+  React.useEffect(() => {
+    const active = navSections.find((s) => s.items.some((i) => !i.external && isRouteActive(i.url, location.pathname)));
+    if (active) {
+      setCollapsedIds((prev) => prev.filter((id) => id !== active.id));
+    }
+  }, [location.pathname]);
+
+  const visibleSections = React.useMemo(
+    () =>
+      navSections
+        .map((section) => ({
+          ...section,
+          items: section.items.filter((item) => {
+            if (item.superAdminOnly) return isSuperAdmin;
+            if (item.adminOrEmployees) {
+              if (isSuperAdmin) return true;
+              if (item.permission && !hasPermission(item.permission)) return false;
+              if (item.module && !isModuleEnabled(item.module)) return false;
+              return true;
+            }
+            if (item.permission && !hasPermission(item.permission)) return false;
+            if (item.module && !isModuleEnabled(item.module)) return false;
+            return true;
+          }),
+        }))
+        .filter((section) => section.items.length > 0),
+    [hasPermission, isModuleEnabled, isSuperAdmin]
+  );
 
   const user = {
     name: currentAdmin?.name || t('common.unknown'),
@@ -102,6 +203,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         : t('common.admin'),
     avatar: currentAdmin?.avatar || "",
   };
+
+  const sectionActive = (section: NavSection) =>
+    section.items.some((item) => !item.external && isRouteActive(item.url, location.pathname));
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -121,71 +225,89 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
-      </SidebarHeader>
+
+        </SidebarHeader>
+
       <SidebarContent className="px-2">
-        <AnimatePresence mode="wait">
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.3 }}
-          >
-            <SidebarMenu>
-              <div className="space-y-0.5 py-2">
-                <p className="px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground/50 group-data-[collapsible=icon]:hidden">{t('tabs.main_terminal')}</p>
-                {filteredMain.map((item) => {
-                  const isPremiumItem = NAV_ITEM_PREMIUM[item.title];
-                  const isLocked = isPremiumItem && !isPremium && !isTrial;
-                  const isActive = location.pathname === item.url;
-                  return (
-                  <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton
-                      asChild
-                      isActive={isActive}
-                      className={`relative overflow-hidden transition-all duration-200 ${isActive ? 'bg-accent/60 font-medium' : 'hover:bg-accent/30'} ${isLocked ? 'opacity-60' : ''}`}
-                    >
-                      <Link to={item.url} className="flex items-center gap-3">
-                        <item.icon className="size-[18px]" />
-                        <span className="text-xs font-medium tracking-wide group-data-[collapsible=icon]:hidden">{t(`tabs.${item.title}` as any)}</span>
-                        {isPremiumItem && !isPremium && !isTrial && (
-                          <PremiumBadge size="sm" showIcon={false} className="ml-auto" />
-                        )}
-                        {item.title === 'subscription' && (isPremium || isTrial) && (
-                          <Sparkles className="h-3 w-3 text-amber-500 ml-auto" />
-                        )}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.3 }}
+        >
+          <SidebarMenu className="gap-3 py-2">
+            {visibleSections.map((section) => {
+              const isOpen = !collapsedIds.includes(section.id);
+              const active = sectionActive(section);
+              const label = t(`tabs.${section.title}`);
+
+              // Icon mode: sections become single navigation icons.
+              if (state === 'collapsed') {
+                return (
+                  <SidebarMenuItem key={section.id}>
+                    <SidebarMenuButton asChild size="default" isActive={active} tooltip={label} className="transition-all duration-200 hover:bg-accent/30">
+                      <Link to={section.defaultUrl} aria-label={label}>
+                        <section.icon className="size-[18px]" />
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-                )})}
-              </div>
+                );
+              }
 
-              <div className="space-y-0.5 py-2">
-                <p className="px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground/50 group-data-[collapsible=icon]:hidden">{t('tabs.system_config')}</p>
-                {filteredSecondary.map((item) => (
-                  <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton
-                      asChild
-                      isActive={location.pathname === item.url}
-                      className="transition-all duration-200 hover:bg-accent/30"
-                    >
-                      {item.url.startsWith('http') ? (
-                        <button onClick={() => window.api.openExternal(item.url)} className="flex items-center gap-3 w-full">
-                          <item.icon className="size-[18px]" />
-                          <span className="text-xs font-medium tracking-wide group-data-[collapsible=icon]:hidden">{t(`tabs.${item.title}` as any)}</span>
-                        </button>
-                      ) : (
-                        <Link to={item.url} className="flex items-center gap-3">
-                          <item.icon className="size-[18px]" />
-                          <span className="text-xs font-medium tracking-wide group-data-[collapsible=icon]:hidden">{t(`tabs.${item.title}` as any)}</span>
-                        </Link>
-                      )}
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </div>
-            </SidebarMenu>
-          </motion.div>
-        </AnimatePresence>
+              return (
+                <SidebarMenuItem key={section.id}>
+                  <SidebarMenuButton
+                    size="default"
+                    onClick={() => setCollapsedIds((prev) => (isOpen ? [...prev, section.id] : prev.filter((id) => id !== section.id)))}
+                    isActive={active}
+                    className={cn(
+                      'relative overflow-hidden transition-all duration-200',
+                      active && 'bg-accent/60 font-medium',
+                      !active && 'hover:bg-accent/30'
+                    )}
+                  >
+                    <section.icon className="size-[18px]" />
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/90">{label}</span>
+                    <ChevronDown className={cn('ml-auto size-3.5 shrink-0 text-muted-foreground/60 transition-transform duration-200', !isOpen && '-rotate-90')} />
+                  </SidebarMenuButton>
+
+                  {isOpen && (
+                    <SidebarMenuSub className="mt-1">
+                      {section.items.map((item) => {
+                        const isLocked = item.premium && !isPremium && !isTrial;
+                        const itemActive = !item.external && isRouteActive(item.url, location.pathname);
+                        const itemLabel = t(`tabs.${item.title}`);
+                        const inner = item.external ? (
+                          <button onClick={() => window.api.openExternal(item.url)} className="flex w-full items-center gap-2 text-left">
+                            <item.icon className="size-4 shrink-0 text-muted-foreground" />
+                            <span className="truncate">{itemLabel}</span>
+                          </button>
+                        ) : (
+                          <Link to={item.url} className="flex w-full items-center gap-2">
+                            <item.icon className="size-4 shrink-0 text-muted-foreground" />
+                            <span className="truncate">{itemLabel}</span>
+                            {isLocked && <PremiumBadge size="sm" showIcon={false} className="ml-auto" />}
+                            {item.title === 'subscription' && (isPremium || isTrial) && (
+                              <Sparkles className="ml-auto h-3 w-3 text-amber-500" />
+                            )}
+                          </Link>
+                        );
+                        return (
+                          <SidebarMenuSubItem key={item.title}>
+                            <SidebarMenuSubButton asChild size="sm" isActive={itemActive} className={cn(isLocked && 'opacity-60')}>
+                              {inner}
+                            </SidebarMenuSubButton>
+                          </SidebarMenuSubItem>
+                        );
+                      })}
+                    </SidebarMenuSub>
+                  )}
+                </SidebarMenuItem>
+              );
+            })}
+          </SidebarMenu>
+        </motion.div>
       </SidebarContent>
+
       <SidebarFooter className="p-3 border-t border-border/30">
         <NavUser user={user} />
       </SidebarFooter>

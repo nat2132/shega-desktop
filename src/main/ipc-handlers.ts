@@ -836,7 +836,7 @@ export function registerIPCHandlers() {
   ipcMain.handle('get-sales', (_, options: any = {}) => {
     requirePermission('sales.view');
     const bizId = getActiveBusinessId();
-    let query = 'SELECT sales.*, items.name as itemName, items.basePurchasePrice, items.unitsPerPack, categories.name as categoryName FROM sales LEFT JOIN items ON sales.itemId = items.id LEFT JOIN categories ON items.categoryId = categories.id';
+    let query = 'SELECT sales.*, items.name as itemName, items.basePurchasePrice, items.unitsPerPack, items.image as itemImage, categories.name as categoryName FROM sales LEFT JOIN items ON sales.itemId = items.id LEFT JOIN categories ON items.categoryId = categories.id';
     const params: any[] = [];
     const conditions: string[] = ['sales.businessId = ?'];
     params.push(bizId);
@@ -898,7 +898,7 @@ export function registerIPCHandlers() {
 
   ipcMain.handle('get-sale', (_, id: number) => {
     requirePermission('sales.view');
-    return db.prepare('SELECT sales.*, items.name as itemName FROM sales LEFT JOIN items ON sales.itemId = items.id WHERE sales.id = ?').get(id);
+    return db.prepare('SELECT sales.*, items.name as itemName, items.image as itemImage FROM sales LEFT JOIN items ON sales.itemId = items.id WHERE sales.id = ?').get(id);
   });
 
   ipcMain.handle('insert-sales-batch', async (event, sales: any[]) => {
@@ -2062,7 +2062,7 @@ export function registerIPCHandlers() {
     }
 
     const sales = db.prepare(`
-      SELECT 'sale' as type, 'sale-' || s.id as id, s.totalPrice as amount, s.createdAt as date, i.name as description, s.customerName as extra,
+      SELECT 'sale' as type, 'sale-' || s.id as id, s.totalPrice as amount, s.createdAt as date, i.name as description, s.customerName as extra, i.image as itemImage,
         COALESCE(e.firstName || ' ' || e.lastName, u.name) as userName,
         COALESCE(e.avatar, u.avatar) as userAvatar
       FROM sales s LEFT JOIN items i ON s.itemId = i.id
@@ -2080,7 +2080,7 @@ export function registerIPCHandlers() {
     const adjFilter = dateFilter.replace(/s\.createdAt/g, 'a.createdAt').replace(/s\.businessId/g, 'a.businessId');
 
     const adjustments = db.prepare(`
-      SELECT 'adjustment' as type, 'adj-' || a.id as id, a.newValue as amount, a.createdAt as date, i.name as description, a.type as extra,
+      SELECT 'adjustment' as type, 'adj-' || a.id as id, a.newValue as amount, a.createdAt as date, i.name as description, a.type as extra, i.image as itemImage,
         COALESCE(e.avatar, u.avatar) as userAvatar, COALESCE(e.firstName || ' ' || e.lastName, u.name) as userName
       FROM adjustments a LEFT JOIN items i ON a.itemId = i.id
       LEFT JOIN employees e ON a.user_id = e.id

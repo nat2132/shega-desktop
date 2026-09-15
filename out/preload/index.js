@@ -21,19 +21,18 @@ electron.contextBridge.exposeInMainWorld("api", {
   insertItem: (item) => electron.ipcRenderer.invoke("insert-item", item),
   updateItem: (id, item) => electron.ipcRenderer.invoke("update-item", id, item),
   deleteItem: (id) => electron.ipcRenderer.invoke("delete-item", id),
+  generateShegaCode: () => electron.ipcRenderer.invoke("generate-shega-code"),
+  itemBarcodesList: (itemId) => electron.ipcRenderer.invoke("item-barcodes:list", itemId),
+  itemBarcodesAdd: (itemId, barcode) => electron.ipcRenderer.invoke("item-barcodes:add", itemId, barcode),
+  itemBarcodesRemove: (barcodeId) => electron.ipcRenderer.invoke("item-barcodes:remove", barcodeId),
+  itemBarcodesSetPrimary: (barcodeId) => electron.ipcRenderer.invoke("item-barcodes:set-primary", barcodeId),
   getLowStockItems: () => electron.ipcRenderer.invoke("get-low-stock-items"),
   getReorderSuggestions: () => electron.ipcRenderer.invoke("get-reorder-suggestions"),
   getReportDrilldowns: (range) => electron.ipcRenderer.invoke("get-report-drilldowns", range),
   getGlJournal: (range) => electron.ipcRenderer.invoke("get-gl-journal", range),
-  getGiftCards: () => electron.ipcRenderer.invoke("get-gift-cards"),
-  issueGiftCard: (data) => electron.ipcRenderer.invoke("issue-gift-card", data),
-  redeemGiftCard: (data) => electron.ipcRenderer.invoke("redeem-gift-card", data),
-  topupGiftCard: (data) => electron.ipcRenderer.invoke("topup-gift-card", data),
-  voidGiftCard: (id) => electron.ipcRenderer.invoke("void-gift-card", id),
-  getGiftCardTransactions: (cardId) => electron.ipcRenderer.invoke("get-gift-card-transactions", cardId),
   getExpiringItems: () => electron.ipcRenderer.invoke("get-expiring-items"),
   getItemsBySupplier: (supplierId) => electron.ipcRenderer.invoke("get-items-by-supplier", supplierId),
-  restockItem: (id, quantity) => electron.ipcRenderer.invoke("restock-item", id, quantity),
+  restockItem: (id, quantity, unit) => electron.ipcRenderer.invoke("restock-item", id, quantity, unit),
   archiveItem: (data) => electron.ipcRenderer.invoke("archive-item", data),
   restoreItem: (data) => electron.ipcRenderer.invoke("restore-item", data),
   getDeletedItems: () => electron.ipcRenderer.invoke("get-deleted-items"),
@@ -51,16 +50,6 @@ electron.contextBridge.exposeInMainWorld("api", {
   reverseDebtPayment: (data) => electron.ipcRenderer.invoke("reverse-debt-payment", data),
   createReturn: (data) => electron.ipcRenderer.invoke("create-return", data),
   getReturns: (options) => electron.ipcRenderer.invoke("get-returns", options),
-  // Expenses
-  getExpenses: (options) => electron.ipcRenderer.invoke("get-expenses", options),
-  insertExpense: (expense) => electron.ipcRenderer.invoke("insert-expense", expense),
-  updateExpense: (id, expense) => electron.ipcRenderer.invoke("update-expense", id, expense),
-  deleteExpense: (id) => electron.ipcRenderer.invoke("delete-expense", id),
-  // Adjustments
-  getAdjustments: (options) => electron.ipcRenderer.invoke("get-adjustments", options),
-  insertAdjustment: (adjustment) => electron.ipcRenderer.invoke("insert-adjustment", adjustment),
-  insertBulkAdjustments: (adjustments) => electron.ipcRenderer.invoke("insert-bulk-adjustments", adjustments),
-  reverseAdjustment: (data) => electron.ipcRenderer.invoke("reverse-adjustment", data),
   // Notifications
   checkNotifications: () => electron.ipcRenderer.invoke("check-notifications"),
   getNotifications: (options) => electron.ipcRenderer.invoke("get-notifications", options),
@@ -97,6 +86,13 @@ electron.contextBridge.exposeInMainWorld("api", {
   // Analytics / Dashboard
   getDashboardStats: () => electron.ipcRenderer.invoke("get-dashboard-stats"),
   getRecentActivity: (limit, dateRange) => electron.ipcRenderer.invoke("get-recent-activity", limit, dateRange),
+  // P2P Yjs + WebRTC sync
+  p2pHealth: () => electron.ipcRenderer.invoke("p2p:health"),
+  p2pDevices: () => electron.ipcRenderer.invoke("p2p:devices"),
+  p2pAnnounce: () => electron.ipcRenderer.invoke("p2p:announce"),
+  p2pRevokeDevice: (deviceId) => electron.ipcRenderer.invoke("p2p:revoke-device", deviceId),
+  p2pRenameDevice: (deviceId, name) => electron.ipcRenderer.invoke("p2p:rename-device", deviceId, name),
+  p2pRecordCounts: () => electron.ipcRenderer.invoke("p2p:record-counts"),
   getAnalytics: (period, dateRange) => electron.ipcRenderer.invoke("get-analytics", period, dateRange),
   getVatReport: (dateRange) => electron.ipcRenderer.invoke("get-vat-report", dateRange),
   getVoidedSales: (options) => electron.ipcRenderer.invoke("get-voided-sales", options),
@@ -119,7 +115,9 @@ electron.contextBridge.exposeInMainWorld("api", {
   // Admin Management
   login: (username, pin) => electron.ipcRenderer.invoke("login", username, pin),
   getAdmins: () => electron.ipcRenderer.invoke("get-admins"),
-  getCurrentAdmin: (id) => electron.ipcRenderer.invoke("get-current-admin", id),
+  getLoginUsers: () => electron.ipcRenderer.invoke("get-login-users"),
+  loginByUser: (source, id, pin) => electron.ipcRenderer.invoke("login-by-user", source, id, pin),
+  getCurrentAdmin: (id, isEmployee) => electron.ipcRenderer.invoke("get-current-admin", id, isEmployee),
   insertAdmin: (admin) => electron.ipcRenderer.invoke("insert-admin", admin),
   updateAdmin: (id, admin) => electron.ipcRenderer.invoke("update-admin", id, admin),
   deleteAdmin: (id) => electron.ipcRenderer.invoke("delete-admin", id),
@@ -238,6 +236,9 @@ electron.contextBridge.exposeInMainWorld("api", {
   openCashDrawer: () => electron.ipcRenderer.invoke("open-cash-drawer"),
   printTestPage: () => electron.ipcRenderer.invoke("print-test-page"),
   printLabel: (label) => electron.ipcRenderer.invoke("print-label", label),
+  barcodePng: (value) => electron.ipcRenderer.invoke("barcode-png", value),
+  barcodePngDataUrl: (value) => electron.ipcRenderer.invoke("barcode-png-dataurl", value),
+  simulateScan: (code) => electron.ipcRenderer.invoke("simulate-scan", code),
   getPrintStatus: () => electron.ipcRenderer.invoke("get-print-status"),
   setPrinterConfig: (cfg) => electron.ipcRenderer.invoke("set-printer-config", cfg),
   parseScaleReading: (line) => electron.ipcRenderer.invoke("parse-scale-reading", line),
@@ -246,11 +247,6 @@ electron.contextBridge.exposeInMainWorld("api", {
   syncVerify: () => electron.ipcRenderer.invoke("sync:verify"),
   syncLog: (limit) => electron.ipcRenderer.invoke("sync:log", limit),
   syncResync: (deviceId) => electron.ipcRenderer.invoke("sync:resync", deviceId),
-  cloudStatus: () => electron.ipcRenderer.invoke("cloud:status"),
-  cloudSync: () => electron.ipcRenderer.invoke("cloud:sync"),
-  saveCloudConfig: (url, key) => electron.ipcRenderer.invoke("cloud:save-config", url, key),
-  cloudEnabled: (enabled) => electron.ipcRenderer.invoke("cloud:set-enabled", enabled),
-  cloudSelfStatus: () => electron.ipcRenderer.invoke("cloud:self-status"),
   // Audit (Phase 4)
   verifyAuditChain: () => electron.ipcRenderer.invoke("verify-audit-chain"),
   // Draft Sales
@@ -258,23 +254,6 @@ electron.contextBridge.exposeInMainWorld("api", {
   getDraftSale: (id) => electron.ipcRenderer.invoke("get-draft-sale", id),
   saveDraftSale: (data) => electron.ipcRenderer.invoke("save-draft-sale", data),
   deleteDraftSale: (id) => electron.ipcRenderer.invoke("delete-draft-sale", id),
-  // Contacts
-  getContacts: (options) => electron.ipcRenderer.invoke("get-contacts", options),
-  insertContact: (data) => electron.ipcRenderer.invoke("insert-contact", data),
-  updateContact: (id, data) => electron.ipcRenderer.invoke("update-contact", id, data),
-  deleteContact: (id) => electron.ipcRenderer.invoke("delete-contact", id),
-  // Budgets
-  getBudgets: (options) => electron.ipcRenderer.invoke("get-budgets", options),
-  setBudget: (data) => electron.ipcRenderer.invoke("set-budget", data),
-  deleteBudget: (id) => electron.ipcRenderer.invoke("delete-budget", id),
-  getBudgetAdjustments: (budgetId) => electron.ipcRenderer.invoke("get-budget-adjustments", budgetId),
-  createBudgetAdjustment: (data) => electron.ipcRenderer.invoke("create-budget-adjustment", data),
-  approveBudgetAdjustment: (id, approvedBy) => electron.ipcRenderer.invoke("approve-budget-adjustment", id, approvedBy),
-  duplicateBudget: (fromData, toMonth, toYear) => electron.ipcRenderer.invoke("duplicate-budget", fromData, toMonth, toYear),
-  getBudgetAlerts: (options) => electron.ipcRenderer.invoke("get-budget-alerts", options),
-  acknowledgeBudgetAlert: (id) => electron.ipcRenderer.invoke("acknowledge-budget-alert", id),
-  getBudgetReport: (options) => electron.ipcRenderer.invoke("get-budget-report", options),
-  getBudgetForecast: (options) => electron.ipcRenderer.invoke("get-budget-forecast", options),
   // Supplier Price Checks
   getSupplierPriceChecks: (supplierId) => electron.ipcRenderer.invoke("get-supplier-price-checks", supplierId),
   saveSupplierPriceCheck: (data) => electron.ipcRenderer.invoke("save-supplier-price-check", data),
@@ -347,6 +326,20 @@ electron.contextBridge.exposeInMainWorld("api", {
     electron.ipcRenderer.removeAllListeners("update:progress");
     electron.ipcRenderer.removeAllListeners("update:error");
   },
+  // POS Products & Categories (cashier-safe)
+  posProducts: () => electron.ipcRenderer.invoke("pos:products"),
+  posCategories: () => electron.ipcRenderer.invoke("pos:categories"),
+  posRegisters: () => electron.ipcRenderer.invoke("pos:shift-by-register"),
+  // POS Shifts (cashier)
+  posLastShift: (cashierId) => electron.ipcRenderer.invoke("shift:last-by-cashier", cashierId),
+  shiftOpen: (data) => electron.ipcRenderer.invoke("shift:open", data),
+  shiftClose: (shiftId, data) => electron.ipcRenderer.invoke("shift:close", shiftId, data),
+  shiftMidAudit: (shiftId, countedCash, notes) => electron.ipcRenderer.invoke("shift:mid-audit", shiftId, countedCash, notes),
+  shiftActive: (registerId) => electron.ipcRenderer.invoke("shift:active", registerId),
+  shiftById: (shiftId) => electron.ipcRenderer.invoke("shift:by-id", shiftId),
+  shiftTransactions: (shiftId) => electron.ipcRenderer.invoke("shift:transactions", shiftId),
+  shiftSummary: (shiftId) => electron.ipcRenderer.invoke("shift:summary", shiftId),
+  shiftRecordTransaction: (data) => electron.ipcRenderer.invoke("shift:record-transaction", data),
   // Shared Business Model (registers, devices, roles, people)
   businessListRegisters: () => electron.ipcRenderer.invoke("business:list-registers"),
   businessAddRegister: (name, locationId) => electron.ipcRenderer.invoke("business:add-register", name, locationId),
@@ -371,12 +364,55 @@ electron.contextBridge.exposeInMainWorld("api", {
   pairingList: () => electron.ipcRenderer.invoke("pairing:list"),
   pairingInvite: (input) => electron.ipcRenderer.invoke("pairing:invite", input),
   pairingRevoke: (id) => electron.ipcRenderer.invoke("pairing:revoke", id),
-  pairingDecide: (id, decision) => electron.ipcRenderer.invoke("pairing:decide", id, decision),
+  pairingDecide: (id, decision, role, permissions) => electron.ipcRenderer.invoke("pairing:decide", id, decision, role, permissions),
   pairingQrCode: (text) => electron.ipcRenderer.invoke("pairing:qr-code", text),
+  joinLookup: (code) => electron.ipcRenderer.invoke("join:lookup", code),
+  joinAccept: (input) => electron.ipcRenderer.invoke("join:accept", input),
+  joinStatus: (invitationId) => electron.ipcRenderer.invoke("join:status", invitationId),
+  joinActivate: (pin) => electron.ipcRenderer.invoke("join:activate", pin),
+  joinCancel: () => electron.ipcRenderer.invoke("join:cancel"),
+  // Tax computation (existing pos modules, now reachable)
+  taxCalculateWht: (input) => electron.ipcRenderer.invoke("tax:wht", input),
+  taxCalculateVatReturn: (input) => electron.ipcRenderer.invoke("tax:vat-return", input),
+  taxCalculateTotReturn: (input) => electron.ipcRenderer.invoke("tax:tot-return", input),
+  taxCalculateMat: (grossTurnover) => electron.ipcRenderer.invoke("tax:mat", grossTurnover),
+  taxCalculateAdvance: (estimatedAnnualTax) => electron.ipcRenderer.invoke("tax:advance", estimatedAnnualTax),
+  taxCalculatePaye: (input) => electron.ipcRenderer.invoke("tax:paye", input),
+  taxCalculatePension: (input) => electron.ipcRenderer.invoke("tax:pension", input),
+  morQrGenerate: (data) => electron.ipcRenderer.invoke("mor-qr:generate", data),
+  morQrValidate: (payload) => electron.ipcRenderer.invoke("mor-qr:validate", payload),
+  morQrPrintReceipt: (data) => electron.ipcRenderer.invoke("mor-qr:print-receipt", data),
+  complianceCheck: (context, rules) => electron.ipcRenderer.invoke("compliance:check", context, rules),
+  complianceValidateTin: (tin) => electron.ipcRenderer.invoke("compliance:validate-tin", tin),
+  complianceReport: (fromDate, toDate) => electron.ipcRenderer.invoke("compliance:report", fromDate, toDate),
+  // §U — Ministry of Revenues taxpayer verification
+  morVerify: (tin, subTin, force) => electron.ipcRenderer.invoke("mor:verify", tin, subTin, force),
+  morGet: (tin, subTin) => electron.ipcRenderer.invoke("mor:get", tin, subTin),
+  morList: () => electron.ipcRenderer.invoke("mor:list"),
+  morClear: (tin) => electron.ipcRenderer.invoke("mor:clear", tin),
+  morIsVerified: (tin, subTin) => electron.ipcRenderer.invoke("mor:is-verified", tin, subTin),
   // §15 — Manager PIN approval prompt (main → renderer event + renderer → main)
   onApprovalPrompt: (callback) => {
     electron.ipcRenderer.on("approval:prompt", (_event, payload) => callback(payload));
   },
+  onBusinessChanged: (callback) => {
+    electron.ipcRenderer.on("business-changed", (_event, payload) => callback(payload));
+  },
+  onDataChanged: (callback) => {
+    electron.ipcRenderer.on("data:changed", (_event, stats) => callback(stats));
+  },
+  removeDataChangedListeners: () => {
+    electron.ipcRenderer.removeAllListeners("data:changed");
+  },
+  // Phone-peripherals: use a connected phone as scanner / camera
+  peripheralPhones: () => electron.ipcRenderer.invoke("peripheral:phones"),
+  peripheralScan: (deviceId, timeoutMs) => electron.ipcRenderer.invoke("peripheral:scan", deviceId, timeoutMs),
+  peripheralCapture: (deviceId, mode, timeoutMs) => electron.ipcRenderer.invoke("peripheral:capture", deviceId, mode, timeoutMs),
+  peripheralCancel: (deviceId, requestId) => electron.ipcRenderer.invoke("peripheral:cancel", deviceId, requestId),
+  // QR user invites (Teams → Add User)
+  inviteCreate: (opts = {}) => electron.ipcRenderer.invoke("invites:create", opts),
+  inviteList: () => electron.ipcRenderer.invoke("invites:list"),
+  inviteDecide: (inviteId, decision, opts = {}) => electron.ipcRenderer.invoke("invites:decide", inviteId, decision, opts),
   onApprovalPinInvalid: (callback) => {
     electron.ipcRenderer.on("approval:pin-invalid", (_event, payload) => callback(payload));
   },

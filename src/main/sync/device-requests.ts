@@ -2,10 +2,12 @@
  * LAN hub device-join channel (spec §4/5/6/26).
  *
  * The hub is a *rendezvous/staging point* for device-join requests and their
- * decisions. It does NOT own the business roster (desktop has no `users` table
- * and its `devices` table is the pairing registry) — that lives on the Owner's
- * mobile. This module stores requests + decisions and relays them over the WS
- * channel; the owner's mobile turns an approval into real user/device rows.
+ * decisions. Any authorized Owner/Manager hub — on Desktop or Mobile — can
+ * serve as that rendezvous: platforms are equal first-class participants, and
+ * the business roster (users + devices) lives per-device on every authorized
+ * install, synced over LAN + Cloud. This module stores requests + decisions
+ * and relays them over the WS channel; the approving owner turns a decision
+ * into real user/device rows.
  */
 import { randomBytes } from 'crypto';
 import db from '../database';

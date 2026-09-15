@@ -5,7 +5,7 @@ import {
   Warehouse, Truck, Users, BarChart3, SlidersHorizontal, Building2
 } from 'lucide-react';
 import { useSettings } from '../../context/SettingsContext';
-import { ALL_MODULES, MODULE_META } from '../../utils/feature-modules';
+import { ALL_MODULES, MODULE_META, ONBOARDING_DEFAULT_MODULES } from '../../utils/feature-modules';
 
 interface OnboardingWizardProps {
   onComplete: () => void;
@@ -37,15 +37,6 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
       description: t('onboarding.desc_2'),
       features: [
         t('onboarding.feat_cart'), t('onboarding.feat_discount_vat'), t('onboarding.feat_receipt'), t('onboarding.feat_debt_tracking')
-      ],
-    },
-    {
-      icon: Receipt,
-      title: t('onboarding.title_3'),
-      subtitle: t('onboarding.sub_3'),
-      description: t('onboarding.desc_3'),
-      features: [
-        t('onboarding.feat_expense_categories'), t('onboarding.feat_recurring'), t('onboarding.feat_date_tracking'), t('onboarding.feat_budget_insights')
       ],
     },
     {
@@ -81,7 +72,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onComplete }) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [mounted, setMounted] = useState(false);
   const [stepTransition, setStepTransition] = useState(true);
-  const [selectedModules, setSelectedModules] = useState<string[]>([...ALL_MODULES]);
+  const [selectedModules, setSelectedModules] = useState<string[]>([...ONBOARDING_DEFAULT_MODULES]);
 
   useEffect(() => {
     setTimeout(() => setMounted(true), 100);

@@ -11,6 +11,7 @@ import { ColumnDef } from '@tanstack/react-table';
 import { toast } from 'sonner';
 
 import { useSettings } from '../context/SettingsContext';
+import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
 import { SectionCards, SectionCardData } from '../components/section-cards';
 import { DataTable } from '../components/data-table';
 import { Badge } from '../components/ui/badge';
@@ -112,6 +113,9 @@ const Customers: React.FC = () => {
     loadCustomers();
   }, []);
 
+  // Live sync: re-query when P2P/Yjs sync lands new data in SQLite.
+  useDataChangedRefresh(() => { loadCustomers(); });
+
   const loadCustomers = () => {
     window.api?.getCustomers().then((data: any[]) => {
       setCustomers(data);
@@ -145,6 +149,12 @@ const Customers: React.FC = () => {
   const openEditCustomer = (customer: Customer) => {
     setEditingCustomer({ ...customer });
     setIsEditing(true);
+    setShowFormModal(true);
+  };
+
+  const openNewCustomer = () => {
+    setEditingCustomer({ ...emptyCustomer });
+    setIsEditing(false);
     setShowFormModal(true);
   };
 
@@ -364,7 +374,7 @@ const Customers: React.FC = () => {
 
   return (
     <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 fade-in">
-      <SectionCards cards={kpiCards} />
+      <SectionCards cards={kpiCards} storageKey="customers" />
 
       <div className="px-4 lg:px-6 space-y-4">
         <div className="flex items-center justify-between">
@@ -452,6 +462,8 @@ const Customers: React.FC = () => {
           columns={columns}
           data={filteredCustomers}
           title={t('customers.header')}
+          onAddClick={openNewCustomer}
+          addLabel={t('customers.add_customer', 'Add Customer')}
         />
       </div>
 
@@ -624,11 +636,6 @@ const Customers: React.FC = () => {
               <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('customers.company', 'Company')}</Label>
               <Input value={editingCustomer.company}
                 onChange={e => setEditingCustomer({ ...editingCustomer, company: e.target.value })} />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('customers.tax_number', 'Tax Number')}</Label>
-              <Input value={editingCustomer.taxNumber}
-                onChange={e => setEditingCustomer({ ...editingCustomer, taxNumber: e.target.value })} />
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">

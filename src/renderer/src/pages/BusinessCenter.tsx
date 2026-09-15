@@ -17,6 +17,7 @@ import { toast } from 'sonner';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '../components/ui/alert-dialog';
 import { BusinessHealthScore } from '../components/BusinessHealthScore';
 import { useSettings } from '../context/SettingsContext';
+import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
 
 type Tab = 'overview' | 'registers' | 'locations' | 'devices' | 'team' | 'businesses';
 
@@ -326,6 +327,9 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
     (window.api.businessCan('team.manage').then((r) => setAccess((a) => ({ ...a, 'team.manage': r.allowed }))).catch(() => {}));
     loadPairing();
   }, []);
+
+  // Live sync: re-query when P2P/Yjs sync lands new data in SQLite.
+  useDataChangedRefresh(() => { load(); loadOverview(); loadPairing(); });
 
   useEffect(() => {
     if (!qrInvite) return;

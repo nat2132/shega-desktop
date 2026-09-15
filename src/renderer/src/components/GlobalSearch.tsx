@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Search, Package, ShoppingCart, Users, Truck, Receipt, PiggyBank, Hash, Warehouse, ClipboardList, Bell, FileEdit, Loader2, ArrowRight } from 'lucide-react';
+import { Search, Package, ShoppingCart, Users, Truck, Hash, Warehouse, ClipboardList, Bell, FileEdit, Loader2, ArrowRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Input } from './ui/input';
 import { useSettings } from '../context/SettingsContext';
@@ -9,8 +9,6 @@ const TYPE_CONFIG: Record<string, { icon: React.ElementType; color: string; labe
   sale: { icon: ShoppingCart, color: 'text-green-500', labelKey: 'global_search.type_sale' },
   customer: { icon: Users, color: 'text-purple-500', labelKey: 'global_search.type_customer' },
   supplier: { icon: Truck, color: 'text-orange-500', labelKey: 'global_search.type_supplier' },
-  expense: { icon: Receipt, color: 'text-red-500', labelKey: 'global_search.type_expense' },
-  budget: { icon: PiggyBank, color: 'text-emerald-500', labelKey: 'global_search.type_budget' },
   category: { icon: Hash, color: 'text-cyan-500', labelKey: 'global_search.type_category' },
   warehouse: { icon: Warehouse, color: 'text-amber-500', labelKey: 'global_search.type_warehouse' },
   purchase: { icon: ClipboardList, color: 'text-indigo-500', labelKey: 'global_search.type_purchase' },
@@ -26,7 +24,7 @@ interface GlobalSearchProps {
 
 export function GlobalSearch({ placeholder, onSelect }: GlobalSearchProps) {
   const navigate = useNavigate();
-  const { t } = useSettings();
+  const { t, isModuleEnabled } = useSettings();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -106,7 +104,7 @@ export function GlobalSearch({ placeholder, onSelect }: GlobalSearchProps) {
     }
   };
 
-  const typeOrder = ['item', 'sale', 'customer', 'supplier', 'expense', 'budget', 'purchase', 'adjustment', 'warehouse', 'category', 'notification', 'draft'];
+  const typeOrder = React.useMemo(() => ['item', 'sale', 'customer', 'supplier', 'purchase', 'adjustment', 'warehouse', 'category', 'notification', 'draft'].filter(type => (type !== 'warehouse' || isModuleEnabled('warehouses')) && (type !== 'customer' || isModuleEnabled('customers'))), [isModuleEnabled]);
 
   return (
     <div ref={containerRef} className="relative">

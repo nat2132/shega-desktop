@@ -45,7 +45,7 @@ export function ChartBarInteractive({
   config,
   title,
   description,
-  dataKeys = ["revenue", "expense"],
+  dataKeys = ["revenue"],
   xAxisKey = "date"
 }: ChartBarInteractiveProps) {
   const { formatDate } = useSettings()

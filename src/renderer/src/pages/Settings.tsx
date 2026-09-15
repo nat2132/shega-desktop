@@ -2,19 +2,17 @@ import React, { useState, useEffect } from 'react';
 import {
   Palette, Globe, Building2,
   CheckCircle, UploadCloud,
-  ShieldCheck, Database, Sun, Moon, Trash2, Upload, UserCog, Bell, HardDrive, RotateCcw, FileText,
+  ShieldCheck, Database, Sun, Moon, Trash2, Upload, Bell, HardDrive, RotateCcw, FileText,
   Sparkles, Leaf, Flame, Gem, Coffee, Clock, Headphones,
-  Phone, Users, HeartPulse, Info, RefreshCw, Download,
-  Package, ShoppingCart, Receipt, TrendingDown,
-  CreditCard, Warehouse, Truck, BarChart3, SlidersHorizontal, Printer, Server
+  Phone, HeartPulse, Info, RefreshCw, Download,
+  Printer, Server, Percent
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
 
 import { useSettings, Language } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
-import { MODULE_META } from '../utils/feature-modules';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { Switch } from '../components/ui/switch';
 import { Badge } from '../components/ui/badge';
 import { cn } from '../utils/shadcn';
 import Modal from '../components/Modal';
@@ -24,12 +22,11 @@ import DataTransferModal from '../components/DataTransferModal';
 import { BusinessHealthScore } from '../components/BusinessHealthScore';
 import { UpdateDialog } from '../components/UpdateDialog';
 import DeviceSettings from '../components/DeviceSettings';
+import P2pSyncStatus from '../components/P2pSyncStatus';
 import SyncSettings from '../components/SyncSettings';
 
 import companyLogo from '../assets/company.png';
-
-const profileImages = (import.meta as any).glob('../assets/profile/*.png', { eager: true, import: 'default' });
-const AVATAR_OPTIONS = Object.values(profileImages) as string[];
+import { resolveAvatar, AVATAR_OPTIONS, avatarFileNameFrom } from '../lib/avatar';
 
 const LANGUAGES: { id: Language; nameKey: string; native: string }[] = [
   { id: 'en', nameKey: 'settings.lang_en', native: 'English' },
@@ -40,16 +37,18 @@ const LANGUAGES: { id: Language; nameKey: string; native: string }[] = [
 
 const Settings: React.FC = () => {
   const { 
-    language, setLanguage, 
-    calendarType, setCalendarType, 
+    language, setLanguage,
+    calendarType, setCalendarType,
     timeSystem, setTimeSystem,
     theme, setTheme,
+    taxEnabled, setTaxEnabled,
+    taxRate, setTaxRate,
     currentBusiness, refreshBusiness,
-    t, enabledModules, setEnabledModules
+    t
   } = useSettings();
-  const { isSuperAdmin, currentAdmin, refreshAdmin } = useAuth();
+  const { currentAdmin, refreshAdmin } = useAuth();
   
-  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'notifications' | 'security' | 'data' | 'devices' | 'sync' | 'support' | 'health' | 'about'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'tax' | 'notifications' | 'data' | 'devices' | 'sync' | 'support' | 'health' | 'about'>('profile');
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [updateDialogAction, setUpdateDialogAction] = useState<'check' | 'auto'>('auto');
   const [appVersion, setAppVersion] = useState('');
@@ -208,8 +207,8 @@ const Settings: React.FC = () => {
     { id: 'profile' as const, label: t('settings.enterprise_profile'), icon: Building2 },
     { id: 'appearance' as const, label: t('settings.visual_interface'), icon: Palette },
     { id: 'system' as const, label: t('settings.localization_engine'), icon: Globe },
+    { id: 'tax' as const, label: t('settings.tax', 'Tax'), icon: Percent },
     { id: 'notifications' as const, label: t('settings.notifications'), icon: Bell },
-    { id: 'security' as const, label: t('settings.security_protocols'), icon: ShieldCheck },
     { id: 'data' as const, label: t('settings.core_database'), icon: Database },
     { id: 'devices' as const, label: 'Devices', icon: Printer },
     { id: 'sync' as const, label: 'Sync Hub', icon: Server },
@@ -301,8 +300,8 @@ const Settings: React.FC = () => {
                       <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground">{t('settings.avatar_title')}</h4>
                       <div className="flex flex-wrap gap-3">
                         {AVATAR_OPTIONS.map((src, idx) => {
-                          const filename = `profile${idx + 1}.png`;
-                          const isSelected = currentAvatar === filename;
+                          const filename = avatarFileNameFrom(src);
+                          const isSelected = currentAvatar === filename || resolveAvatar(avatar ?? currentAdmin?.avatar) === src;
                           return (
                             <div
                               key={idx}
@@ -408,69 +407,55 @@ const Settings: React.FC = () => {
                          <p className="text-xs font-black uppercase tracking-widest">{t('settings.calendar_protocol')}</p>
                          <p className="text-xs text-muted-foreground font-bold uppercase">{t('settings.date_formatting')}</p>
                       </div>
-                      <div className="flex bg-card p-1 rounded-lg border">
-                         <Button size="sm" variant={calendarType === 'ethiopian' ? 'default' : 'ghost'} onClick={() => setCalendarType('ethiopian')} className="h-7 px-4 text-xs">{t('common.ethiopian')}</Button>
-                         <Button size="sm" variant={calendarType === 'gregorian' ? 'default' : 'ghost'} onClick={() => setCalendarType('gregorian')} className="h-7 px-4 text-xs">{t('common.gregorian')}</Button>
-                      </div>
-                   </div>
-
-                   {/* Feature Modules */}
-                   <div className="space-y-4 pt-4 border-t border-border">
-                      <div className="space-y-1">
-                         <h4 className="text-sm font-black uppercase tracking-widest">{t('settings.modules')}</h4>
-                         <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">{t('settings.modules_desc')}</p>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        {MODULE_META.map(meta => {
-                          const SettingIcon = {
-                            Package, ShoppingCart, Receipt, TrendingDown,
-                            UserCog, CreditCard, Warehouse, Truck, Building2,
-                            Users, BarChart3, SlidersHorizontal,
-                          }[meta.iconName] || Package;
-                          const isOn = enabledModules.includes(meta.id);
-                          return (
-                            <button
-                              key={meta.id}
-                              onClick={() => {
-                                const next = isOn
-                                  ? enabledModules.filter(m => m !== meta.id)
-                                  : [...enabledModules, meta.id];
-                                setEnabledModules(next);
-                              }}
-                              className={`flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${
-                                isOn
-                                  ? 'bg-muted/30 border-border hover:bg-muted/50'
-                                  : 'bg-muted/10 border-transparent opacity-50 hover:opacity-80'
-                              }`}
-                            >
-                              <div className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${
-                                isOn ? 'bg-primary/10 text-primary' : 'bg-muted/20 text-muted-foreground'
-                              }`}>
-                                <SettingIcon size={14} />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <p className={`text-xs font-black uppercase tracking-wider ${isOn ? 'text-foreground' : 'text-muted-foreground'}`}>
-                                  {t(meta.nameKey)}
-                                </p>
-                                <p className="text-xs text-muted-foreground font-bold leading-tight">{t(meta.descKey)}</p>
-                              </div>
-                              <div className={`h-4 w-7 rounded-full border transition-colors ${
-                                isOn ? 'bg-primary border-primary/50' : 'bg-muted border-border'
-                              }`}>
-                                <div className={`h-full w-1/2 rounded-full transition-all duration-200 ${
-                                  isOn ? 'bg-primary-foreground translate-x-full' : 'bg-muted-foreground/50 translate-x-0'
-                                }`} />
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <p className="text-xs text-muted-foreground/60 font-bold uppercase tracking-wider">{t('settings.modules_hint')}</p>
-                   </div>
+<div className="flex bg-card p-1 rounded-lg border">
+                          <Button size="sm" variant={calendarType === 'ethiopian' ? 'default' : 'ghost'} onClick={() => setCalendarType('ethiopian')} className="h-7 px-4 text-xs">{t('common.ethiopian')}</Button>
+                          <Button size="sm" variant={calendarType === 'gregorian' ? 'default' : 'ghost'} onClick={() => setCalendarType('gregorian')} className="h-7 px-4 text-xs">{t('common.gregorian')}</Button>
+                       </div>
+</div>
                 </div>
               )}
 
-               {activeTab === 'notifications' && (
+{activeTab === 'tax' && (
+                <div className="space-y-8">
+                   <div className="space-y-1">
+                      <h3 className="text-xl font-black tracking-tight">{t('settings.tax', 'Tax')}</h3>
+                      <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">{t('settings.tax_desc', 'Set how tax is applied to your sales')}</p>
+                   </div>
+                   <div className="p-6 rounded-2xl border bg-muted/20 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                         <Percent size={20} className="text-foreground" />
+                         <div>
+                            <p className="text-sm font-black uppercase tracking-widest">{t('settings.tax_enable', 'Enable Tax')}</p>
+                            <p className="text-xs text-muted-foreground font-bold uppercase mt-0.5">{t('settings.tax_enable_desc', 'Apply tax to new sales')}</p>
+                         </div>
+                      </div>
+                      <Switch checked={taxEnabled} onCheckedChange={setTaxEnabled} />
+                   </div>
+                   <div className={`p-6 rounded-2xl border bg-muted/20 transition-opacity ${taxEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
+                      <div className="flex items-center gap-3 mb-4">
+                         <ShieldCheck size={20} className="text-foreground" />
+                         <div>
+                            <p className="text-sm font-black uppercase tracking-widest">{t('settings.tax_rate', 'Tax Rate')}</p>
+                            <p className="text-xs text-muted-foreground font-bold uppercase mt-0.5">{t('settings.tax_rate_desc', 'Percentage applied to the subtotal')}</p>
+                         </div>
+                      </div>
+                      <div className="flex items-center gap-3 max-w-xs">
+                         <Input
+                           type="number"
+                           min="0"
+                           max="100"
+                           step="0.5"
+                           value={String(taxRate)}
+                           onChange={e => setTaxRate(parseFloat(e.target.value) || 0)}
+                           className="h-12 text-lg font-black text-center rounded-xl"
+                         />
+                         <span className="text-2xl font-black text-muted-foreground">%</span>
+                      </div>
+                   </div>
+                </div>
+               )}
+
+{activeTab === 'notifications' && (
                 <div className="space-y-8">
                    <div className="space-y-1">
                       <h3 className="text-xl font-black tracking-tight">{t('settings.notifications')}</h3>
@@ -478,37 +463,7 @@ const Settings: React.FC = () => {
                    </div>
                    <NotificationSettings />
                 </div>
-              )}
-
-              {activeTab === 'security' && (
-                <div className="space-y-8">
-                   <div className="space-y-1">
-                      <h3 className="text-xl font-black tracking-tight">{t('settings.security_studio')}</h3>
-                      <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">{t('settings.security_desc')}</p>
-                   </div>
-                   <div className="p-8 rounded-2xl border bg-muted/20 flex items-center justify-between">
-                      <div className="flex items-center gap-5">
-                         <div className="h-12 w-12 rounded-xl bg-card flex items-center justify-center text-foreground shadow-md">
-                            <ShieldCheck size={20} />
-                         </div>
-                         <div>
-                            <p className="text-sm font-black tracking-tight">{t('settings.admin_auth')}</p>
-                            <p className="text-xs text-muted-foreground font-bold uppercase tracking-widest">{t('settings.admin_auth_desc')}</p>
-                         </div>
-                      </div>
-                      <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20 text-xs font-black">{t('settings.active')}</Badge>
-                   </div>
-                   {isSuperAdmin && (
-                     <Link to="/admin-management">
-                       <div className="p-8 rounded-2xl border bg-muted/20 hover:border-primary transition-all cursor-pointer group">
-                          <UserCog size={24} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
-                          <p className="text-sm font-black uppercase tracking-widest">{t('settings.admin_management')}</p>
-                          <p className="text-xs text-muted-foreground font-bold uppercase mt-2">{t('settings.admin_management_desc')}</p>
-                       </div>
-                     </Link>
-                   )}
-                </div>
-              )}
+               )}
 
                {activeTab === 'data' && (
                 <div className="space-y-8">
@@ -580,7 +535,12 @@ const Settings: React.FC = () => {
               )}
 
 {activeTab === 'devices' && (
-              <DeviceSettings />
+              <>
+                <P2pSyncStatus />
+                <div className="mt-4">
+                  <DeviceSettings />
+                </div>
+              </>
             )}
             {activeTab === 'sync' && (
               <SyncSettings />
@@ -665,41 +625,21 @@ const Settings: React.FC = () => {
                  </div>
                )}
 
-               {activeTab === 'support' && (
-                 <div className="space-y-8">
-                   <div className="space-y-1">
-                     <h3 className="text-xl font-black tracking-tight">{t('settings.support')}</h3>
-                     <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">{t('settings.support_desc')}</p>
-                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="p-8 rounded-2xl border bg-muted/20 hover:bg-primary/5 hover:border-primary/30 transition-all group">
-                      <Phone size={28} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
-                      <p className="text-sm font-black uppercase tracking-widest">{t('support.call_us')}</p>
-                      <p className="text-lg font-bold mt-2 text-primary">{t('support.phone')}</p>
-                      <p className="text-xs text-muted-foreground font-bold uppercase tracking-wider mt-2">
-                        {t('support.business_hours')}: {t('support.mon_fri')}
-                      </p>
+{activeTab === 'support' && (
+                  <div className="space-y-8">
+                    <div className="space-y-1">
+                      <h3 className="text-xl font-black tracking-tight">{t('settings.support')}</h3>
+                      <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">{t('settings.support_desc')}</p>
+                    </div>
+                    <div className="grid grid-cols-1 max-w-md">
+                      <a href="tel:+251925319901" className="p-8 rounded-2xl border bg-muted/20 hover:bg-primary/5 hover:border-primary/30 transition-all group">
+                        <Phone size={28} className="mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                        <p className="text-sm font-black uppercase tracking-widest">{t('support.call_us')}</p>
+                        <p className="text-lg font-bold mt-2 text-primary">+251925319901</p>
+                      </a>
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <a href="https://shega.tech/docs" target="_blank" rel="noopener noreferrer" className="p-6 rounded-2xl border bg-muted/20 hover:border-primary transition-all group cursor-pointer">
-                      <FileText size={24} className="mb-3 text-muted-foreground group-hover:text-primary transition-colors" />
-                      <p className="text-xs font-black uppercase tracking-widest">{t('support.documentation')}</p>
-                      <p className="text-xs text-muted-foreground font-bold uppercase mt-1">shega.tech/docs</p>
-                    </a>
-                    <a href="https://shega.tech/community" target="_blank" rel="noopener noreferrer" className="p-6 rounded-2xl border bg-muted/20 hover:border-primary transition-all group cursor-pointer">
-                      <Users size={24} className="mb-3 text-muted-foreground group-hover:text-primary transition-colors" />
-                      <p className="text-xs font-black uppercase tracking-widest">{t('support.community')}</p>
-                      <p className="text-xs text-muted-foreground font-bold uppercase mt-1">{t('support.community')}</p>
-                    </a>
-                    <a href="https://shega.tech/support" target="_blank" rel="noopener noreferrer" className="p-6 rounded-2xl border bg-muted/20 hover:border-primary transition-all group cursor-pointer">
-                      <Headphones size={24} className="mb-3 text-muted-foreground group-hover:text-primary transition-colors" />
-                      <p className="text-xs font-black uppercase tracking-widest">{t('support.report_issue')}</p>
-                      <p className="text-xs text-muted-foreground font-bold uppercase mt-1">{t('support.report_issue')}</p>
-                    </a>
-                  </div>
-                </div>
-              )}
+                )}
             </div>
         </div>
       </div>

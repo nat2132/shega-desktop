@@ -3,12 +3,13 @@ import {
   AlertTriangle,
   Banknote, Search, ChevronDown, ChevronUp,
   CircleDollarSign, History, X,
-  MoreHorizontal, Filter, Ban
+  MoreHorizontal, Filter, Ban, Plus, ShoppingCart
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
+import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
 import { SectionCards, SectionCardData } from '../components/section-cards';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -88,6 +89,16 @@ const DebtManagement: React.FC = () => {
   const [filterEndDate, setFilterEndDate] = useState('');
   const [reversePaymentTarget, setReversePaymentTarget] = useState<DebtPayment | null>(null);
   const [reversePaymentReason, setReversePaymentReason] = useState('');
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [items, setItems] = useState<any[]>([]);
+  const [addForm, setAddForm] = useState({
+    itemId: '' as string,
+    quantity: '1' as string,
+    price: '' as string,
+    customerName: '' as string,
+    customerPhone: '' as string,
+    dueDate: '' as string,
+  });
 
   const paymentMethodKeys: Record<string, string> = {
     Cash: 'debt.payment_cash',
@@ -99,6 +110,9 @@ const DebtManagement: React.FC = () => {
   useEffect(() => {
     loadDebts();
   }, []);
+
+  // Live sync: re-query when P2P/Yjs sync lands new data in SQLite.
+  useDataChangedRefresh(() => { loadDebts(); });
 
   const loadDebts = () => {
     window.api?.getSales({ paymentStatus: 'Debt' }).then((data: DebtSale[]) => {
@@ -167,6 +181,59 @@ const DebtManagement: React.FC = () => {
       loadDebts();
     } catch (error) {
       toast.error(t('debt.reverse_error'));
+    }
+  };
+
+  const openAddDebt = async () => {
+    setAddForm({ itemId: '', quantity: '1', price: '', customerName: '', customerPhone: '', dueDate: '' });
+    const data = await window.api?.getItems?.() || [];
+    setItems(data);
+    setShowAddModal(true);
+  };
+
+  const handleAddDebt = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const item = items.find(i => i.id === parseInt(addForm.itemId));
+    if (!item) {
+      toast.error(t('debt.select_item', 'Select an item'));
+      return;
+    }
+    if (!addForm.customerName.trim()) {
+      toast.error(t('debt.customer_required', 'Customer name is required'));
+      return;
+    }
+    const qty = parseFloat(addForm.quantity);
+    const price = parseFloat(addForm.price);
+    if (!qty || qty <= 0) {
+      toast.error(t('debt.amount_positive'));
+      return;
+    }
+    const total = qty * price;
+    if (total <= 0) {
+      toast.error(t('debt.amount_positive'));
+      return;
+    }
+    try {
+      await window.api?.insertSalesBatch([{
+        itemId: item.id,
+        quantity: qty,
+        unit: item.baseUnit || item.unit || 'pcs',
+        unitType: 'base',
+        discount: 0,
+        vat: 0,
+        totalPrice: total,
+        paymentMethod: 'Cash',
+        paymentStatus: 'Debt',
+        customerName: addForm.customerName.trim(),
+        customerPhone: addForm.customerPhone.trim() || null,
+        dueDate: addForm.dueDate || null,
+        paidAmount: 0,
+      }]);
+      toast.success(t('debt.debt_created', 'Debt created'));
+      setShowAddModal(false);
+      loadDebts();
+    } catch (error: any) {
+      toast.error(error?.message || t('debt.create_error', 'Failed to create debt'));
     }
   };
 
@@ -271,7 +338,7 @@ const DebtManagement: React.FC = () => {
         <p className="text-sm text-muted-foreground mt-1">{t('debt.subtitle')}</p>
       </div>
 
-      <SectionCards cards={kpiCards} />
+      <SectionCards cards={kpiCards} storageKey="debts" />
 
       <div className="px-4 lg:px-6 space-y-4">
         <div className="flex items-center gap-2">
@@ -284,6 +351,10 @@ const DebtManagement: React.FC = () => {
               className="pl-9"
             />
           </div>
+          <Button size="sm" onClick={openAddDebt} className="h-8 px-3 shadow-md shadow-primary/20">
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            {t('debt.add_debt', 'Add Debt')}
+          </Button>
           <Sheet open={isFilterOpen} onOpenChange={setIsFilterOpen}>
             <SheetTrigger asChild>
               <Button variant="outline" size="sm" className={`h-8 px-3 transition-all ${hasActiveFilters ? 'border-primary text-primary bg-primary/5 shadow-sm' : 'border-border/60 hover:bg-muted/50'}`}>
@@ -303,11 +374,11 @@ const DebtManagement: React.FC = () => {
                   <div className="space-y-3">
                       <div className="space-y-1.5">
                         <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.start_date')}</label>
-                        <DatePicker value={filterStartDate} onChange={setFilterStartDate} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs w-full" />
+                        <DatePicker value={filterStartDate} onChange={setFilterStartDate} className="bg-muted/30 border-border/50 rounded-xl text-xs w-full [&>div]:w-full [&>div>button]:flex-1 [&>div>button]:min-w-0" />
                       </div>
                       <div className="space-y-1.5">
                         <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('inventory.end_date')}</label>
-                        <DatePicker value={filterEndDate} onChange={setFilterEndDate} className="h-10 bg-muted/30 border-border/50 rounded-xl text-xs w-full" />
+                        <DatePicker value={filterEndDate} onChange={setFilterEndDate} className="bg-muted/30 border-border/50 rounded-xl text-xs w-full [&>div]:w-full [&>div>button]:flex-1 [&>div>button]:min-w-0" />
                     </div>
                   </div>
                 </div>
@@ -595,6 +666,88 @@ const DebtManagement: React.FC = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)}
+        title={t('debt.add_debt', 'Add Debt')} size="md">
+        <form onSubmit={handleAddDebt} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+              {t('debt.select_item', 'Item')} *
+            </Label>
+            <Select value={addForm.itemId} onValueChange={(v) => {
+              const item = items.find(i => i.id === parseInt(v));
+              setAddForm({ ...addForm, itemId: v, price: item?.baseSellingPrice?.toString() || '' });
+            }}>
+              <SelectTrigger className="h-10 bg-muted/30 border-border/50 rounded-xl">
+                <SelectValue placeholder={t('debt.select_item', 'Select item')} />
+              </SelectTrigger>
+              <SelectContent className="rounded-xl">
+                {items.map(item => (
+                  <SelectItem key={item.id} value={String(item.id)}>
+                    {item.name} ({item.baseUnit}) — {t('common.etb')} {Number(item.baseSellingPrice).toLocaleString()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                {t('inventory.quantity', 'Quantity')} *
+              </Label>
+              <Input type="number" min="1" step="1" value={addForm.quantity}
+                onChange={(e) => setAddForm({ ...addForm, quantity: e.target.value })} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                {t('inventory.unit_price', 'Unit Price')} ({t('common.etb')}) *
+              </Label>
+              <Input type="number" min="0" step="0.01" value={addForm.price}
+                onChange={(e) => setAddForm({ ...addForm, price: e.target.value })} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                {t('customers.customer_name', 'Customer Name')} *
+              </Label>
+              <Input required value={addForm.customerName}
+                onChange={(e) => setAddForm({ ...addForm, customerName: e.target.value })}
+                placeholder={t('customers.customer_name', 'Customer name')} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                {t('common.phone', 'Phone')}
+              </Label>
+              <Input value={addForm.customerPhone}
+                onChange={(e) => setAddForm({ ...addForm, customerPhone: e.target.value })}
+                placeholder={t('common.phone', 'Phone')} />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+              {t('debt.due_date', 'Due Date')}
+            </Label>
+            <DatePicker value={addForm.dueDate} onChange={(v) => setAddForm({ ...addForm, dueDate: v })} className="w-full" />
+          </div>
+          {addForm.itemId && addForm.price && addForm.quantity && (
+            <div className="rounded-xl bg-primary/10 p-3 flex justify-between items-center">
+              <span className="text-xs font-black uppercase tracking-widest text-primary">{t('debt.amount')}</span>
+              <span className="text-lg font-black text-primary">
+                {t('common.etb')} {((parseFloat(addForm.price) || 0) * (parseFloat(addForm.quantity) || 1)).toLocaleString()}
+              </span>
+            </div>
+          )}
+          <div className="flex gap-3 pt-2">
+            <Button type="button" variant="outline" onClick={() => setShowAddModal(false)} className="flex-1">
+              {t('common.cancel', 'Cancel')}
+            </Button>
+            <Button type="submit" className="flex-1">
+              <ShoppingCart size={14} className="mr-1" /> {t('debt.add_debt', 'Add Debt')}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 };

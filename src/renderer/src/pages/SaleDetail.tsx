@@ -65,6 +65,7 @@ interface Sale {
   createdAt: string;
   basePurchasePrice?: number;
   unitsPerPack?: number;
+  itemImage?: string;
   status?: string;
 }
 

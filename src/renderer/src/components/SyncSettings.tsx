@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Network, RefreshCw, ShieldCheck, ScrollText, Server, Users, Wifi, WifiOff, QrCode, Copy, Check, AlertTriangle, RotateCcw, Globe } from 'lucide-react';
+import { Network, RefreshCw, ShieldCheck, ScrollText, Server, Users, Wifi, WifiOff, QrCode, Copy, Check, AlertTriangle, RotateCcw } from 'lucide-react';
 import QRCode from 'qrcode';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
@@ -27,22 +27,12 @@ interface SyncStatus {
   conflicts: number;
 }
 
-interface CloudStatus {
-  configured: boolean;
-  enabled: boolean;
-  url: string;
-  lastError: string | null;
-  lastAt: string | null;
-}
-
 const SyncSettings: React.FC = () => {
   const [status, setStatus] = useState<SyncStatus | null>(null);
-  const [cloud, setCloud] = useState<CloudStatus | null>(null);
   const [verify, setVerify] = useState<Record<string, { count: number; checksum: string }> | null>(null);
   const [log, setLog] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [verifying, setVerifying] = useState(false);
-  const [cloudBusy, setCloudBusy] = useState(false);
   const [qrData, setQrData] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -59,8 +49,6 @@ const SyncSettings: React.FC = () => {
           setQrData(null);
         }
       }
-      const c = await window.api?.cloudStatus?.();
-      if (c) setCloud(c);
       const l = await window.api?.syncLog?.(50);
       if (l) setLog(l);
     } catch {
@@ -69,19 +57,6 @@ const SyncSettings: React.FC = () => {
       setLoading(false);
     }
   }, []);
-
-  const doCloudSync = async () => {
-    setCloudBusy(true);
-    try {
-      const res = await window.api?.cloudSync?.();
-      toast.success(res?.pushed != null ? `Cloud synced — pushed ${res.pushed}, pulled ${res.pulled}` : 'Cloud sync complete');
-      setTimeout(load, 800);
-    } catch (e: any) {
-      toast.error(e?.message || 'Cloud sync failed');
-    } finally {
-      setCloudBusy(false);
-    }
-  };
 
   useEffect(() => {
     load();
@@ -144,10 +119,9 @@ const SyncSettings: React.FC = () => {
         </div>
       )}
 
-      {/* §24 unified health banner (LAN + Cloud) */}
+      {/* §24 unified health banner (LAN) */}
       {(() => {
         const lanUp = status?.running;
-        const cloudUp = cloud?.configured && cloud?.enabled;
         const pending = (status?.pendingOutbox ?? 0) > 0 || false;
         const synced = lanUp && !pending;
         const cls = synced
@@ -156,7 +130,7 @@ const SyncSettings: React.FC = () => {
             ? 'border-amber-500/30 bg-amber-500/10'
             : 'border-slate-300 bg-slate-100';
         const text = synced ? 'text-emerald-600' : pending ? 'text-amber-600' : 'text-muted-foreground';
-        const mode = lanUp && cloudUp ? 'LAN + Cloud' : lanUp ? 'LAN' : cloudUp ? 'Cloud' : 'Offline';
+        const mode = lanUp ? 'LAN' : 'Offline';
         return (
           <div className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${cls}`}>
             <div className="flex items-center gap-2">
@@ -321,45 +295,6 @@ const SyncSettings: React.FC = () => {
           ) : (
             <p className="text-xs text-muted-foreground">No sync activity yet.</p>
           )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <div>
-            <CardTitle className="flex items-center gap-2"><Globe size={16} /> Cloud Sync</CardTitle>
-            <CardDescription>Internet transport when the LAN hub is unreachable</CardDescription>
-          </div>
-          {cloud?.configured ? (
-            <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/30">
-              <Wifi size={12} /> {cloud?.enabled ? 'Enabled' : 'Paused'}
-            </Badge>
-          ) : (
-            <Badge variant="outline">Not configured</Badge>
-          )}
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div className="space-y-1">
-              <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">Endpoint</p>
-              <p className="font-mono text-xs break-all">{cloud?.url || '—'}</p>
-            </div>
-            <div className="space-y-1">
-              <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">Last cloud sync</p>
-              <p className="font-mono text-xs">{cloud?.lastAt ? new Date(cloud.lastAt).toLocaleString() : 'never'}</p>
-            </div>
-          </div>
-          {cloud?.lastError ? (
-            <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2">
-              <AlertTriangle size={14} className="text-red-600" />
-              <p className="text-xs font-bold text-red-700">{cloud.lastError}</p>
-            </div>
-          ) : null}
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={doCloudSync} disabled={cloudBusy || !cloud?.configured}>
-              <RefreshCw size={14} className={cloudBusy ? 'animate-spin' : ''} /> Sync now (cloud)
-            </Button>
-          </div>
         </CardContent>
       </Card>
     </div>

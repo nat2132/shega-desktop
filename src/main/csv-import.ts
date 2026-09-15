@@ -190,38 +190,6 @@ function importItems(rows: ImportRow[]): ImportResult {
   return result
 }
 
-// ===== EXPENSES IMPORT =====
-function importExpenses(rows: ImportRow[]): ImportResult {
-  const result: ImportResult = { success: true, imported: 0, errors: [], skipped: 0 }
-  const bizId = getActiveBusinessId()
-
-  const transaction = db.transaction(() => {
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i]
-      try {
-        const name = r.name?.trim()
-        if (!name) { result.errors.push({ row: i + 1, message: 'Expense name is required' }); continue }
-        const amount = parseFloat(r.amount)
-        if (isNaN(amount) || amount < 0) { result.errors.push({ row: i + 1, message: `Invalid amount: "${r.amount}"` }); continue }
-        const date = r.date || new Date().toISOString().split('T')[0]
-        if (!date) { result.errors.push({ row: i + 1, message: 'Date is required' }); continue }
-
-        db.prepare('INSERT INTO expenses (businessId, name, amount, category, date, isRecurring, frequency, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
-          bizId, name, amount, r.category || null, date,
-          r.isRecurring === 'true' || r.isRecurring === '1' ? 1 : 0,
-          r.frequency || null, r.notes || null
-        )
-        result.imported++
-      } catch (e: any) {
-        result.errors.push({ row: i + 1, message: e.message || 'Unknown error' })
-      }
-    }
-  })
-
-  try { transaction() } catch (e: any) { result.success = false; result.errors.push({ row: 0, message: `Transaction failed: ${e.message}` }) }
-  return result
-}
-
 // ===== CUSTOMERS IMPORT =====
 function importCustomers(rows: ImportRow[]): ImportResult {
   const result: ImportResult = { success: true, imported: 0, errors: [], skipped: 0 }
@@ -304,97 +272,6 @@ function importShipments(rows: ImportRow[]): ImportResult {
           bizId, r.origin?.trim() || null, dest, r.driverName?.trim() || null,
           r.driverPhone?.trim() || null, r.vehicleInfo?.trim() || null,
           status, r.scheduledDate || null, r.notes?.trim() || null
-        )
-        result.imported++
-      } catch (e: any) {
-        result.errors.push({ row: i + 1, message: e.message || 'Unknown error' })
-      }
-    }
-  })
-
-  try { transaction() } catch (e: any) { result.success = false; result.errors.push({ row: 0, message: `Transaction failed: ${e.message}` }) }
-  return result
-}
-
-// ===== ADJUSTMENTS IMPORT =====
-function importAdjustments(rows: ImportRow[]): ImportResult {
-  const result: ImportResult = { success: true, imported: 0, errors: [], skipped: 0 }
-  const bizId = getActiveBusinessId()
-  const validTypes = ['damage', 'loss', 'add_stock', 'price_increase', 'price_decrease']
-
-  const transaction = db.transaction(() => {
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i]
-      try {
-        const itemName = r.itemName?.trim()
-        if (!itemName) { result.errors.push({ row: i + 1, message: 'Item name is required' }); continue }
-        const itemId = resolveItemId(itemName)
-        if (!itemId) { result.errors.push({ row: i + 1, message: `Item "${itemName}" not found` }); continue }
-
-        const type = r.type?.trim()
-        if (!type || !validTypes.includes(type)) { result.errors.push({ row: i + 1, message: `Invalid type "${type}". Must be one of: ${validTypes.join(', ')}` }); continue }
-
-        const quantity = parseFloat(r.quantity)
-        if (isNaN(quantity) || quantity < 0) { result.errors.push({ row: i + 1, message: `Invalid quantity: "${r.quantity}"` }); continue }
-
-        const date = r.date || new Date().toISOString().split('T')[0]
-        const unitType = r.unitType || 'base'
-
-        db.prepare('INSERT INTO adjustments (businessId, itemId, type, oldValue, newValue, quantity, unitType, reason, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-          bizId, itemId, type, null, null, quantity, unitType, r.reason?.trim() || null, date
-        )
-
-        if (type === 'damage' || type === 'loss') {
-          const item = db.prepare('SELECT unitsPerPack FROM items WHERE id = ?').get(itemId) as any
-          let baseDeduction = quantity
-          if (unitType === 'pack') baseDeduction = quantity * (item?.unitsPerPack || 1)
-          const itemResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(baseDeduction, itemId, baseDeduction)
-          if (itemResult.changes === 0) throw new Error(`Insufficient stock: item "${itemName}" has less than ${baseDeduction} units available`)
-
-          const defWhId = getDefaultWarehouseId()
-          const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, itemId) as any
-          if (whRow) {
-            const whAdjustResult = db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND quantity >= ?').run(baseDeduction, whRow.id, baseDeduction)
-            if (whAdjustResult.changes === 0) throw new Error(`Insufficient warehouse stock for item "${itemName}"`)
-          }
-        } else if (type === 'add_stock') {
-          const item = db.prepare('SELECT unitsPerPack FROM items WHERE id = ?').get(itemId) as any
-          let baseAddition = quantity
-          if (unitType === 'pack') baseAddition = quantity * (item?.unitsPerPack || 1)
-          db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity + ? WHERE id = ?').run(baseAddition, itemId)
-
-          const defWhId = getDefaultWarehouseId()
-          const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, itemId) as any
-          if (whRow) { db.prepare('UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(baseAddition, whRow.id) }
-        }
-
-        result.imported++
-      } catch (e: any) {
-        result.errors.push({ row: i + 1, message: e.message || 'Unknown error' })
-      }
-    }
-  })
-
-  try { transaction() } catch (e: any) { result.success = false; result.errors.push({ row: 0, message: `Transaction failed: ${e.message}` }) }
-  return result
-}
-
-// ===== CONTACTS IMPORT =====
-function importContacts(rows: ImportRow[]): ImportResult {
-  const result: ImportResult = { success: true, imported: 0, errors: [], skipped: 0 }
-  const bizId = getActiveBusinessId()
-
-  const transaction = db.transaction(() => {
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i]
-      try {
-        const name = r.name?.trim()
-        if (!name) { result.errors.push({ row: i + 1, message: 'Name is required' }); continue }
-        const phone = r.phone?.trim()
-        if (!phone) { result.errors.push({ row: i + 1, message: 'Phone is required' }); continue }
-
-        db.prepare('INSERT INTO contacts (businessId, name, phone, category, notes) VALUES (?, ?, ?, ?, ?)').run(
-          bizId, name, phone, r.category?.trim() || 'other', r.notes?.trim() || null
         )
         result.imported++
       } catch (e: any) {
@@ -581,12 +458,9 @@ function importOrders(rows: ImportRow[]): ImportResult {
 const IMPORTERS: Record<string, (rows: ImportRow[]) => ImportResult> = {
   sales: importSales,
   inventory: importItems,
-  expenses: importExpenses,
   customers: importCustomers,
   suppliers: importSuppliers,
   shipments: importShipments,
-  adjustments: importAdjustments,
-  contacts: importContacts,
   warehouses: importWarehouses,
   employees: importEmployees,
   'supplier-purchases': importSupplierPurchases,

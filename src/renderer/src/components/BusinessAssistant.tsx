@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Sparkles, Package, AlertTriangle, TrendingUp, TrendingDown,
-  DollarSign, Users, Truck, PiggyBank, BarChart3,
+  Sparkles, Package, AlertTriangle, TrendingUp,
+  DollarSign, Users, Truck, BarChart3,
   Clock, CalendarDays, CalendarRange, Lightbulb, Activity, RefreshCw,
   Loader2, Zap, ArrowRight
 } from 'lucide-react';
@@ -21,8 +21,6 @@ const INSIGHT_CONFIG: Record<string, { icon: React.ElementType; gradient: string
   top_profit: { icon: DollarSign, gradient: 'from-emerald-500/20 to-emerald-600/10' },
   slow_moving: { icon: Activity, gradient: 'from-orange-500/20 to-orange-600/10' },
   overstocked: { icon: Package, gradient: 'from-blue-500/20 to-blue-600/10' },
-  expense_increase: { icon: TrendingDown, gradient: 'from-red-500/20 to-red-600/10' },
-  budget_overrun: { icon: PiggyBank, gradient: 'from-rose-500/20 to-rose-600/10' },
   sales_decline: { icon: BarChart3, gradient: 'from-red-500/20 to-red-600/10' },
   top_customers: { icon: Users, gradient: 'from-purple-500/20 to-purple-600/10' },
   supplier_performance: { icon: Truck, gradient: 'from-orange-500/20 to-orange-600/10' },

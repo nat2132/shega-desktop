@@ -9,7 +9,7 @@ interface SubscriptionWelcomeProps {
   onComplete: () => void;
 }
 
-const basicFeatureKeys = ['subscription.feature_inventory', 'subscription.feature_sales', 'subscription.feature_contacts', 'subscription.feature_stock_adjustments'];
+const basicFeatureKeys = ['subscription.feature_inventory', 'subscription.feature_sales'];
 const premiumFeatureKeys = ['subscription.feature_user_mgmt', 'subscription.feature_employee_mgmt', 'subscription.feature_audit_logs', 'subscription.feature_supplier_mgmt', 'subscription.feature_shipment_mgmt', 'subscription.feature_advanced_reports'];
 
 const SubscriptionWelcome: React.FC<SubscriptionWelcomeProps> = ({ onComplete }) => {

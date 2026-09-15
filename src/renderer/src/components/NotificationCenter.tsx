@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Bell, Search, Check, CheckCheck, X, Trash2, Clock,
   AlertCircle, AlertTriangle, Info, CheckCircle2, ShoppingCart,
-  Package, Users, Truck, Receipt, Settings as SettingsIcon, Archive,
+  Package, Users, Truck, Settings as SettingsIcon, Archive,
   Filter, Eye, BellOff, Hourglass
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -17,7 +17,6 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   sales: <ShoppingCart className="h-4 w-4" />,
   customers: <Users className="h-4 w-4" />,
   suppliers: <Truck className="h-4 w-4" />,
-  expenses: <Receipt className="h-4 w-4" />,
   employees: <Users className="h-4 w-4" />,
   system: <SettingsIcon className="h-4 w-4" />,
   reminders: <Clock className="h-4 w-4" />,

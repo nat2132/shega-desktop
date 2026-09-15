@@ -27,6 +27,10 @@ interface SettingsContextType {
   setTimeSystem: (type: TimeSystem) => void;
   theme: Theme;
   setTheme: (theme: Theme) => void;
+  taxEnabled: boolean;
+  setTaxEnabled: (enabled: boolean) => void;
+  taxRate: number;
+  setTaxRate: (rate: number) => void;
   currentBusiness: any | null;
   refreshBusiness: () => Promise<void>;
   businesses: any[];
@@ -50,6 +54,8 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [calendarType, setCalendarType] = useState<CalendarType>('ethiopian');
   const [timeSystem, setTimeSystem] = useState<TimeSystem>('device');
   const [theme, setTheme] = useState<Theme>('dark');
+  const [taxEnabled, setTaxEnabled] = useState(false);
+  const [taxRate, setTaxRate] = useState<number>(15);
   const [currentBusiness, setCurrentBusiness] = useState<any | null>(null);
   const [businesses, setBusinesses] = useState<any[]>([]);
   const [enabledModules, setEnabledModulesState] = useState<string[]>([...ALL_MODULES]);
@@ -104,6 +110,8 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         if (appSettings.calendarType) setCalendarType(appSettings.calendarType);
         if (appSettings.timeSystem) setTimeSystem(appSettings.timeSystem);
         if (appSettings.theme) setTheme(appSettings.theme);
+        if (typeof appSettings.taxEnabled === 'boolean') setTaxEnabled(appSettings.taxEnabled);
+        if (typeof appSettings.taxRate === 'number') setTaxRate(appSettings.taxRate);
       }
       if (savedModules && Array.isArray(savedModules)) {
         setEnabledModulesState(savedModules);
@@ -119,8 +127,8 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Save settings when they change
   useEffect(() => {
-    window.api.setSetting('app_settings', { language, calendarType, timeSystem, theme }).catch(() => {});
-  }, [language, calendarType, timeSystem, theme]);
+    window.api.setSetting('app_settings', { language, calendarType, timeSystem, theme, taxEnabled, taxRate }).catch(() => {});
+  }, [language, calendarType, timeSystem, theme, taxEnabled, taxRate]);
 
   // Apply theme & language to document
   useEffect(() => {

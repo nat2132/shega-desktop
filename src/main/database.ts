@@ -130,16 +130,7 @@ const ALL_PERMISSIONS = [
 ];
 
 const DEFAULT_ROLES: { name: string; description: string; permissions: string[] }[] = [
-  { name: 'Owner', description: 'Full system access and control', permissions: ALL_PERMISSIONS },
-  { name: 'Administrator', description: 'System administration with all operational permissions', permissions: [...ALL_PERMISSIONS.filter(p => !p.startsWith('settings.')), 'settings.backup'] },
-  { name: 'Manager', description: 'Oversee daily operations across all departments', permissions: ['dashboard', 'inventory.view', 'inventory.add', 'inventory.edit', 'inventory.adjust', 'inventory.transfer', 'sales.create', 'sales.edit', 'sales.cancel', 'sales.returns', 'sales.invoices', 'purchases.create', 'purchases.edit', 'purchases.approve', 'purchases.receive', 'customers.view', 'customers.add', 'customers.edit', 'suppliers.view', 'suppliers.add', 'suppliers.edit', 'warehouses.view', 'warehouses.transfer', 'expenses.view', 'expenses.add', 'expenses.edit', 'reports.view', 'reports.profits', 'employees.view', 'employees.add', 'employees.edit'] },
-  { name: 'Accountant', description: 'Financial operations and reporting', permissions: ['dashboard', 'inventory.view', 'sales.view', 'purchases.view', 'customers.view', 'suppliers.view', 'expenses.view', 'expenses.add', 'expenses.edit', 'expenses.delete', 'reports.view', 'reports.profits'] },
-  { name: 'Cashier', description: 'Process sales transactions', permissions: ['dashboard', 'inventory.view', 'sales.create', 'sales.invoices', 'customers.view', 'customers.add'] },
-  { name: 'Inventory Manager', description: 'Manage stock levels and warehouse operations', permissions: ['dashboard', 'inventory.view', 'inventory.add', 'inventory.edit', 'inventory.adjust', 'inventory.transfer', 'purchases.receive', 'warehouses.view', 'warehouses.edit', 'warehouses.transfer', 'reports.view'] },
-  { name: 'Warehouse Staff', description: 'Handle stock movement and organization', permissions: ['inventory.view', 'inventory.adjust', 'inventory.transfer', 'warehouses.view', 'warehouses.transfer'] },
-  { name: 'Purchasing Officer', description: 'Manage purchase orders and supplier relations', permissions: ['dashboard', 'inventory.view', 'purchases.create', 'purchases.edit', 'purchases.approve', 'purchases.receive', 'suppliers.view', 'suppliers.add', 'suppliers.edit', 'suppliers.delete', 'reports.view'] },
-  { name: 'Sales Representative', description: 'Customer-facing sales and relationship management', permissions: ['dashboard', 'inventory.view', 'sales.create', 'sales.edit', 'sales.invoices', 'customers.view', 'customers.add', 'customers.edit'] },
-  { name: 'Driver', description: 'Handle shipments and deliveries', permissions: ['shipments', 'inventory.view', 'warehouses.view'] }
+  { name: 'Cashier', description: 'Process sales transactions', permissions: ['dashboard', 'inventory.view', 'sales.create', 'sales.invoices', 'customers.view', 'customers.add'] }
 ];
 
 function hashPin(pin: string): string {
@@ -246,6 +237,8 @@ export function initDB() {
       allowSellByPackUnit INTEGER DEFAULT 0,
       expiryDate TEXT,
       qualityGrade TEXT,
+      taxType TEXT,
+      taxTreatment TEXT,
       notes TEXT,
       isCredit INTEGER,
       supplierPhone TEXT,
@@ -1056,6 +1049,133 @@ export function initDB() {
     }
   }
 
+  // ========== ORDERS + SUBSCRIPTIONS (created BEFORE the versioned migrations
+  // below: the v17/v30 migrations and the change-capture triggers reference
+  // these tables, so on a fresh database they must exist first — otherwise
+  // initDB crashed with "no such table: orders" and the sync hub never came up) ==========
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER,
+      orderNumber TEXT UNIQUE NOT NULL,
+      customerName TEXT,
+      customerPhone TEXT,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'Order',
+      totalAmount REAL NOT NULL DEFAULT 0,
+      createdBy INTEGER,
+      createdByName TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      convertedAt TEXT,
+      convertedBy TEXT,
+      cancelledAt TEXT,
+      cancelledBy TEXT,
+      cancelReason TEXT,
+      uuid TEXT UNIQUE,
+      is_deleted INTEGER DEFAULT 0,
+      FOREIGN KEY (businessId) REFERENCES businesses(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      orderId INTEGER NOT NULL,
+      itemId INTEGER,
+      itemName TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      unit TEXT,
+      unitType TEXT DEFAULT 'base',
+      unitPrice REAL NOT NULL DEFAULT 0,
+      totalPrice REAL NOT NULL DEFAULT 0,
+      FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE,
+      FOREIGN KEY (itemId) REFERENCES items(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS order_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      orderId INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      performedBy TEXT,
+      notes TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS subscription_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      tier TEXT NOT NULL CHECK(tier IN ('basic', 'premium')),
+      durationMonths INTEGER NOT NULL,
+      price REAL NOT NULL,
+      currency TEXT DEFAULT 'ETB',
+      description TEXT,
+      features TEXT,
+      isActive INTEGER DEFAULT 1,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER NOT NULL UNIQUE,
+      planId INTEGER,
+      tier TEXT NOT NULL DEFAULT 'basic' CHECK(tier IN ('basic', 'premium', 'trial')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'expired', 'cancelled', 'pending')),
+      startedAt TEXT,
+      expiresAt TEXT,
+      trialStartedAt TEXT,
+      trialEndsAt TEXT,
+      isTrial INTEGER DEFAULT 0,
+      autoRenew INTEGER DEFAULT 0,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1,
+      FOREIGN KEY (businessId) REFERENCES businesses(id),
+      FOREIGN KEY (planId) REFERENCES subscription_plans(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS payment_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER,
+      transactionId TEXT,
+      businessName TEXT NOT NULL,
+      phoneNumber TEXT NOT NULL,
+      selectedPlan TEXT NOT NULL,
+      amount REAL NOT NULL,
+      currency TEXT DEFAULT 'ETB',
+      paymentDate TEXT NOT NULL,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'cancelled')),
+      adminNotes TEXT,
+      verifiedBy INTEGER,
+      verifiedAt TEXT,
+      subscriptionId INTEGER,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (businessId) REFERENCES businesses(id),
+      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS subscription_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subscriptionId INTEGER,
+      businessId INTEGER,
+      action TEXT NOT NULL,
+      oldTier TEXT,
+      newTier TEXT,
+      oldStatus TEXT,
+      newStatus TEXT,
+      details TEXT,
+      changedBy TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id),
+      FOREIGN KEY (businessId) REFERENCES businesses(id)
+    );
+  `);
+
   // ========== VERSIONED MIGRATION SYSTEM ==========
   const currentVersion = db.pragma('user_version', { simple: true }) as number;
   let version = typeof currentVersion === 'number' ? currentVersion : 0;
@@ -1577,6 +1697,7 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
         name TEXT NOT NULL,
         phone TEXT,
         email TEXT,
+        username TEXT,
         role TEXT,
         roleName TEXT,
         permissions TEXT DEFAULT '{}',
@@ -1584,6 +1705,9 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
         isOwner INTEGER DEFAULT 0,
         pinHash TEXT,
         pinSalt TEXT,
+        avatar TEXT,
+        sourceType TEXT,
+        sourceId INTEGER,
         uuid TEXT,
         device_id TEXT,
         row_version INTEGER DEFAULT 1,
@@ -1725,7 +1849,7 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
       'employees', 'employee_roles',
       'categories', 'items', 'item_packs', 'item_barcodes', 'quick_products',
       'sales', 'debt_payments', 'expenses', 'adjustments', 'customers',
-      'warehouses', 'returns', 'gift_cards', 'gift_card_transactions',
+      'warehouses', 'returns',
       'attendance', 'employee_performance', 'stock_movements',
       'suppliers', 'supplier_purchases', 'supplier_payments',
       'orders', 'order_items', 'shipments', 'shipment_items',
@@ -1756,13 +1880,296 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     db.pragma(`user_version = ${version}`);
   }
 
+  // 7.x: notifications were created before the shared sync schema existed.
+  // Add the columns required by notification queries and change-capture triggers
+  // so upgraded databases match newly-created databases.
+  if (version < 34) {
+    const notificationCols = (db.prepare('PRAGMA table_info(notifications)').all() as any[]).map((c: any) => c.name);
+    const addNotificationCol = (name: string, definition: string) => {
+      if (!notificationCols.includes(name)) db.exec(`ALTER TABLE notifications ADD COLUMN ${name} ${definition}`);
+    };
+    addNotificationCol('category', "TEXT DEFAULT 'system'");
+    addNotificationCol('priority', "TEXT DEFAULT 'normal'");
+    addNotificationCol('groupKey', 'TEXT');
+    addNotificationCol('actionUrl', 'TEXT');
+    addNotificationCol('actionLabel', 'TEXT');
+    addNotificationCol('expiresAt', 'TEXT');
+    addNotificationCol('severity', "TEXT DEFAULT 'info'");
+    addNotificationCol('entityType', 'TEXT');
+    addNotificationCol('entityId', 'INTEGER');
+    addNotificationCol('isDismissed', 'INTEGER DEFAULT 0');
+    addNotificationCol('snoozedUntil', 'TEXT');
+    addNotificationCol('channels', "TEXT DEFAULT 'in_app'");
+    addNotificationCol('requiresAction', 'INTEGER DEFAULT 0');
+    addNotificationCol('uuid', 'TEXT');
+    addNotificationCol('device_id', 'TEXT');
+    addNotificationCol('row_version', 'INTEGER DEFAULT 1');
+    addNotificationCol('updated_at', 'TEXT');
+    addNotificationCol('is_deleted', 'INTEGER DEFAULT 0');
+    addNotificationCol('deleted_at', 'TEXT');
+    addNotificationCol('is_synced', 'INTEGER DEFAULT 1');
+    db.exec("UPDATE notifications SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))) WHERE uuid IS NULL");
+    db.exec('UPDATE notifications SET updated_at = COALESCE(updated_at, createdAt, CURRENT_TIMESTAMP) WHERE updated_at IS NULL');
+    version = 34;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 7.x: legacy employee tables were created before business scoping. The
+  // v32 backfill could not add a missing column, so add it explicitly here.
+  if (version < 35) {
+    const fallbackBiz = (db.prepare('SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1').get() as any)?.id || 1;
+    for (const table of ['employees', 'employee_roles']) {
+      const cols = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map((c: any) => c.name);
+      if (!cols.includes('businessId')) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN businessId INTEGER`);
+      }
+      db.prepare(`UPDATE ${table} SET businessId = ? WHERE businessId IS NULL`).run(fallbackBiz);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_businessId ON ${table}(businessId)`);
+    }
+    version = 35;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 7.x: Ethiopian Tax Center — taxpayer profile, obligations/payment ledger,
+  // compliance audit log, and the MoR invoice/QR + eTax export sales columns.
+  if (version < 36) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tax_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER NOT NULL UNIQUE,
+        tin TEXT,
+        vatNumber TEXT,
+        authority TEXT DEFAULT 'Ministry of Revenues',
+        category TEXT DEFAULT 'B',
+        vatRegistered INTEGER DEFAULT 0,
+        licenseNumber TEXT,
+        cashRegisterNumber TEXT,
+        estimatedAnnualTurnover REAL DEFAULT 0,
+        estimatedAnnualTax REAL DEFAULT 0,
+        payrollActive INTEGER DEFAULT 0,
+        taxYearStartMonth INTEGER DEFAULT 1,
+        taxYearStartDay INTEGER DEFAULT 1,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS tax_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER,
+        obligationId TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        period TEXT NOT NULL,
+        amount REAL NOT NULL,
+        paidDate TEXT NOT NULL,
+        method TEXT,
+        reference TEXT,
+        notes TEXT,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(businessId, obligationId)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tax_payments_business_kind ON tax_payments(businessId, kind, period);
+
+      CREATE TABLE IF NOT EXISTS compliance_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        businessId INTEGER,
+        eventType TEXT NOT NULL,
+        details TEXT,
+        userId INTEGER,
+        timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_compliance_audit_business_time ON compliance_audit_log(businessId, timestamp);
+    `);
+
+    const taxAddCol = (table: string, col: string, def: string) => {
+      const taxCols = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map((c: any) => c.name);
+      if (!taxCols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+    };
+    taxAddCol('sales', 'taxType', "TEXT DEFAULT 'VAT'");
+    taxAddCol('sales', 'invoiceNo', 'TEXT');
+    taxAddCol('sales', 'customerTin', 'TEXT');
+    taxAddCol('sales', 'vatAmount', 'REAL DEFAULT 0');
+    taxAddCol('sales', 'totAmount', 'REAL DEFAULT 0');
+    taxAddCol('sales', 'whtAmount', 'REAL DEFAULT 0');
+    db.exec("UPDATE sales SET vatAmount = COALESCE(vatAmount, 0) + COALESCE(vat, 0) WHERE vatAmount = 0 AND vat > 0");
+    taxAddCol('supplier_purchases', 'supplierTin', 'TEXT');
+    taxAddCol('supplier_purchases', 'supplierName', 'TEXT');
+    taxAddCol('supplier_purchases', 'vatAmount', 'REAL DEFAULT 0');
+    taxAddCol('supplier_purchases', 'whtAmount', 'REAL DEFAULT 0');
+    taxAddCol('supplier_purchases', 'paymentMethod', 'TEXT DEFAULT "bank"');
+    taxAddCol('supplier_purchases', 'invoiceNo', 'TEXT');
+    version = 36;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 37) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS mor_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tin TEXT NOT NULL UNIQUE,
+        sub_tin TEXT,
+        status TEXT NOT NULL,
+        taxpayer_name TEXT,
+        taxpayer_type TEXT,
+        registration TEXT,
+        reference TEXT,
+        verified_at TEXT,
+        source TEXT NOT NULL DEFAULT 'client-cache',
+        reason TEXT,
+        cached_at TEXT NOT NULL,
+        cache_until TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_mor_verifications_tin ON mor_verifications(tin);
+      CREATE INDEX IF NOT EXISTS idx_mor_verifications_status ON mor_verifications(status);
+    `);
+    version = 37;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 5.x: inventory tax configuration — mirrors the mobile product wizard, which
+  // stores taxType (VAT | TOT | None) and taxTreatment (inclusive | exclusive)
+  // per item. Existing rows default to the same conservative defaults the sale
+  // engine uses (VAT-at-15%) so receipts keep matching prior behavior.
+  if (version < 38) {
+    const itemCols = db.prepare('PRAGMA table_info(items)').all() as any[];
+    const itemColNames = itemCols.map((c: any) => c.name);
+    if (!itemColNames.includes('taxType')) db.exec("ALTER TABLE items ADD COLUMN taxType TEXT DEFAULT 'VAT'");
+    if (!itemColNames.includes('taxTreatment')) db.exec("ALTER TABLE items ADD COLUMN taxTreatment TEXT DEFAULT 'inclusive'");
+    version = 38;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 5.x: wholesale/costing & quick-product expansion — mirrors the mobile
+  // product wizard. Adds image, wholesale pricing, landed-cost components,
+  // target margin, supplier link, warehouse and the quick-product flag to
+  // items, plus the item_barcodes and quick_products relay tables used by the
+  // quick-add flow. Existing rows keep their current pricing/quantity behavior.
+  if (version < 39) {
+    const itemCols = db.prepare('PRAGMA table_info(items)').all() as any[];
+    const itemColNames = itemCols.map((c: any) => c.name);
+    if (!itemColNames.includes('image')) db.exec('ALTER TABLE items ADD COLUMN image TEXT');
+    if (!itemColNames.includes('wholesaleSellingPrice')) db.exec('ALTER TABLE items ADD COLUMN wholesaleSellingPrice REAL');
+    if (!itemColNames.includes('minWholesaleQty')) db.exec('ALTER TABLE items ADD COLUMN minWholesaleQty REAL');
+    if (!itemColNames.includes('transportCost')) db.exec('ALTER TABLE items ADD COLUMN transportCost REAL DEFAULT 0');
+    if (!itemColNames.includes('importCost')) db.exec('ALTER TABLE items ADD COLUMN importCost REAL DEFAULT 0');
+    if (!itemColNames.includes('packagingCost')) db.exec('ALTER TABLE items ADD COLUMN packagingCost REAL DEFAULT 0');
+    if (!itemColNames.includes('handlingCost')) db.exec('ALTER TABLE items ADD COLUMN handlingCost REAL DEFAULT 0');
+    if (!itemColNames.includes('otherCost')) db.exec('ALTER TABLE items ADD COLUMN otherCost REAL DEFAULT 0');
+    if (!itemColNames.includes('targetMargin')) db.exec('ALTER TABLE items ADD COLUMN targetMargin REAL');
+    if (!itemColNames.includes('supplierAccount')) db.exec('ALTER TABLE items ADD COLUMN supplierAccount TEXT');
+    if (!itemColNames.includes('supplierCallEnabled')) db.exec('ALTER TABLE items ADD COLUMN supplierCallEnabled INTEGER DEFAULT 0');
+    if (!itemColNames.includes('warehouseId')) db.exec('ALTER TABLE items ADD COLUMN warehouseId INTEGER');
+    if (!itemColNames.includes('isActive')) db.exec('ALTER TABLE items ADD COLUMN isActive INTEGER DEFAULT 1');
+    if (!itemColNames.includes('quickProduct')) db.exec('ALTER TABLE items ADD COLUMN quickProduct INTEGER DEFAULT 0');
+    db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );`);
+    db.exec(`CREATE TABLE IF NOT EXISTS item_barcodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      itemId INTEGER NOT NULL,
+      barcode TEXT NOT NULL,
+      isPrimary INTEGER DEFAULT 0,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1,
+      FOREIGN KEY (itemId) REFERENCES items(id),
+      UNIQUE(itemId, barcode)
+    );`);
+    db.exec(`CREATE TABLE IF NOT EXISTS quick_products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      businessId INTEGER NOT NULL,
+      itemId INTEGER NOT NULL,
+      displayOrder INTEGER DEFAULT 0,
+      label TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT,
+      device_id TEXT,
+      row_version INTEGER DEFAULT 1,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      is_deleted INTEGER DEFAULT 0,
+      deleted_at TEXT,
+      is_synced INTEGER DEFAULT 1,
+      FOREIGN KEY (itemId) REFERENCES items(id),
+      FOREIGN KEY (businessId) REFERENCES businesses(id),
+      UNIQUE(businessId, itemId)
+    );`);
+    version = 39;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 8.0: collapse seeded default roles to a single 'Cashier'. Existing databases
+  // were seeded with 10 system roles; reassign any employees still pointing at the
+  // removed roles to Cashier, then drop the legacy roles so the Team page only
+  // surfaces Cashier as a default role.
+  if (version < 40) {
+    const legacyDefaultRoles = ['Owner', 'Administrator', 'Manager', 'Accountant', 'Inventory Manager', 'Warehouse Staff', 'Purchasing Officer', 'Sales Representative', 'Driver'];
+    const roleCols = (db.prepare('PRAGMA table_info(employee_roles)').all() as any[]).map((c: any) => c.name);
+    if (roleCols.includes('businessId')) {
+      const legacyRoles = db.prepare(`SELECT id, businessId FROM employee_roles WHERE isSystem = 1 AND name IN (${legacyDefaultRoles.map(() => '?').join(',')})`).all(...legacyDefaultRoles) as any[];
+      for (const role of legacyRoles) {
+        const cashier = db.prepare("SELECT id FROM employee_roles WHERE isSystem = 1 AND name = 'Cashier' AND businessId = ? LIMIT 1").get(role.businessId ?? 1) as any;
+        const targetId = cashier?.id;
+        db.prepare('UPDATE employees SET roleId = ? WHERE roleId = ?').run(targetId ?? null, role.id);
+        db.prepare('DELETE FROM employee_roles WHERE id = ?').run(role.id);
+      }
+    }
+    version = 40;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // Activity avatars: adjustments gain a user_id so the activity feed can
+  // attribute each adjustment to a user, and users gain an avatar column.
+  if (version < 41) {
+    const adjCols = (db.prepare('PRAGMA table_info(adjustments)').all() as any[]).map((c: any) => c.name);
+    if (!adjCols.includes('user_id')) db.exec('ALTER TABLE adjustments ADD COLUMN user_id INTEGER');
+    const uCols2 = (db.prepare('PRAGMA table_info(users)').all() as any[]).map((c: any) => c.name);
+    if (!uCols2.includes('avatar')) db.exec("ALTER TABLE users ADD COLUMN avatar TEXT");
+    if (!uCols2.includes('username')) db.exec('ALTER TABLE users ADD COLUMN username TEXT');
+    if (!uCols2.includes('sourceType')) db.exec('ALTER TABLE users ADD COLUMN sourceType TEXT');
+    if (!uCols2.includes('sourceId')) db.exec('ALTER TABLE users ADD COLUMN sourceId INTEGER');
+    version = 41;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // ========== SYNC COLUMN BACKSTOP ==========
+  // Every table in the relay must carry the standard sync columns. Tables that
+  // were added to SHARED_TABLES without a dedicated migration (e.g.
+  // budget_adjustments) would otherwise crash buildCloudChanges/verifyChecksums
+  // with "no such column: is_deleted" and stall the whole sync hub.
+  const ensureSyncColumns = (table: string): void => {
+    try {
+      const cols = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map((c: any) => c.name);
+      const add = (col: string, def: string) => { if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); };
+      add('uuid', 'TEXT');
+      add('device_id', 'TEXT');
+      add('row_version', 'INTEGER DEFAULT 1');
+      add('updated_at', 'TEXT');
+      add('is_deleted', 'INTEGER DEFAULT 0');
+      add('deleted_at', 'TEXT');
+      add('is_synced', 'INTEGER DEFAULT 1');
+      db.exec(`UPDATE ${table} SET updated_at = COALESCE(updated_at, ${cols.includes('createdAt') ? 'createdAt, ' : ''}CURRENT_TIMESTAMP) WHERE updated_at IS NULL`);
+      db.exec(`UPDATE ${table} SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))), row_version = 1 WHERE uuid IS NULL`);
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_uuid ON ${table}(uuid)`);
+    } catch (e: any) {
+      console.error(`sync column backstop (${table}):`, e?.message);
+    }
+  };
+
   // ========== CHANGE CAPTURE TRIGGERS (run after migrations so all sync columns exist) ==========
   const syncTables: { table: string; relay?: string; id: string; columns: string[] }[] = [
     { table: 'businesses', id: 'id', columns: ['id', 'businessName', 'storeName', 'logo', 'address', 'phone', 'email', 'currency', 'isDefault', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'categories', id: 'id', columns: ['id', 'businessId', 'name', 'icon', 'isCustom', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
-    { table: 'items', id: 'id', columns: ['id', 'businessId', 'name', 'categoryId', 'sku', 'barcode', 'companyName', 'purchaseUnit', 'baseUnit', 'unitsPerPack', 'totalPackQuantity', 'totalBaseQuantity', 'packPurchasePrice', 'basePurchasePrice', 'baseSellingPrice', 'packSellingPrice', 'allowSellByBaseUnit', 'allowSellByPackUnit', 'expiryDate', 'qualityGrade', 'notes', 'isCredit', 'supplierPhone', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'items', id: 'id', columns: ['id', 'businessId', 'name', 'categoryId', 'sku', 'barcode', 'companyName', 'purchaseUnit', 'baseUnit', 'unitsPerPack', 'totalPackQuantity', 'totalBaseQuantity', 'packPurchasePrice', 'basePurchasePrice', 'baseSellingPrice', 'packSellingPrice', 'allowSellByBaseUnit', 'allowSellByPackUnit', 'expiryDate', 'qualityGrade', 'taxType', 'taxTreatment', 'notes', 'isCredit', 'supplierPhone', 'image', 'wholesaleSellingPrice', 'minWholesaleQty', 'transportCost', 'importCost', 'packagingCost', 'handlingCost', 'otherCost', 'targetMargin', 'supplierAccount', 'supplierCallEnabled', 'warehouseId', 'isActive', 'quickProduct', 'supplierId', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'item_packs', id: 'id', columns: ['id', 'itemId', 'packNumber', 'initialQuantity', 'currentQuantity', 'unit', 'status', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
-    { table: 'sales', id: 'id', columns: ['id', 'businessId', 'itemId', 'quantity', 'unit', 'unitType', 'discount', 'vat', 'totalPrice', 'paymentMethod', 'paymentStatus', 'status', 'customerName', 'customerPhone', 'packId', 'dueDate', 'paidAmount', 'createdBy', 'createdAt', 'fiscal_number', 'fiscal_signature', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced', 'overrideBy', 'overrideReason', 'voidReason', 'voidedBy', 'voidedAt'] },
+    { table: 'item_barcodes', id: 'id', columns: ['id', 'itemId', 'barcode', 'isPrimary', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'quick_products', id: 'id', columns: ['id', 'businessId', 'itemId', 'displayOrder', 'label', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'sales', id: 'id', columns: ['id', 'businessId', 'itemId', 'quantity', 'unit', 'unitType', 'discount', 'vat', 'totalPrice', 'paymentMethod', 'paymentStatus', 'status', 'customerName', 'customerPhone', 'packId', 'dueDate', 'paidAmount', 'createdBy', 'createdAt', 'fiscal_number', 'fiscal_signature', 'taxType', 'invoiceNo', 'customerTin', 'vatAmount', 'totAmount', 'whtAmount', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced', 'overrideBy', 'overrideReason', 'voidReason', 'voidedBy', 'voidedAt'] },
     { table: 'debt_payments', id: 'id', columns: ['id', 'saleId', 'customerName', 'customerPhone', 'amount', 'type', 'note', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'returns', id: 'id', columns: ['id', 'businessId', 'saleId', 'itemId', 'quantity', 'unit', 'unitType', 'refundAmount', 'reason', 'status', 'createdBy', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'expenses', id: 'id', columns: ['id', 'businessId', 'name', 'amount', 'category', 'date', 'isRecurring', 'frequency', 'nextBillingDate', 'createdAt', 'uuid', 'device_id', 'row_version', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
@@ -1771,7 +2178,7 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     { table: 'locations', id: 'id', columns: ['id', 'businessId', 'name', 'address', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'registers', id: 'id', columns: ['id', 'businessId', 'locationId', 'name', 'deviceId', 'printerName', 'hasDrawer', 'isActive', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'business_roles', id: 'id', columns: ['id', 'businessId', 'name', 'description', 'permissions', 'isSystem', 'builtinKey', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
-    { table: 'users', relay: 'users', id: 'id', columns: ['id', 'businessId', 'name', 'phone', 'email', 'role', 'roleName', 'permissions', 'isActive', 'isOwner', 'pinHash', 'pinSalt', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'users', relay: 'users', id: 'id', columns: ['id', 'businessId', 'name', 'phone', 'email', 'username', 'role', 'roleName', 'permissions', 'isActive', 'isOwner', 'pinHash', 'pinSalt', 'avatar', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'roster_devices', relay: 'devices', id: 'id', columns: ['id', 'businessId', 'userId', 'name', 'model', 'platform', 'registerId', 'role', 'status', 'pairingCode', 'pairingExpiresAt', 'lastSeenAt', 'lastSyncAt', 'appVersion', 'isPrimary', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'budgets', id: 'id', columns: ['id','businessId','category','amount','period','month','year','budgetType','referenceName','isRecurring','notes','updatedAt','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'suppliers', id: 'id', columns: ['id','businessId','supplierCode','supplierName','companyName','contactPerson','phone','secondaryPhone','email','address','city','country','taxNumber','paymentTerms','creditLimit','notes','status','isActive','createdAt','updatedAt','contact_id','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
@@ -1780,14 +2187,14 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     { table: 'order_items', id: 'id', columns: ['id','orderId','itemId','itemName','quantity','unit','unitType','unitPrice','totalPrice','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'shipments', id: 'id', columns: ['id','businessId','origin','destination','driverName','driverPhone','vehicleInfo','status','notes','scheduledDate','deliveredAt','createdAt','updatedAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'shipment_items', id: 'id', columns: ['id','shipmentId','itemId','itemName','quantity','unit','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
-{ table: 'employees', id: 'id', columns: ['id','businessId','employeeCode','firstName','lastName','phone','email','address','emergencyContact','gender','dateOfBirth','roleId','department','warehouseId','isActive','employmentStatus','avatar','hireDate','notes','createdAt','updatedAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
-   { table: 'employee_roles', id: 'id', columns: ['id','businessId','name','description','permissions','isSystem','createdAt','updatedAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
+    { table: 'employees', id: 'id', columns: ['id','businessId','employeeCode','firstName','lastName','phone','email','address','emergencyContact','gender','dateOfBirth','roleId','department','warehouseId','isActive','employmentStatus','avatar','hireDate','notes','createdAt','updatedAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
+    { table: 'employee_roles', id: 'id', columns: ['id','businessId','name','description','permissions','isSystem','createdAt','updatedAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'employee_accounts', id: 'id', columns: ['id','employeeId','username','pin','isActive','forcePasswordChange','failedLoginAttempts','lockedUntil','lastPasswordChange','lastLogin','createdAt','updatedAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'notification_reminders', id: 'id', columns: ['id','businessId','title','message','category','triggerDate','repeatInterval','status','lastTriggeredAt','completedAt','snoozedUntil','relatedEntityType','relatedEntityId','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'subscriptions', id: 'id', columns: ['id','businessId','planId','tier','status','startedAt','expiresAt','trialStartedAt','trialEndsAt','isTrial','autoRenew','createdAt','updatedAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'attendance', id: 'id', columns: ['id','employeeId','date','clockIn','clockOut','status','notes','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'employee_performance', id: 'id', columns: ['id','employeeId','period','salesAmount','ordersProcessed','attendanceScore','tasksCompleted','rating','notes','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
-    { table: 'order_history', id: 'id', columns: ['id','orderId','status','changedBy','notes','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
+    { table: 'order_history', id: 'id', columns: ['id','orderId','action','performedBy','notes','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'shipment_history', id: 'id', columns: ['id','shipmentId','status','changedBy','notes','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'budget_categories', id: 'id', columns: ['id','budgetId','category','plannedAmount','notes','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'budget_adjustments', id: 'id', columns: ['id','budgetId','businessId','previousAmount','newAmount','reason','status','requestedBy','approvedBy','approvedAt','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
@@ -1795,26 +2202,85 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     { table: 'subscription_renewals', id: 'id', columns: ['id','subscriptionId','previousExpiry','newExpiry','plan','durationMonths','amount','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'notifications', id: 'id', columns: ['id','type','title','message','category','priority','isRead','groupKey','actionUrl','actionLabel','expiresAt','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] }
   ];
+  for (const t of syncTables) {
+    ensureSyncColumns(t.table);
+  }
   const genUuid = "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random())%4+1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))";
   for (const t of syncTables) {
+    // Stale change-capture triggers: if a table's schema evolved (columns dropped
+    // or renamed) but its `_ad` trigger was created against the OLD schema,
+    // `CREATE TRIGGER IF NOT EXISTS` keeps the broken body and any DELETE on
+    // that table dies with "no such column: OLD.<col>". Detect and drop so the
+    // recreate below installs a trigger matching the current columns.
+    try {
+      const trigSql = (db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_${t.table}_ad'`).get() as any)?.sql as string | undefined;
+      if (trigSql) {
+        const liveCols = (db.prepare(`PRAGMA table_info(${t.table})`).all() as any[]).map((c: any) => c.name);
+        const stale = [...trigSql.matchAll(/OLD\.([A-Za-z_][A-Za-z0-9_]*)/g)].some((m) => !liveCols.includes(m[1]));
+        if (stale) {
+          db.exec(`DROP TRIGGER IF EXISTS trg_${t.table}_ai; DROP TRIGGER IF EXISTS trg_${t.table}_au; DROP TRIGGER IF EXISTS trg_${t.table}_ad;`);
+        }
+      }
+    } catch (e: any) {
+      console.error(`sync trigger sanitation (${t.table}):`, e?.message);
+    }
     const relayName = t.relay ?? t.table;
     const newArgs = t.columns.map((c) => `'${c}', ${c}`).join(', ');
     const oldArgs = t.columns.map((c) => `'${c}', OLD.${c}`).join(', ');
-    db.exec(`
-      CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ai AFTER INSERT ON ${t.table} BEGIN
-        UPDATE ${t.table} SET uuid = ${genUuid} WHERE ${t.id} = NEW.${t.id} AND uuid IS NULL;
-        INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-        SELECT '${relayName}', uuid, 'INSERT', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
-      END;
-      CREATE TRIGGER IF NOT EXISTS trg_${t.table}_au AFTER UPDATE ON ${t.table} WHEN OLD.uuid IS NOT NULL AND NEW.uuid IS NOT NULL BEGIN
-        INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-        SELECT '${relayName}', uuid, 'UPDATE', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
-      END;
-      CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ad AFTER DELETE ON ${t.table} BEGIN
-        INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-        VALUES ('${relayName}', OLD.uuid, 'DELETE', json_object(${oldArgs}), OLD.device_id);
-      END;
-    `);
+    // One malformed trigger entry must never abort initDB (that took the whole
+    // sync hub down); log and keep going so the remaining tables still sync.
+    try {
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ai AFTER INSERT ON ${t.table} BEGIN
+          UPDATE ${t.table} SET uuid = ${genUuid} WHERE ${t.id} = NEW.${t.id} AND uuid IS NULL;
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          SELECT '${relayName}', uuid, 'INSERT', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_${t.table}_au AFTER UPDATE ON ${t.table} WHEN OLD.uuid IS NOT NULL AND NEW.uuid IS NOT NULL BEGIN
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          SELECT '${relayName}', uuid, 'UPDATE', json_object(${newArgs}), device_id FROM ${t.table} WHERE ${t.id} = NEW.${t.id};
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_${t.table}_ad AFTER DELETE ON ${t.table} BEGIN
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          VALUES ('${relayName}', OLD.uuid, 'DELETE', json_object(${oldArgs}), OLD.device_id);
+        END;
+      `);
+    } catch (e: any) {
+      console.error(`sync trigger (${t.table}):`, e?.message);
+    }
+  }
+
+  // Cross-platform user sign-in identity: recreate the `users` relay triggers
+  // so their payloads always carry username + avatar, even on installs whose
+  // triggers were created before those columns existed.
+  {
+    const uCols = (db.prepare('PRAGMA table_info(users)').all() as any[]).map((c: any) => c.name);
+    const uTrigCols = uCols.includes('username') && uCols.includes('avatar')
+      ? ['id', 'businessId', 'name', 'phone', 'email', 'username', 'role', 'roleName', 'permissions', 'isActive', 'isOwner', 'pinHash', 'pinSalt', 'avatar', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced']
+      : ['id', 'businessId', 'name', 'phone', 'email', 'role', 'roleName', 'permissions', 'isActive', 'isOwner', 'pinHash', 'pinSalt', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'];
+    const userArgs = uTrigCols.map((c) => `'${c}', ${c}`).join(', ');
+    try {
+      db.exec(`
+        DROP TRIGGER IF EXISTS trg_users_ai;
+        DROP TRIGGER IF EXISTS trg_users_au;
+        DROP TRIGGER IF EXISTS trg_users_ad;
+        CREATE TRIGGER IF NOT EXISTS trg_users_ai AFTER INSERT ON users BEGIN
+          UPDATE users SET uuid = ${genUuid} WHERE id = NEW.id AND uuid IS NULL;
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          SELECT 'users', uuid, 'INSERT', json_object(${userArgs}), device_id FROM users WHERE id = NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_users_au AFTER UPDATE ON users WHEN OLD.uuid IS NOT NULL AND NEW.uuid IS NOT NULL BEGIN
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          SELECT 'users', uuid, 'UPDATE', json_object(${userArgs}), device_id FROM users WHERE id = NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_users_ad AFTER DELETE ON users BEGIN
+          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
+          VALUES ('users', OLD.uuid, 'DELETE', json_object('id', OLD.id, 'businessId', OLD.businessId, 'name', OLD.name, 'uuid', OLD.uuid, 'device_id', OLD.device_id, 'row_version', OLD.row_version, 'updated_at', OLD.updated_at, 'is_deleted', OLD.is_deleted, 'deleted_at', OLD.deleted_at, 'is_synced', OLD.is_synced), OLD.device_id);
+        END;
+      `);
+    } catch (e: any) {
+      console.error('users relay triggers:', e?.message);
+    }
   }
 
   // §23: LAN/cloud sync of the inventory movement ledger. Only ADDITIVE
@@ -1845,132 +2311,6 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
         NEW.device_id
       FROM audit_logs WHERE id = NEW.id AND uuid IS NOT NULL;
     END;
-  `);
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      businessId INTEGER,
-      orderNumber TEXT UNIQUE NOT NULL,
-      customerName TEXT,
-      customerPhone TEXT,
-      notes TEXT,
-      status TEXT NOT NULL DEFAULT 'Order',
-      totalAmount REAL NOT NULL DEFAULT 0,
-      createdBy INTEGER,
-      createdByName TEXT,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      convertedAt TEXT,
-      convertedBy TEXT,
-      cancelledAt TEXT,
-      cancelledBy TEXT,
-      cancelReason TEXT,
-      uuid TEXT UNIQUE,
-      is_deleted INTEGER DEFAULT 0,
-      FOREIGN KEY (businessId) REFERENCES businesses(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS order_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      orderId INTEGER NOT NULL,
-      itemId INTEGER,
-      itemName TEXT NOT NULL,
-      quantity REAL NOT NULL,
-      unit TEXT,
-      unitType TEXT DEFAULT 'base',
-      unitPrice REAL NOT NULL DEFAULT 0,
-      totalPrice REAL NOT NULL DEFAULT 0,
-      FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE,
-      FOREIGN KEY (itemId) REFERENCES items(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS order_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      orderId INTEGER NOT NULL,
-      action TEXT NOT NULL,
-      performedBy TEXT,
-      notes TEXT,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE
-    );
-  `);
-
-  // ========== SUBSCRIPTION SYSTEM TABLES ==========
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS subscription_plans (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      tier TEXT NOT NULL CHECK(tier IN ('basic', 'premium')),
-      durationMonths INTEGER NOT NULL,
-      price REAL NOT NULL,
-      currency TEXT DEFAULT 'ETB',
-      description TEXT,
-      features TEXT,
-      isActive INTEGER DEFAULT 1,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS subscriptions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      businessId INTEGER NOT NULL UNIQUE,
-      planId INTEGER,
-      tier TEXT NOT NULL DEFAULT 'basic' CHECK(tier IN ('basic', 'premium', 'trial')),
-      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'expired', 'cancelled', 'pending')),
-      startedAt TEXT,
-      expiresAt TEXT,
-      trialStartedAt TEXT,
-      trialEndsAt TEXT,
-      isTrial INTEGER DEFAULT 0,
-      autoRenew INTEGER DEFAULT 0,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      uuid TEXT,
-      device_id TEXT,
-      row_version INTEGER DEFAULT 1,
-      updated_at TEXT,
-      is_deleted INTEGER DEFAULT 0,
-      deleted_at TEXT,
-      is_synced INTEGER DEFAULT 1,
-      FOREIGN KEY (businessId) REFERENCES businesses(id),
-      FOREIGN KEY (planId) REFERENCES subscription_plans(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS payment_transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      businessId INTEGER,
-      transactionId TEXT,
-      businessName TEXT NOT NULL,
-      phoneNumber TEXT NOT NULL,
-      selectedPlan TEXT NOT NULL,
-      amount REAL NOT NULL,
-      currency TEXT DEFAULT 'ETB',
-      paymentDate TEXT NOT NULL,
-      notes TEXT,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'cancelled')),
-      adminNotes TEXT,
-      verifiedBy INTEGER,
-      verifiedAt TEXT,
-      subscriptionId INTEGER,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (businessId) REFERENCES businesses(id),
-      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS subscription_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      subscriptionId INTEGER,
-      businessId INTEGER,
-      action TEXT NOT NULL,
-      oldTier TEXT,
-      newTier TEXT,
-      oldStatus TEXT,
-      newStatus TEXT,
-      details TEXT,
-      changedBy TEXT,
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (subscriptionId) REFERENCES subscriptions(id),
-      FOREIGN KEY (businessId) REFERENCES businesses(id)
-    );
   `);
 
   // Seed subscription plans
@@ -2137,12 +2477,12 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
       .run(businessId, 'Main Warehouse', 'Headquarters', 'Operations Manager');
   }
 
-  // Seed 10 default employee roles
+  // Seed default employee role (Cashier)
   const roleCount = db.prepare('SELECT COUNT(*) as count FROM employee_roles').get() as any;
   if (roleCount.count === 0) {
-    const insertRole = db.prepare('INSERT INTO employee_roles (name, description, permissions, isSystem) VALUES (?, ?, ?, 1)');
+    const insertRole = db.prepare('INSERT INTO employee_roles (businessId, name, description, permissions, isSystem) VALUES (?, ?, ?, ?, 1)');
     for (const role of DEFAULT_ROLES) {
-      insertRole.run(role.name, role.description, JSON.stringify(role.permissions));
+      insertRole.run(businessId, role.name, role.description, JSON.stringify(role.permissions));
     }
   }
 
@@ -2180,6 +2520,23 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     db.prepare(
       'INSERT INTO admins (name, username, pin, role, permissions) VALUES (?, ?, ?, ?, ?)'
     ).run('Super Admin', 'admin', hash, 'super_admin', JSON.stringify(ALL_PERMISSIONS));
+
+    // The owner also exists as a canonical `users` roster row (v27) so this
+    // person can be recognized across devices and platforms as the SAME owner.
+    // Role/permissions live on this membership record (isOwner, role='owner'),
+    // which is what other installs sync and adopt — never a per-device identity.
+    const usersMissingPinHash = db.prepare("SELECT COUNT(*) AS c FROM users WHERE isOwner = 1").get() as any;
+    if ((usersMissingPinHash.c ?? 0) === 0) {
+      db.prepare(
+        `INSERT INTO users (businessId, name, phone, email, role, roleName, permissions, isActive, isOwner, pinHash, pinSalt, uuid)
+         VALUES (?, 'Super Admin', NULL, 'admin', 'owner', 'Owner', ?, 1, 1, ?, NULL, ?)`
+      ).run(
+        businessId,
+        JSON.stringify({ '*': true }),
+        hash,
+        crypto.randomUUID()
+      );
+    }
   }
 
   // Migration: Import existing customer names from sales into customers table

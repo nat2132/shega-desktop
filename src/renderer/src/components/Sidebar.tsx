@@ -1,8 +1,8 @@
 import { NavLink } from 'react-router-dom';
 import { 
   LayoutDashboard, Package, ShoppingCart, 
-  Receipt, Users, BarChart3, Settings, 
-  LogOut, RefreshCcw, Gift, Building2
+  Users, BarChart3, Settings, 
+  LogOut, Building2
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { Button } from './ui/button';
@@ -17,11 +17,8 @@ const Sidebar = () => {
     { id: 'dashboard', path: '/', icon: LayoutDashboard },
     { id: 'inventory', path: '/inventory', icon: Package },
     { id: 'sales', path: '/sales', icon: ShoppingCart },
-    { id: 'logistics', path: '/adjustments', icon: RefreshCcw },
     { id: 'customers', path: '/customers', icon: Users },
     { id: 'analytics', path: '/analytics', icon: BarChart3 },
-    { id: 'expense', path: '/expenses', icon: Receipt },
-    { id: 'giftcards', path: '/gift-cards', icon: Gift },
     { id: 'business', path: '/business', icon: Building2 },
   ];
 

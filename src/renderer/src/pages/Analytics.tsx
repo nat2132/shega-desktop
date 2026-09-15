@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useMemo } from "react";
+import { resolveAvatar } from '../lib/avatar';
 import {
   TrendingUp,
   Activity,
   DollarSign,
-  Briefcase,
   Boxes,
   CreditCard,
   Zap,
@@ -31,26 +31,27 @@ import {
   CartesianGrid,
 } from "recharts";
 import { useSettings } from "../context/SettingsContext";
+import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent } from "../components/ui/card";
 import { Label } from "../components/ui/label";
 import { DatePicker } from "../components/DatePicker";
+import { KpiVisibility } from "../components/kpi-visibility";
+import { CategorySalesChart } from "../components/category-sales-chart";
 
 interface AnalyticsData {
   salesData: { date: string; revenue: number; units: number; profit: number }[];
-  expenseData: { date: string; amount: number }[];
   topItems: { name: string; totalQty: number; totalRevenue: number }[];
   categoryBreakdown: { name: string; saleCount: number; revenue: number }[];
   summary: {
     totalRevenue: number;
     totalProfit: number;
-    totalExpenses: number;
     netProfit: number;
   };
 }
 
 const Analytics: React.FC = () => {
-  const { t, formatDate, formatTime, language } = useSettings();
+  const { t, formatDate, formatTime, language, isModuleEnabled } = useSettings();
   const [period, setPeriod] = useState<
     "today" | "week" | "month" | "year" | "custom"
   >("month");
@@ -94,11 +95,16 @@ const Analytics: React.FC = () => {
     }
   }, [period]);
 
+  // Live sync: re-query when P2P/Yjs sync lands new data in SQLite.
+  useDataChangedRefresh(() => { loadData(); });
+
   const loadData = async (customRange?: { start: string; end: string }) => {
     const range = customRange || currentRange;
 
     try {
-      const [anData, dbStats, items, activity, sales] = await Promise.all([
+      // Fetch independently so one failing call (e.g. a permission error on
+      // get-items/get-sales) can't blank out the entire page including charts.
+      const [anRes, dbRes, itemsRes, actRes, salesRes] = await Promise.allSettled([
         window.api.getAnalytics(period, range),
         window.api.getDashboardStats(),
         window.api.getItems({}),
@@ -106,12 +112,24 @@ const Analytics: React.FC = () => {
         window.api.getSales({ startDate: range.start, endDate: range.end }),
       ]);
 
-      setData(anData);
-      setDashboardStats(dbStats);
-      setRecentActivity(activity || []);
-      setRawSales(sales || []);
+      if (anRes.status === "fulfilled") {
+        console.log("[Analytics] getAnalytics ok:", JSON.stringify({
+          period,
+          range,
+          salesDataPoints: anRes.value?.salesData?.length ?? 0,
+          salesData: anRes.value?.salesData,
+        }));
+        setData(anRes.value);
+      }
+      else console.error("[Analytics] getAnalytics failed:", (anRes.reason as Error)?.message || anRes.reason);
+      setDashboardStats(dbRes.status === "fulfilled" ? dbRes.value : null);
+      setRecentActivity(actRes.status === "fulfilled" ? actRes.value || [] : []);
+      setRawSales(salesRes.status === "fulfilled" ? salesRes.value || [] : []);
+      if (actRes.status === "rejected") console.error("getRecentActivity failed:", (actRes.reason as Error)?.message || actRes.reason);
+      if (salesRes.status === "rejected") console.error("getSales failed:", (salesRes.reason as Error)?.message || salesRes.reason);
 
-      if (items) {
+      if (itemsRes.status === "fulfilled" && itemsRes.value) {
+        const items = itemsRes.value;
         const val = items.reduce(
           (s: number, i: any) => s + i.totalBaseQuantity * i.basePurchasePrice,
           0,
@@ -122,6 +140,8 @@ const Analytics: React.FC = () => {
           .filter((i: any) => i.totalBaseQuantity <= 10)
           .sort((a: any, b: any) => a.totalBaseQuantity - b.totalBaseQuantity);
         setLowStockItems(lowStock);
+      } else if (itemsRes.status === "rejected") {
+        console.error("getItems failed:", (itemsRes.reason as Error)?.message || itemsRes.reason);
       }
     } catch (e: any) {
       console.error(e.message || 'Failed to load analytics');
@@ -130,35 +150,34 @@ const Analytics: React.FC = () => {
 
   const chartData = useMemo(() => {
     if (!data) return [];
-    return data.salesData.map((s) => {
-      const expense =
-        data.expenseData.find((e) => e.date === s.date)?.amount || 0;
 
-      let name = s.date;
+    let name = (s: any) => {
+      let n = s.date;
       try {
         const d = new Date(s.date);
         if (period === "year" && !dateRange.start) {
-          name = d.toLocaleDateString(language, { month: "short" });
+          n = d.toLocaleDateString(language, { month: "short" });
         } else if (period === "today") {
-          name = d.toLocaleTimeString(language, {
+          n = d.toLocaleTimeString(language, {
             hour: "2-digit",
             minute: "2-digit",
           });
         } else {
-          name = d.toLocaleDateString(language, {
+          n = d.toLocaleDateString(language, {
             month: "short",
             day: "numeric",
           });
         }
       } catch (e) {}
 
-      return {
-        name,
-        revenue: s.revenue,
-        expense: expense,
-        profit: s.profit,
-      };
-    });
+      return n;
+    };
+
+    return data.salesData.map((s) => ({
+      name: name(s),
+      revenue: s.revenue,
+      profit: s.profit,
+    }));
   }, [data, period, language, dateRange]);
 
   const salesDistribution = useMemo(() => {
@@ -202,7 +221,7 @@ const Analytics: React.FC = () => {
     }
 
     if (granularity === 'weekly') {
-      const weeks = Array.from({ length: 5 }, (_, i) => ({ label: t('analytics.week_label', { week: i + 1 }), revenue: 0, count: 0 }));
+      const weeks = Array.from({ length: 5 }, (_, i) => ({ label: t('analytics.week_label', { number: i + 1 }), revenue: 0, count: 0 }));
       rawSales.forEach((s) => {
         const d = new Date(s.createdAt);
         const day = d.getDate();
@@ -213,7 +232,7 @@ const Analytics: React.FC = () => {
       return { title: t('analytics.by_week') || 'Sales by Week', subtitle: t('analytics.by_week_desc') || 'Weekly revenue pattern', data: weeks, dataKey: 'label' };
     }
 
-    const months = [t('budgets.month_jan'), t('budgets.month_feb'), t('budgets.month_mar'), t('budgets.month_apr'), t('budgets.month_may'), t('budgets.month_jun'), t('budgets.month_jul'), t('budgets.month_aug'), t('budgets.month_sep'), t('budgets.month_oct'), t('budgets.month_nov'), t('budgets.month_dec')];
+    const months = [t('common.month_jan'), t('common.month_feb'), t('common.month_mar'), t('common.month_apr'), t('common.month_may'), t('common.month_jun'), t('common.month_jul'), t('common.month_aug'), t('common.month_sep'), t('common.month_oct'), t('common.month_nov'), t('common.month_dec')];
     const monthly = months.map((n) => ({ label: n, revenue: 0, count: 0 }));
     rawSales.forEach((s) => {
       const m = new Date(s.createdAt).getMonth();
@@ -330,7 +349,7 @@ const Analytics: React.FC = () => {
                     <DatePicker
                       value={dateRange.start}
                       onChange={(v) => setDateRange((prev) => ({ ...prev, start: v }))}
-                      className="h-7 w-32 bg-background border-none text-xs font-bold grow"
+                      className="w-auto bg-background border-none text-xs font-bold"
                     />
                   </div>
                   <div className="flex items-center gap-1.5 px-2">
@@ -343,7 +362,7 @@ const Analytics: React.FC = () => {
                     <DatePicker
                       value={dateRange.end}
                       onChange={(v) => setDateRange((prev) => ({ ...prev, end: v }))}
-                      className="h-7 w-32 bg-background border-none text-xs font-bold grow"
+                      className="w-auto bg-background border-none text-xs font-bold"
                     />
                   </div>
                   <button
@@ -386,7 +405,9 @@ const Analytics: React.FC = () => {
         </Card>
 
         {/* 1. Overview Cards (Period Based) */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <KpiVisibility storageKey="analytics-overview-kpis">
+          {visible => visible ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <Card className="rounded-3xl shadow-sm flex flex-col relative overflow-hidden group border-border">
             <CardContent className="p-5">
               <div className="flex justify-between items-start mb-3">
@@ -437,32 +458,6 @@ const Analytics: React.FC = () => {
             <CardContent className="p-5">
               <div className="flex justify-between items-start mb-3">
                 <div className="p-2 bg-muted rounded-xl text-foreground">
-                  <Briefcase size={20} />
-                </div>
-                <Badge
-                  variant="outline"
-                  className="text-xs font-bold uppercase tracking-widest"
-                >
-                  {t(`analytics.${period}`)}
-                </Badge>
-              </div>
-              <p className="text-muted-foreground text-xs font-bold uppercase tracking-wider mb-1">
-                {t("analytics.expenses_today").replace(
-                  "Today",
-                  t(`analytics.${period}`),
-                )}
-              </p>
-              <h3 className="text-2xl font-bold tracking-tight text-foreground">
-                {t("common.etb")}{" "}
-                {(data?.summary?.totalExpenses || 0).toLocaleString()}
-              </h3>
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-3xl shadow-sm flex flex-col relative overflow-hidden group border-border">
-            <CardContent className="p-5">
-              <div className="flex justify-between items-start mb-3 relative z-10">
-                <div className="p-2 bg-muted rounded-xl text-foreground">
                   <Zap size={20} />
                 </div>
                 <Badge
@@ -473,10 +468,7 @@ const Analytics: React.FC = () => {
                 </Badge>
               </div>
               <p className="text-muted-foreground text-xs font-bold uppercase tracking-wider mb-1 relative z-10">
-                {t("analytics.net_today").replace(
-                  "Today",
-                  t(`analytics.${period}`),
-                )}
+                {t("analytics.net_today")}
               </p>
               <h3 className="text-2xl font-bold tracking-tight text-foreground relative z-10">
                 {t("common.etb")}{" "}
@@ -485,6 +477,8 @@ const Analytics: React.FC = () => {
             </CardContent>
           </Card>
         </div>
+          ) : null}
+        </KpiVisibility>
 
         {/* Payment Method Breakdown */}
         <Card className="rounded-3xl shadow-sm border-border bg-gradient-to-t from-primary/5 to-card">
@@ -599,11 +593,11 @@ const Analytics: React.FC = () => {
               {chartData.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground">
                   <TrendingUp size={32} className="mb-2 opacity-20" />
-                  <p className="text-xs font-black uppercase tracking-widest">{t('analytics.no_sales_data')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest">{t('analytics.no_chart_data')}</p>
                   <p className="text-xs mt-1 opacity-60">{t('analytics.no_trend')}</p>
                 </div>
               ) : (
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minHeight={300} minWidth={0}>
                 <AreaChart
                   data={chartData}
                   margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
@@ -731,16 +725,18 @@ const Analytics: React.FC = () => {
                 </div>
 
                 <div className="space-y-6">
-                  <div>
-                    <p className="text-muted-foreground text-xs font-bold uppercase tracking-wider mb-2 flex items-center gap-2">
-                      <ArrowUpRight size={12} className="text-foreground" />
-                      {t("analytics.customers_owe")}
-                    </p>
-                    <h3 className="text-3xl font-bold tracking-tight text-foreground">
-                      {t("common.etb")}{" "}
-                      {(dashboardStats?.activeDebts || 0).toLocaleString()}
-                    </h3>
-                  </div>
+                  {isModuleEnabled('customers') && (
+                    <div>
+                      <p className="text-muted-foreground text-xs font-bold uppercase tracking-wider mb-2 flex items-center gap-2">
+                        <ArrowUpRight size={12} className="text-foreground" />
+                        {t("analytics.customers_owe")}
+                      </p>
+                      <h3 className="text-3xl font-bold tracking-tight text-foreground">
+                        {t("common.etb")}{" "}
+                        {(dashboardStats?.activeDebts || 0).toLocaleString()}
+                      </h3>
+                    </div>
+                  )}
 
                   <div className="h-px w-full bg-border" />
 
@@ -846,10 +842,10 @@ const Analytics: React.FC = () => {
               {salesDistribution.data.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground">
                   <BarChart3 size={32} className="mb-2 opacity-20" />
-                  <p className="text-xs font-black uppercase tracking-widest">{t('analytics.no_sales_data')}</p>
+                  <p className="text-xs font-black uppercase tracking-widest">{t('analytics.no_chart_data')}</p>
                 </div>
               ) : (
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minHeight={250} minWidth={0}>
                 <BarChart
                   data={salesDistribution.data}
                   margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
@@ -976,22 +972,39 @@ const Analytics: React.FC = () => {
                 ) : (
                   recentActivity.map((activity, i) => {
                     const isSale = activity.type === "sale";
-                    const isExpense = activity.type === "expense";
 
                     return (
                       <div
                         key={i}
                         className="flex gap-4 py-3 border-b border-border last:border-0"
                       >
-                        <div
-                          className={`mt-0.5 p-1.5 rounded-lg h-fit bg-muted text-foreground`}
-                        >
-                          {isSale ? (
-                            <TrendingUp size={12} />
-                          ) : isExpense ? (
-                            <TrendingDown size={12} />
+                        <div className="relative mt-0.5 h-fit">
+                          {isSale && activity.itemImage ? (
+                            <>
+                              <img
+                                src={activity.itemImage}
+                                alt={activity.description || 'Product'}
+                                className="h-8 w-8 rounded-lg object-cover ring-1 ring-border"
+                              />
+                              <span className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-muted text-foreground ring-1 ring-border">
+                                <TrendingUp size={9} />
+                              </span>
+                            </>
+                          ) : activity.userAvatar ? (
+                            <>
+                              <img
+                                src={resolveAvatar(activity.userAvatar)}
+                                alt={activity.userName || 'User'}
+                                className="h-8 w-8 rounded-full object-cover"
+                              />
+                              <span className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-muted text-foreground ring-1 ring-border">
+                                {isSale ? <TrendingUp size={9} /> : <Activity size={9} />}
+                              </span>
+                            </>
                           ) : (
-                            <Activity size={12} />
+                            <div className="p-1.5 rounded-lg bg-muted text-foreground">
+                              {isSale ? <TrendingUp size={12} /> : <Activity size={12} />}
+                            </div>
                           )}
                         </div>
                         <div className="flex-1">
@@ -1012,7 +1025,14 @@ const Analytics: React.FC = () => {
                               activity.extra ||
                               t("analytics.system_update")}
                           </p>
-                          <p className="text-xs font-medium text-muted-foreground mt-0.5">
+                          <p className="text-xs font-medium text-muted-foreground mt-0.5 flex items-center gap-1.5">
+                            {activity.userName && (
+                              <span className="inline-flex items-center gap-1">
+                                <img src={resolveAvatar(activity.userAvatar)} alt="" className="h-4 w-4 rounded-full object-cover" />
+                                <span className="text-primary font-bold">{activity.userName}</span>
+                              </span>
+                            )}
+                            {activity.userName ? " · " : ""}
                             {formatTime(activity.date)}{" "}
                             · {formatDate(activity.date)}
                           </p>
@@ -1025,6 +1045,9 @@ const Analytics: React.FC = () => {
             </CardContent>
           </Card>
         </div>
+
+        {/* 6. Sales by Category */}
+        <CategorySalesChart data={data?.categoryBreakdown || []} />
       </div>
     </div>
   );

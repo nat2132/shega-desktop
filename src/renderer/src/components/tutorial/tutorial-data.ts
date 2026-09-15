@@ -15,15 +15,15 @@ const tutorials: ScreenTutorial[] = [
       {
         id: 'dashboard-welcome',
         title: 'Welcome to Your Dashboard',
-        description: 'The Dashboard is your command center. It gives you a real-time snapshot of your business performance, including revenue, expenses, profit, and key alerts.',
-        instruction: 'Take a moment to scan the summary cards at the top. These show your total revenue, expenses, profit, and outstanding debts for the current period.',
+        description: 'The Dashboard is your command center. It gives you a real-time snapshot of your business performance, including revenue, profit, and key alerts.',
+        instruction: 'Take a moment to scan the summary cards at the top. These show your total revenue, profit, and outstanding debts for the current period.',
         tooltipPosition: 'center',
       },
       {
         id: 'dashboard-kpi-cards',
         title: 'Key Performance Indicators',
-        description: 'The KPI cards at the top show your most important metrics: Total Revenue, Expenses, Profit, and Outstanding Debts for the current period.',
-        instruction: 'Each card shows a metric name, the current value, and a comparison indicator. Green means positive performance, red means attention needed. Review all four cards to get a snapshot of your business health.',
+        description: 'The KPI cards at the top show your most important metrics: Total Revenue, Profit, and Outstanding Debts for the current period.',
+        instruction: 'Each card shows a metric name, the current value, and a comparison indicator. Green means positive performance, red means attention needed. Review all three cards to get a snapshot of your business health.',
         targetSelector: '[data-tutorial-section="kpi-cards"]',
         tooltipPosition: 'bottom',
       },
@@ -43,22 +43,6 @@ const tutorials: ScreenTutorial[] = [
         tooltipPosition: 'bottom',
       },
       {
-        id: 'dashboard-reversals',
-        title: 'Reversals Overview',
-        description: 'Track reversals including voided sales, reversed payments, and reversed adjustments.',
-        instruction: 'Review the reversal stats to monitor any voided or reversed transactions. High numbers may indicate issues that need investigation.',
-        targetSelector: '[data-tutorial-section="reversals"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'dashboard-suppliers',
-        title: 'Supplier Insights',
-        description: 'Get a supplier performance overview including totals, outstanding balances, monthly purchases, top suppliers, and unpaid orders.',
-        instruction: 'Scroll through the supplier section to review key metrics, unpaid supplier orders (amount and due dates), payment due alerts, and low stock items from specific suppliers.',
-        targetSelector: '[data-tutorial-section="suppliers"]',
-        tooltipPosition: 'top',
-      },
-      {
         id: 'dashboard-charts',
         title: 'Sales & Revenue Charts',
         description: 'Visualize your sales trends over time. These charts help you spot patterns, peak seasons, and areas for improvement.',
@@ -68,17 +52,9 @@ const tutorials: ScreenTutorial[] = [
       },
       {
         id: 'dashboard-category-sales',
-        title: 'Sales by Product Category',
-        description: 'See how sales are distributed across product categories. This breakdown helps identify your best-performing categories.',
-        instruction: 'Review the category breakdown chart. Larger segments represent categories with higher sales. Use this to identify which product categories drive the most revenue.',
-        targetSelector: '[data-tutorial-section="category-sales"]',
-        tooltipPosition: 'top',
-      },
-      {
-        id: 'dashboard-recent-activity',
         title: 'Recent Activity',
-        description: 'The Recent Activity table shows the latest transactions including sales, expenses, and other actions performed in the system.',
-        instruction: 'Scroll through the table to see recent transactions. Each row shows the type, description, amount, date, and who performed the action. Click any row to view full details.',
+        description: 'See the latest sales, adjustments, and staff clock-in/out events with the user who performed them.',
+        instruction: 'Review the recent activity feed. Each entry shows the action, the person who performed it, and the time. Use this to keep track of what is happening across your team.',
         targetSelector: '[data-tutorial-section="recent-activity"]',
         tooltipPosition: 'top',
       },
@@ -375,140 +351,6 @@ const tutorials: ScreenTutorial[] = [
   },
 
   // ═══════════════════════════════════════════════════════════════
-  // EXPENSES — Add Expense form + Set Budget form
-  // ═══════════════════════════════════════════════════════════════
-  {
-    id: 'tutorial-expenses',
-    screenPath: '/expenses',
-    screenName: 'Expenses',
-    title: 'Expense Tracking',
-    description: 'Learn how to record and categorize business expenses, set budgets, and track spending patterns.',
-    estimatedDuration: 11,
-    steps: [
-      {
-        id: 'expenses-welcome',
-        title: 'Budget-First Expense Tracking',
-        description: 'The Expenses screen helps you record every business expense. Before you can record an expense, you must set up a budget.',
-        instruction: 'This is where you track all business expenses. Note: you must set up a budget before recording expenses. We\'ll start there.',
-        tooltipPosition: 'center',
-      },
-      // ── Budget First (required) ──
-      {
-        id: 'expenses-budget-open',
-        title: 'Setting a Budget (Required First)',
-        description: 'Budgets are required before recording expenses. Set a spending limit for at least one category to unlock expense recording.',
-        instruction: 'Click the "Budgets" tab, then click "Set Budget" to create your first budget.',
-        targetSelector: '[data-slot="tabs-trigger"][value="budget"]',
-        tooltipPosition: 'left',
-      },
-      {
-        id: 'expenses-budget-category',
-        title: 'Budget Category',
-        description: 'Select the expense category this budget applies to. Each category can have its own monthly or yearly limit.',
-        instruction: 'Choose a category from the dropdown, e.g. "Utilities" or "Supplies".',
-        targetSelector: 'button[data-slot="select-trigger"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'expenses-budget-amount',
-        title: 'Budget Amount',
-        description: 'Enter the maximum amount you plan to spend in this category for the selected period.',
-        instruction: 'Set a realistic limit (e.g. 50000 ETB). Check previous spending to set an appropriate budget. Enter the amount in ETB.',
-        targetSelector: 'input[data-slot="input"][type="number"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'expenses-budget-period',
-        title: 'Budget Period',
-        description: 'Choose how often the budget resets: monthly, quarterly, or yearly.',
-        instruction: 'Select "Monthly" for regular monitoring, "Quarterly" for flexible tracking, or "Yearly" for annual planning.',
-        targetSelector: 'button[data-slot="select-trigger"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'expenses-budget-submit',
-        title: 'Saving the Budget',
-        description: 'Click "Save Budget" to set your spending limit. The budget dashboard will track actual spending against this target.',
-        instruction: 'Review the budget details. Click "Save Budget" to activate the spending limit.',
-        targetSelector: 'button[type="submit"]',
-        tooltipPosition: 'right',
-      },
-      // ── Add Expense Form (now unlocked) ──
-      {
-        id: 'expenses-add-open',
-        title: 'Recording Your First Expense',
-        description: 'Now that a budget is set, recording expenses is unlocked. Click the + button to open the expense form.',
-        instruction: 'Click the large + button to begin recording a new expense.',
-        targetSelector: '[data-tutorial-section="add-expense-fab"]',
-        tooltipPosition: 'left',
-      },
-      {
-        id: 'expenses-add-dialog',
-        title: 'Add Expense Form',
-        description: 'The Add Expense form records business expenses with description, amount, category, date, and optional recurring settings.',
-        instruction: 'This form has fields for entering the necessary information. Take a moment to review the layout before we fill in each field step by step.',
-        targetSelector: '[data-slot="dialog-content"]',
-        tooltipPosition: 'top',
-      },
-      {
-        id: 'expenses-add-name',
-        title: 'Expense Description (Required)',
-        description: 'Enter a clear description of the expense. This helps identify the transaction when reviewing reports.',
-        instruction: 'Type a descriptive name (e.g. "Office Rent — July"). Be specific for easier tracking.',
-        targetSelector: 'input[data-slot="input"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'expenses-add-amount',
-        title: 'Expense Amount',
-        description: 'Enter the total amount paid for this expense. All amounts are in your business currency (ETB by default).',
-        instruction: 'Enter the exact amount paid (e.g. 5000 ETB). Double-check receipts for accuracy.',
-        targetSelector: 'input[data-slot="input"][type="number"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'expenses-add-category',
-        title: 'Selecting a Category',
-        description: 'Categories organize your expenses for reporting. Choose the most specific category for each expense.',
-        instruction: 'Select a category that best matches the expense type — Rent, Utilities, Supplies, Salaries, Transport, etc.',
-        targetSelector: 'button[data-slot="select-trigger"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'expenses-add-date',
-        title: 'Transaction Date',
-        description: 'Set the date when the expense occurred. This affects which period the expense appears in for reporting.',
-        instruction: 'Pick the date from the date picker (e.g. 2026-06-01). Defaults to today. Use the actual transaction date, not when you\'re entering it.',
-        targetSelector: 'input[data-slot="input"][type="date"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'expenses-add-recurring',
-        title: 'Recurring Expenses',
-        description: 'For regular expenses like rent or subscriptions, enable the recurring toggle. Set the frequency and next billing date.',
-        instruction: 'Toggle "Recurring" on. Choose frequency (Daily, Weekly, Monthly). Set start date and next billing date for automatic reminders.',
-        targetSelector: 'button[data-slot="switch"][role="switch"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'expenses-add-submit',
-        title: 'Committing the Expense',
-        description: 'Review the details and click "Commit" to save. The expense will appear in your records and reports immediately.',
-        instruction: 'Verify all fields are correct. Click "Commit" to record the expense. Click "Abort" to discard changes.',
-        targetSelector: 'button[type="submit"]',
-        tooltipPosition: 'right',
-      },
-      {
-        id: 'expenses-best-practices',
-        title: 'Expense Best Practices',
-        description: 'Follow these guidelines for accurate expense tracking.',
-        instruction: '• Record expenses immediately — don\'t wait until month-end\n• Use the description field to add context\n• Keep digital copies of receipts\n• Review expenses weekly against budget\n• Categorize consistently for accurate reports',
-        tooltipPosition: 'center',
-      },
-    ],
-  },
-
-  // ═══════════════════════════════════════════════════════════════
   // CUSTOMERS — Add/Edit Customer form + Payment form
   // ═══════════════════════════════════════════════════════════════
   {
@@ -625,7 +467,7 @@ const tutorials: ScreenTutorial[] = [
         id: 'analytics-welcome',
         title: 'Understanding Your Analytics',
         description: 'The Analytics screen provides detailed visualizations of your business data, helping you identify trends and opportunities.',
-        instruction: 'Analytics are organized by category: sales, expenses, inventory, and customers. Each section offers different chart types.',
+        instruction: 'Analytics are organized by category: sales, inventory, and customers. Each section offers different chart types.',
         tooltipPosition: 'center',
       },
       {
@@ -707,7 +549,7 @@ const tutorials: ScreenTutorial[] = [
         id: 'settings-modules',
         title: 'Managing Modules',
         description: 'The Modules tab lets you enable or disable features. Disable modules you don\'t use to keep the interface clean and focused.',
-        instruction: 'Click the Modules tab. Toggle switches on for features you use (Inventory, Sales, Expenses, etc.) and off for those you don\'t need. Changes apply immediately.',
+        instruction: 'Click the Modules tab. Toggle switches on for features you use (Inventory, Sales, etc.) and off for those you don\'t need. Changes apply immediately.',
         targetSelector: 'button[data-slot="switch"][role="switch"]',
         tooltipPosition: 'bottom',
       },
@@ -1006,158 +848,6 @@ const tutorials: ScreenTutorial[] = [
         title: 'Debt Management Best Practices',
         description: 'Keep your receivables healthy.',
         instruction: '• Set clear credit terms before extending credit\n• Follow up on overdue debts within 7 days\n• Offer receipts for every payment\n• Review the debt report weekly\n• Consider setting credit limits for customers',
-        tooltipPosition: 'center',
-      },
-    ],
-  },
-
-  // ═══════════════════════════════════════════════════════════════
-  // ORDERS — Create Order form + Convert modals
-  // ═══════════════════════════════════════════════════════════════
-  {
-    id: 'tutorial-orders',
-    screenPath: '/orders',
-    screenName: 'Orders',
-    title: 'Order Management',
-    description: 'Learn how to manage customer orders from creation to fulfillment, including conversion to sales or debts.',
-    estimatedDuration: 9,
-    steps: [
-      {
-        id: 'orders-welcome',
-        title: 'Managing Orders',
-        description: 'The Orders screen tracks customer orders through their lifecycle: pending, confirmed, shipped, and delivered.',
-        instruction: 'This is your order management hub. From here you can view all customer orders, create new orders, convert them to sales or debts, and track fulfillment progress. Take a moment to explore the layout before we begin.',
-        tooltipPosition: 'center',
-      },
-      // ── Create Order Form ──
-      {
-        id: 'orders-create-open',
-        title: 'Creating a New Order',
-        description: 'Click "New Order" to open the order creation form. Enter customer details and add items.',
-        instruction: 'Click "New Order" to begin. We\'ll walk through the form fields together.',
-        targetSelector: 'button:has(svg.lucide-plus)',
-        tooltipPosition: 'left',
-      },
-      {
-        id: 'orders-add-dialog',
-        title: 'New Order Form',
-        description: 'The New Order form creates customer orders with customer details, notes, and item selection.',
-        instruction: 'This form has fields for entering the necessary information. Take a moment to review the layout before we fill in each field step by step.',
-        targetSelector: '[data-slot="dialog-content"]',
-        tooltipPosition: 'top',
-      },
-      {
-        id: 'orders-create-customer',
-        title: 'Customer Information',
-        description: 'Enter the customer name and phone number. This links the order to the customer for tracking.',
-        instruction: 'Type the customer\'s name (e.g. "Abebe Kebede") and phone. These help identify the order throughout its lifecycle.',
-        targetSelector: 'input[data-slot="input"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'orders-create-notes',
-        title: 'Order Notes',
-        description: 'Add any special instructions or notes about the order, like delivery preferences or special requests.',
-        instruction: 'Type notes (e.g. "Deliver after 5 PM"). This field is optional but helpful.',
-        targetSelector: 'textarea',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'orders-create-items',
-        title: 'Adding Items to the Order',
-        description: 'Search for inventory items, adjust quantities and prices, and build the order cart.',
-        instruction: 'Type to search items. Click on an item to add it. Adjust quantity and unit price for each cart item.',
-        targetSelector: 'input[data-slot="input"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'orders-create-submit',
-        title: 'Creating the Order',
-        description: 'Review the cart total and click "Create Order" to save. The order will appear with "Pending" status.',
-        instruction: 'Verify the items and total. Click "Create Order" to finalize. You can convert it to a sale or debt later.',
-        targetSelector: 'button[type="submit"]',
-        tooltipPosition: 'right',
-      },
-      // ── Convert to Sale ──
-      {
-        id: 'orders-convert-sale',
-        title: 'Converting an Order to Sale',
-        description: 'When the customer is ready, convert the order to a sale. Select the payment method to complete the transaction.',
-        instruction: 'Click "Convert to Sale" on an order. Choose the payment method (Cash, Bank Transfer, etc.). Click "Confirm Convert".',
-        targetSelector: 'button:has(svg.lucide-receipt)',
-        tooltipPosition: 'right',
-      },
-      {
-        id: 'orders-convert-debt',
-        title: 'Converting an Order to Debt',
-        description: 'If the customer wants credit, convert the order to a debt. Set the due date for payment follow-up.',
-        instruction: 'Click "Convert to Debt". Set the due date by which the customer should pay. Click "Confirm Convert".',
-        targetSelector: 'button:has(svg.lucide-credit-card)',
-        tooltipPosition: 'right',
-      },
-      {
-        id: 'orders-best-practices',
-        title: 'Order Best Practices',
-        description: 'Keep orders organized and customers happy.',
-        instruction: '• Update order status promptly to keep customers informed\n• Verify stock availability before confirming orders\n• Keep delivery notes for reference\n• Review pending orders daily\n• Convert orders to sales or debts as soon as possible',
-        tooltipPosition: 'center',
-      },
-    ],
-  },
-
-  // ═══════════════════════════════════════════════════════════════
-  // ORDER DETAIL — View, Convert to Sale/Debt, Cancel
-  // ═══════════════════════════════════════════════════════════════
-  {
-    id: 'tutorial-order-detail',
-    screenPath: '/orders/',
-    screenName: 'Order Detail',
-    title: 'Order Detail & Fulfillment',
-    description: 'Learn how to review order details, track history, convert orders to sales or debts, and manage cancellations.',
-    estimatedDuration: 5,
-    steps: [
-      {
-        id: 'order-detail-welcome',
-        title: 'Order Detail Overview',
-        description: 'The Order Detail screen shows complete information about a customer order: items, status, history timeline, and conversion actions.',
-        instruction: 'This view has a left column (items + history) and a right sidebar (order info + status). Action buttons appear at the top for pending orders.',
-        tooltipPosition: 'center',
-      },
-      {
-        id: 'order-detail-info',
-        title: 'Order Information',
-        description: 'The sidebar shows the order status badge, customer name and phone, who created the order, and timestamps for creation, conversion, or cancellation.',
-        instruction: 'This section shows the order status, customer details, and key dates. Check whether the order is Pending, Converted, or Cancelled to take appropriate action.',
-        tooltipPosition: 'center',
-      },
-      {
-        id: 'order-detail-items',
-        title: 'Order Items',
-        description: 'The items table lists every product in the order with the quantity ordered, unit price, and line total. The footer shows the grand total.',
-        instruction: 'Review each item. Verify quantities and prices against what was ordered. The total is shown at the bottom.',
-        targetSelector: 'table.w-full.text-left',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'order-detail-history',
-        title: 'Order History Timeline',
-        description: 'The history timeline shows every action taken on this order: creation, conversion, or cancellation, with timestamps and who performed them.',
-        instruction: 'Scroll through the timeline to see the order lifecycle. Each entry has an icon, action description, timestamp, and the person who performed it.',
-        tooltipPosition: 'center',
-      },
-      {
-        id: 'order-detail-convert',
-        title: 'Converting the Order',
-        description: 'For pending orders, use the action buttons at the top to convert to a Sale (payment now) or Debt (credit). You can also cancel the order.',
-        instruction: 'Click "Convert to Sale" to process payment — select the payment method and confirm. Click "Convert to Debt" to set a due date for future payment.',
-        targetSelector: 'button:has(svg.lucide-credit-card)',
-        tooltipPosition: 'left',
-      },
-      {
-        id: 'order-detail-best-practices',
-        title: 'Order Fulfillment Best Practices',
-        description: 'Manage orders efficiently with these tips.',
-        instruction: '• Convert orders promptly once the customer is ready\n• Always verify stock before confirming large orders\n• Keep cancellation reasons documented for analysis\n• Review the order history to track communication\n• Communicate status changes to customers',
         tooltipPosition: 'center',
       },
     ],
@@ -1470,50 +1160,6 @@ const tutorials: ScreenTutorial[] = [
   },
 
   // ═══════════════════════════════════════════════════════════════
-  // BUDGETS — Adjust Budget form
-  // ═══════════════════════════════════════════════════════════════
-  {
-    id: 'tutorial-budgets',
-    screenPath: '/budgets',
-    screenName: 'Budgets',
-    title: 'Budget Management',
-    description: 'Learn how to set budgets for expense categories, track spending against targets, and make adjustments.',
-    estimatedDuration: 5,
-    steps: [
-      {
-        id: 'budgets-welcome',
-        title: 'Setting Budgets',
-        description: 'The Budget Management screen lets you set spending limits for each expense category and track actual spending against targets.',
-        instruction: 'This is where you manage spending limits. View your budget overview at a glance — green indicates under budget, red means over budget. You can create and adjust budgets from here. Take a moment to explore the layout before we begin.',
-        tooltipPosition: 'center',
-      },
-      {
-        id: 'budgets-create',
-        title: 'Creating a Budget',
-        description: 'Set a budget for each category by entering a spending limit for a specific period.',
-        instruction: 'Click "Set Budget". Choose a category, enter the amount, select the period. Be realistic — budgets should challenge but not restrict.',
-        targetSelector: 'button:has(svg.lucide-plus)',
-        tooltipPosition: 'left',
-      },
-      {
-        id: 'budgets-adjust',
-        title: 'Adjusting a Budget',
-        description: 'If actual spending differs from the budget, you can adjust the amount. Record the reason for the adjustment.',
-        instruction: 'Click the adjust icon on a budget card. Enter the new amount (shows current budget as reference). Add a reason like "Increased rent" or "Seasonal adjustment".',
-        targetSelector: 'button:has(svg.lucide-plus)',
-        tooltipPosition: 'right',
-      },
-      {
-        id: 'budgets-best-practices',
-        title: 'Budget Best Practices',
-        description: 'Stay on top of your finances.',
-        instruction: '• Review budgets monthly and adjust as needed\n• Investigate categories that are consistently over budget\n• Set annual budgets and track monthly progress\n• Involve department heads in budget planning\n• Compare actual vs budgeted spending for insights',
-        tooltipPosition: 'center',
-      },
-    ],
-  },
-
-  // ═══════════════════════════════════════════════════════════════
   // CONTACTS — Add/Edit Contact form (Dialog)
   // ═══════════════════════════════════════════════════════════════
   {
@@ -1620,8 +1266,8 @@ const tutorials: ScreenTutorial[] = [
       {
         id: 'reports-welcome',
         title: 'Generating Reports',
-        description: 'The Reports screen lets you generate comprehensive business reports covering sales, expenses, inventory, and customer activities.',
-        instruction: 'This is where you generate business reports. Choose from different report types covering sales, expenses, inventory, and customers to gain insights into your performance. Take a moment to explore the layout before we begin.',
+        description: 'The Reports screen lets you generate comprehensive business reports covering sales, inventory, and customer activities.',
+        instruction: 'This is where you generate business reports. Choose from different report types covering sales, inventory, and customers to gain insights into your performance. Take a moment to explore the layout before we begin.',
         tooltipPosition: 'center',
       },
       {
@@ -1681,91 +1327,6 @@ const tutorials: ScreenTutorial[] = [
         title: 'Audit Best Practices',
         description: 'Maintain good security practices.',
         instruction: '• Review audit logs weekly for unusual activity\n• Investigate failed login attempts\n• Keep logs for at least 90 days\n• Use filters to focus on critical actions\n• Export logs periodically for backup',
-        tooltipPosition: 'center',
-      },
-    ],
-  },
-
-  // ═══════════════════════════════════════════════════════════════
-  // REMINDERS — Reminder form
-  // ═══════════════════════════════════════════════════════════════
-  {
-    id: 'tutorial-reminders',
-    screenPath: '/reminders',
-    screenName: 'Reminders',
-    title: 'Reminder History',
-    description: 'Learn how to view and manage system reminders including payment due dates, expiry alerts, and custom notifications.',
-    estimatedDuration: 7,
-    steps: [
-      {
-        id: 'reminders-welcome',
-        title: 'Viewing Reminders',
-        description: 'The Reminder History screen shows all system reminders, including payment due dates, expiry alerts, and other notifications.',
-        instruction: 'This is your reminder history. View past and upcoming notifications including payment due dates, expiry alerts, and custom reminders. Take a moment to explore the layout before we begin.',
-        tooltipPosition: 'center',
-      },
-      // ── Reminder Form ──
-      {
-        id: 'reminders-add-open',
-        title: 'Creating a Reminder',
-        description: 'Click the + button to create a new reminder. Set the title, type, message, and trigger date/time.',
-        instruction: 'Click the large + button to open the reminder form.',
-        targetSelector: 'button:has(svg.lucide-plus)',
-        tooltipPosition: 'left',
-      },
-      {
-        id: 'reminders-add-dialog',
-        title: 'Create Reminder Form',
-        description: 'The Create Reminder form schedules notifications with title, type, message, and trigger date/time.',
-        instruction: 'This form has fields for entering the necessary information. Take a moment to review the layout before we fill in each field step by step.',
-        targetSelector: '[data-slot="dialog-content"]',
-        tooltipPosition: 'top',
-      },
-      {
-        id: 'reminders-add-title',
-        title: 'Reminder Title (Required)',
-        description: 'Enter a clear title for the reminder. This is what you\'ll see in notifications and the reminder list.',
-        instruction: 'Type a descriptive title (e.g. "Electricity Bill Due"). Be specific.',
-        targetSelector: 'input[data-slot="input"][required]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'reminders-add-type',
-        title: 'Reminder Type',
-        description: 'Choose the type of reminder: payment, expiry, meeting, or custom. This helps with organization.',
-        instruction: 'Select a type that best matches your reminder. Payment for bills, Expiry for deadlines, Meeting for appointments, Custom for anything else.',
-        targetSelector: 'button[data-slot="select-trigger"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'reminders-add-message',
-        title: 'Reminder Message',
-        description: 'Write a detailed message that provides context and any action items for the reminder.',
-        instruction: 'Type the message (e.g. "Pay 5000 ETB for electricity bill"). Include important details like amounts, locations, or contact info.',
-        targetSelector: 'textarea[data-slot="textarea"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'reminders-add-trigger',
-        title: 'Trigger Date & Time',
-        description: 'Set when the reminder should fire. Choose the date and time for the notification.',
-        instruction: 'Pick the date (e.g. 2026-07-15) and set the time. The reminder will trigger at the specified date and time.',
-        targetSelector: 'input[data-slot="input"][type="date"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'reminders-add-submit',
-        title: 'Creating the Reminder',
-        description: 'Click "Create Reminder" to save. You\'ll be notified at the scheduled date and time.',
-        instruction: 'Review all details. Click "Create Reminder" to schedule it.',
-        targetSelector: 'button[type="submit"]',
-        tooltipPosition: 'right',
-      },
-      {
-        id: 'reminders-best-practices',
-        title: 'Reminder Best Practices',
-        description: 'Never miss important dates.',
-        instruction: '• Check reminders at the start of each day\n• Act on reminders promptly\n• Use the notification settings to customize which reminders you receive\n• Review reminder settings periodically\n• Delete completed reminders to stay organized',
         tooltipPosition: 'center',
       },
     ],
@@ -1996,83 +1557,6 @@ const tutorials: ScreenTutorial[] = [
         title: 'Payment Best Practices',
         description: 'Ensure smooth payments with these tips.',
         instruction: '• Double-check the Telebirr number before transferring\n• Save your transaction ID for reference\n• Use your registered business name for easy verification\n• Contact support if your payment isn\'t verified within 48 hours\n• Keep your Telebirr receipt as proof of payment',
-        tooltipPosition: 'center',
-      },
-    ],
-  },
-
-  // ═══════════════════════════════════════════════════════════════
-  // ADMIN MANAGEMENT — Admin form
-  // ═══════════════════════════════════════════════════════════════
-  {
-    id: 'tutorial-admin-management',
-    screenPath: '/admin-management',
-    screenName: 'Admin Management',
-    title: 'Admin Management',
-    description: 'Learn how to manage system administrators, create admin accounts, and configure permissions.',
-    estimatedDuration: 7,
-    steps: [
-      {
-        id: 'admin-welcome',
-        title: 'System Administration',
-        description: 'The Admin Management screen is for super administrators only. It provides tools for managing admin accounts.',
-        instruction: 'This is the super admin management hub. From here you can create and manage admin accounts, assign permissions, and configure system access. Only super administrators can access this screen. Take a moment to explore the layout before we begin.',
-        tooltipPosition: 'center',
-      },
-      // ── Admin Form ──
-      {
-        id: 'admin-add-open',
-        title: 'Creating an Admin',
-        description: 'Click "Add Admin" to open the form. Enter their name, username, set a PIN, and assign permissions.',
-        instruction: 'Click "Add Admin" to begin. Fields marked with * are required.',
-        targetSelector: 'button:has(svg.lucide-plus)',
-        tooltipPosition: 'left',
-      },
-      {
-        id: 'admin-add-dialog',
-        title: 'Create Admin Form',
-        description: 'The Create Admin form sets up administrator accounts with identity, security PIN, and module permissions.',
-        instruction: 'This form has fields for entering the necessary information. Take a moment to review the layout before we fill in each field step by step.',
-        targetSelector: '[data-slot="dialog-content"]',
-        tooltipPosition: 'top',
-      },
-      {
-        id: 'admin-add-identity',
-        title: 'Admin Identity',
-        description: 'Enter the admin\'s display name and a unique username. The username is used for login.',
-        instruction: 'Type the admin\'s full name (e.g. "Jane Smith"). Enter a username (e.g. "janesmith") — this must be unique in the system.',
-        targetSelector: 'input[data-slot="input"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'admin-add-pin',
-        title: 'Security PIN',
-        description: 'Set a 4-digit PIN for the admin. The PIN is used for quick authentication. Confirm the PIN to avoid errors.',
-        instruction: 'Enter a 4-digit PIN (e.g. 1234). Use the eye icon to toggle visibility. Confirm the PIN in the second field.',
-        targetSelector: 'input[data-slot="input"][type="password"]',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'admin-add-permissions',
-        title: 'Assigning Permissions',
-        description: 'Select which modules and features this admin can access. Use "Select All" or choose individually.',
-        instruction: 'Check permissions for the admin. Give only the access they need — you can always add more later. Use "Select All" for full access or toggle individual modules.',
-        targetSelector: 'div.grid.grid-cols-2',
-        tooltipPosition: 'bottom',
-      },
-      {
-        id: 'admin-add-submit',
-        title: 'Creating the Admin',
-        description: 'Review the details and click "Create Admin" to save. The new admin can log in immediately.',
-        instruction: 'Verify the name, username, and permissions. Click "Create Admin" to create the account. A recovery key will be generated.',
-        targetSelector: 'button[type="submit"]',
-        tooltipPosition: 'right',
-      },
-      {
-        id: 'admin-best-practices',
-        title: 'Super Admin Best Practices',
-        description: 'Use admin powers responsibly.',
-        instruction: '• Limit super admin access to essential personnel\n• Never share super admin credentials\n• Review all changes in audit logs\n• Have a recovery plan for admin access\n• Change default PINs on first login',
         tooltipPosition: 'center',
       },
     ],

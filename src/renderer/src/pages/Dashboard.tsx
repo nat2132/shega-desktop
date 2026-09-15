@@ -1,26 +1,22 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
-  Clock, Truck, AlertCircle, RefreshCw,
-  Loader2, ShoppingBag, Receipt, Sliders,
-  DollarSign, AlertTriangle, Package, Ban,
-  RotateCcw, ArrowLeftRight, TrendingUp, TrendingDown
+  Clock, AlertCircle, RefreshCw, LayoutDashboard, Building2,
+  Loader2, TrendingUp, Activity
 } from 'lucide-react';
-import {
-  ColumnDef
-} from '@tanstack/react-table';
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Cell } from 'recharts';
+import { useLocation } from 'react-router-dom';
+import { resolveAvatar } from '../lib/avatar';
 
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
+import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
 import { SectionCards, SectionCardData } from '../components/section-cards';
 import DashboardAlerts from '../components/DashboardAlerts';
 import { BusinessAssistant } from '../components/BusinessAssistant';
+import { BusinessSwitcher } from '../components/BusinessSwitcher';
+import BusinessCenter from './BusinessCenter';
 
-import { CategorySalesChart } from '../components/category-sales-chart';
-import { DataTable } from '../components/data-table';
-import Modal from '../components/Modal';
-import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import {
@@ -32,6 +28,9 @@ import {
 import {
   ToggleGroup, ToggleGroupItem
 } from '../components/ui/toggle-group';
+import {
+  Tabs, TabsList, TabsTrigger, TabsContent
+} from '../components/ui/tabs';
 import {
   toEthiopianDate, getEthiopianDayName, getEthiopianMonthName
 } from '../utils/ethiopian-calendar';
@@ -58,19 +57,18 @@ const itemVariants = {
 };
 
 const Dashboard: React.FC = () => {
-  const { t, formatDate, calendarType, language } = useSettings();
+  const { t, formatDate, formatTime, calendarType, language } = useSettings();
   const { currentAdmin } = useAuth();
+  const location = useLocation();
+  const queryTab = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return params.get('tab');
+  }, [location.search]);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'business'>(location.pathname === '/business' ? 'business' : 'dashboard');
   const [stats, setStats] = useState<any>(null);
   const [analytics, setAnalytics] = useState<any>(null);
-  const [recentActivity, setRecentActivity] = useState<any[]>([]);
-  const [selectedActivity, setSelectedActivity] = useState<any | null>(null);
-  const [showActivityDetail, setShowActivityDetail] = useState(false);
   const [empStats, setEmpStats] = useState<any>(null);
-  const [supplierStats, setSupplierStats] = useState<any>(null);
-  const [supplierUnpaidOrders, setSupplierUnpaidOrders] = useState<any[]>([]);
-  const [supplierPaymentAlerts, setSupplierPaymentAlerts] = useState<any[]>([]);
-  const [supplierLowStock, setSupplierLowStock] = useState<any[]>([]);
-  const [reversalStats, setReversalStats] = useState<any>(null);
+  const [recentActivity, setRecentActivity] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [revPeriod, setRevPeriod] = useState<'week' | 'month' | 'year'>('week');
@@ -86,6 +84,9 @@ const Dashboard: React.FC = () => {
     loadData();
   }, []);
 
+  // Live sync: re-query when P2P/Yjs sync lands new data in SQLite.
+  useDataChangedRefresh(() => { loadData(); });
+
   useEffect(() => {
     window.api?.getAnalytics(revPeriod === 'week' ? 'month' : revPeriod)
       .then(data => setAnalytics(data || { salesData: [] }));
@@ -95,26 +96,16 @@ const Dashboard: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [statData, anData, activity, employees, suppliers, unpaidOrders, paymentAlerts, lowStock, revStats] = await Promise.all([
+      const [statData, anData, employees, activity] = await Promise.all([
         window.api?.getDashboardStats() || Promise.resolve({}),
         window.api?.getAnalytics('month') || Promise.resolve({ salesData: [], topItems: [] }),
-        window.api?.getRecentActivity(5) || Promise.resolve([]),
         window.api?.getEmployeeStats() || Promise.resolve(null),
-        window.api?.getSupplierDashboardStats() || Promise.resolve(null),
-        window.api?.getSupplierUnpaidOrders() || Promise.resolve([]),
-        window.api?.getSupplierPaymentDueAlerts() || Promise.resolve([]),
-        window.api?.getSupplierLowStock() || Promise.resolve([]),
-        window.api?.getReversalStats() || Promise.resolve(null)
+        window.api?.getRecentActivity(10) || Promise.resolve([]),
       ]);
       setStats(statData);
       setAnalytics(anData);
-      setRecentActivity(activity);
       setEmpStats(employees);
-      setSupplierStats(suppliers);
-      setSupplierUnpaidOrders(unpaidOrders);
-      setSupplierPaymentAlerts(paymentAlerts);
-      setSupplierLowStock(lowStock);
-      setReversalStats(revStats);
+      setRecentActivity(activity);
     } catch (e: any) {
       setError(e.message || t('dashboard.load_error'));
     } finally {
@@ -252,53 +243,6 @@ const Dashboard: React.FC = () => {
     },
   ], [stats]);
 
-  const columns: ColumnDef<any>[] = [
-    {
-      accessorKey: "description",
-      header: t('common.description'),
-      cell: ({ row }) => (
-        <button
-          className="font-medium text-sm hover:text-primary transition-colors text-left cursor-pointer"
-          onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}
-        >
-          {row.original.description}
-        </button>
-      )
-    },
-    {
-      accessorKey: "type",
-      header: t('common.category'),
-      cell: ({ row }) => (
-        <Badge variant="secondary" className="cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>{t(`dashboard.${row.original.type.toLowerCase()}`)}</Badge>
-      )
-    },
-    {
-      accessorKey: "amount",
-      header: () => <div className="text-right">{t('common.amount')}</div>,
-      cell: ({ row }) => (
-        <div className="text-right font-medium tabular-nums cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>{t('common.etb')} {row.original.amount.toLocaleString()}</div>
-      )
-    },
-    {
-      accessorKey: "extra",
-      header: t('common.details'),
-      cell: ({ row }) => (
-        <span className="text-xs text-muted-foreground/70 cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>
-          {row.original.extra || t('dashboard.system_entry')}
-        </span>
-      )
-    },
-    {
-      accessorKey: "date",
-      header: t('common.date'),
-      cell: ({ row }) => (
-        <div className="text-muted-foreground text-xs tabular-nums cursor-pointer" onClick={() => { setSelectedActivity(row.original); setShowActivityDetail(true); }}>
-          {formatDate(new Date(row.original.date), { month: 'short', day: 'numeric' })}
-        </div>
-      )
-    }
-  ];
-
   return (
     <motion.div
       className="flex flex-col gap-4 py-4 md:gap-6 md:py-6"
@@ -306,360 +250,259 @@ const Dashboard: React.FC = () => {
       initial="hidden"
       animate="visible"
     >
-      {loading ? (
-        <div className="flex items-center justify-center py-20">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </div>
-      ) : error ? (
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'dashboard' | 'business')} className="space-y-4 md:space-y-6">
         <motion.div variants={itemVariants} className="px-4 lg:px-6">
-          <Alert variant="destructive">
-            <AlertCircle className="h-4 w-4" />
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-          <Button variant="outline" size="sm" onClick={loadData} className="mt-3">
-            <RefreshCw className="h-4 w-4 mr-1" /> {t('common.retry')}
-          </Button>
-        </motion.div>
-      ) : !stats ? (
-        <motion.div variants={itemVariants} className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-          <AlertCircle className="h-12 w-12 mb-4 opacity-20" />
-          <p className="text-base font-medium">{t('common.no_data')}</p>
-        </motion.div>
-      ) : (
-        <>
-          <motion.div variants={itemVariants} className="px-4 lg:px-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h1 className="text-xl md:text-2xl font-semibold tracking-tight">
-                  {t(`dashboard.${greeting}`)}, {currentAdmin?.name?.split(' ')[0] || 'Admin'}
-                </h1>
-                <p className="text-sm text-muted-foreground/70 mt-0.5">
-                  {t('dashboard.welcome')}
-                </p>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground/60">
-                  <Clock className="h-4 w-4" />
-                  <span className="text-xs font-medium tabular-nums">
-                    {formatDate(new Date(), { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
-                  </span>
-                </div>
+          <div className="flex items-center justify-between">
+            <div className="flex-1">
+              <h1 className="text-xl md:text-2xl font-semibold tracking-tight">
+                {t(`dashboard.${greeting}`)}, {currentAdmin?.name?.split(' ')[0] || 'Admin'}
+              </h1>
+              <p className="text-sm text-muted-foreground/70 mt-0.5">
+                {t('dashboard.welcome')}
+              </p>
+            </div>
+            <div className="flex items-center gap-4">
+              <BusinessSwitcher onChanged={loadData} />
+              <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground/60">
+                <Clock className="h-4 w-4" />
+                <span className="text-xs font-medium tabular-nums">
+                  {formatDate(new Date(), { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+                </span>
               </div>
             </div>
-          </motion.div>
+          </div>
 
-          <motion.div variants={itemVariants}>
-            <SectionCards cards={kpiCards} />
-          </motion.div>
+          <TabsList className="mt-4 h-auto rounded-xl p-1">
+            <TabsTrigger value="dashboard" className="gap-2 rounded-lg px-4 py-2 text-sm">
+              <LayoutDashboard className="h-4 w-4" /> {t('tabs.dashboard')}
+            </TabsTrigger>
+            <TabsTrigger value="business" className="gap-2 rounded-lg px-4 py-2 text-sm">
+              <Building2 className="h-4 w-4" /> {t('tabs.business')}
+            </TabsTrigger>
+          </TabsList>
+        </motion.div>
 
-          <motion.div variants={itemVariants} className="px-4 lg:px-6">
-            <DashboardAlerts />
-          </motion.div>
-
-          {empStats && (
+        <TabsContent value="dashboard" className="space-y-4 md:space-y-6">
+          {loading ? (
+            <div className="flex items-center justify-center py-20">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : error ? (
             <motion.div variants={itemVariants} className="px-4 lg:px-6">
-              <div data-tutorial-section="employee-stats" className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                {[
-                  { label: t('dashboard.total_employees'), value: empStats.total || 0, color: 'text-foreground' },
-                  { label: t('common.active'), value: empStats.active || 0, color: 'text-emerald-600' },
-                  { label: t('dashboard.online_now'), value: empStats.online || 0, color: 'text-primary' },
-                  { label: t('dashboard.clocked_in'), value: empStats.clockedIn || 0, color: 'text-amber-600' },
-                  { label: t('common.pending'), value: empStats.pendingApprovals || 0, color: 'text-destructive' },
-                ].map((item, idx) => (
-                  <div key={idx} className="rounded-2xl border border-border/40 bg-card/50 p-4 space-y-1.5">
-                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground/70">{item.label}</p>
-                    <p className={`text-2xl font-semibold tracking-tight tabular-nums ${item.color}`}>{item.value}</p>
-                  </div>
-                ))}
-              </div>
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+              <Button variant="outline" size="sm" onClick={loadData} className="mt-3">
+                <RefreshCw className="h-4 w-4 mr-1" /> {t('common.retry')}
+              </Button>
             </motion.div>
-          )}
-
-          {reversalStats && (
-            <motion.div data-tutorial-section="reversals" variants={itemVariants} className="px-4 lg:px-6">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 flex items-center gap-2 mb-3">
-                <ArrowLeftRight className="h-3.5 w-3.5" /> {t('reports.reversals')}
-              </h3>
-              <div className="grid grid-cols-3 gap-3">
-                {[
-                  { label: t('reports.voided_sales'), value: reversalStats.voidedSales || 0, icon: Ban },
-                  { label: t('dashboard.reversed_payments'), value: reversalStats.reversedPayments || 0, icon: RotateCcw },
-                  { label: t('dashboard.reversed_adjustments'), value: reversalStats.reversedAdjustments || 0, icon: RotateCcw },
-                ].map((item, idx) => (
-                  <div key={idx} className="rounded-2xl border border-border/40 bg-card/50 p-3.5 space-y-1.5">
-                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground/70 flex items-center gap-1.5">
-                      <item.icon className="h-3 w-3" /> {item.label}
-                    </p>
-                    <p className="text-xl font-semibold tracking-tight tabular-nums">{item.value}</p>
-                  </div>
-                ))}
-              </div>
+          ) : !stats ? (
+            <motion.div variants={itemVariants} className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+              <AlertCircle className="h-12 w-12 mb-4 opacity-20" />
+              <p className="text-base font-medium">{t('common.no_data')}</p>
             </motion.div>
-          )}
-
-          {supplierStats && (
-            <motion.div data-tutorial-section="suppliers" variants={itemVariants} className="px-4 lg:px-6 space-y-4">
-              <div className="flex items-center justify-between mb-1">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 flex items-center gap-2">
-                  <Truck className="h-3.5 w-3.5" />{t('suppliers.title')}
-                </h3>
-                <Button variant="ghost" size="sm" onClick={() => window.location.hash = '/suppliers'} className="text-xs">{t('common.view_all')} →</Button>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-                {[
-                  { label: t('suppliers.kpi_total'), value: supplierStats.totalSuppliers || 0 },
-                  { label: t('suppliers.kpi_active'), value: supplierStats.activeSuppliers || 0, color: 'text-emerald-600' },
-                  { label: t('suppliers.kpi_outstanding'), value: `${t('common.etb')} ${(supplierStats.outstandingBalance || 0).toLocaleString()}`, color: 'text-destructive', small: true },
-                  { label: t('suppliers.kpi_month'), value: `${t('common.etb')} ${(supplierStats.monthPurchases || 0).toLocaleString()}`, small: true },
-                  { label: t('suppliers.kpi_top'), value: supplierStats.topSupplier?.supplierName || '-', small: true },
-                  { label: t('suppliers.kpi_recent'), value: (supplierStats.recent || []).length },
-                ].map((item, idx) => (
-                  <div key={idx} className="rounded-2xl border border-border/40 bg-card/50 p-3.5 space-y-1.5">
-                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground/70">{item.label}</p>
-                    <p className={`${item.small ? 'text-sm' : 'text-xl'} font-semibold tracking-tight tabular-nums ${item.color || ''} truncate`}>{item.value}</p>
-                  </div>
-                ))}
-              </div>
-
-              {supplierUnpaidOrders.length > 0 && (
-                <Card data-tutorial-section="unpaid-supplier-orders">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      <DollarSign className="h-4 w-4 text-destructive" />
-                      {t('dashboard.unpaid_supplier_orders', { count: supplierUnpaidOrders.length })}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="p-0">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-muted/20">
-                          <tr>
-                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
-                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('reports.header_order_num')}</th>
-                            <th className="text-right p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.balance')}</th>
-                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.due')}</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {supplierUnpaidOrders.slice(0, 5).map(o => (
-                            <tr key={o.id} className="border-t border-border/20 hover:bg-muted/10 transition-colors">
-                              <td className="p-2.5 text-xs font-medium">{o.supplierName}</td>
-                              <td className="p-2.5 text-xs font-mono text-muted-foreground">{o.purchaseNumber || `#${o.id}`}</td>
-                              <td className="p-2.5 text-right text-xs text-destructive font-semibold tabular-nums">{t('common.etb')} {o.remainingBalance.toLocaleString()}</td>
-                              <td className="p-2.5 text-xs text-muted-foreground">{o.dueDate ? formatDate(o.dueDate) : '-'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-
-              {supplierPaymentAlerts.length > 0 && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      <AlertTriangle className="h-4 w-4 text-amber-500" />
-                      {t('dashboard.payment_due_alerts')}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="p-0">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-muted/20">
-                          <tr>
-                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
-                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('reports.header_order_num')}</th>
-                            <th className="text-right p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.amount')}</th>
-                            <th className="text-right p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('dashboard.due_in')}</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {supplierPaymentAlerts.slice(0, 5).map(a => (
-                            <tr key={a.id} className="border-t border-border/20 hover:bg-muted/10 transition-colors">
-                              <td className="p-2.5 text-xs font-medium">{a.supplierName}</td>
-                              <td className="p-2.5 text-xs font-mono text-muted-foreground">{a.purchaseNumber || `#${a.id}`}</td>
-                              <td className="p-2.5 text-right text-xs text-amber-600 font-semibold tabular-nums">{t('common.etb')} {a.remainingBalance.toLocaleString()}</td>
-                              <td className="p-2.5 text-right text-xs">
-                                {a.daysUntilDue !== null && a.daysUntilDue !== undefined ? (
-                                  a.daysUntilDue <= 0 ? (
-                                    <Badge variant="destructive" className="text-xs">{t('common.overdue')}</Badge>
-                                  ) : (
-                                    <span className="text-amber-600 font-semibold tabular-nums">{a.daysUntilDue} {t('common.days')}</span>
-                                  )
-                                ) : '-'}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-
-              {supplierLowStock.length > 0 && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      <Package className="h-4 w-4 text-amber-500" />
-                      {t('dashboard.low_stock_supplier')}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="p-0">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-muted/20">
-                          <tr>
-                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('inventory.product')}</th>
-                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('suppliers.col_supplier')}</th>
-                            <th className="text-right p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.stock')}</th>
-                            <th className="text-left p-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t('common.category')}</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {supplierLowStock.map(p => (
-                            <tr key={p.id} className="border-t border-border/20 hover:bg-muted/10 transition-colors">
-                              <td className="p-2.5 text-xs font-medium">{p.name}</td>
-                              <td className="p-2.5 text-xs text-muted-foreground">{p.supplierName}</td>
-                              <td className="p-2.5 text-right text-xs text-destructive font-semibold tabular-nums">{p.totalBaseQuantity} {p.baseUnit}</td>
-                              <td className="p-2.5 text-xs text-muted-foreground/70">{p.categoryName || '-'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-            </motion.div>
-          )}
-
-          <motion.div data-tutorial-section="business-assistant" variants={itemVariants} className="px-4 lg:px-6">
-            <BusinessAssistant />
-          </motion.div>
-
-
-          <motion.div variants={itemVariants} className="px-4 lg:px-6">
-            <Card data-tutorial-section="revenue-chart" className="@container/card">
-              <CardHeader>
-                <CardTitle>{t('dashboard.revenue_intelligence')}</CardTitle>
-                <CardDescription>
-                  <span className="hidden @[540px]/card:block">{t('dashboard.performance_analysis')}</span>
-                  <span className="@[540px]/card:hidden">{t('dashboard.performance_analysis')}</span>
-                </CardDescription>
-                <CardAction>
-                  <ToggleGroup
-                    type="single"
-                    value={revPeriod}
-                    onValueChange={(v) => v && setRevPeriod(v as any)}
-                    className="*:data-[slot=toggle-group-item]:px-4!"
-                  >
-                    <ToggleGroupItem value="week">{t('analytics.week')}</ToggleGroupItem>
-                    <ToggleGroupItem value="month">{t('analytics.month')}</ToggleGroupItem>
-                    <ToggleGroupItem value="year">{t('analytics.year')}</ToggleGroupItem>
-                  </ToggleGroup>
-                </CardAction>
-              </CardHeader>
-              <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
-                <ChartContainer config={chartConfig} className="aspect-auto h-[250px] w-full">
-                  <BarChart data={revenueChartData} barGap={4} barCategoryGap="20%">
-                    <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" />
-                    <XAxis
-                      dataKey="label"
-                      tickLine={false}
-                      axisLine={false}
-                      tickMargin={8}
-                      className="text-xs"
-                    />
-                    <YAxis
-                      tickLine={false}
-                      axisLine={false}
-                      tickFormatter={(v) => (v ?? 0) >= 1000 ? `${((v ?? 0) / 1000).toFixed(0)}k` : `${v ?? 0}`}
-                      width={40}
-                      className="text-xs"
-                    />
-                    <ChartTooltip
-                      cursor={{ fill: 'var(--muted)', opacity: 0.3 }}
-                      content={<ChartTooltipContent indicator="dot" />}
-                    />
-                    <Bar
-                      dataKey="revenue"
-                      radius={[8, 8, 0, 0]}
-                      maxBarSize={48}
-                    >
-                      {revenueChartData.map((entry: any, idx: number) => (
-                        <Cell
-                          key={idx}
-                          fill={entry.isToday ? 'var(--primary)' : 'var(--primary)'}
-                          opacity={entry.isToday ? 1 : 0.3}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ChartContainer>
-              </CardContent>
-            </Card>
-          </motion.div>
-
-          <motion.div data-tutorial-section="category-sales" variants={itemVariants} className="px-4 lg:px-6">
-            <CategorySalesChart data={analytics?.categoryBreakdown || []} />
-          </motion.div>
-
-          <motion.div data-tutorial-section="recent-activity" variants={itemVariants} className="px-4 lg:px-6">
-            <DataTable
-              columns={columns}
-              data={recentActivity}
-              title={t('dashboard.recent_activity')}
-              addLabel={t('sales.new_btn')}
-              onAddClick={() => {}}
-            />
-          </motion.div>
-
-          <Modal isOpen={showActivityDetail} onClose={() => setShowActivityDetail(false)} title={t('common.details')} size="md">
-            {selectedActivity && (
-              <motion.div
-                className="space-y-6"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3 }}
-              >
-                <div className="p-5 rounded-2xl bg-muted/30 border border-border/40 flex items-center gap-4">
-                  <div className="h-12 w-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
-                    {selectedActivity.type === 'sale' ? <ShoppingBag className="h-6 w-6 text-primary" /> :
-                     selectedActivity.type === 'expense' ? <Receipt className="h-6 w-6 text-destructive" /> :
-                     <Sliders className="h-6 w-6 text-amber-500" />}
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-base">{selectedActivity.description}</h3>
-                    <Badge variant="outline" className="mt-1 capitalize">{selectedActivity.type}</Badge>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 rounded-xl border border-border/30 bg-card/50">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.amount')}</p>
-                    <p className="text-xl font-semibold tabular-nums text-primary">{t('common.etb')} {selectedActivity.amount.toLocaleString()}</p>
-                  </div>
-                  <div className="p-4 rounded-xl border border-border/30 bg-card/50">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.date')}</p>
-                    <p className="text-base font-semibold">{formatDate(new Date(selectedActivity.date), { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</p>
-                  </div>
-                  <div className="p-4 rounded-xl border border-border/30 bg-card/50 col-span-2">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1">{t('common.details')}</p>
-                    <p className="text-sm">{selectedActivity.extra || t('dashboard.system_entry')}</p>
-                  </div>
-                </div>
-
-                <Button onClick={() => setShowActivityDetail(false)} className="w-full h-10 font-semibold">
-                  {t('inventory.close_specs')}
-                </Button>
+          ) : (
+            <>
+              <motion.div variants={itemVariants}>
+                <SectionCards cards={kpiCards} />
               </motion.div>
-            )}
-          </Modal>
-        </>
-      )}
+
+              <motion.div variants={itemVariants} className="px-4 lg:px-6">
+                <DashboardAlerts />
+              </motion.div>
+
+              {empStats && (
+                <motion.div variants={itemVariants} className="px-4 lg:px-6">
+                  <div data-tutorial-section="employee-stats" className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    {[
+                      { label: t('dashboard.total_employees'), value: empStats.total || 0, color: 'text-foreground' },
+                      { label: t('common.active'), value: empStats.active || 0, color: 'text-emerald-600' },
+                      { label: t('dashboard.online_now'), value: empStats.online || 0, color: 'text-primary' },
+                      { label: t('dashboard.clocked_in'), value: empStats.clockedIn || 0, color: 'text-amber-600' },
+                      { label: t('common.pending'), value: empStats.pendingApprovals || 0, color: 'text-destructive' },
+                    ].map((item, idx) => (
+                      <div key={idx} className="rounded-2xl border border-border/40 bg-card/50 p-4 space-y-1.5">
+                        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground/70">{item.label}</p>
+                        <p className={`text-2xl font-semibold tracking-tight tabular-nums ${item.color}`}>{item.value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+
+              <motion.div data-tutorial-section="business-assistant" variants={itemVariants} className="px-4 lg:px-6">
+                <BusinessAssistant />
+              </motion.div>
+
+              <motion.div variants={itemVariants} className="px-4 lg:px-6">
+                <Card data-tutorial-section="revenue-chart" className="@container/card">
+                  <CardHeader>
+                    <CardTitle>{t('dashboard.revenue_intelligence')}</CardTitle>
+                    <CardDescription>
+                      <span className="hidden @[540px]/card:block">{t('dashboard.performance_analysis')}</span>
+                      <span className="@[540px]/card:hidden">{t('dashboard.performance_analysis')}</span>
+                    </CardDescription>
+                    <CardAction>
+                      <ToggleGroup
+                        type="single"
+                        value={revPeriod}
+                        onValueChange={(v) => v && setRevPeriod(v as any)}
+                        className="*:data-[slot=toggle-group-item]:px-4!"
+                      >
+                        <ToggleGroupItem value="week">{t('analytics.week')}</ToggleGroupItem>
+                        <ToggleGroupItem value="month">{t('analytics.month')}</ToggleGroupItem>
+                        <ToggleGroupItem value="year">{t('analytics.year')}</ToggleGroupItem>
+                      </ToggleGroup>
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
+                    <ChartContainer config={chartConfig} className="aspect-auto h-[250px] w-full">
+                      <BarChart data={revenueChartData} barGap={4} barCategoryGap="20%">
+                        <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" />
+                        <XAxis
+                          dataKey="label"
+                          tickLine={false}
+                          axisLine={false}
+                          tickMargin={8}
+                          className="text-xs"
+                        />
+                        <YAxis
+                          tickLine={false}
+                          axisLine={false}
+                          tickFormatter={(v) => (v ?? 0) >= 1000 ? `${((v ?? 0) / 1000).toFixed(0)}k` : `${v ?? 0}`}
+                          width={40}
+                          className="text-xs"
+                        />
+                        <ChartTooltip
+                          cursor={{ fill: 'var(--muted)', opacity: 0.3 }}
+                          content={<ChartTooltipContent indicator="dot" />}
+                        />
+                        <Bar
+                          dataKey="revenue"
+                          radius={[8, 8, 0, 0]}
+                          maxBarSize={48}
+                        >
+                          {revenueChartData.map((entry: any, idx: number) => (
+                            <Cell
+                              key={idx}
+                              fill={entry.isToday ? 'var(--primary)' : 'var(--primary)'}
+                              opacity={entry.isToday ? 1 : 0.3}
+                            />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ChartContainer>
+                  </CardContent>
+                </Card>
+              </motion.div>
+
+              <motion.div variants={itemVariants} className="px-4 lg:px-6">
+                <Card data-tutorial-section="recent-activity">
+                  <CardHeader>
+                    <CardTitle>{t('analytics.recent_activity')}</CardTitle>
+                    <CardDescription>{t('dashboard.recent_activity_desc', 'Latest actions across your team')}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {recentActivity.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground py-10">
+                        <Activity size={24} className="mb-2 opacity-20" />
+                        <p className="text-xs font-bold uppercase tracking-wider">
+                          {t('analytics.no_activity')}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="overflow-y-auto pr-2 custom-scrollbar max-h-[400px]">
+                        {recentActivity.map((activity, i) => {
+                          const isSale = activity.type === 'sale';
+                          const isMoney = isSale;
+                          const isClock = activity.type === 'clock_in' || activity.type === 'clock_out';
+                          const typeKey = isClock ? `employees.${activity.type}` : `dashboard.${activity.type}`;
+                          return (
+                            <div key={i} className="flex gap-4 py-3 border-b border-border last:border-0">
+                              <div className="relative mt-0.5 h-fit">
+                                {(isSale || activity.type === 'adjustment') && activity.itemImage ? (
+                                  <>
+                                    <img
+                                      src={activity.itemImage}
+                                      alt={activity.description || 'Product'}
+                                      className="h-8 w-8 rounded-lg object-cover ring-1 ring-border"
+                                    />
+                                    <span
+                                      className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-muted text-foreground ring-1 ring-border"
+                                    >
+                                      {isSale ? <TrendingUp size={9} /> : <Activity size={9} />}
+                                    </span>
+                                  </>
+                                ) : activity.userAvatar ? (
+                                  <>
+                                    <img
+                                      src={resolveAvatar(activity.userAvatar)}
+                                      alt={activity.userName || 'User'}
+                                      className="h-8 w-8 rounded-full object-cover"
+                                    />
+                                    <span
+                                      className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-muted text-foreground ring-1 ring-border"
+                                    >
+                                      {isSale ? <TrendingUp size={9} /> : <Activity size={9} />}
+                                    </span>
+                                  </>
+                                ) : (
+                                  <div className="p-1.5 rounded-lg bg-muted text-foreground">
+                                    {isSale ? <TrendingUp size={12} /> : <Activity size={12} />}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex-1">
+                                <div className="flex justify-between items-start mb-0.5">
+                                  <p className="text-xs font-bold truncate max-w-[140px] capitalize text-foreground">
+                                    {t(typeKey)}
+                                  </p>
+                                  {isMoney ? (
+                                    <span className="text-xs font-bold text-foreground">
+                                      {isSale ? '+' : '-'}
+                                      {t('common.etb')} {(activity.amount || 0).toLocaleString()}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">
+                                      {formatTime(activity.date)}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground line-clamp-1">
+                                  {activity.description || activity.extra || t('analytics.system_update')}
+                                </p>
+                                <p className="text-xs font-medium text-muted-foreground mt-0.5 flex items-center gap-1.5">
+                                  {activity.userName && (
+                                    <span className="inline-flex items-center gap-1">
+                                      <img
+                                        src={resolveAvatar(activity.userAvatar)}
+                                        alt=""
+                                        className="h-4 w-4 rounded-full object-cover"
+                                      />
+                                      <span className="text-primary font-bold">{activity.userName}</span>
+                                    </span>
+                                  )}
+                                  {activity.userName ? ' · ' : ''}
+                                  {formatTime(activity.date)} · {formatDate(activity.date)}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </motion.div>
+            </>
+          )}
+        </TabsContent>
+
+        <TabsContent value="business" className="px-4 lg:px-6">
+          <BusinessCenter key={queryTab || 'overview'} initialTab={queryTab as any} />
+        </TabsContent>
+      </Tabs>
     </motion.div>
   );
 };

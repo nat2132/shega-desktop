@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import {
-  TrendingUp, TrendingDown, AlertTriangle, Package,
-  BarChart3, CreditCard, ShoppingCart, Receipt, PiggyBank,
+  TrendingUp, AlertTriangle, Package,
+  BarChart3, CreditCard, ShoppingCart,
   Loader2, AlertCircle, RefreshCw, Zap, Banknote
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
@@ -25,9 +25,8 @@ interface DashboardStats {
 
 interface AnalyticsData {
   salesData: { date: string; revenue: number; units: number; profit: number }[];
-  expenseData: { date: string; amount: number }[];
   topItems: { name: string; totalQty: number; totalRevenue: number }[];
-  summary: { totalRevenue: number; totalProfit: number; totalExpenses: number; netProfit: number };
+  summary: { totalRevenue: number; totalProfit: number; netProfit: number };
 }
 
 const Summary: React.FC = () => {
@@ -48,7 +47,7 @@ const Summary: React.FC = () => {
     try {
       const [statData, anData, items] = await Promise.all([
         window.api?.getDashboardStats() || Promise.resolve({} as DashboardStats),
-        window.api?.getAnalytics('month') || Promise.resolve({ salesData: [], expenseData: [], topItems: [], summary: { totalRevenue: 0, totalProfit: 0, totalExpenses: 0, netProfit: 0 } }),
+        window.api?.getAnalytics('month') || Promise.resolve({ salesData: [], topItems: [], summary: { totalRevenue: 0, totalProfit: 0, netProfit: 0 } }),
         window.api?.getItems({}) || Promise.resolve([])
       ]);
       setStats(statData);
@@ -66,48 +65,32 @@ const Summary: React.FC = () => {
   };
 
   const totalSales = analytics?.summary?.totalRevenue || 0;
-  const totalExpenses = analytics?.summary?.totalExpenses || 0;
   const netCashFlow = analytics?.summary?.netProfit || 0;
   const activeDebts = stats?.activeDebts || 0;
   const lowStock = stats?.lowStock || 0;
 
-  const revenueScore = totalSales > 0 ? Math.min((totalSales / (totalSales + totalExpenses + 1)) * 100, 100) : 0;
-  const expenseRatio = totalSales > 0 ? (totalExpenses / totalSales) * 100 : 0;
+  const revenueScore = totalSales > 0 ? Math.min(Math.max((netCashFlow / totalSales) * 250, 0), 100) : 0;
   const profitMargin = totalSales > 0 ? (netCashFlow / totalSales) * 100 : 0;
 
   const pulseData = useMemo(() => {
     if (!analytics?.salesData) return [];
     const now = new Date();
-    const days: { label: string; revenue: number; expense: number }[] = [];
+    const days: { label: string; revenue: number }[] = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(now);
       d.setDate(d.getDate() - i);
       const dateStr = d.toISOString().split('T')[0];
       const sale = analytics.salesData.find(s => s.date === dateStr);
-      const expense = analytics.expenseData.find(e => e.date === dateStr);
       const loc = 'en-US';
       days.push({
         label: d.toLocaleDateString(loc, { weekday: 'short' }),
-        revenue: sale?.revenue || 0,
-        expense: expense?.amount || 0
+        revenue: sale?.revenue || 0
       });
     }
     return days;
   }, [analytics]);
 
   const topProduct = analytics?.topItems?.[0]?.name || null;
-
-  const getExpenseStatusColor = (ratio: number) => {
-    if (ratio <= 40) return 'text-green-500';
-    if (ratio <= 70) return 'text-amber-500';
-    return 'text-red-500';
-  };
-
-  const getExpenseStatusBg = (ratio: number) => {
-    if (ratio <= 40) return 'bg-green-500/10 border-green-500/20';
-    if (ratio <= 70) return 'bg-amber-500/10 border-amber-500/20';
-    return 'bg-red-500/10 border-red-500/20';
-  };
 
   const getScoreStatusColor = (score: number) => {
     if (score >= 60) return 'text-green-500';
@@ -193,26 +176,7 @@ const Summary: React.FC = () => {
               <CardContent className="p-5">
                 <div className="flex justify-between items-start mb-3">
                   <div className="p-2 bg-muted rounded-xl text-foreground">
-                    <Receipt size={20} />
-                  </div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">
-                    {t('summary.total_expenses')}
-                  </Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">
-                  {t('summary.total_expenses')}
-                </p>
-                <h3 className="text-2xl font-black tracking-tight">
-                  {t('common.etb')} {totalExpenses.toLocaleString()}
-                </h3>
-              </CardContent>
-            </Card>
-
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground">
-                    <PiggyBank size={20} />
+                    <TrendingUp size={20} />
                   </div>
                   <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">
                     {t('summary.net_cashflow')}
@@ -283,31 +247,6 @@ const Summary: React.FC = () => {
                 <CardContent className="p-5">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="p-2 bg-muted rounded-xl text-foreground">
-                      <TrendingDown size={18} />
-                    </div>
-                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
-                      {t('summary.expense_ratio')}
-                    </p>
-                  </div>
-                  <p className={`text-3xl font-black tracking-tight ${getExpenseStatusColor(expenseRatio)}`}>
-                    {expenseRatio.toFixed(1)}%
-                  </p>
-                  <div className="mt-3 w-full h-1.5 bg-muted rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-700 ${expenseRatio <= 40 ? 'bg-green-500' : expenseRatio <= 70 ? 'bg-amber-500' : 'bg-red-500'}`}
-                      style={{ width: `${Math.min(expenseRatio, 100)}%` }}
-                    />
-                  </div>
-                  <Badge variant="outline" className={`mt-3 text-xs font-black uppercase tracking-widest ${getExpenseStatusBg(expenseRatio)}`}>
-                    {expenseRatio <= 40 ? t('summary.healthy') : expenseRatio <= 70 ? t('summary.needs_attention') : t('summary.critical')}
-                  </Badge>
-                </CardContent>
-              </Card>
-
-              <Card className="rounded-3xl border-border">
-                <CardContent className="p-5">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2 bg-muted rounded-xl text-foreground">
                       <TrendingUp size={18} />
                     </div>
                     <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
@@ -350,6 +289,12 @@ const Summary: React.FC = () => {
               </CardHeader>
               <CardContent className="px-2 pt-0 sm:px-6">
                 <div className="h-[180px] w-full">
+                  {pulseData.every((d) => d.revenue === 0) ? (
+                    <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground">
+                      <BarChart3 size={32} className="mb-2 opacity-20" />
+                      <p className="text-xs font-black uppercase tracking-widest">{t('analytics.no_chart_data')}</p>
+                    </div>
+                  ) : (
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={pulseData} barGap={2} barCategoryGap="20%">
                       <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" />
@@ -372,10 +317,10 @@ const Summary: React.FC = () => {
                         itemStyle={{ color: 'var(--foreground)', fontSize: '11px', fontWeight: 700 }}
                         labelStyle={{ color: 'var(--muted-foreground)', fontSize: '9px', textTransform: 'uppercase', fontWeight: 700, marginBottom: '6px' }}
                       />
-                      <Bar dataKey="revenue" fill="var(--primary)" radius={[4, 4, 0, 0]} maxBarSize={32} name={t('summary.total_sales')} />
-                      <Bar dataKey="expense" fill="var(--muted-foreground)" radius={[4, 4, 0, 0]} maxBarSize={32} name={t('summary.total_expenses')} />
-                    </BarChart>
+<Bar dataKey="revenue" fill="var(--primary)" radius={[4, 4, 0, 0]} maxBarSize={32} name={t('summary.total_sales')} />
+</BarChart>
                   </ResponsiveContainer>
+                  )}
                 </div>
               </CardContent>
             </Card>

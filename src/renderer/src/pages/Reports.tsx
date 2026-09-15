@@ -3,12 +3,13 @@ import {
   FileText, Download, TrendingUp,
   Package, DollarSign, Receipt, PiggyBank, BarChart3,
   Loader2, AlertCircle, RefreshCw, Trash2,
-  Calendar, Boxes, CreditCard, AlertTriangle, Banknote, Truck, Ban, RotateCcw, BookOpen, Scale
+  Calendar, Boxes, CreditCard, AlertTriangle, Banknote, Truck
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 import { useSettings } from '../context/SettingsContext';
+import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -30,12 +31,10 @@ interface SalesData {
 
 interface AnalyticsData {
   salesData: SalesData[];
-  expenseData: { date: string; amount: number }[];
   topItems: { name: string; totalQty: number; totalRevenue: number }[];
   summary: {
     totalRevenue: number;
     totalProfit: number;
-    totalExpenses: number;
     netProfit: number;
   };
 }
@@ -56,14 +55,6 @@ interface Item {
   unitsPerPack: number;
 }
 
-interface Expense {
-  id: number;
-  name: string;
-  amount: number;
-  category: string;
-  date: string;
-}
-
 const Reports: React.FC = () => {
   const { t, formatDate, currentBusiness } = useSettings();
   const [activeTab, setActiveTab] = useState('sales');
@@ -74,7 +65,6 @@ const Reports: React.FC = () => {
 
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [items, setItems] = useState<Item[]>([]);
-  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [reportGenerated, setReportGenerated] = useState(false);
 
   const [lowStockItems, setLowStockItems] = useState<(Item & { orderQty: number })[]>([]);
@@ -84,12 +74,6 @@ const Reports: React.FC = () => {
   const [supplierSummary, setSupplierSummary] = useState<any[]>([]);
   const [supplierTransactions, setSupplierTransactions] = useState<any[]>([]);
   const [supplierPayments, setSupplierPayments] = useState<any[]>([]);
-  const [inventoryBySupplier, setInventoryBySupplier] = useState<any[]>([]);
-  const [voidedSales, setVoidedSales] = useState<any[]>([]);
-  const [reversalData, setReversalData] = useState<any[]>([]);
-  const [vatReport, setVatReport] = useState<any>(null);
-  const [drilldowns, setDrilldowns] = useState<any>(null);
-  const [glJournal, setGlJournal] = useState<any>(null);
 
   const currentRange = useMemo(() => {
     if (period === 'custom') return dateRange;
@@ -128,15 +112,6 @@ const Reports: React.FC = () => {
           setItems(Array.isArray(itemsData) ? itemsData : []);
           break;
         }
-        case 'expenses': {
-          const [expData, anData] = await Promise.all([
-            window.api.getExpenses({ startDate: range.start, endDate: range.end }),
-            window.api.getAnalytics(period, range)
-          ]);
-          setExpenses(Array.isArray(expData) ? expData : []);
-          setAnalytics(anData);
-          break;
-        }
         case 'pnl': {
           const anData = await window.api.getAnalytics(period, range);
           setAnalytics(anData);
@@ -158,37 +133,6 @@ const Reports: React.FC = () => {
           setSupplierPayments(Array.isArray(data.payments) ? data.payments : []);
           break;
         }
-        case 'inventory_by_supplier': {
-          const data = await window.api.getInventoryBySupplierReport();
-          setInventoryBySupplier(Array.isArray(data) ? data : []);
-          break;
-        }
-        case 'voided_sales': {
-          const vs = await window.api.getVoidedSales({ startDate: range.start, endDate: range.end });
-          setVoidedSales(Array.isArray(vs) ? vs : []);
-          break;
-        }
-        case 'reversals': {
-          const dp = await window.api.getAuditLogs({ action: 'reverse_payment' });
-          const sa = await window.api.getAuditLogs({ action: 'reverse_adjustment' });
-          setReversalData([...(Array.isArray(dp) ? dp : []), ...(Array.isArray(sa) ? sa : [])]);
-          break;
-        }
-        case 'vat': {
-          const data = await window.api.getVatReport(range);
-          setVatReport(data);
-          break;
-        }
-        case 'drilldowns': {
-          const data = await window.api.getReportDrilldowns(range);
-          setDrilldowns(data);
-          break;
-        }
-        case 'gl': {
-          const data = await window.api.getGlJournal(range);
-          setGlJournal(data);
-          break;
-        }
       }
       setReportGenerated(true);
     } catch (e: any) {
@@ -203,6 +147,9 @@ const Reports: React.FC = () => {
       setReportGenerated(false);
     }
   }, [activeTab, period, dateRange]);
+
+  // Live sync: re-query when P2P/Yjs sync lands new data in SQLite.
+  useDataChangedRefresh(() => { fetchLowStock(); });
 
   const fetchLowStock = async () => {
     setLowStockLoading(true);
@@ -301,26 +248,11 @@ const Reports: React.FC = () => {
     toast.success(t('reports.report_exported'));
   };
 
-  const exportExpenseCSV = () => {
-    const headers = [t('reports.header_date'), t('reports.header_name'), t('reports.header_category'), t('reports.header_amount')];
-    const rows = expenses.map(e => [e.date, e.name, e.category, e.amount]);
-    exportCSV(headers, rows, 'expense-report');
-  };
-
-  const exportExpensePDF = () => {
-    const headers = [t('reports.header_date'), t('reports.header_name'), t('reports.header_category'), t('reports.header_amount')];
-    const rows = expenses.map(e => [e.date, e.name, e.category, String(e.amount)]);
-    const total = expenses.reduce((s, e) => s + e.amount, 0);
-    exportPDF(t('reports.report_expense'), headers, rows, 'expense-report', ['', '', t('common.total'), String(total)], undefined, currentBusiness);
-    toast.success(t('reports.report_exported'));
-  };
-
   const exportPNLCSV = () => {
     if (!analytics) return;
     const headers = [t('reports.col_metric'), t('reports.col_value')];
     const rows = [
       [t('reports.col_total_revenue'), analytics.summary.totalRevenue],
-      [t('reports.col_total_expenses'), analytics.summary.totalExpenses],
       [t('reports.col_gross_profit'), analytics.summary.totalProfit],
       [t('reports.col_net_profit'), analytics.summary.netProfit],
     ];
@@ -332,7 +264,6 @@ const Reports: React.FC = () => {
     const headers = [t('reports.col_metric'), t('reports.col_value')];
     const rows = [
       [t('reports.col_total_revenue'), String(analytics.summary.totalRevenue)],
-      [t('reports.col_total_expenses'), String(analytics.summary.totalExpenses)],
       [t('reports.col_gross_profit'), String(analytics.summary.totalProfit)],
       [t('reports.col_net_profit'), String(analytics.summary.netProfit)],
     ];
@@ -382,169 +313,6 @@ const Reports: React.FC = () => {
     toast.success(t('reports.report_exported'));
   };
 
-  const exportInventoryBySupplierCSV = () => {
-    const headers = [t('reports.header_supplier'), t('reports.header_product_count'), t('reports.header_stock_quantity'), t('reports.header_inventory_value'), t('reports.header_last_supply')];
-    const rows = inventoryBySupplier.map((r: any) => [r.supplierName, r.productCount, r.totalStockQuantity, r.inventoryValue, r.lastSupplyDate || '']);
-    exportCSV(headers, rows, 'inventory-by-supplier');
-  };
-
-  const exportInventoryBySupplierPDF = () => {
-    const headers = [t('reports.header_supplier'), t('reports.header_product_count'), t('reports.header_stock_quantity'), t('reports.header_inventory_value'), t('reports.header_last_supply')];
-    const rows = inventoryBySupplier.map((r: any) => [r.supplierName, String(r.productCount), String(r.totalStockQuantity), String(r.inventoryValue), r.lastSupplyDate || '']);
-    exportPDF(t('reports.report_inventory_supplier'), headers, rows, 'inventory-by-supplier', [], undefined, currentBusiness);
-    toast.success(t('reports.report_exported'));
-  };
-
-  const exportVoidedSalesCSV = () => {
-    const headers = [t('reports.header_sale_num'), t('reports.header_product'), t('reports.header_amount'), t('reports.header_reason'), t('reports.header_voided_by'), t('reports.header_date')];
-    const rows = voidedSales.map((r: any) => [r.id, r.name || `Item #${r.itemId}`, r.totalPrice, r.voidReason || '', r.voidedBy || '', r.voidedAt || '']);
-    exportCSV(headers, rows, 'voided-sales');
-  };
-
-  const exportVoidedSalesPDF = () => {
-    const headers = [t('reports.header_sale_num'), t('reports.header_product'), t('reports.header_amount'), t('reports.header_reason'), t('reports.header_voided_by'), t('reports.header_date')];
-    const rows = voidedSales.map((r: any) => [String(r.id), r.name || `Item #${r.itemId}`, String(r.totalPrice), r.voidReason || '', r.voidedBy || '', r.voidedAt || '']);
-    exportPDF(t('reports.report_voided_sales'), headers, rows, 'voided-sales', [], undefined, currentBusiness);
-    toast.success(t('reports.report_exported'));
-  };
-
-  const exportReversalsCSV = () => {
-    const headers = [t('reports.header_action'), t('reports.header_entity'), t('reports.header_entity_id'), t('reports.header_description'), t('reports.header_changed_by'), t('reports.header_date')];
-    const rows = reversalData.map((r: any) => [r.action, r.entityType || '', String(r.entityId || ''), r.description || '', r.changedBy || '', r.createdAt || '']);
-    exportCSV(headers, rows, 'reversals');
-  };
-
-  const exportReversalsPDF = () => {
-    const headers = [t('reports.header_action'), t('reports.header_entity'), t('reports.header_entity_id'), t('reports.header_description'), t('reports.header_changed_by'), t('reports.header_date')];
-    const rows = reversalData.map((r: any) => [r.action, r.entityType || '', String(r.entityId || ''), r.description || '', r.changedBy || '', r.createdAt || '']);
-    exportPDF(t('reports.report_reversals'), headers, rows, 'reversals', [], undefined, currentBusiness);
-    toast.success(t('reports.report_exported'));
-  };
-
-  const exportVatCSV = () => {
-    const headers = [t('reports.vat_rate'), t('reports.vat_invoices'), t('reports.vat_taxable_sales'), t('reports.vat_output')];
-    const rows = (vatReport?.buckets || []).map((r: any) => [r.rate, r.count, r.taxable, r.vat]);
-    exportCSV(headers, rows, 'vat-report');
-  };
-
-  const exportVatPDF = () => {
-    const headers = [t('reports.vat_rate'), t('reports.vat_invoices'), t('reports.vat_taxable_sales'), t('reports.vat_output')];
-    const rows = (vatReport?.buckets || []).map((r: any) => [String(r.rate), String(r.count), String(r.taxable), String(r.vat)]);
-    exportPDF(t('reports.report_vat'), headers, rows, 'vat-report', [], undefined, currentBusiness);
-    toast.success(t('reports.report_exported'));
-  };
-
-  const exportDrilldownsCSV = () => {
-    const all: string[][] = [];
-    const pushTable = (title: string, headers: string[], rows: any[][]) => {
-      all.push([title]);
-      all.push(headers);
-      rows.forEach((r) => all.push(r));
-      all.push([]);
-    };
-    if (drilldowns?.byCashier?.length) pushTable(
-      t('reports.sales_by_cashier'),
-      [t('reports.cashier'), t('reports.invoices'), t('common.revenue'), t('reports.vat_output'), t('common.profit')],
-      drilldowns.byCashier.map((r: any) => [r.cashier, r.saleCount, r.revenue, r.vat, r.profit])
-    );
-    if (drilldowns?.byHour?.length) pushTable(
-      t('reports.sales_by_hour'),
-      [t('reports.hour'), t('reports.invoices'), t('common.revenue')],
-      drilldowns.byHour.map((r: any) => [`${String(r.hour).padStart(2, '0')}:00`, r.saleCount, r.revenue])
-    );
-    if (drilldowns?.marginByItem?.length) pushTable(
-      t('reports.margin_by_item'),
-      [t('inventory.product'), t('reports.category'), t('reports.units'), t('common.revenue'), t('reports.cogs'), t('common.profit')],
-      drilldowns.marginByItem.map((r: any) => [r.name, r.categoryName, r.units, r.revenue, r.cogs, r.profit])
-    );
-    if (drilldowns?.debtAging?.length) pushTable(
-      t('reports.debt_aging'),
-      [t('reports.customer'), t('common.phone'), t('reports.outstanding'), t('reports.days_overdue')],
-      drilldowns.debtAging.map((r: any) => [r.customerName || '', r.customerPhone || '', r.outstanding, r.daysOverdue])
-    );
-    if (drilldowns?.movers?.length) pushTable(
-      t('reports.movers'),
-      [t('inventory.product'), t('reports.units_sold'), t('common.revenue'), t('reports.sales'), t('reports.days_since_sale')],
-      drilldowns.movers.map((r: any) => [r.name, r.unitsSold, r.revenue, r.saleCount, r.daysSinceLastSale ?? ''])
-    );
-    if (drilldowns?.valuationByWarehouse?.length) pushTable(
-      t('reports.valuation_by_warehouse'),
-      [t('reports.warehouse'), t('reports.units'), t('reports.products'), t('reports.value')],
-      drilldowns.valuationByWarehouse.map((r: any) => [r.warehouse, r.units, r.productCount, r.value])
-    );
-    exportCSV(all, 'drilldowns-report');
-  };
-
-  const exportDrilldownsPDF = () => {
-    const sections: { title: string; headers: string[]; rows: any[][] }[] = [];
-    if (drilldowns?.byCashier?.length) sections.push({
-      title: t('reports.sales_by_cashier'),
-      headers: [t('reports.cashier'), t('reports.invoices'), t('common.revenue'), t('reports.vat_output'), t('common.profit')],
-      rows: drilldowns.byCashier.map((r: any) => [r.cashier, r.saleCount, r.revenue, r.vat, r.profit])
-    });
-    if (drilldowns?.byHour?.length) sections.push({
-      title: t('reports.sales_by_hour'),
-      headers: [t('reports.hour'), t('reports.invoices'), t('common.revenue')],
-      rows: drilldowns.byHour.map((r: any) => [`${String(r.hour).padStart(2, '0')}:00`, r.saleCount, r.revenue])
-    });
-    if (drilldowns?.marginByItem?.length) sections.push({
-      title: t('reports.margin_by_item'),
-      headers: [t('inventory.product'), t('reports.category'), t('reports.units'), t('common.revenue'), t('reports.cogs'), t('common.profit')],
-      rows: drilldowns.marginByItem.map((r: any) => [r.name, r.categoryName, r.units, r.revenue, r.cogs, r.profit])
-    });
-    if (drilldowns?.debtAging?.length) sections.push({
-      title: t('reports.debt_aging'),
-      headers: [t('reports.customer'), t('common.phone'), t('reports.outstanding'), t('reports.days_overdue')],
-      rows: drilldowns.debtAging.map((r: any) => [r.customerName || '', r.customerPhone || '', r.outstanding, r.daysOverdue])
-    });
-    if (drilldowns?.movers?.length) sections.push({
-      title: t('reports.movers'),
-      headers: [t('inventory.product'), t('reports.units_sold'), t('common.revenue'), t('reports.sales'), t('reports.days_since_sale')],
-      rows: drilldowns.movers.map((r: any) => [r.name, r.unitsSold, r.revenue, r.saleCount, r.daysSinceLastSale ?? ''])
-    });
-    if (drilldowns?.valuationByWarehouse?.length) sections.push({
-      title: t('reports.valuation_by_warehouse'),
-      headers: [t('reports.warehouse'), t('reports.units'), t('reports.products'), t('reports.value')],
-      rows: drilldowns.valuationByWarehouse.map((r: any) => [r.warehouse, r.units, r.productCount, r.value])
-    });
-    const doc = new jsPDF();
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const lang = 'en';
-    let startY = addPdfHeader(doc, currentBusiness ?? null, 8) + 4;
-    sections.forEach((section, idx) => {
-      if (idx > 0) startY += 8;
-      doc.setFontSize(12);
-      doc.setFont('helvetica', 'bold');
-      doc.text(section.title, pageWidth / 2, startY, { align: 'center' });
-      startY += 6;
-      const body = section.rows.map(r => r.map(c => String(c ?? '')));
-      autoTable(doc, {
-        startY,
-        head: [section.headers],
-        body,
-        theme: 'striped',
-        headStyles: { fillColor: [0, 0, 0], fontSize: 8 },
-        styles: { fontSize: 7 },
-      });
-      startY = (doc as any).lastAutoTable.finalY + 8;
-    });
-    doc.save(`drilldowns-report-${Date.now()}.pdf`);
-    toast.success(t('reports.report_exported'));
-  };
-
-  const exportGlCSV = () => {
-    const headers = [t('reports.date'), t('reports.account'), t('reports.reference'), t('reports.debit'), t('reports.credit'), t('reports.memo')];
-    const rows = (glJournal?.lines || []).map((l: any) => [l.date, l.account, l.ref, l.debit || 0, l.credit || 0, l.memo || '']);
-    exportCSV(headers, rows, 'gl-journal');
-  };
-
-  const exportGlPDF = () => {
-    const headers = [t('reports.date'), t('reports.account'), t('reports.reference'), t('reports.debit'), t('reports.credit'), t('reports.memo')];
-    const rows = (glJournal?.lines || []).map((l: any) => [l.date, l.account, l.ref, l.debit || 0, l.credit || 0, l.memo || '']);
-    exportPDF(t('reports.report_gl'), headers, rows, 'gl-journal', [], undefined, currentBusiness);
-    toast.success(t('reports.report_exported'));
-  };
-
   const formattedRange = useMemo(() => {
     if (!currentRange.start) return '';
     if (currentRange.start === currentRange.end) return formatDate(currentRange.start);
@@ -586,16 +354,6 @@ const Reports: React.FC = () => {
                 </div>
                 <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('summary.total_sales')}</p>
                 <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {(analytics.summary.totalProfit || 0).toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Receipt size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.expenses')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('summary.total_expenses')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {(analytics.summary.totalExpenses || 0).toLocaleString()}</h3>
               </CardContent>
             </Card>
             <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
@@ -650,42 +408,6 @@ const Reports: React.FC = () => {
           </div>
         );
 
-      case 'expenses':
-        return (
-          <div className="grid grid-cols-1 gap-4 @xl/main:grid-cols-3">
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Receipt size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{formattedRange}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('summary.total_expenses')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {expenses.reduce((s, e) => s + e.amount, 0).toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><BarChart3 size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.count')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.entries')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{expenses.length}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><CreditCard size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.categories')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.categories')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{new Set(expenses.map(e => e.category)).size}</h3>
-              </CardContent>
-            </Card>
-          </div>
-        );
-
       case 'pnl':
         if (!analytics) return null;
         return (
@@ -698,16 +420,6 @@ const Reports: React.FC = () => {
                 </div>
                 <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('summary.total_sales')}</p>
                 <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {(analytics.summary.totalRevenue || 0).toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Receipt size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.expenses')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('summary.total_expenses')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {(analytics.summary.totalExpenses || 0).toLocaleString()}</h3>
               </CardContent>
             </Card>
             <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
@@ -811,53 +523,6 @@ const Reports: React.FC = () => {
           </div>
         );
 
-      case 'inventory_by_supplier':
-        if (inventoryBySupplier.length === 0) return null;
-        return (
-          <div className="grid grid-cols-1 gap-4 @xl/main:grid-cols-4">
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Truck size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{inventoryBySupplier.length}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('suppliers.title')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{inventoryBySupplier.filter((r: any) => r.productCount > 0).length}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Package size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('inventory.total')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.total_skus')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{inventoryBySupplier.reduce((s: number, r: any) => s + (r.productCount || 0), 0)}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Boxes size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('inventory.qty')}</Badge>
-                </div>
-                  <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.total_stock_badge')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{Math.round(inventoryBySupplier.reduce((s: number, r: any) => s + (r.totalStockQuantity || 0), 0)).toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><DollarSign size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.value_badge')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('inventory.total_value')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {Math.round(inventoryBySupplier.reduce((s: number, r: any) => s + (r.inventoryValue || 0), 0)).toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-          </div>
-        );
-
       case 'catalog':
         if (items.length === 0) return null;
         return (
@@ -900,219 +565,6 @@ const Reports: React.FC = () => {
                 </div>
                 <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.low_stock')}</p>
                 <h3 className="text-2xl font-black tracking-tight text-amber-500">{items.filter(i => i.totalBaseQuantity > 0 && i.totalBaseQuantity < 10).length}</h3>
-              </CardContent>
-            </Card>
-          </div>
-        );
-
-      case 'voided_sales':
-        return (
-          <div className="grid grid-cols-1 gap-4 @xl/main:grid-cols-3">
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Ban size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{formattedRange}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.voided_sales')}</p>
-                <h3 className="text-2xl font-black tracking-tight text-destructive">{voidedSales.length}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><DollarSign size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.total_amount')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.total_amount')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {voidedSales.reduce((s: number, v: any) => s + (v.totalPrice || 0), 0).toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Ban size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.unique_voiders')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.unique_voiders')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{new Set(voidedSales.map((v: any) => v.voidedBy).filter(Boolean)).size}</h3>
-              </CardContent>
-            </Card>
-          </div>
-        );
-
-      case 'reversals':
-        return (
-          <div className="grid grid-cols-1 gap-4 @xl/main:grid-cols-2">
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><RotateCcw size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{formattedRange}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.total_reversals')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{reversalData.length}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Ban size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.types')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.types')}</p>
-                <h3 className="text-lg font-black tracking-tight">
-                  {t('reports.payments_label', { count: reversalData.filter((r: any) => r.action === 'reverse_payment').length })} / 
-                  {t('reports.adjustments_label', { count: reversalData.filter((r: any) => r.action === 'reverse_adjustment').length })}
-                </h3>
-              </CardContent>
-            </Card>
-          </div>
-        );
-
-      case 'vat':
-        if (!vatReport) return null;
-        return (
-          <div className="grid grid-cols-1 gap-4 @xl/main:grid-cols-2 @3xl/main:grid-cols-4">
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Receipt size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{formattedRange}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.vat_taxable_sales')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {vatReport.summary.totalTaxable.toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><DollarSign size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{formattedRange}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.vat_output')}</p>
-                <h3 className="text-2xl font-black tracking-tight text-amber-500">{t('common.etb')} {vatReport.summary.totalVAT.toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><FileText size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.transactions')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.vat_invoices')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{vatReport.summary.totalCount.toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><BarChart3 size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.total_amount')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.gross_sales')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {vatReport.summary.totalSales.toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-          </div>
-        );
-
-      case 'drilldowns':
-        if (!drilldowns) return null;
-        const topCashier = (drilldowns.byCashier || [])[0];
-        const peakHour = (drilldowns.byHour || []).slice().sort((a: any, b: any) => b.revenue - a.revenue)[0];
-        const topMargin = (drilldowns.marginByItem || [])[0];
-        const totalWhValue = (drilldowns.valuationByWarehouse || []).reduce((s: number, r: any) => s + (r.value || 0), 0);
-        return (
-          <div className="grid grid-cols-1 gap-4 @xl/main:grid-cols-2 @3xl/main:grid-cols-4">
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Banknote size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{formattedRange}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.top_cashier')}</p>
-                <h3 className="text-2xl font-black tracking-tight truncate">{topCashier?.cashier || '-'}</h3>
-                <p className="text-xs font-bold text-muted-foreground mt-1">{t('common.etb')} {(topCashier?.revenue || 0).toLocaleString()}</p>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><TrendingUp size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.peak_hour')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.busiest_hour')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{peakHour ? `${String(peakHour.hour).padStart(2, '0')}:00` : '-'}</h3>
-                <p className="text-xs font-bold text-muted-foreground mt-1">{t('common.etb')} {(peakHour?.revenue || 0).toLocaleString()}</p>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><TrendingUp size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.top_margin')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.highest_margin_item')}</p>
-                <h3 className="text-2xl font-black tracking-tight truncate">{topMargin?.name || '-'}</h3>
-                <p className="text-xs font-bold text-muted-foreground mt-1">{t('common.etb')} {(topMargin?.profit || 0).toLocaleString()}</p>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Package size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.warehouse_value')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.inventory_valuation')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {totalWhValue.toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-          </div>
-        );
-
-      case 'gl':
-        if (!glJournal) return null;
-        return (
-          <div className="grid grid-cols-1 gap-4 @xl/main:grid-cols-2 @3xl/main:grid-cols-4">
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><BookOpen size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{formattedRange}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.entries')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{(glJournal.lines || []).length.toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Banknote size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.totals_debit')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.debit_total')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {(glJournal.totals?.debit || 0).toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Banknote size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.totals_credit')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.credit_total')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {(glJournal.totals?.credit || 0).toLocaleString()}</h3>
-              </CardContent>
-            </Card>
-            <Card className="rounded-3xl border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="p-2 bg-muted rounded-xl text-foreground"><Scale size={20} /></div>
-                  <Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{t('reports.balance')}</Badge>
-                </div>
-                <p className="text-muted-foreground text-xs font-black uppercase tracking-widest mb-1">{t('reports.debit_minus_credit')}</p>
-                <h3 className="text-2xl font-black tracking-tight">{t('common.etb')} {((glJournal.totals?.debit || 0) - (glJournal.totals?.credit || 0)).toLocaleString()}</h3>
               </CardContent>
             </Card>
           </div>
@@ -1195,39 +647,6 @@ const Reports: React.FC = () => {
           </Card>
         );
 
-      case 'expenses':
-        if (expenses.length === 0) return null;
-        return (
-          <Card className="rounded-3xl border-border">
-            <CardHeader>
-              <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.expense_data')}</CardTitle>
-              <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{formattedRange}</CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.date')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('common.name')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('common.category')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('common.amount')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {expenses.map((exp) => (
-                    <TableRow key={exp.id}>
-                      <TableCell className="font-medium">{formatDate(exp.date)}</TableCell>
-                      <TableCell>{exp.name}</TableCell>
-                      <TableCell><Badge variant="outline" className="text-xs font-black uppercase tracking-widest">{exp.category}</Badge></TableCell>
-                      <TableCell className="text-right font-bold">{t('common.etb')} {exp.amount.toLocaleString()}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        );
-
       case 'pnl':
         if (!analytics) return null;
         return (
@@ -1248,10 +667,6 @@ const Reports: React.FC = () => {
                   <TableRow>
                     <TableCell className="font-medium">{t('summary.total_sales')}</TableCell>
                     <TableCell className="text-right font-bold">{t('common.etb')} {(analytics.summary.totalRevenue || 0).toLocaleString()}</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell className="font-medium">{t('summary.total_expenses')}</TableCell>
-                    <TableCell className="text-right text-red-500 font-bold">{t('common.etb')} -{(analytics.summary.totalExpenses || 0).toLocaleString()}</TableCell>
                   </TableRow>
                   <TableRow>
                     <TableCell className="font-medium text-green-500">{t('reports.gross_profit')}</TableCell>
@@ -1422,388 +837,6 @@ const Reports: React.FC = () => {
           </div>
         );
 
-      case 'inventory_by_supplier':
-        if (inventoryBySupplier.length === 0) return null;
-        return (
-          <Card className="rounded-3xl border-border">
-            <CardHeader>
-              <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.inventory_supplier_card')}</CardTitle>
-              <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('reports.as_of_date')} {formatDate(new Date())}</CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('suppliers.col_supplier')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.total_skus')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('inventory.stock')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('inventory.total_value')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('suppliers.col_last_date')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {inventoryBySupplier.map((row: any) => (
-                    <TableRow key={row.supplierId}>
-                      <TableCell className="font-medium">{row.supplierName}</TableCell>
-                      <TableCell className="text-right">{row.productCount || 0}</TableCell>
-                      <TableCell className="text-right">{Math.round(row.totalStockQuantity || 0).toLocaleString()}</TableCell>
-                      <TableCell className="text-right font-bold">{t('common.etb')} {Math.round(row.inventoryValue || 0).toLocaleString()}</TableCell>
-                      <TableCell>{row.lastSupplyDate ? formatDate(row.lastSupplyDate) : '-'}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        );
-
-      case 'voided_sales':
-        if (voidedSales.length === 0) return null;
-        return (
-          <Card className="rounded-3xl border-border">
-            <CardHeader>
-              <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.voided_sales')}</CardTitle>
-              <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{formattedRange}</CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">#</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('inventory.product')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('common.amount')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.void_reason')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.voided_by')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('common.date')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {voidedSales.map((row: any) => (
-                    <TableRow key={row.id}>
-                      <TableCell className="font-mono text-xs">{row.id}</TableCell>
-                      <TableCell className="font-medium">{row.name || `Item #${row.itemId}`}</TableCell>
-                      <TableCell className="text-right font-bold text-destructive">{t('common.etb')} {(row.totalPrice || 0).toLocaleString()}</TableCell>
-                      <TableCell className="text-xs max-w-[200px] truncate">{row.voidReason || '-'}</TableCell>
-                      <TableCell>{row.voidedBy || '-'}</TableCell>
-                      <TableCell className="text-right text-xs text-muted-foreground">{row.voidedAt ? formatDate(row.voidedAt) : '-'}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        );
-
-      case 'reversals':
-        if (reversalData.length === 0) return null;
-        return (
-          <Card className="rounded-3xl border-border">
-            <CardHeader>
-              <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.reversals')}</CardTitle>
-              <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{formattedRange}</CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.action')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.entity')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.id_header')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.description')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('audit_logs.by')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('common.date')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {reversalData.map((row: any, i: number) => (
-                    <TableRow key={row.id || i}>
-                      <TableCell>
-                        <Badge variant={row.action === 'reverse_payment' ? 'default' : 'secondary'} className="text-xs font-black uppercase">
-                          {row.action === 'reverse_payment' ? t('reports.badge_payment') : t('reports.badge_adjustment')}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-xs">{row.entityType || '-'}</TableCell>
-                      <TableCell className="text-right font-mono text-xs">{row.entityId || '-'}</TableCell>
-                      <TableCell className="text-xs max-w-[250px] truncate">{row.description || '-'}</TableCell>
-                      <TableCell className="text-xs">{row.changedBy || '-'}</TableCell>
-                      <TableCell className="text-right text-xs text-muted-foreground">{row.createdAt ? formatDate(row.createdAt) : '-'}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        );
-
-      case 'vat':
-        if (!vatReport || !vatReport.buckets || vatReport.buckets.length === 0) return null;
-        return (
-          <Card className="rounded-3xl border-border">
-            <CardHeader>
-              <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.vat_breakdown')}</CardTitle>
-              <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{formattedRange}</CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.vat_rate')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.vat_invoices')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.vat_taxable_sales')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.vat_output')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {vatReport.buckets.map((row: any, i: number) => (
-                    <TableRow key={i}>
-                      <TableCell className="font-bold">{row.rate}</TableCell>
-                      <TableCell className="text-right">{row.count}</TableCell>
-                      <TableCell className="text-right">{t('common.etb')} {row.taxable.toLocaleString()}</TableCell>
-                      <TableCell className="text-right font-bold text-amber-500">{t('common.etb')} {row.vat.toLocaleString()}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        );
-
-      case 'drilldowns':
-        if (!drilldowns) return null;
-        const dd = drilldowns;
-        return (
-          <>
-            {(dd.byCashier || []).length > 0 && (
-              <Card className="rounded-3xl border-border">
-                <CardHeader>
-                  <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.sales_by_cashier')}</CardTitle>
-                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{formattedRange}</CardDescription>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.cashier')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.invoices')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('common.revenue')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.vat_output')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('common.profit')}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {dd.byCashier.map((r: any, i: number) => (
-                        <TableRow key={i}>
-                          <TableCell className="font-bold">{r.cashier}</TableCell>
-                          <TableCell className="text-right">{r.saleCount}</TableCell>
-                          <TableCell className="text-right">{t('common.etb')} {r.revenue.toLocaleString()}</TableCell>
-                          <TableCell className="text-right">{t('common.etb')} {r.vat.toLocaleString()}</TableCell>
-                          <TableCell className="text-right font-bold text-emerald-500">{t('common.etb')} {r.profit.toLocaleString()}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            )}
-
-            {(dd.byHour || []).length > 0 && (
-              <Card className="rounded-3xl border-border">
-                <CardHeader>
-                  <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.sales_by_hour')}</CardTitle>
-                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{formattedRange}</CardDescription>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.hour')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.invoices')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('common.revenue')}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {dd.byHour.map((r: any, i: number) => (
-                        <TableRow key={i}>
-                          <TableCell className="font-bold">{String(r.hour).padStart(2, '0')}:00</TableCell>
-                          <TableCell className="text-right">{r.saleCount}</TableCell>
-                          <TableCell className="text-right">{t('common.etb')} {r.revenue.toLocaleString()}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            )}
-
-            {(dd.marginByItem || []).length > 0 && (
-              <Card className="rounded-3xl border-border">
-                <CardHeader>
-                  <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.margin_by_item')}</CardTitle>
-                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{formattedRange}</CardDescription>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="text-xs font-black uppercase tracking-widest">{t('inventory.product')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.category')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.units')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('common.revenue')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.cogs')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('common.profit')}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {dd.marginByItem.map((r: any) => (
-                        <TableRow key={r.id}>
-                          <TableCell className="font-bold">{r.name}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{r.categoryName}</TableCell>
-                          <TableCell className="text-right">{r.units}</TableCell>
-                          <TableCell className="text-right">{t('common.etb')} {r.revenue.toLocaleString()}</TableCell>
-                          <TableCell className="text-right">{t('common.etb')} {r.cogs.toLocaleString()}</TableCell>
-                          <TableCell className="text-right font-bold text-emerald-500">{t('common.etb')} {r.profit.toLocaleString()}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            )}
-
-            {(dd.debtAging || []).length > 0 && (
-              <Card className="rounded-3xl border-border">
-                <CardHeader>
-                  <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.debt_aging')}</CardTitle>
-                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('reports.customer_debt')}</CardDescription>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.customer')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest">{t('common.phone')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.outstanding')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.days_overdue')}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {dd.debtAging.map((r: any, i: number) => (
-                        <TableRow key={i}>
-                          <TableCell className="font-bold">{r.customerName || '-'}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{r.customerPhone || '-'}</TableCell>
-                          <TableCell className="text-right font-bold text-amber-500">{t('common.etb')} {r.outstanding.toLocaleString()}</TableCell>
-                          <TableCell className="text-right">{Math.max(0, r.daysOverdue || 0)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            )}
-
-            {(dd.movers || []).length > 0 && (
-              <Card className="rounded-3xl border-border">
-                <CardHeader>
-                  <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.movers')}</CardTitle>
-                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{formattedRange}</CardDescription>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="text-xs font-black uppercase tracking-widest">{t('inventory.product')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.units_sold')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('common.revenue')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.sales')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.days_since_sale')}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {dd.movers.map((r: any) => (
-                        <TableRow key={r.id}>
-                          <TableCell className="font-bold">{r.name}</TableCell>
-                          <TableCell className="text-right">{r.unitsSold}</TableCell>
-                          <TableCell className="text-right">{t('common.etb')} {r.revenue.toLocaleString()}</TableCell>
-                          <TableCell className="text-right">{r.saleCount}</TableCell>
-                          <TableCell className="text-right">{r.daysSinceLastSale == null ? '—' : r.daysSinceLastSale}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            )}
-
-            {(dd.valuationByWarehouse || []).length > 0 && (
-              <Card className="rounded-3xl border-border">
-                <CardHeader>
-                  <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.valuation_by_warehouse')}</CardTitle>
-                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('reports.inventory_valuation')}</CardDescription>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.warehouse')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.units')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.products')}</TableHead>
-                        <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.value')}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {dd.valuationByWarehouse.map((r: any, i: number) => (
-                        <TableRow key={i}>
-                          <TableCell className="font-bold">{r.warehouse || '-'}</TableCell>
-                          <TableCell className="text-right">{r.units}</TableCell>
-                          <TableCell className="text-right">{r.productCount}</TableCell>
-                          <TableCell className="text-right font-bold">{t('common.etb')} {r.value.toLocaleString()}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            )}
-          </>
-        );
-
-      case 'gl':
-        if (!glJournal || !glJournal.lines || glJournal.lines.length === 0) return null;
-        return (
-          <Card className="rounded-3xl border-border">
-            <CardHeader>
-              <CardTitle className="text-sm font-black uppercase tracking-widest">{t('reports.gl_journal')}</CardTitle>
-              <CardDescription className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{formattedRange}</CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.date')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.account')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.reference')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.debit')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest text-right">{t('reports.credit')}</TableHead>
-                    <TableHead className="text-xs font-black uppercase tracking-widest">{t('reports.memo')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {glJournal.lines.map((l: any, i: number) => (
-                    <TableRow key={i}>
-                      <TableCell className="text-xs text-muted-foreground">{formatDate(l.date)}</TableCell>
-                      <TableCell className="font-bold">{l.account}</TableCell>
-                      <TableCell className="text-xs font-mono text-muted-foreground">{l.ref}</TableCell>
-                      <TableCell className="text-right">{l.debit ? `${t('common.etb')} ${l.debit.toLocaleString()}` : ''}</TableCell>
-                      <TableCell className="text-right">{l.credit ? `${t('common.etb')} ${l.credit.toLocaleString()}` : ''}</TableCell>
-                      <TableCell className="text-xs max-w-[260px] truncate text-muted-foreground">{l.memo || '-'}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        );
-
       default:
         return null;
     }
@@ -1826,11 +859,6 @@ const Reports: React.FC = () => {
         csvHandler = exportValuationCSV;
         pdfHandler = exportValuationPDF;
         break;
-      case 'expenses':
-        showCSV = showPDF = expenses.length > 0;
-        csvHandler = exportExpenseCSV;
-        pdfHandler = exportExpensePDF;
-        break;
       case 'pnl':
         showCSV = showPDF = !!analytics;
         csvHandler = exportPNLCSV;
@@ -1850,36 +878,6 @@ const Reports: React.FC = () => {
         showCSV = showPDF = supplierTransactions.length > 0;
         csvHandler = exportSupplierTransactionsCSV;
         pdfHandler = exportSupplierTransactionsPDF;
-        break;
-      case 'inventory_by_supplier':
-        showCSV = showPDF = inventoryBySupplier.length > 0;
-        csvHandler = exportInventoryBySupplierCSV;
-        pdfHandler = exportInventoryBySupplierPDF;
-        break;
-      case 'voided_sales':
-        showCSV = showPDF = voidedSales.length > 0;
-        csvHandler = exportVoidedSalesCSV;
-        pdfHandler = exportVoidedSalesPDF;
-        break;
-      case 'reversals':
-        showCSV = showPDF = reversalData.length > 0;
-        csvHandler = exportReversalsCSV;
-        pdfHandler = exportReversalsPDF;
-        break;
-      case 'vat':
-        showCSV = showPDF = !!vatReport && (vatReport.buckets || []).length > 0;
-        csvHandler = exportVatCSV;
-        pdfHandler = exportVatPDF;
-        break;
-      case 'drilldowns':
-        showCSV = showPDF = !!drilldowns && ((drilldowns.byCashier || []).length > 0 || (drilldowns.marginByItem || []).length > 0 || (drilldowns.byHour || []).length > 0);
-        csvHandler = exportDrilldownsCSV;
-        pdfHandler = exportDrilldownsPDF;
-        break;
-      case 'gl':
-        showCSV = showPDF = !!glJournal && (glJournal.lines || []).length > 0;
-        csvHandler = exportGlCSV;
-        pdfHandler = exportGlPDF;
         break;
     }
 
@@ -1920,9 +918,6 @@ const Reports: React.FC = () => {
             <TabsTrigger value="valuation" className="text-xs font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
               {t('reports.valuation')}
             </TabsTrigger>
-            <TabsTrigger value="expenses" className="text-xs font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
-              {t('reports.expenses')}
-            </TabsTrigger>
             <TabsTrigger value="pnl" className="text-xs font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
               {t('reports.pnl')}
             </TabsTrigger>
@@ -1934,24 +929,6 @@ const Reports: React.FC = () => {
             </TabsTrigger>
             <TabsTrigger value="supplier_transactions" className="text-xs font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
               <Receipt className="h-3 w-3 mr-1" />{t('reports.tab_transactions')}
-            </TabsTrigger>
-            <TabsTrigger value="inventory_by_supplier" className="text-xs font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
-              <Package className="h-3 w-3 mr-1" />{t('reports.tab_by_supplier')}
-            </TabsTrigger>
-            <TabsTrigger value="voided_sales" className="text-xs font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
-              <Ban className="h-3 w-3 mr-1" />{t('reports.voided_sales')}
-            </TabsTrigger>
-            <TabsTrigger value="reversals" className="text-xs font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
-              <RotateCcw className="h-3 w-3 mr-1" />{t('reports.reversals')}
-            </TabsTrigger>
-            <TabsTrigger value="vat" className="text-xs font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
-              <Receipt className="h-3 w-3 mr-1" />{t('reports.tab_vat')}
-            </TabsTrigger>
-            <TabsTrigger value="drilldowns" className="text-xs font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
-              <BarChart3 className="h-3 w-3 mr-1" />{t('reports.tab_drilldowns')}
-            </TabsTrigger>
-            <TabsTrigger value="gl" className="text-xs font-bold uppercase tracking-wider px-4 py-2 data-[state=active]:bg-background data-[state=active]:text-foreground rounded-lg">
-              <BookOpen className="h-3 w-3 mr-1" />{t('reports.tab_gl')}
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -1983,7 +960,7 @@ const Reports: React.FC = () => {
                     <DatePicker
                       value={dateRange.start}
                       onChange={(v) => setDateRange(prev => ({ ...prev, start: v }))}
-                      className="h-7 w-32 bg-background border-none text-xs font-bold grow"
+                      className="w-auto bg-background border-none text-xs font-bold"
                     />
                   </div>
                   <div className="flex items-center gap-1.5 px-2">
@@ -1991,7 +968,7 @@ const Reports: React.FC = () => {
                     <DatePicker
                       value={dateRange.end}
                       onChange={(v) => setDateRange(prev => ({ ...prev, end: v }))}
-                      className="h-7 w-32 bg-background border-none text-xs font-bold grow"
+                      className="w-auto bg-background border-none text-xs font-bold"
                     />
                   </div>
                   <button

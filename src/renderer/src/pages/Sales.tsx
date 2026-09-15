@@ -9,6 +9,7 @@ import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 
 import { useSettings } from '../context/SettingsContext';
+import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
 import { playSound } from '../utils/sound';
 import { SectionCards, SectionCardData } from '../components/section-cards';
 import { DataTable } from '../components/data-table';
@@ -57,6 +58,7 @@ interface Sale {
   createdAt: string;
   basePurchasePrice?: number;
   unitsPerPack?: number;
+  itemImage?: string;
   status?: string;
 }
 
@@ -64,19 +66,13 @@ interface Item {
   id: number;
   name: string;
   baseUnit: string;
-  purchaseUnit: string;
-  unitsPerPack: number;
   totalBaseQuantity: number;
-  totalPackQuantity: number;
   baseSellingPrice: number;
-  packSellingPrice: number;
-  allowSellByBaseUnit: number;
-  allowSellByPackUnit: number;
   basePurchasePrice: number;
 }
 
 const Sales: React.FC = () => {
-  const { t, formatDate, formatDateTime, currentBusiness } = useSettings();
+  const { t, formatDate, formatDateTime, currentBusiness, isModuleEnabled, taxEnabled, taxRate } = useSettings();
   const [sales, setSales] = useState<Sale[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -109,12 +105,15 @@ const Sales: React.FC = () => {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [lastSale, setLastSale] = useState<any>(null);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
-  const { currentAdmin } = useAuth();
+  const { currentAdmin, isCashier } = useAuth();
   const [overrideReason, setOverrideReason] = useState('');
 
   useEffect(() => {
     loadData();
   }, [searchQuery, filterCategory, filterStartDate, filterEndDate]);
+
+  // Live sync: re-query when P2P/Yjs sync lands new data in SQLite.
+  useDataChangedRefresh(() => { loadData(); });
 
   // Barcode wedge: a scanner types the code then Enter; resolve and add to cart.
   useEffect(() => {
@@ -124,10 +123,11 @@ const Sales: React.FC = () => {
       if (!code) return;
       window.api?.getItemByBarcode(code).then((item: any) => {
         if (!item) {
-          toast.error(`Barcode ${code} not found`);
+          toast.error(`Product not found for barcode ${code}`, { description: 'Search manually or add the product in Inventory.' });
           return;
         }
         addToCart(String(item.id));
+        toast.success(`${item.name} added to cart`);
       });
     };
     window.addEventListener('shega:barcode-scan', onScan as EventListener);
@@ -156,7 +156,7 @@ const Sales: React.FC = () => {
   const kpiCards: SectionCardData[] = useMemo(() => {
     const total = sales.reduce((sum, s) => sum + s.totalPrice, 0);
     const profit = sales.reduce((sum, s) => {
-      const cost = s.costAtTimeOfSale || ((s.basePurchasePrice || 0) * (s.unitType === 'pack' ? (s.quantity * (s.unitsPerPack || 1)) : s.quantity));
+      const cost = s.costAtTimeOfSale || ((s.basePurchasePrice || 0) * s.quantity);
       return sum + ((s.totalPrice - (s.discount || 0) - (s.vat || 0)) - cost);
     }, 0);
 
@@ -165,27 +165,27 @@ const Sales: React.FC = () => {
 
     const revenueTrend = computeTrend(sales, 'createdAt', s => s.totalPrice);
     const profitTrend = computeTrend(sales, 'createdAt', s => {
-      const cost = s.costAtTimeOfSale || ((s.basePurchasePrice || 0) * (s.unitType === 'pack' ? (s.quantity * (s.unitsPerPack || 1)) : s.quantity));
+      const cost = s.costAtTimeOfSale || ((s.basePurchasePrice || 0) * s.quantity);
       return (s.totalPrice - (s.discount || 0) - (s.vat || 0)) - cost;
     });
     const txTrend = computeTrend(sales, 'createdAt', () => 1);
     const outTrend = computeTrend(outDebt, 'createdAt', s => s.totalPrice - s.paidAmount);
 
     return [
-      { 
+      ...(!isCashier ? [{ 
         title: t('sales.revenue'), 
         value: `${t('common.etb')} ${total.toLocaleString()}`, 
         ...revenueTrend,
         footerTitle: t('sales.transactions'),
         footerSub: t('customers.last_30')
-      },
-      { 
+      }] : []),
+      ...(!isCashier ? [{ 
         title: t('sales.profit'), 
         value: `${t('common.etb')} ${profit.toLocaleString()}`, 
         ...profitTrend,
         footerTitle: t('inventory.margin'),
         footerSub: t('sales.healthy_growth')
-      },
+      }] : []),
       { 
         title: t('sales.transactions'), 
         value: sales.length, 
@@ -193,15 +193,15 @@ const Sales: React.FC = () => {
         footerTitle: t('sales.order_freq'),
         footerSub: t('sales.high_activity')
       },
-      { 
+      ...(isModuleEnabled('customers') ? [{ 
         title: t('sales.outstanding'), 
         value: `${t('common.etb')} ${totalOutstanding.toLocaleString()}`, 
         ...outTrend,
         footerTitle: t('sales.debt'),
         footerSub: t('customers.active_ledgers')
-      },
+      }] : []),
     ];
-  }, [sales]);
+  }, [sales, isModuleEnabled, isCashier]);
 
   const columns: ColumnDef<Sale>[] = [
     {
@@ -209,8 +209,12 @@ const Sales: React.FC = () => {
       header: t('sales.transaction_details'),
       cell: ({ row }) => (
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted">
-            <ShoppingBag className="h-5 w-5 text-muted-foreground" />
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted overflow-hidden">
+            {row.original.itemImage ? (
+              <img src={row.original.itemImage} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <ShoppingBag className="h-5 w-5 text-muted-foreground" />
+            )}
           </div>
           <div className="flex flex-col">
             <span className="font-bold">{row.original.itemName}</span>
@@ -308,8 +312,7 @@ const Sales: React.FC = () => {
     if (!item) return;
 
     const existing = cart.find(c => c.itemId === item.id);
-    const unitType = existing ? existing.unitType : (item.allowSellByBaseUnit ? 'base' : 'pack');
-    const maxQty = unitType === 'pack' ? item.totalPackQuantity : item.totalBaseQuantity;
+    const maxQty = item.totalBaseQuantity;
     
     if (existing) {
       if (existing.quantity + 1 > maxQty) return;
@@ -323,13 +326,13 @@ const Sales: React.FC = () => {
       itemId: item.id,
       name: item.name,
       quantity: 1,
-      unitType: item.allowSellByBaseUnit ? 'base' : 'pack',
-      unit: item.allowSellByBaseUnit ? item.baseUnit : item.purchaseUnit,
-      price: item.allowSellByBaseUnit ? item.baseSellingPrice : item.packSellingPrice,
+      unitType: 'base' as const,
+      unit: item.baseUnit,
+      price: item.baseSellingPrice,
       baseSellingPrice: item.baseSellingPrice,
       discount: 0,
       vat: 0,
-      total: item.allowSellByBaseUnit ? item.baseSellingPrice : item.packSellingPrice
+      total: item.baseSellingPrice
     };
     setCart([...cart, newItem]);
   };
@@ -341,15 +344,14 @@ const Sales: React.FC = () => {
         const updated = { ...c, ...updates };
         
         if (item) {
-          const maxQty = updated.unitType === 'pack' ? item.totalPackQuantity : item.totalBaseQuantity;
-          if (updated.quantity > maxQty) {
-            updated.quantity = maxQty;
+          if (updated.quantity > item.totalBaseQuantity) {
+            updated.quantity = item.totalBaseQuantity;
           }
         }
 
-        const price = updated.unitType === 'pack' ? item?.packSellingPrice : item?.baseSellingPrice;
+        const price = item?.baseSellingPrice;
         updated.price = price || 0;
-        updated.unit = updated.unitType === 'pack' ? item?.purchaseUnit : item?.baseUnit;
+        updated.unit = item?.baseUnit;
         updated.total = (updated.quantity * updated.price) - updated.discount + updated.vat;
         return updated;
       }
@@ -457,7 +459,7 @@ const Sales: React.FC = () => {
         quantity: sale.quantity,
         unitType: sale.unitType,
         unit: sale.unit,
-        price: sale.unitType === 'pack' ? item.packSellingPrice : item.baseSellingPrice,
+        price: item.baseSellingPrice,
         discount: sale.discount,
         vat: sale.vat,
         total: sale.totalPrice
@@ -483,7 +485,7 @@ const Sales: React.FC = () => {
     setCustomerInfo({ name: '', phone: '' });
     setPaymentInfo({ method: t('sales.cash'), status: t('sales.paid'), dueDate: '', isDebt: false });
     setGlobalDiscount('0');
-    setGlobalVAT('0');
+    setGlobalVAT(taxEnabled ? String(taxRate) : '0');
     setOverrideReason('');
     setEditingId(null);
     setCurrentStep(1);
@@ -686,7 +688,7 @@ const Sales: React.FC = () => {
 
   return (
     <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 fade-in">
-      <SectionCards cards={kpiCards} />
+      <SectionCards cards={kpiCards} storageKey="sales" />
 
       <div className="px-4 lg:px-6">
         <div className="flex items-center gap-4 mb-4">
@@ -828,7 +830,7 @@ const Sales: React.FC = () => {
                   {itemSearchQuery ? (
                     <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
                       {items.filter(i => i.name.toLowerCase().includes(itemSearchQuery.toLowerCase())).map(item => {
-                        const isOutOfStock = item.totalBaseQuantity === 0 && item.totalPackQuantity === 0;
+                        const isOutOfStock = item.totalBaseQuantity === 0;
                         return (
                         <button 
                           key={item.id} 
@@ -909,18 +911,6 @@ const Sales: React.FC = () => {
                           />
                           <button onClick={() => updateCartItem(item.itemId, { quantity: item.quantity + 1 })} className="px-2 hover:bg-muted text-xs font-bold">+</button>
                         </div>
-                        <Select 
-                          value={item.unitType} 
-                          onValueChange={val => updateCartItem(item.itemId, { unitType: val })}
-                        >
-                          <SelectTrigger className="h-7 w-20 text-xs font-black uppercase tracking-widest rounded-lg border-border/40 bg-card px-2">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="base" className="text-xs uppercase font-bold">{t('sales.individual')}</SelectItem>
-                            <SelectItem value="pack" className="text-xs uppercase font-bold">{t('sales.pack')}</SelectItem>
-                          </SelectContent>
-                        </Select>
                       </div>
                       <div className="w-24 text-right shrink-0">
                         <p className="font-black text-[11px] whitespace-nowrap">{t('common.etb')} {item.total.toLocaleString()}</p>
@@ -960,11 +950,14 @@ const Sales: React.FC = () => {
                         </div>
                         <div className="flex-1 space-y-1">
                           <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground opacity-60">{t('sales.vat_percent')}</label>
-                          <Input className="h-10 bg-muted/10 font-bold border-none" placeholder="15" type="number" value={globalVAT} onChange={e => setGlobalVAT(e.target.value)} />
+                          <Input className="h-10 bg-muted/10 font-bold border-none" placeholder="15" type="number" value={globalVAT} onChange={e => setGlobalVAT(e.target.value)} disabled={!taxEnabled} />
+                          {!taxEnabled && <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground opacity-60">{t('sales.tax_disabled_hint', 'Tax is disabled in Settings')}</p>}
+                          {taxEnabled && <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground opacity-60">{t('sales.tax_default_hint', 'Default {rate}% from Settings', { rate: String(taxRate) })}</p>}
                         </div>
                       </div>
                     </div>
 
+                    {isModuleEnabled('customers') && (
                     <div className="space-y-3">
                       <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('sales.customer_identity')}</h4>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 rounded-2xl bg-card border border-border shadow-sm">
@@ -986,6 +979,7 @@ const Sales: React.FC = () => {
                         </div>
                       </div>
                     </div>
+                    )}
 
                     <div className="space-y-3">
                       <h4 className="text-xs font-black uppercase tracking-[0.3em] text-muted-foreground border-b border-border/50 pb-2">{t('sales.payment_logistics')}</h4>

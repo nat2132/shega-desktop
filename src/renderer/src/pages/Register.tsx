@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Search, CreditCard, Banknote, Receipt, X, Plus, Minus, Keyboard, Zap, Coins } from 'lucide-react';
+import { Search, CreditCard, Banknote, Receipt, X, Plus, Minus, Keyboard, Zap, Coins, PackageSearch } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { AppButton } from '../components/ui/button';
 import { AppInput } from '../components/ui/input';
@@ -12,6 +12,7 @@ interface CartItem {
   uuid: string;
   name: string;
   baseSalePrice: number;
+  baseUnit?: string;
   categoryId: number;
   categoryName?: string;
   totalBaseQuantity: number;
@@ -27,24 +28,17 @@ interface Item {
   name: string;
   companyName?: string;
   baseSalePrice: number;
+  baseSellingPrice?: number;
   basePurchasePrice: number;
+  baseUnit?: string;
   totalBaseQuantity: number;
   unitsPerPack: number;
   categoryId: number;
   categoryName?: string;
   sku?: string;
   barcode?: string;
+  image?: string | null;
 }
-
-const CATEGORIES = [
-  { id: 0, name: 'All' },
-  { id: 1, name: 'Beverages' },
-  { id: 2, name: 'Snacks' },
-  { id: 3, name: 'Dairy' },
-  { id: 4, name: 'Bakery' },
-  { id: 5, name: 'Produce' },
-  { id: 6, name: 'Household' },
-];
 
 const PAYMENT_METHODS = [
   { id: 'cash', label: 'Cash', icon: Banknote, shortcut: 'F4' },
@@ -53,13 +47,14 @@ const PAYMENT_METHODS = [
 ];
 
 export default function Register() {
-  const { t, colors } = useSettings();
+  const { t, colors, taxEnabled, taxRate } = useSettings();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState(0);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'mobile'>('cash');
   const [cashTendered, setCashTendered] = useState('');
   const [items, setItems] = useState<Item[]>([]);
+  const [categories, setCategories] = useState([{ id: 0, name: 'All' }]);
   const [loading, setLoading] = useState(true);
   const [showPayment, setShowPayment] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -73,11 +68,21 @@ export default function Register() {
   const loadItems = async () => {
     try {
       const result = await window.api?.getItems?.({ limit: 500 });
-      if (result?.data) {
-        setItems(result.data);
-      } else if (Array.isArray(result)) {
-        setItems(result);
-      }
+      const rows = result?.data ?? (Array.isArray(result) ? result : []);
+      setItems(rows.map((r: any) => ({
+        ...r,
+        baseSalePrice: Number(r.baseSalePrice) || Number(r.baseSellingPrice) || 0,
+        basePurchasePrice: Number(r.basePurchasePrice) || 0,
+        totalBaseQuantity: Number(r.totalBaseQuantity) || 0,
+        unitsPerPack: Number(r.unitsPerPack) || 1,
+      })));
+
+      try {
+        const cats = await window.api?.getCategories?.();
+        if (Array.isArray(cats) && cats.length > 0) {
+          setCategories([{ id: 0, name: 'All' }, ...cats.map((c: any) => ({ id: c.id, name: c.name || '' }))]);
+        }
+      } catch (_) { /* non-fatal */ }
     } catch (e) {
       console.error('Failed to load items:', e);
     } finally {
@@ -156,7 +161,7 @@ export default function Register() {
         ...item, 
         qty: 1, 
         discount: 0, 
-        taxRate: 0.15 
+        taxRate: taxEnabled ? taxRate / 100 : 0 
       }];
     });
     setSearchQuery('');
@@ -200,28 +205,34 @@ export default function Register() {
 
   const handlePayment = async () => {
     if (cart.length === 0) return;
-    
+
     try {
-      const saleItems = cart.map(item => ({
-        itemId: item.id,
-        qty: item.qty,
-        unitPrice: item.baseSalePrice,
-        discount: item.discount,
-        taxRate: item.taxRate,
-      }));
-      
-      const result = await window.api?.createSale?.({
-        items: saleItems,
-        paymentMethod,
-        cashTendered: paymentMethod === 'cash' ? parseFloat(cashTendered) : undefined,
+      const lines = cart.map(item => {
+        const lineSub = (item.baseSalePrice - item.discount) * item.qty;
+        const vat = taxEnabled ? Math.round((lineSub * (taxRate / 100) + Number.EPSILON) * 100) / 100 : 0;
+        const totalPrice = Math.round((lineSub + vat + Number.EPSILON) * 100) / 100;
+        return {
+          itemId: item.id,
+          quantity: item.qty,
+          unit: item.baseUnit || 'unit',
+          unitType: 'base' as const,
+          discount: item.discount,
+          vat,
+          totalPrice,
+          paymentMethod,
+          paymentStatus: 'Paid' as const,
+          customerName: null,
+          customerPhone: null,
+          paidAmount: totalPrice,
+        };
       });
-      
-      if (result?.success) {
-        setCart([]);
-        setCashTendered('');
-        setShowPayment(false);
-        // Could show success toast
-      }
+
+      const ids = await window.api?.insertSalesBatch(lines);
+      if (!ids) throw new Error('Sale failed');
+
+      setCart([]);
+      setCashTendered('');
+      setShowPayment(false);
     } catch (e) {
       console.error('Sale failed:', e);
     }
@@ -281,7 +292,7 @@ export default function Register() {
             </div>
             
             <div className="flex gap-2 overflow-x-auto pb-2">
-              {CATEGORIES.map(cat => (
+              {categories.map(cat => (
                 <button
                   key={cat.id}
                   onClick={() => setSelectedCategory(cat.id)}
@@ -315,12 +326,26 @@ export default function Register() {
                     key={item.id}
                     onClick={() => addToCart(item)}
                     disabled={item.totalBaseQuantity <= 0}
-                    className={`relative p-3 rounded-xl border-2 transition-all text-left ${
+                    className={`relative p-3 rounded-xl border-2 transition-all text-left group ${
                       item.totalBaseQuantity <= 0
                         ? 'bg-muted/50 border-muted text-muted-foreground opacity-50 cursor-not-allowed'
                         : 'bg-card border-border hover:border-primary/50 hover:shadow-lg hover:-translate-y-1 active:scale-[0.98]'
                     }`}
                   >
+                    <div className="relative mb-2 aspect-square w-full overflow-hidden rounded-lg bg-muted">
+                      {item.image ? (
+                        <img
+                          src={item.image}
+                          alt={item.name}
+                          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center">
+                          <PackageSearch className="h-8 w-8 text-muted-foreground/30" />
+                        </div>
+                      )}
+                    </div>
                     <div className="font-medium text-base mb-1 line-clamp-1">{item.name}</div>
                     <div className="text-sm text-muted-foreground mb-2">{item.categoryName}</div>
                     <div className="flex items-center justify-between">

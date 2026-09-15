@@ -4,7 +4,7 @@ import {
   Search, Edit, Trash2, Lock, Unlock, Key,
   AlertCircle, Copy, Plus,
   RefreshCw, Eye,
-  ShieldAlert, KeyRound
+  ShieldAlert, KeyRound, Crown, Power, Upload, X, EyeOff, QrCode, Check, Hourglass
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -12,9 +12,20 @@ import { Badge } from '../components/ui/badge';
 import { toast } from 'sonner';
 import Modal from '../components/Modal';
 import { useSettings } from '../context/SettingsContext';
+import { useAuth } from '../context/AuthContext';
 import { DatePicker } from '../components/DatePicker';
+import { resolveAvatar, AVATAR_OPTIONS, avatarFileNameFrom } from '../lib/avatar';
 
 type Tab = 'directory' | 'accounts' | 'roles' | 'attendance';
+
+const ADMIN_PERMISSIONS = [
+  { id: 'dashboard', label: 'Dashboard', icon: '📊' },
+  { id: 'inventory', label: 'Inventory', icon: '📦' },
+  { id: 'sales', label: 'Sales', icon: '🛒' },
+  { id: 'customers', label: 'Customers', icon: '👥' },
+  { id: 'analytics', label: 'Analytics', icon: '📈' },
+  { id: 'settings', label: 'Settings', icon: '🔧' },
+];
 
 const PERMISSION_GROUPS: { key: string; label: string; permissions: string[] }[] = [
   { key: 'dashboard', label: 'Dashboard', permissions: ['dashboard'] },
@@ -25,16 +36,17 @@ const PERMISSION_GROUPS: { key: string; label: string; permissions: string[] }[]
   { key: 'suppliers', label: 'Suppliers', permissions: ['suppliers.view', 'suppliers.add', 'suppliers.edit', 'suppliers.delete', 'suppliers'] },
   { key: 'shipments', label: 'Logistics', permissions: ['shipments'] },
   { key: 'warehouses', label: 'Warehouses', permissions: ['warehouses.view', 'warehouses.create', 'warehouses.edit', 'warehouses.transfer'] },
-  { key: 'expenses', label: 'Finances', permissions: ['expenses.view', 'expenses.add', 'expenses.edit', 'expenses.delete', 'reports.view', 'reports.profits'] },
   { key: 'employees', label: 'Employees', permissions: ['employees.view', 'employees.add', 'employees.edit', 'employees.delete', 'employees.attendance', 'employees.performance'] },
   { key: 'settings', label: 'System', permissions: ['settings.manage', 'settings.users', 'settings.roles', 'settings.backup'] },
 ];
 
 const UsersEmployees: React.FC = () => {
-  const { t, formatDate, formatTime } = useSettings();
+  const { t, formatDate, formatTime, isModuleEnabled } = useSettings();
+  const { isSuperAdmin, currentAdmin, refreshAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('directory');
 
   const [employees, setEmployees] = useState<any[]>([]);
+  const [admins, setAdmins] = useState<any[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
@@ -46,8 +58,16 @@ const UsersEmployees: React.FC = () => {
   const [empForm, setEmpForm] = useState<any>({
     firstName: '', lastName: '', phone: '', email: '', address: '',
     emergencyContact: '', gender: '', dateOfBirth: '', roleId: '',
-    department: '', warehouseId: '', employmentStatus: 'active', hireDate: '', notes: ''
+    department: '', warehouseId: '', employmentStatus: 'active', hireDate: '', notes: '', avatar: ''
   });
+
+  const [showAdminModal, setShowAdminModal] = useState(false);
+  const [editAdmin, setEditAdmin] = useState<any>(null);
+  const [adminForm, setAdminForm] = useState<any>({
+    name: '', username: '', pin: '', confirmPin: '', permissions: [] as string[], avatar: ''
+  });
+  const [showPin, setShowPin] = useState(false);
+  const [adminError, setAdminError] = useState('');
 
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [editAccount, setEditAccount] = useState<any>(null);
@@ -68,16 +88,18 @@ const UsersEmployees: React.FC = () => {
 
   const loadData = async () => {
     try {
-      const [emps, rls, accts, whs] = await Promise.all([
+      const [emps, rls, accts, whs, adms] = await Promise.all([
         window.api?.getEmployees({ search, roleId: filterRole || undefined, employmentStatus: filterStatus || undefined }) || [],
         window.api?.getEmployeeRoles() || [],
         window.api?.getEmployeeAccounts() || [],
         window.api?.getWarehouses() || [],
+        window.api?.getAdmins() || [],
       ]);
       setEmployees(emps);
       setRoles(rls);
       setAccounts(accts);
       setWarehouses(whs);
+      setAdmins(adms);
     } catch (err) {
       console.error(err);
     }
@@ -94,7 +116,50 @@ const UsersEmployees: React.FC = () => {
     } catch (_) {}
   };
 
-  useEffect(() => { loadData(); }, [search, filterRole, filterStatus]);
+  // ---------- QR user invites (Teams → Add User) ----------
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [invite, setInvite] = useState<any>(null);
+  const [inviteQr, setInviteQr] = useState('');
+  const [invites, setInvites] = useState<any[]>([]);
+  const [inviteRoleChoice, setInviteRoleChoice] = useState<Record<string, string>>({});
+  const [copied, setCopied] = useState(false);
+
+  const loadInvites = async () => {
+    try { setInvites(await window.api?.inviteList?.() || []); } catch (_) {}
+  };
+
+  const openInviteModal = async () => {
+    try {
+      const inv = await window.api.inviteCreate({});
+      const QR = await import('qrcode');
+      setInviteQr(await QR.toDataURL(JSON.stringify({ t: 'shega-invite', c: inv.code }), { width: 240, margin: 1 }));
+      setInvite(inv);
+      setCopied(false);
+      setShowInviteModal(true);
+    } catch (_) {
+      toast.error(t('employees.invite_failed', 'Could not create invitation'));
+    }
+  };
+
+  const decideInvite = async (inviteId: string, decision: 'approved' | 'rejected') => {
+    try {
+      await window.api.inviteDecide(inviteId, decision, { role: inviteRoleChoice[inviteId] || 'cashier' });
+      toast.success(decision === 'approved' ? t('employees.invite_approved', 'User approved') : t('employees.invite_rejected', 'Request rejected'));
+      loadInvites();
+      loadData();
+    } catch (_) {
+      toast.error(t('employees.invite_failed', 'Action failed'));
+    }
+  };
+
+  useEffect(() => {
+    if (!showInviteModal) return;
+    loadInvites();
+    const id = setInterval(loadInvites, 4000);
+    return () => clearInterval(id);
+  }, [showInviteModal]);
+
+  useEffect(() => { loadData(); loadInvites(); }, [search, filterRole, filterStatus]);
   useEffect(() => { if (activeTab === 'attendance') loadAttendance(); }, [activeTab, attendanceFilter]);
 
   const openEmployeeModal = (emp?: any) => {
@@ -105,11 +170,11 @@ const UsersEmployees: React.FC = () => {
         email: emp.email || '', address: emp.address || '', emergencyContact: emp.emergencyContact || '',
         gender: emp.gender || '', dateOfBirth: emp.dateOfBirth || '', roleId: emp.roleId?.toString() || '',
         department: emp.department || '', warehouseId: emp.warehouseId?.toString() || '',
-        employmentStatus: emp.employmentStatus || 'active', hireDate: emp.hireDate || '', notes: emp.notes || ''
+        employmentStatus: emp.employmentStatus || 'active', hireDate: emp.hireDate || '', notes: emp.notes || '', avatar: emp.avatar || ''
       });
     } else {
       setEditEmployee(null);
-      setEmpForm({ firstName: '', lastName: '', phone: '', email: '', address: '', emergencyContact: '', gender: '', dateOfBirth: '', roleId: '', department: '', warehouseId: '', employmentStatus: 'active', hireDate: new Date().toISOString().split('T')[0], notes: '' });
+      setEmpForm({ firstName: '', lastName: '', phone: '', email: '', address: '', emergencyContact: '', gender: '', dateOfBirth: '', roleId: '', department: '', warehouseId: '', employmentStatus: 'active', hireDate: new Date().toISOString().split('T')[0], notes: '', avatar: '' });
     }
     setShowEmployeeModal(true);
   };
@@ -126,7 +191,109 @@ const UsersEmployees: React.FC = () => {
       }
       setShowEmployeeModal(false);
       loadData();
+      if (currentAdmin?.isEmployee && editEmployee && editEmployee.id === currentAdmin.id) {
+        await refreshAdmin();
+      }
     } catch { toast.error(t('employees.emp_save_failed', 'Failed to save employee')); }
+  };
+
+  const handlePhotoUpload = (file?: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast.error(t('employees.photo_invalid', 'Please select an image file')); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setEmpForm({ ...empForm, avatar: String(reader.result || '') });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const openAdminModal = (admin?: any) => {
+    if (admin) {
+      setEditAdmin(admin);
+      setAdminForm({
+        name: admin.name || '',
+        username: admin.username || '',
+        pin: '',
+        confirmPin: '',
+        permissions: admin.permissions ? [...admin.permissions] : [],
+        avatar: admin.avatar || ''
+      });
+    } else {
+      setEditAdmin(null);
+      setAdminForm({ name: '', username: '', pin: '', confirmPin: '', permissions: [], avatar: '' });
+    }
+    setAdminError('');
+    setShowPin(false);
+    setShowAdminModal(true);
+  };
+
+  const toggleAdminPermission = (perm: string) => {
+    setAdminForm(prev => ({
+      ...prev,
+      permissions: prev.permissions.includes(perm) ? prev.permissions.filter(p => p !== perm) : [...prev.permissions, perm]
+    }));
+  };
+
+  const selectAllAdminPermissions = () => {
+    setAdminForm(prev => ({ ...prev, permissions: ADMIN_PERMISSIONS.map(p => p.id) }));
+  };
+
+  const clearAllAdminPermissions = () => {
+    setAdminForm(prev => ({ ...prev, permissions: [] }));
+  };
+
+  const handleAdminPhotoUpload = (file?: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast.error(t('employees.photo_invalid', 'Please select an image file')); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAdminForm({ ...adminForm, avatar: String(reader.result || '') });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const saveAdmin = async () => {
+    if (!adminForm.name.trim() || !adminForm.username.trim()) { setAdminError(t('admin.required_fields', 'Name and username are required')); return; }
+    if (!editAdmin && (!adminForm.pin || adminForm.pin.length !== 4)) { setAdminError(t('admin.pin_error', 'PIN must be exactly 4 digits')); return; }
+    if (adminForm.pin && adminForm.pin !== adminForm.confirmPin) { setAdminError(t('admin.pin_mismatch', 'PINs do not match')); return; }
+    try {
+      if (editAdmin) {
+        const updateData: any = {
+          name: adminForm.name.trim(),
+          username: adminForm.username.trim(),
+          permissions: adminForm.permissions,
+          avatar: adminForm.avatar || undefined,
+        };
+        if (adminForm.pin) updateData.pin = adminForm.pin;
+        const res = await window.api?.updateAdmin(editAdmin.id, updateData);
+        if (res && !res.success) { setAdminError(res.error || 'Update failed'); return; }
+        toast.success(t('admin.updated', 'Admin updated'));
+      } else {
+        const res = await window.api?.insertAdmin({
+          name: adminForm.name.trim(),
+          username: adminForm.username.trim(),
+          pin: adminForm.pin,
+          role: 'admin',
+          permissions: adminForm.permissions,
+          avatar: adminForm.avatar || null,
+        });
+        if (res && !res.success) { setAdminError(res.error || 'Creation failed'); return; }
+        toast.success(t('admin.created', 'Admin created'));
+      }
+      setShowAdminModal(false);
+      loadData();
+      if (editAdmin && editAdmin.id === currentAdmin?.id && !currentAdmin?.isEmployee) {
+        await refreshAdmin();
+      }
+    } catch { toast.error(t('admin.save_failed', 'Failed to save admin')); }
+  };
+
+  const toggleAdminActive = async (admin: any) => {
+    try {
+      await window.api?.updateAdmin(admin.id, { isActive: admin.isActive ? 0 : 1 });
+      toast.success(admin.isActive ? t('admin.deactivated', 'Admin deactivated') : t('admin.activated', 'Admin activated'));
+      loadData();
+    } catch { toast.error(t('admin.update_failed', 'Failed to update admin')); }
   };
 
   const openAccountModal = (acct?: any) => {
@@ -219,7 +386,8 @@ const UsersEmployees: React.FC = () => {
       if (type === 'employee') await window.api?.deleteEmployee(id);
       else if (type === 'account') await window.api?.deleteEmployeeAccount(id);
       else if (type === 'role') await window.api?.deleteEmployeeRole(id);
-      toast.success(type === 'employee' ? t('employees.emp_deleted', 'Employee deleted') : type === 'account' ? t('employees.account_deleted', 'Account deleted') : t('employees.role_deleted', 'Role deleted'));
+      else if (type === 'admin') await window.api?.deleteAdmin(id);
+      toast.success(type === 'employee' ? t('employees.emp_deleted', 'Employee deleted') : type === 'account' ? t('employees.account_deleted', 'Account deleted') : type === 'role' ? t('employees.role_deleted', 'Role deleted') : t('admin.deleted', 'Admin deleted'));
       setShowDeleteConfirm(null);
       loadData();
     } catch { toast.error(t('employees.delete_failed', 'Delete failed')); }
@@ -302,6 +470,35 @@ const UsersEmployees: React.FC = () => {
     { id: 'attendance', label: t('employees.attendance', 'Attendance'), icon: Clock },
   ];
 
+  const directoryRows = [
+    ...employees.map(emp => ({ type: 'employee' as const, ...emp })),
+    ...admins
+      .filter(ad => {
+        if (filterRole) return false;
+        if (search && !`${ad.name} ${ad.username} ${ad.role}`.toLowerCase().includes(search.toLowerCase())) return false;
+        if (filterStatus === 'active' && !ad.isActive) return false;
+        if (filterStatus === 'inactive' && ad.isActive) return false;
+        if (filterStatus === 'suspended') return false;
+        return true;
+      })
+      .map(ad => ({
+        type: 'admin' as const,
+        id: ad.id,
+        firstName: ad.name,
+        lastName: '',
+        email: `@${ad.username}`,
+        phone: '',
+        employeeCode: ad.username,
+        roleName: ad.role === 'super_admin' ? t('admin.super_admins', 'Super Admin') : t('common.operator', 'Admin'),
+        department: '',
+        employmentStatus: ad.isActive ? 'active' : 'inactive',
+        isActive: ad.isActive,
+        avatar: ad.avatar,
+        username: ad.username,
+        adminRole: ad.role,
+      })),
+  ];
+
   return (
     <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 fade-in">
       <div className="px-4 lg:px-6 flex items-center justify-between">
@@ -332,10 +529,46 @@ const UsersEmployees: React.FC = () => {
         {/* ============ DIRECTORY TAB ============ */}
         {activeTab === 'directory' && (
           <div className="space-y-4">
+            {invites.filter(i => i.status === 'pending').length > 0 && (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 space-y-2">
+                <div className="flex items-center gap-2 text-amber-600">
+                  <Hourglass size={14} />
+                  <span className="text-xs font-black uppercase tracking-widest">
+                    {t('employees.pending_requests', 'Pending user requests')}
+                  </span>
+                </div>
+                {invites.filter(i => i.status === 'pending').map(inv => (
+                  <div key={inv.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-background/60 px-3 py-2">
+                    <div>
+                      <p className="text-xs font-bold">{inv.joinerName || t('employees.unknown_user', 'Unknown user')}</p>
+                      <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest">{inv.code}</p>
+                    </div>
+                    <select
+                      className="h-8 rounded-lg border bg-background px-2 text-xs"
+                      value={inviteRoleChoice[inv.id] || inv.suggestedRole || 'cashier'}
+                      onChange={e => setInviteRoleChoice(m => ({ ...m, [inv.id]: e.target.value }))}
+                    >
+                      <option value="cashier">Cashier</option>
+                      <option value="operator">{t('common.operator', 'Operator')}</option>
+                      <option value="admin">{t('admin.admins', 'Admin')}</option>
+                      {roles.map(r => <option key={r.id} value={String(r.name || r.id)}>{r.name}</option>)}
+                    </select>
+                    <div className="flex gap-1.5">
+                      <Button size="sm" className="h-8 px-3 gap-1 text-xs font-black uppercase tracking-widest" onClick={() => decideInvite(inv.id, 'approved')}>
+                        <Check size={12} /> {t('employees.approve', 'Approve')}
+                      </Button>
+                      <Button size="sm" variant="destructive" className="h-8 px-3" onClick={() => decideInvite(inv.id, 'rejected')}>
+                        <X size={12} />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="flex items-center gap-3">
               <div className="relative flex-1 max-w-sm">
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                <Input placeholder={t('employees.search', 'Search employees...')} className="pl-8 h-9 text-xs" value={search} onChange={e => setSearch(e.target.value)} />
+                <Input placeholder={t('employees.search', 'Search users...')} className="pl-8 h-9 text-xs" value={search} onChange={e => setSearch(e.target.value)} />
               </div>
               <select className="h-9 rounded-lg border bg-background px-3 text-xs" value={filterRole} onChange={e => setFilterRole(e.target.value)}>
                 <option value="">{t('employees.all_roles', 'All Roles')}</option>
@@ -348,16 +581,24 @@ const UsersEmployees: React.FC = () => {
                 <option value="suspended">{t('employees.suspended', 'Suspended')}</option>
               </select>
               <Button size="sm" variant="outline" onClick={() => loadData()} className="h-9 px-3"><RefreshCw size={14} /></Button>
-              <Button size="sm" onClick={() => openEmployeeModal()} className="h-9 px-4 gap-1.5 text-xs font-black uppercase tracking-widest">
-                <UserPlus size={14} /> {t('employees.add_employee', 'Add Employee')}
+              <Button size="sm" variant="outline" onClick={openInviteModal} className="h-9 px-4 gap-1.5 text-xs font-black uppercase tracking-widest">
+                <QrCode size={14} /> {t('employees.invite_qr', 'Invite via QR')}
               </Button>
+              <Button size="sm" onClick={() => openEmployeeModal()} className="h-9 px-4 gap-1.5 text-xs font-black uppercase tracking-widest">
+                <UserPlus size={14} /> {t('employees.add_team', 'Add Team')}
+              </Button>
+              {isSuperAdmin && (
+                <Button size="sm" variant="outline" onClick={() => openAdminModal()} className="h-9 px-4 gap-1.5 text-xs font-black uppercase tracking-widest">
+                  <ShieldAlert size={14} /> {t('admin.add', 'Add Admin')}
+                </Button>
+              )}
             </div>
             <div className="rounded-xl border bg-card/40 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b bg-muted/20">
-                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee', 'Employee')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee', 'Team')}</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.code', 'Code')}</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.role', 'Role')}</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.department', 'Department')}</th>
@@ -367,34 +608,57 @@ const UsersEmployees: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {employees.length === 0 && (
-                      <tr><td colSpan={7} className="p-8 text-center text-xs text-muted-foreground">{t('employees.no_employees', 'No employees found')}</td></tr>
+                    {directoryRows.length === 0 && (
+                      <tr><td colSpan={7} className="p-8 text-center text-xs text-muted-foreground">{t('employees.no_users', 'No users found')}</td></tr>
                     )}
-                    {employees.map(emp => (
-                      <tr key={emp.id} className="border-b hover:bg-muted/10 transition-colors">
+                    {directoryRows.map(emp => (
+                      <tr key={`${emp.type}-${emp.id}`} className="border-b hover:bg-muted/10 transition-colors">
                         <td className="p-3">
                           <div className="flex items-center gap-2.5">
+                            {emp.avatar ? (
+                              <img src={resolveAvatar(emp.avatar)} alt={emp.firstName} className="h-8 w-8 rounded-full object-cover" />
+                            ) : (
                             <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-black text-primary">
                               {emp.firstName?.[0]}{emp.lastName?.[0]}
                             </div>
+                            )}
                             <div>
-                              <p className="font-bold text-xs">{emp.firstName} {emp.lastName}</p>
+                              <div className="flex items-center gap-1.5">
+                                <p className="font-bold text-xs">{emp.firstName} {emp.lastName}</p>
+                                {emp.type === 'admin' && emp.adminRole === 'super_admin' && <Crown size={11} className="text-amber-500" />}
+                              </div>
                               <p className="text-xs text-muted-foreground">{emp.email || t('employees.no_email', 'No email')}</p>
                             </div>
                           </div>
                         </td>
                         <td className="p-3"><code className="text-xs bg-muted px-1.5 py-0.5 rounded">{emp.employeeCode || '—'}</code></td>
-                        <td className="p-3"><Badge variant="outline" className="text-xs font-bold">{emp.roleName || '—'}</Badge></td>
+                        <td className="p-3"><Badge variant={emp.type === 'admin' && emp.adminRole === 'super_admin' ? 'default' : 'outline'} className="text-xs font-bold">{emp.roleName || '—'}</Badge></td>
                         <td className="p-3 text-muted-foreground">{emp.department || '—'}</td>
                         <td className="p-3">
-                          <p className="text-xs">{emp.phone || '—'}</p>
+                          <p className="text-xs">{emp.phone || emp.username || '—'}</p>
                         </td>
                         <td className="p-3">{getStatusBadge(emp.employmentStatus || (emp.isActive ? 'active' : 'inactive'))}</td>
                         <td className="p-3 text-right">
                           <div className="flex items-center justify-end gap-1">
-                            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => setShowDetail(emp)}><Eye size={12} /></Button>
-                            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => openEmployeeModal(emp)}><Edit size={12} /></Button>
-                            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive" onClick={() => setShowDeleteConfirm({ type: 'employee', id: emp.id, name: `${emp.firstName} ${emp.lastName}` })}><Trash2 size={12} /></Button>
+                            {emp.type === 'employee' && (
+                              <>
+                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => setShowDetail(emp)}><Eye size={12} /></Button>
+                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => openEmployeeModal(emp)}><Edit size={12} /></Button>
+                              </>
+                            )}
+                            {emp.type === 'admin' && (
+                              <>
+                                {isSuperAdmin && (
+                                  <>
+                                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title={emp.isActive ? t('admin.deactivate', 'Deactivate') : t('admin.activate', 'Activate')} onClick={() => toggleAdminActive(emp)}><Power size={12} className={emp.isActive ? 'text-green-600' : 'text-muted-foreground'} /></Button>
+                                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => openAdminModal(emp)}><Edit size={12} /></Button>
+                                  </>
+                                )}
+                              </>
+                            )}
+                            {(!isSuperAdmin && emp.type === 'admin') ? null : (
+                            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive" onClick={() => setShowDeleteConfirm(emp.type === 'admin' ? { type: 'admin', id: emp.id, name: emp.firstName } : { type: 'employee', id: emp.id, name: `${emp.firstName} ${emp.lastName}` })}><Trash2 size={12} /></Button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -410,18 +674,22 @@ const UsersEmployees: React.FC = () => {
         {activeTab === 'accounts' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">{t('employees.accounts_count', '{count} accounts', { count: accounts.length })}</p>
+              <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">{t('employees.accounts_count', '{count} accounts', { count: accounts.length + admins.length })}</p>
               <Button size="sm" onClick={() => openAccountModal()} className="h-9 px-4 gap-1.5 text-xs font-black uppercase tracking-widest">
                 <Plus size={14} /> {t('employees.create_account_btn', 'Create Account')}
               </Button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {accounts.map(acct => (
-                <div key={acct.id} className="rounded-xl border bg-card/40 p-4 space-y-3 hover:shadow-md transition-shadow">
+                <div key={`emp-${acct.id}`} className="rounded-xl border bg-card/40 p-4 space-y-3 hover:shadow-md transition-shadow">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
-                        <UserCog size={14} className="text-primary" />
+                      <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center overflow-hidden">
+                        {acct.avatar ? (
+                          <img src={resolveAvatar(acct.avatar)} alt={acct.firstName} className="h-8 w-8 rounded-full object-cover" />
+                        ) : (
+                          <UserCog size={14} className="text-primary" />
+                        )}
                       </div>
                       <div>
                         <p className="text-xs font-bold">{acct.firstName} {acct.lastName}</p>
@@ -455,7 +723,42 @@ const UsersEmployees: React.FC = () => {
                   </div>
                 </div>
               ))}
-              {accounts.length === 0 && (
+              {admins.map(ad => (
+                <div key={`admin-${ad.id}`} className="rounded-xl border bg-card/40 p-4 space-y-3 hover:shadow-md transition-shadow">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center overflow-hidden">
+                        {ad.avatar ? (
+                          <img src={resolveAvatar(ad.avatar)} alt={ad.name} className="h-8 w-8 rounded-full object-cover" />
+                        ) : (
+                          ad.role === 'super_admin' ? <Crown size={14} className="text-amber-500" /> : <ShieldAlert size={14} className="text-primary" />
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold">{ad.name}</p>
+                        <p className="text-xs text-muted-foreground">@{ad.username}</p>
+                      </div>
+                    </div>
+                    <Badge variant={ad.isActive ? 'success' : 'secondary'} className="text-xs h-4 px-1.5">
+                      {ad.isActive ? t('employees.active', 'Active') : t('employees.inactive', 'Inactive')}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Badge variant={ad.role === 'super_admin' ? 'default' : 'outline'} className="text-xs font-bold">{ad.role === 'super_admin' ? t('admin.super_admins', 'Super Admin') : t('common.operator', 'Operator')}</Badge>
+                  </div>
+                  <div className="flex flex-wrap gap-1 pt-1 border-t">
+                    {isSuperAdmin && (
+                      <>
+                        <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1" onClick={() => openAdminModal(ad)}><Edit size={10} /> {t('employees.edit', 'Edit')}</Button>
+                        <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1" onClick={() => { const newPin = prompt(t('employees.pin_prompt', 'Enter new PIN (min 4 characters):')); if (newPin && newPin.length >= 4) { const cp = prompt(t('employees.confirm_pin_prompt', 'Confirm PIN:')); if (newPin === cp) window.api?.updateAdmin(ad.id, { pin: newPin }).then(() => loadData()); else toast.error(t('employees.pin_mismatch', 'PINs do not match')); } }}><Key size={10} /> {t('employees.reset_pin_btn', 'Reset PIN')}</Button>
+                        <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1" onClick={() => toggleAdminActive(ad)}><Power size={10} /> {ad.isActive ? t('employees.lock_account', 'Deactivate') : t('employees.unlock_account', 'Activate')}</Button>
+                        <Button variant="ghost" size="sm" className="h-7 text-xs px-2 gap-1 text-destructive" onClick={() => setShowDeleteConfirm({ type: 'admin', id: ad.id, name: ad.name })}><Trash2 size={10} /></Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {accounts.length === 0 && admins.length === 0 && (
                 <div className="col-span-full p-12 text-center text-xs text-muted-foreground">{t('employees.no_accounts_created', 'No accounts created yet')}</div>
               )}
             </div>
@@ -521,11 +824,20 @@ const UsersEmployees: React.FC = () => {
                   {todayAtt.length === 0 && <p className="text-xs text-muted-foreground">{t('employees.no_one_clocked_in', 'No one clocked in yet today.')}</p>}
                   {todayAtt.map(a => (
                     <div key={a.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/20">
-                      <div>
-                        <p className="text-xs font-bold">{a.firstName} {a.lastName}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {t('employees.in', 'In')}: {a.clockIn ? formatTime(a.clockIn) : '—'} | {t('employees.out', 'Out')}: {a.clockOut ? formatTime(a.clockOut) : <span className="text-green-500">{t('employees.active_status', 'Active')}</span>}
-                        </p>
+                      <div className="flex items-center gap-2">
+                        <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center overflow-hidden shrink-0">
+                          {a.avatar ? (
+                            <img src={resolveAvatar(a.avatar)} alt={a.firstName} className="h-6 w-6 rounded-full object-cover" />
+                          ) : (
+                            <span className="text-xs font-bold text-primary">{a.firstName?.[0]}</span>
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold">{a.firstName} {a.lastName}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {t('employees.in', 'In')}: {a.clockIn ? formatTime(a.clockIn) : '—'} | {t('employees.out', 'Out')}: {a.clockOut ? formatTime(a.clockOut) : <span className="text-green-500">{t('employees.active_status', 'Active')}</span>}
+                          </p>
+                        </div>
                       </div>
                       <Badge variant={a.status === 'present' ? 'success' : a.status === 'partial' ? 'warning' : 'secondary'} className="text-xs">{a.status}</Badge>
                     </div>
@@ -539,8 +851,12 @@ const UsersEmployees: React.FC = () => {
                   {employees.filter(e => e.isActive).map(emp => (
                     <div key={emp.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/20">
                       <div className="flex items-center gap-2">
-                        <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
-                          {emp.firstName?.[0]}
+                        <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center overflow-hidden shrink-0">
+                          {emp.avatar ? (
+                            <img src={resolveAvatar(emp.avatar)} alt={emp.firstName} className="h-6 w-6 rounded-full object-cover" />
+                          ) : (
+                            <span className="text-xs font-bold text-primary">{emp.firstName?.[0]}</span>
+                          )}
                         </div>
                         <p className="text-xs font-bold">{emp.firstName} {emp.lastName}</p>
                       </div>
@@ -568,7 +884,18 @@ const UsersEmployees: React.FC = () => {
                   <tbody>
                     {attendance.map(a => (
                       <tr key={a.id} className="border-b hover:bg-muted/10">
-                        <td className="p-3 font-bold">{a.firstName} {a.lastName}</td>
+                        <td className="p-3">
+                          <div className="flex items-center gap-2">
+                            <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center overflow-hidden shrink-0">
+                              {a.avatar ? (
+                                <img src={resolveAvatar(a.avatar)} alt={a.firstName} className="h-6 w-6 rounded-full object-cover" />
+                              ) : (
+                                <span className="text-xs font-bold text-primary">{a.firstName?.[0]}</span>
+                              )}
+                            </div>
+                            <span className="font-bold">{a.firstName} {a.lastName}</span>
+                          </div>
+                        </td>
                         <td className="p-3">{a.date}</td>
                         <td className="p-3">{a.clockIn ? formatTime(a.clockIn) : '—'}</td>
                         <td className="p-3">{a.clockOut ? formatTime(a.clockOut) : '—'}</td>
@@ -587,7 +914,43 @@ const UsersEmployees: React.FC = () => {
       </div>
 
       {/* ============ EMPLOYEE MODAL ============ */}
-      <Modal isOpen={showEmployeeModal} onClose={() => setShowEmployeeModal(false)} title={editEmployee ? t('employees.edit_employee', 'Edit Employee') : t('employees.new_employee', 'New Employee')} size="lg">
+      <Modal isOpen={showEmployeeModal} onClose={() => setShowEmployeeModal(false)} title={editEmployee ? t('employees.edit_team', 'Edit Team') : t('employees.new_team', 'Add Team')} size="lg">
+        <div className="flex items-center gap-4 mb-5">
+          {empForm.avatar ? (
+            <img src={resolveAvatar(empForm.avatar)} alt="avatar" className="h-16 w-16 rounded-full object-cover border" />
+          ) : (
+            <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center text-lg font-black text-primary">
+              {empForm.firstName?.[0]}{empForm.lastName?.[0]}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <label className="cursor-pointer inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border text-xs font-black uppercase tracking-widest hover:bg-muted/10">
+              <Upload size={13} /> {t('employees.upload_photo', 'Upload Photo')}
+              <input type="file" accept="image/*" className="hidden" onChange={e => handlePhotoUpload(e.target.files?.[0])} />
+            </label>
+            {empForm.avatar && (
+              <Button variant="ghost" size="sm" className="h-9 w-9 p-0 text-destructive" onClick={() => setEmpForm({ ...empForm, avatar: '' })}><X size={14} /></Button>
+            )}
+          </div>
+        </div>
+        <div className="mb-5">
+          <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-2">{t('employees.preset_avatar', 'Choose profile image')}</p>
+          <div className="flex flex-wrap gap-2">
+            {AVATAR_OPTIONS.map((src, idx) => {
+              const filename = avatarFileNameFrom(src);
+              const isSelected = empForm.avatar === filename || resolveAvatar(empForm.avatar) === src;
+              return (
+                <div
+                  key={idx}
+                  onClick={() => setEmpForm({ ...empForm, avatar: filename })}
+                  className={`relative w-11 h-11 rounded-full border-2 overflow-hidden cursor-pointer transition-all hover:scale-105 ${isSelected ? 'border-primary ring-2 ring-primary/20' : 'border-border'}`}
+                >
+                  <img src={src} alt={t('employees.preset_avatar', 'Profile image')} className="w-full h-full object-cover" />
+                </div>
+              );
+            })}
+          </div>
+        </div>
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.first_name_label', 'First Name *')}</label>
@@ -616,6 +979,7 @@ const UsersEmployees: React.FC = () => {
             <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.department_label', 'Department')}</label>
             <Input className="h-9 text-xs" value={empForm.department} onChange={e => setEmpForm({ ...empForm, department: e.target.value })} />
           </div>
+          {isModuleEnabled('warehouses') && (
           <div className="space-y-1.5">
             <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.warehouse_label', 'Warehouse')}</label>
             <select className="w-full h-9 rounded-lg border bg-background px-3 text-xs" value={empForm.warehouseId} onChange={e => setEmpForm({ ...empForm, warehouseId: e.target.value })}>
@@ -623,6 +987,7 @@ const UsersEmployees: React.FC = () => {
               {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
             </select>
           </div>
+          )}
           <div className="space-y-1.5">
             <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employment_status_label', 'Employment Status')}</label>
             <select className="w-full h-9 rounded-lg border bg-background px-3 text-xs" value={empForm.employmentStatus} onChange={e => setEmpForm({ ...empForm, employmentStatus: e.target.value })}>
@@ -662,10 +1027,120 @@ const UsersEmployees: React.FC = () => {
         </div>
         <div className="flex gap-3 mt-6">
           <Button className="flex-1 h-10 text-xs font-black uppercase tracking-widest" onClick={saveEmployee}>
-            {editEmployee ? t('employees.update_employee', 'Update Employee') : t('employees.create_employee', 'Create Employee')}
+            {editEmployee ? t('employees.update_team', 'Update Team') : t('employees.create_team', 'Add Team')}
           </Button>
           <Button variant="outline" className="h-10 text-xs font-black uppercase tracking-widest" onClick={() => setShowEmployeeModal(false)}>{t('employees.cancel', 'Cancel')}</Button>
         </div>
+      </Modal>
+
+      {/* ============ ADMIN MODAL ============ */}
+      <Modal isOpen={showAdminModal} onClose={() => setShowAdminModal(false)} title={editAdmin ? t('admin.modify', 'Modify Admin') : t('admin.create', 'Create Admin')} size="lg">
+        <form onSubmit={e => { e.preventDefault(); saveAdmin(); }} className="space-y-5 py-2">
+          <div className="flex items-center gap-4 mb-2">
+            {adminForm.avatar ? (
+              <img src={resolveAvatar(adminForm.avatar)} alt="avatar" className="h-16 w-16 rounded-full object-cover border" />
+            ) : (
+              <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center text-lg font-black text-primary">
+                {adminForm.name?.[0]?.toUpperCase() || <ShieldAlert size={20} />}
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <label className="cursor-pointer inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border text-xs font-black uppercase tracking-widest hover:bg-muted/10">
+                <Upload size={13} /> {t('employees.upload_photo', 'Upload Photo')}
+                <input type="file" accept="image/*" className="hidden" onChange={e => handleAdminPhotoUpload(e.target.files?.[0])} />
+              </label>
+              {adminForm.avatar && (
+                <Button variant="ghost" size="sm" className="h-9 w-9 p-0 text-destructive" type="button" onClick={() => setAdminForm({ ...adminForm, avatar: '' })}><X size={14} /></Button>
+              )}
+            </div>
+          </div>
+          <div className="mb-4">
+            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-2">{t('employees.preset_avatar', 'Choose profile image')}</p>
+            <div className="flex flex-wrap gap-2">
+              {AVATAR_OPTIONS.map((src, idx) => {
+                const filename = avatarFileNameFrom(src);
+                const isSelected = adminForm.avatar === filename || resolveAvatar(adminForm.avatar) === src;
+                return (
+                  <div
+                    key={idx}
+                    onClick={() => setAdminForm({ ...adminForm, avatar: filename })}
+                    className={`relative w-11 h-11 rounded-full border-2 overflow-hidden cursor-pointer transition-all hover:scale-105 ${isSelected ? 'border-primary ring-2 ring-primary/20' : 'border-border'}`}
+                  >
+                    <img src={src} alt={t('employees.preset_avatar', 'Profile image')} className="w-full h-full object-cover" />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('admin.display_name', 'Display Name *')}</label>
+              <Input className="h-9 text-xs" value={adminForm.name} onChange={e => setAdminForm({ ...adminForm, name: e.target.value })} />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('admin.username', 'Username *')}</label>
+              <Input className="h-9 text-xs" value={adminForm.username} onChange={e => setAdminForm({ ...adminForm, username: e.target.value.toLowerCase().replace(/\s/g, '') })} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{editAdmin ? t('admin.pin_reset', 'New PIN (leave blank to keep)') : t('admin.pin_code', 'PIN *')}</label>
+              <div className="relative">
+                <Input type={showPin ? 'text' : 'password'} maxLength={4} className="h-9 text-xs pr-10" value={adminForm.pin} onChange={e => setAdminForm({ ...adminForm, pin: e.target.value.replace(/\D/g, '') })} placeholder="••••" />
+                <button type="button" onClick={() => setShowPin(!showPin)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  {showPin ? <Eye size={14} /> : <EyeOff size={14} />}
+                </button>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('admin.confirm_pin', 'Confirm PIN')}</label>
+              <Input type={showPin ? 'text' : 'password'} maxLength={4} className="h-9 text-xs" value={adminForm.confirmPin} onChange={e => setAdminForm({ ...adminForm, confirmPin: e.target.value.replace(/\D/g, '') })} placeholder="••••" />
+            </div>
+          </div>
+          {(!editAdmin || editAdmin.role !== 'super_admin') && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between border-b pb-2">
+                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('admin.access_permissions', 'Access Permissions')}</p>
+                <div className="flex gap-2">
+                  <button type="button" onClick={selectAllAdminPermissions} className="text-xs font-black uppercase tracking-widest text-primary hover:underline">{t('employees.select_all', 'Select All')}</button>
+                  <span className="text-muted-foreground/30">|</span>
+                  <button type="button" onClick={clearAllAdminPermissions} className="text-xs font-black uppercase tracking-widest text-muted-foreground hover:underline">{t('employees.deselect_all', 'Deselect All')}</button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                {ADMIN_PERMISSIONS.map(perm => {
+                  const isActive = adminForm.permissions.includes(perm.id);
+                  return (
+                    <button
+                      key={perm.id}
+                      type="button"
+                      onClick={() => toggleAdminPermission(perm.id)}
+                      className={`p-3 rounded-xl border-2 transition-all flex items-center gap-2 ${isActive ? 'border-primary bg-primary/5' : 'border-transparent bg-muted/30 hover:border-muted-foreground/20'}`}
+                    >
+                      <span className="text-lg">{perm.icon}</span>
+                      <span className={`text-xs font-black uppercase tracking-widest ${isActive ? 'text-primary' : 'text-muted-foreground'}`}>{t(`tabs.${perm.id}`, perm.label)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {editAdmin?.role === 'super_admin' && (
+            <div className="p-4 rounded-xl border bg-primary/5 border-primary/20 flex items-center gap-3">
+              <Crown size={18} className="text-amber-500" />
+              <p className="text-xs font-bold">{t('admin.super_admin_desc', 'Super Admin has full access.')}</p>
+            </div>
+          )}
+          {adminError && (
+            <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/20">
+              <p className="text-destructive text-xs font-bold">{adminError}</p>
+            </div>
+          )}
+          <div className="flex gap-3 mt-2">
+            <Button type="submit" className="flex-1 h-10 text-xs font-black uppercase tracking-widest">{editAdmin ? t('settings.commit_changes', 'Save Changes') : t('admin.create', 'Create Admin')}</Button>
+            <Button variant="outline" className="h-10 text-xs font-black uppercase tracking-widest" type="button" onClick={() => setShowAdminModal(false)}>{t('employees.cancel', 'Cancel')}</Button>
+          </div>
+        </form>
       </Modal>
 
       {/* ============ ACCOUNT MODAL ============ */}
@@ -806,6 +1281,58 @@ const UsersEmployees: React.FC = () => {
         <div className="flex gap-3 mt-6">
           <Button variant="outline" className="flex-1 h-10 text-xs font-black uppercase tracking-widest" onClick={() => setShowDetail(null)}>{t('employees.close_btn', 'Close')}</Button>
         </div>
+      </Modal>
+
+      {/* ============ QR INVITE ============ */}
+      <Modal isOpen={showInviteModal} onClose={() => setShowInviteModal(false)} title={t('employees.invite_title', 'Invite a New User')} size="sm">
+        {invite && (
+          <div className="space-y-4 text-center">
+            <p className="text-xs text-muted-foreground">
+              {t('employees.invite_scan_hint', 'Have your teammate open Shega Mobile → Join a Business, then scan this code.')}
+            </p>
+            {inviteQr && <img src={inviteQr} alt="Invite QR" className="mx-auto rounded-xl border bg-white p-2" width={220} height={220} />}
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText(invite.code).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+              }}
+              className="mx-auto flex items-center gap-2 rounded-lg border px-4 py-2 font-mono text-lg font-black tracking-widest hover:bg-muted/50 transition-colors"
+            >
+              {invite.code}{copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} className="text-muted-foreground" />}
+            </button>
+            <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest">
+              {t('employees.invite_expires', 'Valid for 24 hours')}
+            </p>
+            {(() => {
+              const pending = invites.filter(i => i.status === 'pending');
+              if (pending.length === 0) return null;
+              return (
+                <div className="space-y-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-left">
+                  <div className="flex items-center gap-2 text-amber-600">
+                    <Hourglass size={14} />
+                    <span className="text-xs font-black uppercase tracking-widest">{t('employees.pending_requests', 'Pending user requests')}</span>
+                  </div>
+                  {pending.map(inv => (
+                    <div key={inv.id} className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs font-bold">{inv.joinerName || t('employees.unknown_user', 'Unknown user')}</p>
+                      <div className="flex gap-1.5">
+                        <Button size="sm" className="h-7 px-2.5 text-[10px] font-black uppercase tracking-widest" onClick={() => decideInvite(inv.id, 'approved')}>
+                          <Check size={11} /> {t('employees.approve', 'Approve')}
+                        </Button>
+                        <Button size="sm" variant="destructive" className="h-7 px-2.5" onClick={() => decideInvite(inv.id, 'rejected')}>
+                          <X size={11} />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+            <Button variant="outline" className="w-full h-10 text-xs font-black uppercase tracking-widest" onClick={() => setShowInviteModal(false)}>
+              {t('employees.close_btn', 'Close')}
+            </Button>
+          </div>
+        )}
       </Modal>
     </div>
   );
