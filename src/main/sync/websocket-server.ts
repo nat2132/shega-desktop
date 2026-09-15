@@ -61,7 +61,9 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
 
     this.wss.on('error', (err) => {
       logger.error('[WS] Server error:', err);
-      this.emit('error', err);
+      if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') {
+        this.emit('error', err);
+      }
     });
 
     // Heartbeat to detect dead connections

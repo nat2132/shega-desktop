@@ -13579,8 +13579,7 @@ class MdnsDiscovery extends events.EventEmitter {
   }
   start() {
     if (this.bonjour) return;
-    this.bonjour = new bonjourService.Bonjour();
-    this.bonjour.on("error", (err) => {
+    this.bonjour = new bonjourService.Bonjour({}, (err) => {
       console.error("[mDNS] Bonjour error:", err);
       this.emit("error", err);
     });
@@ -13789,7 +13788,9 @@ class WsSyncServer extends events.EventEmitter {
     });
     this.wss.on("error", (err) => {
       logger.error("[WS] Server error:", err);
-      this.emit("error", err);
+      if (err.code !== "EADDRINUSE") {
+        this.emit("error", err);
+      }
     });
     this.heartbeatInterval = setInterval(() => this.sendHeartbeats(), 3e4);
     logger.info(`[WS] Sync server listening on port ${WS_SYNC_PORT}`);
@@ -14355,11 +14356,22 @@ function createWindow() {
     } catch {
     }
   }
+  if (windowState.x !== void 0 && windowState.y !== void 0) {
+    const visible = electron.screen.getAllDisplays().some(({ workArea }) => {
+      const right = windowState.x + Math.min(windowState.width, workArea.width);
+      const bottom = windowState.y + Math.min(windowState.height, workArea.height);
+      return right > workArea.x && bottom > workArea.y && windowState.x < workArea.x + workArea.width && windowState.y < workArea.y + workArea.height;
+    });
+    if (!visible) {
+      delete windowState.x;
+      delete windowState.y;
+    }
+  }
   const mainWindow = new electron.BrowserWindow({
     width: windowState.width,
     height: windowState.height,
     ...windowState.x !== void 0 && windowState.y !== void 0 ? { x: windowState.x, y: windowState.y } : {},
-    show: false,
+    show: true,
     autoHideMenuBar: true,
     icon: path.join(__dirname, "../../src/assets/images/logo.ico"),
     webPreferences: {
@@ -14387,6 +14399,13 @@ function createWindow() {
   });
   mainWindow.on("ready-to-show", () => {
     mainWindow.show();
+    mainWindow.focus();
+  });
+  mainWindow.webContents.once("did-finish-load", () => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
   });
   if (process.env["ELECTRON_RENDERER_URL"]) {
     mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);
@@ -14404,6 +14423,7 @@ function createWindow() {
     if (isMain) {
       logger.error("did-fail-load", { code, desc, url });
       console.error("[Did Fail Load]", code, desc, url);
+      mainWindow.show();
     }
   });
   mainWindow.webContents.on("render-process-gone", (_e, details) => {

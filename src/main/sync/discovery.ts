@@ -38,8 +38,7 @@ export class MdnsDiscovery extends EventEmitter<DiscoveryEventMap> {
   start(): void {
     if (this.bonjour) return;
 
-    this.bonjour = new Bonjour();
-    this.bonjour.on('error', (err: Error) => {
+    this.bonjour = new Bonjour({}, (err: Error) => {
       console.error('[mDNS] Bonjour error:', err);
       this.emit('error', err);
     });

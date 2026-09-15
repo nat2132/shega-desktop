@@ -16,7 +16,6 @@ import Modal from '../components/Modal';
 import { toast } from 'sonner';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '../components/ui/alert-dialog';
 import { BusinessHealthScore } from '../components/BusinessHealthScore';
-import { BusinessAssistant } from '../components/BusinessAssistant';
 import { useSettings } from '../context/SettingsContext';
 
 type Tab = 'overview' | 'registers' | 'locations' | 'devices' | 'team' | 'businesses';
@@ -31,9 +30,9 @@ const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
 const fmt = (n: number) =>
   (n ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
 
-const BusinessCenter: React.FC = () => {
+const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
   const { currentBusiness, switchBusiness } = useSettings();
-  const [tab, setTab] = useState<Tab>('overview');
+  const [tab, setTab] = useState<Tab>(initialTab || 'overview');
   const [registers, setRegisters] = useState<any[]>([]);
   const [locations, setLocations] = useState<any[]>([]);
   const [devices, setDevices] = useState<any[]>([]);
@@ -87,7 +86,10 @@ const BusinessCenter: React.FC = () => {
 
   const isOwner = access['*'] === true || access['business.manage'] === true;
   const isTeamManager = isOwner || access['team.manage'] === true;
-  const pairingRoles = useMemo(() => (roles.builtin || []).filter((r) => r.key !== 'owner'), [roles]);
+  const pairingRoles = useMemo(() => [
+    ...(roles.builtin || []).filter((r) => r.key !== 'owner'),
+    ...(roles.custom || []),
+  ], [roles]);
 
   const load = async () => {
     setLoading(true);
@@ -238,11 +240,11 @@ const BusinessCenter: React.FC = () => {
     }
   };
 
-  const decide = async (id: number, decision: 'approve' | 'reject') => {
+  const decide = async (id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>) => {
     setDeciding(id);
     try {
-      await window.api.pairingDecide(id, decision);
-      toast.success(decision === 'approve' ? 'Employee approved' : 'Request rejected');
+      await window.api.pairingDecide(id, decision, role, permissions);
+      toast.success(decision === 'approve' ? `Member approved${role ? ` as ${role}` : ''}` : 'Request rejected');
       void refreshInvites();
     } catch (e: any) {
       toast.error(e?.message || `Failed to ${decision} request`);
@@ -251,7 +253,16 @@ const BusinessCenter: React.FC = () => {
     }
   };
 
-  const changeRole = async (p: any, roleKey: string) => {
+  /** Approve with a chosen final role (Owner / Cashier / Custom). */
+  const decideWithRole = (id: number, name: string) => {
+    const choice = window.prompt(`Assign role for ${name}:\n\nowner — full equal owner\ncashier — point of sale access\ncustom — type a role key (manager, inventory, accountant, reports, warehouse)`, 'cashier');
+    if (choice === null) return;
+    const role = choice.trim().toLowerCase();
+    if (!role) return;
+    void decide(id, 'approve', role);
+  };
+
+  const applyRole = async (p: any, roleKey: string) => {
     setPersonBusy(p.id);
     try {
       await window.api.businessSetPersonRole(p.id, roleKey);
@@ -264,7 +275,27 @@ const BusinessCenter: React.FC = () => {
     }
   };
 
+  /** Ownership-sensitive: granting or revoking OWNER needs explicit confirm. */
+  const changeRole = (p: any, roleKey: string) => {
+    const wasOwner = p.roleKey === 'owner' || !!(p as any).isOwner;
+    if (roleKey === 'owner' && !wasOwner) {
+      if (window.confirm(`${p.name} will become an equal OWNER with full control over the business, team and devices. Continue?`)) {
+        void applyRole(p, roleKey);
+      }
+      return;
+    }
+    if (wasOwner && roleKey !== 'owner') {
+      if (window.confirm(`${p.name} will lose OWNER access across all their devices. Continue?`)) {
+        void applyRole(p, roleKey);
+      }
+      return;
+    }
+    void applyRole(p, roleKey);
+  };
+
   const deactivatePerson = async (p: any) => {
+    const isOwnerPerson = p.roleKey === 'owner' || !!(p as any).isOwner;
+    if (isOwnerPerson && !window.confirm(`${p.name} is an OWNER. Deactivating removes their access on all their devices. Continue?`)) return;
     setPersonBusy(p.id);
     try {
       await window.api.businessSetPersonActive(p.id, false);
@@ -561,12 +592,8 @@ const BusinessCenter: React.FC = () => {
                 );
               })()}
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Health score */}
-                <BusinessHealthScore />
-                {/* Assistant */}
-                <BusinessAssistant />
-              </div>
+              {/* Health score */}
+              <BusinessHealthScore />
 
               {/* Inventory + Debt + Sync summary */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -788,8 +815,8 @@ const BusinessCenter: React.FC = () => {
                           </div>
                           {isTeamManager && (
                             <div className="flex gap-2">
-                              <Button size="sm" disabled={deciding === inv.id} onClick={() => decide(inv.id, 'approve')}>
-                                <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Approve
+                              <Button size="sm" disabled={deciding === inv.id} onClick={() => decideWithRole(inv.id, inv.employee_name || 'New member')}>
+                                <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Approve & Assign Role
                               </Button>
                               <Button size="sm" variant="outline" className="text-red-500 hover:text-red-600" disabled={deciding === inv.id} onClick={() => decide(inv.id, 'reject')}>
                                 <Ban className="h-3.5 w-3.5 mr-1" /> Reject
@@ -880,6 +907,7 @@ const BusinessCenter: React.FC = () => {
                                 <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
                                 <SelectContent>
                                   {roles.builtin.map((r) => <SelectItem key={r.key} value={r.key}>{r.name}</SelectItem>)}
+                                  {roles.custom?.map((r) => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
                                 </SelectContent>
                               </Select>
                               <Button size="sm" variant="outline" disabled={personBusy === p.id || !pairingInfo.linked} onClick={() => openPairModal(p)}>

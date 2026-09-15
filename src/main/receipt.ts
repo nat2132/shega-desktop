@@ -30,9 +30,14 @@ export interface ReceiptInput {
   customerName?: string | null;
   createdAt?: string | null;
   context: ReceiptContext;
+  /** Paper width in mm — determines column budget. Default 80. */
+  paperWidth?: 58 | 80;
 }
 
-const WIDTH = 42;
+// Printable column budget: 80mm ≈ 42 chars @ font A; 58mm ≈ 30.
+function colWidth(paperWidth: 58 | 80): number {
+  return paperWidth === 58 ? 30 : 42;
+}
 
 function padRight(s: string, w: number): string {
   if (s.length >= w) return s.slice(0, w);
@@ -49,9 +54,9 @@ function money(n: number): string {
   return `ETB ${(Math.round(n * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-const divider = '-'.repeat(WIDTH);
-
 export function buildReceiptCommands(input: ReceiptInput): Uint8Array {
+  const WIDTH = colWidth(input.paperWidth ?? 80);
+  const divider = '-'.repeat(WIDTH);
   const w = new EscposWriter().init();
 
   w.align(1).bold(true).text(input.context.businessName.slice(0, WIDTH)).lineFeed();
@@ -62,7 +67,8 @@ export function buildReceiptCommands(input: ReceiptInput): Uint8Array {
   w.text(divider).lineFeed();
 
   for (const line of input.lines) {
-    w.text(padRight(line.name.slice(0, 28), 28)).text(padRight(String(line.quantity), 4)).text(padRight(line.unit.slice(0, 3), 4)).text(money(line.total).padStart(6)).lineFeed();
+    const nameW = Math.max(8, WIDTH - 14);
+    w.text(padRight(line.name.slice(0, nameW), nameW)).text(padRight(String(line.quantity), 4)).text(padRight(line.unit.slice(0, 3), 4)).text(money(line.total).padStart(6)).lineFeed();
     if (line.unitPrice !== line.total) {
       w.text(`  @ ${money(line.unitPrice)}`).lineFeed();
     }
@@ -73,11 +79,11 @@ export function buildReceiptCommands(input: ReceiptInput): Uint8Array {
   if (input.discount > 0) w.column('Discount', `-${money(input.discount)}`, WIDTH);
   if (input.vat > 0) w.column(`${input.taxType || 'VAT'}`, money(input.vat), WIDTH);
   w.text(divider).lineFeed();
-  w.bold(true).size(2, 2).text(padRight('TOTAL', WIDTH - 6) + money(input.total)).lineFeed().size(1, 1).bold(false);
+  w.bold(true).size(2, 2).text(padRight('TOTAL', Math.min(24, WIDTH - 6)) + money(input.total)).lineFeed().size(1, 1).bold(false);
   w.text(divider).lineFeed();
 
-  if (input.customerName) w.column('Customer', input.customerName.slice(0, 30), WIDTH);
-  w.column('Payment', input.paymentMethod || 'Cash', WIDTH);
+  if (input.customerName) w.column('Customer', input.customerName.slice(0, WIDTH - 10), WIDTH);
+  w.column('Payment', (input.paymentMethod || 'Cash').slice(0, WIDTH - 10), WIDTH);
   if (input.paymentStatus === 'Debt') {
     w.column('Status', 'DEBT', WIDTH);
   } else if (input.change > 0) {
@@ -86,7 +92,7 @@ export function buildReceiptCommands(input: ReceiptInput): Uint8Array {
   }
 
   w.text(divider).lineFeed();
-  w.text(padRight('Date: ' + (input.createdAt ? input.createdAt.slice(0, 16).replace('T', ' ') : new Date().toISOString().slice(0, 16).replace('T', ' ')), WIDTH / 2) + padRight('Rcpt #' + (input.context.receiptSerial ?? ''), WIDTH / 2)).lineFeed();
+  w.text(padRight('Date: ' + (input.createdAt ? input.createdAt.slice(0, 16).replace('T', ' ') : new Date().toISOString().slice(0, 16).replace('T', ' ')), Math.ceil(WIDTH / 2)) + padRight('Rcpt #' + (input.context.receiptSerial ?? ''), Math.floor(WIDTH / 2))).lineFeed();
   if (input.context.cashier) w.text(`Cashier: ${input.context.cashier.slice(0, WIDTH)}`).lineFeed();
   w.align(1).text('Thank you for shopping with us!').lineFeed(2).align(0);
 
@@ -102,7 +108,7 @@ export interface LabelInput {
   barcodeType?: 'ean13' | 'code128';
 }
 
-// Shelf label for 58x40mm printers — barcode or QR plus price/name.
+// Shelf label for thermal/label printers — barcode or QR plus price/name.
 export function buildLabelCommands(label: LabelInput, copies: number = 1): Uint8Array {
   const w = new EscposWriter().init();
   const code = label.barcode || label.sku || '';
@@ -110,11 +116,13 @@ export function buildLabelCommands(label: LabelInput, copies: number = 1): Uint8
   for (let i = 0; i < Math.max(1, copies); i++) {
     w.align(1).bold(true).text(label.name.slice(0, 32)).lineFeed().bold(false);
     if (code) {
-      if (label.barcodeType === 'code128') w.barcodeCode128(code);
+      if (label.barcodeType === 'code128' || !/^\d{13}$|^\d{12}$|^\d{8}$/.test(code)) w.barcodeCode128(code);
       else w.barcodeEan13(code);
     } else if (label.sku) {
       w.qr(label.sku, 6);
     }
+    if (code) w.align(1).text(code.slice(0, 24)).lineFeed().align(0);
+    if (label.sku && label.sku !== code) w.align(1).text(`SKU ${label.sku}`.slice(0, 24)).lineFeed().align(0);
     w.align(1).size(2, 2).text(money(label.price)).lineFeed().size(1, 1).align(0);
     w.lineFeed(1);
   }
@@ -122,10 +130,13 @@ export function buildLabelCommands(label: LabelInput, copies: number = 1): Uint8
   return w.toUint8Array();
 }
 
-// Printer self-test page.
-export function buildTestPageCommands(): Uint8Array {
+// Printer self-test page (paper-width aware).
+export function buildTestPageCommands(paperWidth: 58 | 80 = 80): Uint8Array {
+  const WIDTH = colWidth(paperWidth);
+  const divider = '-'.repeat(WIDTH);
   const w = new EscposWriter().init();
   w.align(1).bold(true).size(2, 2).text('SHEGA TEST PAGE').lineFeed().size(1, 1).bold(false);
+  w.text(`Paper: ${paperWidth}mm`).lineFeed();
   w.text(divider).lineFeed();
   w.text('Date: ' + new Date().toLocaleString()).lineFeed();
   w.text('ESC/POS transport OK').lineFeed();

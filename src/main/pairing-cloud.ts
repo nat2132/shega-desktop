@@ -8,7 +8,9 @@
  */
 import { ipcMain } from 'electron';
 import QRCode from 'qrcode';
+import crypto from 'crypto';
 import db from './database';
+import { ensureHubDeviceId } from './sync-hub';
 
 const DEFAULT_BASE = 'https://shega-api-dah3.onrender.com';
 
@@ -33,10 +35,11 @@ async function doAuthRequest(
     method = 'GET',
     auth = false,
     retried = false,
-  }: { method?: string; body?: any; auth?: boolean; retried?: boolean } = {},
+    tokenKey = 'pairing_access_token',
+  }: { method?: string; body?: any; auth?: boolean; retried?: boolean; tokenKey?: string } = {},
 ): Promise<any> {
   const headers: Record<string, string> = { Accept: 'application/json', 'Content-Type': 'application/json' };
-  let token = auth ? getSetting('pairing_access_token') : null;
+  let token = auth ? getSetting(tokenKey) : null;
   if (auth && token) headers.Authorization = `Bearer ${token}`;
 
   const res = await fetch(`${getBaseUrl()}${path}`, {
@@ -50,8 +53,9 @@ async function doAuthRequest(
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
 
   if (res.status === 401 && auth && !retried) {
-    const refreshed = await refreshPairingToken();
-    if (refreshed) return doAuthRequest(path, body, { method, body, auth, retried: true });
+    const refreshKey = tokenKey.replace('_access_', '_refresh_');
+    const refreshed = await refreshAuthToken(refreshKey);
+    if (refreshed) return doAuthRequest(path, body, { method, body, auth, retried: true, tokenKey });
   }
   if (!res.ok) {
     const msg = data?.detail ?? data?.error ?? (typeof data === 'string' ? data : `HTTP ${res.status}`);
@@ -64,11 +68,11 @@ async function doAuthRequest(
   return data;
 }
 
-async function refreshPairingToken(): Promise<boolean> {
+async function refreshAuthToken(refreshKey: string): Promise<boolean> {
   if (authPromise) return authPromise;
   authPromise = (async () => {
     try {
-      const refresh = getSetting('pairing_refresh_token');
+      const refresh = getSetting(refreshKey);
       if (!refresh) return false;
       const res = await fetch(`${getBaseUrl()}/api/auth/refresh/`, {
         method: 'POST',
@@ -78,8 +82,9 @@ async function refreshPairingToken(): Promise<boolean> {
       if (!res.ok) return false;
       const data = (await res.json()) as { access?: string; refresh?: string };
       if (!data?.access) return false;
-      setSetting('pairing_access_token', data.access);
-      if (data.refresh) setSetting('pairing_refresh_token', data.refresh);
+      const accessKey = refreshKey.replace('_refresh_', '_access_');
+      setSetting(accessKey, data.access);
+      if (data.refresh) setSetting(refreshKey, data.refresh);
       return true;
     } catch {
       return false;
@@ -88,6 +93,10 @@ async function refreshPairingToken(): Promise<boolean> {
     }
   })();
   return authPromise;
+}
+
+async function refreshPairingToken(): Promise<boolean> {
+  return refreshAuthToken('pairing_refresh_token');
 }
 
 export function registerPairingCloudHandlers(): void {
@@ -135,12 +144,193 @@ export function registerPairingCloudHandlers(): void {
     return doAuthRequest(`/api/sync/pairing/${id}/revoke/`, {}, { method: 'POST', auth: true });
   });
 
-  ipcMain.handle('pairing:decide', async (_e, id: number, decision: 'approve' | 'reject') => {
-    return doAuthRequest(`/api/sync/pairing/${id}/${decision}/`, {}, { method: 'POST', auth: true });
+  ipcMain.handle('pairing:decide', async (_e, id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>) => {
+    // Approval-time role assignment: the Owner picks Owner/Cashier/Custom when
+    // approving. Body stays empty when no override is chosen (invite role wins).
+    const body: Record<string, unknown> = {};
+    if (role) body.role = role;
+    if (permissions && typeof permissions === 'object') body.permissions = permissions;
+    return doAuthRequest(`/api/sync/pairing/${id}/${decision}/`, body, { method: 'POST', auth: true });
   });
 
   ipcMain.handle('pairing:qr-code', async (_e, text: string) => {
     if (!text?.trim()) throw new Error('Nothing to encode');
     return QRCode.toDataURL(text, { width: 340, margin: 2, errorCorrectionLevel: 'M' });
   });
+
+  // --- Join an existing business (Desktop is a full first-class platform) ---
+  // Employee joins the owner's business from a fresh/other desktop using the
+  // owner's 6-digit code. The employee's own account is linked (login, or signup
+  // when they have no Shega account yet), the invite is accepted with THIS
+  // machine's hub device id, and the one-time device key issued at accept time
+  // becomes the cloud transport credential once the owner approves.
+  ipcMain.handle('join:lookup', async (_e, code: string) => {
+    const c = String(code ?? '').trim();
+    if (!c) throw new Error('Enter the 6-digit code');
+    return doAuthRequest('/api/sync/pairing/lookup/', { code: c }, { method: 'POST' });
+  });
+
+  ipcMain.handle('join:accept', async (_e, input: { code: string; email: string; password: string; name?: string; deviceName?: string }) => {
+    const code = String(input?.code ?? '').trim();
+    const email = String(input?.email ?? '').trim().toLowerCase();
+    const password = String(input?.password ?? '');
+    if (!code || !email || !password) throw new Error('Code, email and password are required');
+
+    // 1) Preview the invitation (validation only — never consumes it).
+    let preview: any;
+    try {
+      preview = await doAuthRequest('/api/sync/pairing/lookup/', { code }, { method: 'POST' });
+    } catch (err: any) {
+      throw err;
+    }
+
+    // 2) Link the employee's account: login first, sign up when they have no
+    //    Shega account yet.
+    let token: string | null = null;
+    let refreshToken: string | null = null;
+    try {
+      const loginData = await doAuthRequest('/api/auth/login/', { email, password }, { method: 'POST' });
+      token = loginData?.access ?? loginData?.token ?? null;
+      refreshToken = loginData?.refresh ?? null;
+    } catch (err: any) {
+      if (err.status !== 400 && err.status !== 401) {
+        throw new Error(`Could not sign in: ${err.message || 'network error'}`);
+      }
+    }
+    if (!token) {
+      try {
+        const regData = await doAuthRequest(
+          '/api/auth/register/',
+          { email, password, name: input?.name || email.split('@')[0] },
+          { method: 'POST' },
+        );
+        token = regData?.access ?? regData?.token ?? null;
+        refreshToken = regData?.refresh ?? null;
+      } catch (err: any) {
+        if (/already exists/i.test(String(err.detail ?? err.message ?? ''))) {
+          throw new Error('An account already exists for that email — sign in with its password instead.');
+        }
+        throw new Error(`Could not create an account: ${err.message || 'network error'}`);
+      }
+    }
+    if (!token) throw new Error('Could not obtain an access token');
+    setSetting('join_access_token', token);
+    if (refreshToken) setSetting('join_refresh_token', refreshToken);
+
+    // 3) Accept the invitation for THIS machine's hub device.
+    const deviceName = String(input?.deviceName ?? '').trim() || 'Shega Desktop';
+    const deviceId = ensureHubDeviceId();
+    const acc = await doAuthRequest(
+      '/api/sync/pairing/accept/',
+      { code, device_id: deviceId, device_name: deviceName, platform: 'desktop' },
+      { method: 'POST', auth: true, tokenKey: 'join_access_token' },
+    );
+    setSetting('join_invitation_id', String(acc?.invitation_id ?? ''));
+    setSetting('join_device_id', deviceId);
+    if (acc?.device_key) setSetting('join_device_key', acc.device_key);
+    setSetting('join_business_name', String(preview?.business_name ?? ''));
+    setSetting('join_role', String(preview?.role ?? ''));
+    setSetting('join_account_email', email);
+    setSetting('join_display_name', String(input?.name || email.split('@')[0]));
+    return {
+      status: acc?.status ?? 'pending',
+      invitation_id: acc?.invitation_id ?? null,
+      device_key: acc?.device_key ?? null,
+      device_id: deviceId,
+      business_name: preview?.business_name ?? null,
+      role: preview?.role ?? null,
+      email,
+    };
+  });
+
+  ipcMain.handle('join:status', async (_e, invitationId?: number) => {
+    const id = invitationId ?? Number(getSetting('join_invitation_id') || 0);
+    const token = getSetting('join_access_token');
+    if (!id || !token) return { phase: 'none', invitation: null };
+
+    const fetchOnce = async (): Promise<any> => {
+      const data = await doAuthRequest(
+        `/api/sync/pairing/status/${id}/`,
+        {},
+        { auth: true, tokenKey: 'join_access_token' },
+      );
+      const status = data?.status ?? 'pending';
+      return {
+        phase: status === 'approved' ? 'approved'
+          : (status === 'rejected' || status === 'cancelled' || status === 'expired') ? status
+          : 'pending',
+        status,
+        business_name: data?.business_name ?? getSetting('join_business_name'),
+        role: data?.role ?? getSetting('join_role'),
+        device_status: data?.device_status ?? null,
+        email: getSetting('join_account_email'),
+      };
+    };
+
+    try {
+      return await fetchOnce();
+    } catch (err: any) {
+      if (err?.status === 401) {
+        const ok = await refreshAuthToken('join_refresh_token');
+        if (ok) {
+          try {
+            return await fetchOnce();
+          } catch (err2: any) {
+            return { phase: 'error', error: err2?.message ?? 'network error' };
+          }
+        }
+      }
+      return { phase: 'error', error: err?.message ?? 'network error' };
+    }
+  });
+
+  ipcMain.handle('join:activate', (_e, pin: string) => {
+    const key = getSetting('join_device_key');
+    const email = getSetting('join_account_email');
+    const id = getSetting('join_invitation_id');
+    if (!key || !email || !id) throw new Error('No active join in progress');
+    const pinStr = String(pin ?? '');
+    if (!/^\d{4}$/.test(pinStr)) throw new Error('PIN must be 4 digits');
+
+    // Cloud transport config: this machine now authenticates with the device
+    // key the backend issued exactly once at accept time (inert until then).
+    const base = getBaseUrl();
+    if (/^https?:\/\//.test(base)) {
+      setSetting('cloud_sync_url', base);
+    }
+    setSetting('cloud_sync_device_key', key);
+    setSetting('cloud_sync_enabled', 'true');
+
+    // Terminal identity: the employee logs in with this app's normal PIN flow.
+    // Once cloud sync delivers the roster `users` row, resolveRosterIdentity
+    // upgrades role/permissions from the membership (matches on email).
+    const username = email;
+    const displayName = getSetting('join_display_name') || email.split('@')[0];
+    const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get(username) as any;
+    if (!existing) {
+      db.prepare('INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)').run(
+        displayName,
+        username,
+        joinHashPin(pinStr),
+        'admin',
+        JSON.stringify(['dashboard', 'inventory', 'sales', 'expenses', 'customers', 'analytics', 'adjustments', 'warehouses', 'shipments']),
+        null,
+      );
+    }
+
+    // Join state consumed — clear tokens so nothing account-scoped lingers.
+    db.prepare("DELETE FROM settings WHERE key LIKE 'join_%'").run();
+    return { success: true, username };
+  });
+
+  ipcMain.handle('join:cancel', () => {
+    db.prepare("DELETE FROM settings WHERE key LIKE 'join_%'").run();
+    return { cancelled: true };
+  });
+}
+
+function joinHashPin(pin: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const key = crypto.scryptSync(pin, salt, 64).toString('hex');
+  return `${salt}:${key}`;
 }

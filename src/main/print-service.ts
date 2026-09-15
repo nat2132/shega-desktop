@@ -9,6 +9,10 @@ export interface PrinterConfig {
   drawerPin: 2 | 5;
   autoOpenDrawer: boolean;
   enabled: boolean;
+  /** Receipt paper width — receipt renderer adapts columns to it. */
+  paperWidth: 58 | 80;
+  /** Simulated mode: bytes go to a log file instead of hardware (dev/testing). */
+  simulate: boolean;
 }
 
 const SETTING_KEY = 'printer_config';
@@ -24,9 +28,11 @@ export function getPrinterConfig(): PrinterConfig {
       drawerPin: stored.drawerPin === 5 ? 5 : 2,
       autoOpenDrawer: stored.autoOpenDrawer !== false,
       enabled: stored.enabled !== false,
+      paperWidth: Number(stored.paperWidth) === 58 ? 58 : 80,
+      simulate: !!stored.simulate,
     };
   } catch {
-    return { transport: 'os-dialog', host: '127.0.0.1', port: 9100, drawerPin: 2, autoOpenDrawer: true, enabled: true };
+    return { transport: 'os-dialog', host: '127.0.0.1', port: 9100, drawerPin: 2, autoOpenDrawer: true, enabled: true, paperWidth: 80 as const, simulate: false };
   }
 }
 
@@ -43,6 +49,8 @@ export interface PrintStatus {
   port: number;
   drawerPin: 2 | 5;
   autoOpenDrawer: boolean;
+  paperWidth: 58 | 80;
+  simulate: boolean;
   online: boolean;
   lastError: string | null;
   lastPrintAt: string | null;
@@ -112,7 +120,9 @@ export function getPrintStatus(): PrintStatus {
     port: cfg.port,
     drawerPin: cfg.drawerPin,
     autoOpenDrawer: cfg.autoOpenDrawer,
-    online: cfg.enabled && cfg.transport === 'network',
+    paperWidth: cfg.paperWidth,
+    simulate: cfg.simulate,
+    online: cfg.enabled && (cfg.transport === 'network' || cfg.simulate),
     lastError,
     lastPrintAt,
   };
@@ -128,9 +138,21 @@ function enqueue(fn: () => Promise<void>): Promise<void> {
 
 // Send raw ESC/POS bytes to the configured printer. Only supported for the
 // network transport; the OS print dialog path is handled by the renderer.
+// In simulate mode bytes are appended to a local file instead (dev/testing).
 export async function printRaw(data: Uint8Array): Promise<void> {
   const cfg = getPrinterConfig();
   if (!cfg.enabled) throw new Error('Printer is disabled in Settings');
+  if (cfg.simulate) {
+    const fs = await import('fs');
+    const path = await import('path');
+    const { app } = await import('electron');
+    const dir = path.join(app.getPath('userData'), 'simulated-printer');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, `output-${cfg.paperWidth}mm.bin`), Buffer.from(data));
+    lastPrintAt = new Date().toISOString();
+    lastError = null;
+    return;
+  }
   if (cfg.transport === 'os-dialog') throw new Error('Raw ESC/POS requires the network printer transport');
   await enqueue(async () => {
     try {
@@ -148,6 +170,7 @@ export async function printRaw(data: Uint8Array): Promise<void> {
 // standalone serial drawer (not yet supported — network printers only).
 export async function openDrawer(): Promise<void> {
   const cfg = getPrinterConfig();
+  if (cfg.simulate) { lastPrintAt = new Date().toISOString(); return; }
   const w = new EscposWriter().init().openDrawer(cfg.drawerPin);
   await printRaw(w.toUint8Array());
   lastPrintAt = new Date().toISOString();

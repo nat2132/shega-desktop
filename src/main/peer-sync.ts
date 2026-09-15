@@ -17,18 +17,17 @@ import db from './database';
 import { logger } from './logger';
 import {
   ensureHubDeviceId,
-  getPairingToken,
 } from './sync-hub';
-import { getCloudConfig, startCloudSyncTimer } from './sync-cloud';
-import { mdnsDiscovery } from './sync/discovery';
+import { mdnsDiscovery, type DiscoveredService } from './sync/discovery';
 import { wsSyncServer, startWsSyncServer } from './sync/websocket-server';
+import { p2pSync } from './sync/p2p-sync-manager';
+import { getActiveBusinessId } from './ipc-handlers';
 import type {
   PeerInfo,
   SyncTransport,
   SyncHealth,
   NetworkCapabilities,
   DevicePlatform,
-  DiscoveredPeer,
 } from '@shega/shared';
 import { getSyncStrategy } from '@shega/shared';
 
@@ -111,42 +110,40 @@ export function detectNetworkCapabilities(): NetworkCapabilities {
     platform: (svc.capabilities?.includes('mobile') ? 'mobile' : 'desktop') as DevicePlatform,
   }));
 
-  const cloudConfig = getCloudConfig();
-
-  // Quick internet check (non-blocking — use last-known state)
   const hasInternet = true; // Will be updated by connectivity service
 
   return {
     hasLan: lanPeers.length > 0,
     hasInternet,
     lanPeers,
-    cloudConfigured: !!cloudConfig,
+    cloudConfigured: false,
   };
 }
 
 // ─── Transport manager ──────────────────────────────────────────────────────
 
 /**
- * The unified sync manager coordinates LAN and Cloud transports.
+ * The unified sync manager coordinates peer transports.
  *
  * Sync priority:
  * 1. LAN first (fast, local)
- * 2. Cloud in background (redundancy, multi-branch)
+ * 2. P2P (WebRTC/Yjs) in the background for branch convergence
  * 3. Offline: queue changes, sync when reconnected
  *
- * Both transports apply the same LWW/conflict resolution through the
- * existing applyChange() path, so changes arriving via either transport
+ * All transports apply the same LWW/conflict resolution through the
+ * existing applyChange() path, so changes arriving via any transport
  * are treated identically.
  */
 let syncInterval: NodeJS.Timeout | null = null;
-let cloudSyncInterval: NodeJS.Timeout | null = null;
 
 const LAN_SYNC_INTERVAL_MS = 30_000;  // 30 seconds
-const CLOUD_SYNC_INTERVAL_MS = 60_000; // 60 seconds
 
 export function startPeerSync(): void {
   const hubId = ensureHubDeviceId();
-  const platform: DevicePlatform = process.platform === 'darwin' ? 'desktop' : 'desktop';
+  // This install is a Desktop build; the platform identity is a peer-detected
+  // property, not an ownership marker. Desktop and Mobile are equal first-class
+  // platforms: either may host a hub or join as a client depending on role.
+  const platform: DevicePlatform = 'desktop';
 
   // Start mDNS discovery (broadcast this hub + discover other hubs)
   mdnsDiscovery.start();
@@ -154,8 +151,20 @@ export function startPeerSync(): void {
   // Start WebSocket server for real-time sync
   startWsSyncServer();
 
-  // Start cloud sync timer (existing)
-  startCloudSyncTimer();
+  // Start P2P Yjs+WebRTC sync for the active business (SQLite stays source of
+  // truth; Yjs replicates, WebRTC transports, the WS hub only signals).
+  try {
+    const hubDevId = ensureHubDeviceId();
+    const bizId = getActiveBusinessId();
+    const biz = db.prepare('SELECT id, uuid FROM businesses WHERE id = ?').get(bizId) as any;
+    if (biz?.uuid) {
+      p2pSync.start(hubDevId, String(biz.uuid), Number(biz.id));
+      // Periodically announce so late-joining peers can dial us.
+      setInterval(() => p2pSync.announce(), 30000);
+    }
+  } catch (e: any) {
+    logger.warn('P2P sync start failed (continuing without it)', { error: e?.message });
+  }
 
   // Periodic LAN sync: pull from any discovered peers, push local changes
   if (syncInterval) clearInterval(syncInterval);
@@ -168,6 +177,26 @@ export function startPeerSync(): void {
   }, LAN_SYNC_INTERVAL_MS);
 
   logger.info('Peer sync started', { hubId, platform });
+}
+
+/**
+ * Re-scope the P2P sync to a newly-activated business without restarting the
+ * whole app. Closes the old business Y.Doc and bootstraps the new one so the
+ * sync layer always matches `active_business_id` — business data never crosses
+ * the boundary after a switch.
+ */
+export function reScopePeerSync(businessRowId: number): void {
+  try {
+    const hubDevId = ensureHubDeviceId();
+    const biz = db.prepare('SELECT id, uuid FROM businesses WHERE id = ?').get(businessRowId) as any;
+    if (biz?.uuid) {
+      p2pSync.start(hubDevId, String(biz.uuid), Number(biz.id));
+      p2pSync.announce();
+      logger.info('P2P sync re-scoped to business', { businessId: businessRowId, uuid: biz.uuid });
+    }
+  } catch (e: any) {
+    logger.warn('P2P sync re-scope failed', { error: e?.message });
+  }
 }
 
 export function stopPeerSync(): void {
@@ -187,8 +216,11 @@ export function stopPeerSync(): void {
  * higher peer count (or older start time) acts as the merge point. Both
  * push their outbox and pull from the other.
  *
- * For Desktop↔Mobile: the Desktop is always the hub (Mobile connects to it).
- * This function triggers a pull from Mobile clients that have connected.
+ * For Desktop↔Mobile: sync is bidirectional and platform-symmetric. Either a
+ * desktop or a mobile running the hub protocol may be the server; the peer
+ * layer treats any discovered hub equally, so a desktop can pull/push with a
+ * mobile hub just as it can with another desktop (or vice-versa). No platform
+ * is assumed to always be the server.
  */
 async function performLanSync(): Promise<void> {
   const discovered = mdnsDiscovery.getDiscoveredServices();
@@ -205,13 +237,28 @@ async function performLanSync(): Promise<void> {
 }
 
 /**
+ * Per-peer change-log cursor so peer pulls are deltas, not full snapshots.
+ * Keyed by the peer's device_id; starts at 0 (full snapshot) the first time a
+ * peer is seen, then advances to the peer's lastSeq after each successful pull.
+ */
+const peerCursors = new Map<string, number>();
+
+function peerCursorSeq(deviceId: string): number {
+  return peerCursors.get(deviceId) ?? 0;
+}
+
+/**
  * Bidirectional sync with a peer hub (Desktop↔Desktop).
- * Both hubs push their changes and pull the other's changes.
+ * Both hubs push their changes and pull the other's changes, each asking for
+ * changes newer than the lastSeq it saw from the peer (delta pull).
  * The same LWW/conflict resolution applies as with Mobile clients.
  */
-async function syncWithPeerHub(peer: Pick<DiscoveredPeer, 'deviceId' | 'host' | 'port'>): Promise<void> {
+async function syncWithPeerHub(peer: DiscoveredService): Promise<void> {
   const hubId = ensureHubDeviceId();
-  const token = getPairingToken();
+  // The peer validates pulls against ITS OWN pairing token, which mDNS
+  // carries in the service's txt record. Using our local token here always
+  // returns 403, so desktop↔desktop never replicated. (Bug fix: B1.)
+  const token = peer.pairingToken;
   const peerUrl = `http://${peer.host}:${peer.port}`;
 
   // First, verify we're authorized to sync with this peer
@@ -230,13 +277,15 @@ async function syncWithPeerHub(peer: Pick<DiscoveredPeer, 'deviceId' | 'host' | 
     return; // Peer unreachable
   }
 
-  // Pull changes from peer
-  const pullUrl = `${peerUrl}/sync/pull?device=${encodeURIComponent(hubId)}&since=0&token=${encodeURIComponent(token)}`;
+  // Pull delta changes from peer (since=0 → full snapshot the first time).
+  const since = peerCursorSeq(peer.deviceId);
+  const pullUrl = `${peerUrl}/sync/pull?device=${encodeURIComponent(hubId)}&since=${since}&token=${encodeURIComponent(token)}`;
   try {
     const pullRes = await fetch(pullUrl);
     const pullData = await pullRes.json() as {
       ok?: boolean;
       changes?: any[];
+      lastSeq?: number;
     };
     const changes = pullData.changes;
     if (pullData.ok && changes && changes.length > 0) {
@@ -248,8 +297,11 @@ async function syncWithPeerHub(peer: Pick<DiscoveredPeer, 'deviceId' | 'host' | 
         pulled: changes.length,
         applied: result.applied,
         conflicts: result.conflicts,
+        from: since,
       });
     }
+    const lastSeq = Number(pullData?.lastSeq ?? since);
+    if (pullData.ok && lastSeq > since) peerCursors.set(peer.deviceId, lastSeq);
   } catch (e: any) {
     logger.warn('Peer pull failed', { peerId: peer.deviceId, error: e?.message });
   }
@@ -269,7 +321,6 @@ export async function getUnifiedSyncStatus(): Promise<{
   failedChanges: number;
   conflicts: number;
   lan: { configured: boolean; peers: number; lastSyncAt: string | null };
-  cloud: { configured: boolean; enabled: boolean; lastError: string | null; lastAt: string | null };
 }> {
   const outboxCount = (db.prepare(
     'SELECT COUNT(*) AS c FROM sync_outbox'
@@ -279,42 +330,25 @@ export async function getUnifiedSyncStatus(): Promise<{
     'SELECT COUNT(*) AS c FROM sync_conflicts'
   ).get() as any)?.c ?? 0;
 
-  const peerCount = mdnsDiscovery.getDiscoveredServices().length;
-
-  const settings = db.prepare(
-    "SELECT key, value FROM settings WHERE key IN ('cloud_sync_enabled', 'cloud_sync_last_error', 'cloud_sync_last_at')"
-  ).all() as any[];
-  const settingsMap = Object.fromEntries(settings.map((s: any) => [s.key, s.value]));
-
-  const hasLan = peerCount > 0;
-  const cloudConfigured = !!getCloudConfig();
-  const cloudEnabled = settingsMap['cloud_sync_enabled'] === 'true';
+  const hasLan = mdnsDiscovery.getDiscoveredServices().length > 0;
 
   let health: SyncHealth = 'synced';
   if (outboxCount > 0) health = 'pending';
-  if (!hasLan && !cloudConfigured) health = 'offline';
+  if (!hasLan) health = 'offline';
 
-  let transport: SyncTransport = 'offline';
-  if (hasLan) transport = 'lan';
-  else if (cloudEnabled) transport = 'cloud';
+  const transport: SyncTransport = hasLan ? 'lan' : 'offline';
 
   return {
     health,
     transport,
-    lastSyncAt: settingsMap['cloud_sync_last_at'] ?? null,
+    lastSyncAt: null,
     pendingOutbound: outboxCount,
     failedChanges: 0,
     conflicts: conflictCount,
     lan: {
       configured: true,
-      peers: peerCount,
+      peers: mdnsDiscovery.getDiscoveredServices().length,
       lastSyncAt: null,
-    },
-    cloud: {
-      configured: cloudConfigured,
-      enabled: cloudEnabled,
-      lastError: settingsMap['cloud_sync_last_error'] ?? null,
-      lastAt: settingsMap['cloud_sync_last_at'] ?? null,
     },
   };
 }

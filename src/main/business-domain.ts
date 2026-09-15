@@ -3,7 +3,7 @@ import { ipcMain } from 'electron';
 import db from './database';
 import { ensureHubDeviceId } from './sync-hub';
 import {
-  BUILTIN_ROLES, getBuiltinRole, ROLE_ORDER, can, PermissionContext,
+  getBuiltinRole, SURFACED_BUILTIN_ROLES, DEFAULT_ROLE_SETS, can, PermissionContext,
 } from '@shega/shared';
 import type { BuiltinRoleKey, PermissionValue } from '@shega/shared';
 
@@ -20,6 +20,8 @@ import type { BuiltinRoleKey, PermissionValue } from '@shega/shared';
 export interface BusinessDomainConfig {
   getActiveBusinessId: () => number;
   isOwnerOrSuper: () => boolean;
+  /** The current desktop user's effective role key ('owner'|'manager'|'cashier'|...). */
+  getUserRole: () => string;
   /** Build the shared-model permission context for the current desktop user. */
   buildPermissionContext: () => PermissionContext;
   audit: (action: string, entityType: string, entityId: number | null, description: string) => void;
@@ -151,8 +153,10 @@ export function registerBusinessDomainHandlers(config: BusinessDomainConfig) {
     const now = new Date().toISOString();
     const newDeviceId = randomUUID();
     const wasPrimary = !!old.isPrimary;
-    const isThis = input.setThisAsReplacement === true;
-    const status = isThis ? 'active' : 'active'; // Desktop hub is always the master/active
+    // The replacement is a normal authorized device — its activation does not
+    // depend on whether it is running on Desktop or Mobile (platforms are equal
+    // first-class participants). Either platform can be a primary/master device.
+    const status = 'active';
     const colon = db
       .prepare(
         `INSERT INTO devices (device_id, name, businessId, platform, role, userId, registerId, status, isPrimary, uuid, row_version, created_at, updated_at, is_deleted, is_synced)
@@ -199,9 +203,12 @@ export function registerBusinessDomainHandlers(config: BusinessDomainConfig) {
   // ---- Roles & people ----
   ipcMain.handle('business:roles', () => {
     return {
-      builtin: BUILTIN_ROLES.map((r) => ({ key: r.key, name: r.name, description: r.description, isSystem: true })),
-      order: ROLE_ORDER,
-      custom: db.prepare('SELECT * FROM business_roles WHERE isSystem = 0 AND is_deleted = 0 ORDER BY created_at').all(bizId()),
+      builtin: SURFACED_BUILTIN_ROLES.map((key) => {
+        const r = getBuiltinRole(key);
+        return { key: r!.key, name: r!.name, description: r!.description, isSystem: true };
+      }),
+      order: SURFACED_BUILTIN_ROLES,
+      custom: db.prepare('SELECT * FROM business_roles WHERE businessId = ? AND isSystem = 0 AND is_deleted = 0 ORDER BY created_at').all(bizId()),
     };
   });
 
@@ -218,20 +225,43 @@ export function registerBusinessDomainHandlers(config: BusinessDomainConfig) {
       phone: e.phone,
       email: e.email,
       roleKey: e.role_key || 'cashier',
+      isOwner: (e.role_key || 'cashier') === 'owner',
       permissions: e.permissions_json ? JSON.parse(e.permissions_json) : undefined,
     }));
   });
 
-  ipcMain.handle('business:set-person-role', (_e, employeeId: number, roleKey: BuiltinRoleKey) => {
+  ipcMain.handle('business:set-person-role', (_e, employeeId: number, roleKey: BuiltinRoleKey | string) => {
     if (!canManageTeam()) throw new Error('You do not have permission to manage team roles');
-    const r = getBuiltinRole(roleKey);
+    let name: string | undefined = getBuiltinRole(roleKey as BuiltinRoleKey)?.name;
+    if (!name) {
+      const custom = db
+        .prepare('SELECT name FROM business_roles WHERE id = ? AND businessId = ? AND isSystem = 0 AND is_deleted = 0')
+        .get(roleKey, bizId()) as any;
+      if (!custom) throw new Error(`Unknown role: ${roleKey}`);
+      name = custom.name;
+    }
     db.prepare('UPDATE employees SET role_key = ? WHERE id = ? AND businessId = ?').run(roleKey, employeeId, bizId());
-    config.audit('role.changed', 'employee', employeeId, `Role -> ${r?.name ?? roleKey}`);
+    // Multi-owner: granting/revoking the owner role keeps the projected `users`
+    // membership in lockstep (is_owner flag + full owner permission set).
+    const projected = db.prepare('SELECT id, isOwner FROM users WHERE sourceType = ? AND sourceId = ?').get('employee', employeeId) as any;
+    if (projected && (roleKey === 'owner') !== !!projected.isOwner) {
+      db.prepare('UPDATE users SET isOwner = ?, role = ?, roleName = ?, permissions = ?, updated_at = ? WHERE id = ?')
+        .run(roleKey === 'owner' ? 1 : 0, roleKey, name ?? 'Owner', roleKey === 'owner' ? JSON.stringify(DEFAULT_ROLE_SETS.owner) : (projected.permissions ?? '{}'), new Date().toISOString(), projected.id);
+    }
+    config.audit('role.changed', 'employee', employeeId, `Role -> ${name}`);
     return { ok: true };
   });
 
   ipcMain.handle('business:set-person-active', (_e, employeeId: number, isActive: boolean) => {
     if (!canManageTeam()) throw new Error('You do not have permission to manage team members');
+    // Last-owner guard: never lock the final active owner out of the business.
+    if (!isActive) {
+      const projected = db.prepare('SELECT id FROM users WHERE sourceType = ? AND sourceId = ? AND isOwner = 1 AND isActive = 1 AND is_deleted = 0').get('employee', employeeId) as any;
+      if (projected) {
+        const remaining = (db.prepare('SELECT COUNT(*) AS c FROM users WHERE isOwner = 1 AND isActive = 1 AND is_deleted = 0 AND businessId = ? AND id != ?').get(bizId(), projected.id) as any).c;
+        if (remaining === 0) throw new Error('Cannot deactivate the last owner of this business. Promote another owner first.');
+      }
+    }
     db.prepare('UPDATE employees SET isActive = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?')
       .run(isActive ? 1 : 0, employeeId, bizId());
     config.audit('employee.changed', 'employee', employeeId, `Set active = ${isActive}`);
@@ -239,6 +269,11 @@ export function registerBusinessDomainHandlers(config: BusinessDomainConfig) {
   });
 
   ipcMain.handle('business:get-user', () => {
-    return { role: 'admin', isOwner: config.isOwnerOrSuper() };
+    // Return the real business-level role (owner/manager/cashier/...) that the
+    // current desktop user holds, not a hardcoded platform admin string. Desktop
+    // and Mobile are equal first-class platforms: a desktop user is a member of
+    // the business with a role, exactly like a mobile user.
+    const role = config.getUserRole() || 'cashier';
+    return { role, isOwner: config.isOwnerOrSuper() || role === 'owner' };
   });
 }

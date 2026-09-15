@@ -114,6 +114,14 @@ export function getShiftById(shiftId: number): Shift | null {
   return db.prepare('SELECT * FROM shifts WHERE id = ?').get(shiftId) as Shift | null;
 }
 
+export function getLastShiftByCashier(cashierId: number): Shift | null {
+  return db.prepare(`
+    SELECT * FROM shifts
+    WHERE cashierId = ?
+    ORDER BY openedAt DESC LIMIT 1
+  `).get(cashierId) as Shift | null;
+}
+
 export function recordMidShiftAudit(shiftId: number, countedCash: number, notes?: string): void {
   const shift = getShiftById(shiftId);
   if (!shift) throw new Error('Shift not found');
@@ -471,6 +479,7 @@ export default {
   openShift,
   getOpenShift,
   getShiftById,
+  getLastShiftByCashier,
   recordMidShiftAudit,
   recordBlindCount,
   closeShift,

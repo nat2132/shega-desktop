@@ -21,10 +21,10 @@ import * as tax from './pos/tax';
 import * as morQr from './pos/mor-qr';
 import * as compliance from './pos/compliance';
 import * as etaxExport from './pos/etax-export';
-import { getCloudStatus, syncToCloud, refreshCloudStatus } from './sync-cloud';
 import { BUILTIN_ROLES, exceedsDiscountCap, getDiscountCap, getBuiltinRole, mergePermissionSets } from '@shega/shared';
 import type { PermissionValue } from '@shega/shared';
 import { registerBusinessDomainHandlers } from './business-domain';
+import { p2pSync } from './sync/p2p-sync-manager';
 import {
   isApproverRole,
   resolveApprover,
@@ -33,6 +33,13 @@ import {
   verifyStoredPin,
   ApprovalOutcome,
 } from './approval';
+import {
+  bridgeAdminUser,
+  bridgeDeleteBySource,
+  bridgeEmployeeUser,
+  findRosterLogin,
+  reconcileUserBridge,
+} from './user-bridge';
 
 // §15 — Desktop manager-PIN approval gate. Returns true when the sensitive
 // action may proceed: either the acting user is an approver (Owner/Administrator/
@@ -129,12 +136,9 @@ const PERMISSION_MODULE: Record<string, string> = {
   orders: 'sales',
   payments: 'sales',
   expenses: 'expenses',
-  budgets: 'expenses',
   customers: 'customers',
-  contacts: 'customers',
   analytics: 'analytics',
   reports: 'analytics',
-  adjustments: 'adjustments',
   settings: 'settings',
   notifications: 'settings',
   employees: 'employees',
@@ -161,9 +165,67 @@ function resolveSharedPermissions(roleKey?: string, permissionsJson?: string): R
   return mergePermissionSets(base.permissions, overrides);
 }
 
+/**
+ * Resolve the current session's effective identity from the synced `users`
+ * roster (the canonical cross-device person record carrying the membership role
+ * + permissions). When the signed-in person exists in the roster, their role /
+ * permissions SHOULD be the roster's (backend/membership-derived) so the same
+ * account is the SAME user with the SAME role on every device — never a fresh
+ * per-device identity. Returns null when no roster row matches (fresh install
+ * before first cloud/roster sync → keep the legacy admin/employee identity).
+ */
+function resolveRosterIdentity(): {
+  role: string;
+  permissions: string[];
+  sharedPerms: Record<string, PermissionValue> | null;
+  businessId: number | null;
+  isOwner: boolean;
+  rosterUserId: number | null;
+} | null {
+  if (!currentUserName) return null;
+  // Match this person in the roster by the email/login username first, then by
+  // name. The roster `users` row is the person across devices (same phone/email
+  // identity synced from Mobile or another install).
+  const roster = db
+    .prepare(
+      `SELECT id, businessId, name, email, phone, role, roleName, permissions,
+              isActive, isOwner, pinHash
+       FROM users
+       WHERE is_deleted = 0 AND isActive = 1
+         AND (email = ? OR name = ? OR phone = ?)
+       ORDER BY CASE WHEN isOwner = 1 THEN 0 ELSE 1 END
+       LIMIT 1`
+    )
+    .get(currentUserName, currentUserName, currentUserName) as any;
+  if (!roster) return null;
+
+  const isOwner = !!roster.isOwner || roster.role === 'owner' || roster.role === 'super_admin';
+  const rawPerms: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(roster.permissions || '{}');
+    if (parsed && typeof parsed === 'object') Object.assign(rawPerms, parsed);
+  } catch (e) {
+    /* keep {} */
+  }
+  const legacyPerms = Object.keys(rawPerms).filter((k) => !['*'].includes(k));
+  const sharedPerms = resolveSharedPermissions(roster.role, roster.permissions);
+
+  return {
+    role: isOwner ? 'owner' : (roster.roleName || roster.role || 'cashier'),
+    permissions: isOwner ? ['*'] : (legacyPerms.length ? legacyPerms : ['*']),
+    sharedPerms,
+    businessId: roster.businessId ?? null,
+    isOwner,
+    rosterUserId: roster.id ?? null,
+  };
+}
+
 function requirePermission(perm: string) {
   if (currentUserRole === 'super_admin') return;
   if (currentUserPermissions.includes(perm) || currentUserPermissions.includes('*')) return;
+  // Canonical @shega/shared PermissionKey grants (employees resolve their builtin
+  // role + overrides into currentUserSharedPerms; e.g. cashier holds products.view).
+  if (currentUserSharedPerms && currentUserSharedPerms[perm] === true) return;
   const prefix = perm.split('.')[0];
   const modulePerm = PERMISSION_MODULE[prefix] || prefix;
   const effective = new Set(
@@ -191,7 +253,7 @@ function verifyPin(pin: string, stored: string): boolean {
   return check === key;
 }
 
-function getActiveBusinessId() {
+export function getActiveBusinessId(): number {
   if (!activeBusinessId) {
     const row = db.prepare("SELECT value FROM settings WHERE key = 'active_business_id'").get() as any;
     if (row) {
@@ -206,7 +268,7 @@ function getActiveBusinessId() {
     const first = db.prepare("SELECT id FROM businesses WHERE is_deleted = 0 ORDER BY CASE WHEN isDefault = 1 THEN 0 ELSE 1 END, id LIMIT 1").get() as any;
     activeBusinessId = first?.id || activeBusinessId;
   }
-  return activeBusinessId;
+  return activeBusinessId as number;
 }
 
 function setActiveBusinessId(id: number) {
@@ -282,9 +344,17 @@ export function registerIPCHandlers() {
     return stmt.run(biz.businessName, biz.storeName, biz.logo, biz.address, biz.phone, biz.email, biz.currency, id);
   });
 
+  // ========== P2P Yjs + WebRTC sync ==========
+  ipcMain.handle('p2p:health', () => p2pSync.getHealth());
+  ipcMain.handle('p2p:devices', () => p2pSync.getDevices());
+  ipcMain.handle('p2p:announce', () => { p2pSync.announce(); return true; });
+  ipcMain.handle('p2p:revoke-device', (_, deviceId: string) => { p2pSync.revokeDevice(deviceId); return true; });
+  ipcMain.handle('p2p:rename-device', (_, deviceId: string, name: string) => p2pSync.renameDevice(deviceId, name));
+  ipcMain.handle('p2p:record-counts', () => p2pSync.getRecordCounts());
+
   ipcMain.handle('business:list', () => {
-    requirePermission('settings');
     const totalBiz = (db.prepare('SELECT COUNT(*) c FROM businesses WHERE is_deleted = 0').get() as any).c;
+    const activeId = getActiveBusinessId();
     return db.prepare(`
       SELECT b.*,
         (SELECT COUNT(*) FROM employees e WHERE e.businessId = b.id AND e.isActive = 1 AND e.is_deleted = 0) as employeeCount,
@@ -294,7 +364,7 @@ export function registerIPCHandlers() {
       FROM businesses b
       WHERE b.is_deleted = 0
       ORDER BY CASE WHEN b.isDefault = 1 THEN 0 ELSE 1 END, b.createdAt
-    `).all().map((b: any) => ({ ...b, totalBusinesses: totalBiz }));
+    `).all().map((b: any) => ({ ...b, totalBusinesses: totalBiz, isActive: b.id === activeId }));
   });
 
   ipcMain.handle('business:create', (_, data: any) => {
@@ -312,19 +382,54 @@ export function registerIPCHandlers() {
     if (isFirst) {
       db.prepare('UPDATE businesses SET isDefault = 1 WHERE id = ?').run(bizId);
     }
-    if (isFirst || !currentUserBusinessId) setActiveBusinessId(bizId);
+    // Multi-business: the creator becomes the OWNER member of the new business
+    // (per-business membership, separate from their other businesses).
+    try {
+      db.prepare(`
+        INSERT INTO users (businessId, name, username, email, role, roleName, permissions, isActive, isOwner, sourceType, sourceId, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'owner', 'Owner', ?, 1, 1, 'admin', ?, ?, ?)
+      `).run(
+        bizId, currentUserName || 'Owner', null, null,
+        JSON.stringify(['*']), currentAdminId ?? null,
+        new Date().toISOString(), new Date().toISOString(),
+      );
+    } catch { /* roster table schema may differ on old installs */ }
+    // The creator can always operate the business they just created — switch
+    // the session to it even when they already belong to another business.
+    setActiveBusinessId(bizId);
     insertAuditLog('business_created', 'business', bizId, 'businessName', null, data.businessName.trim(), `Business "${data.businessName.trim()}" created by ${currentUserName || 'unknown'} (wh #${whRes.lastInsertRowid})`);
     return db.prepare('SELECT * FROM businesses WHERE id = ?').get(bizId);
   });
 
   ipcMain.handle('business:switch', (_, id: number) => {
     if (!Number.isInteger(+id)) throw new Error('Invalid business id');
+    // Employee-scoped accounts may only operate the business of their
+    // membership. Owners/admins (multi-business operators) may switch freely
+    // between the businesses they created or hold memberships in.
     if (currentUserBusinessId && currentUserBusinessId !== +id) {
-      throw new Error('You are signed in as an employee of another business and cannot switch businesses.');
+      const isOperator = currentUserRole === 'super_admin' || currentUserRole === 'admin' || currentUserRole === 'owner';
+      const membership = db.prepare('SELECT id FROM users WHERE businessId = ? AND (id = ? OR username = ? OR name = ?) AND is_deleted = 0 AND isActive = 1')
+        .get(+id, currentAdminId ?? -1, currentUserName ?? '', currentUserName ?? '') as any;
+      if (!isOperator && !membership) {
+        throw new Error('You are signed in as an employee of another business and cannot switch businesses.');
+      }
     }
     const biz = db.prepare('SELECT * FROM businesses WHERE id = ? AND is_deleted = 0').get(+id) as any;
     if (!biz) throw new Error('Business not found');
     setActiveBusinessId(+id);
+    // Re-scope the P2P/Yjs sync to the new business immediately — the old
+    // business doc is closed and the new one bootstrapped, so data can never
+    // cross the business boundary after switching.
+    try {
+      const { reScopePeerSync } = require('./peer-sync');
+      reScopePeerSync(+id);
+    } catch { /* sync layer may not be running yet */ }
+    // Ask every renderer window to reload its business-scoped data so no
+    // records from the previous business stay on screen.
+    const { BrowserWindow } = require('electron');
+    for (const w of BrowserWindow.getAllWindows()) {
+      w.webContents.send('business-changed', { businessId: +id, name: biz.businessName });
+    }
     return biz;
   });
 
@@ -493,9 +598,13 @@ export function registerIPCHandlers() {
         businessId, name, categoryId, sku, barcode, companyName, purchaseUnit, baseUnit, unitsPerPack,
         totalPackQuantity, totalBaseQuantity, packPurchasePrice, basePurchasePrice,
         baseSellingPrice, packSellingPrice, allowSellByBaseUnit, allowSellByPackUnit,
-        expiryDate, qualityGrade, notes, isCredit, supplierPhone, supplierId,
-        reorderPoint, reorderQty, autoReorder, createdAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        expiryDate, qualityGrade, taxType, taxTreatment, notes, isCredit, supplierPhone, supplierId,
+        reorderPoint, reorderQty, autoReorder, createdAt,
+        image, wholesaleSellingPrice, minWholesaleQty,
+        transportCost, importCost, packagingCost, handlingCost, otherCost, targetMargin,
+        supplierAccount, supplierCallEnabled, warehouseId, isActive, quickProduct
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const newBaseQty = item.totalBaseQuantity || 0;
@@ -505,8 +614,11 @@ export function registerIPCHandlers() {
       bizId, item.name, item.categoryId || null, item.sku || null, item.barcode || null, item.companyName, item.purchaseUnit, item.baseUnit, unitsPerPack,
       newPackQty, newBaseQty, item.packPurchasePrice || 0, item.basePurchasePrice || 0,
       item.baseSellingPrice || 0, item.packSellingPrice || 0, item.allowSellByBaseUnit ? 1 : 0, item.allowSellByPackUnit ? 1 : 0,
-      item.expiryDate || null, item.qualityGrade, item.notes, item.isCredit ? 1 : 0, item.supplierPhone,
-      item.supplierId || null, item.reorderPoint ?? 10, item.reorderQty ?? 0, item.autoReorder ? 1 : 0, purchaseDate
+      item.expiryDate || null, item.qualityGrade, item.taxType || null, item.taxTreatment || null, item.notes, item.isCredit ? 1 : 0, item.supplierPhone,
+      item.supplierId || null, item.reorderPoint ?? 10, item.reorderQty ?? 0, item.autoReorder ? 1 : 0, purchaseDate,
+      item.image || null, item.wholesaleSellingPrice ?? null, item.minWholesaleQty ?? null,
+      item.transportCost ?? 0, item.importCost ?? 0, item.packagingCost ?? 0, item.handlingCost ?? 0, item.otherCost ?? 0, item.targetMargin ?? null,
+      item.supplierAccount || null, item.supplierCallEnabled ? 1 : 0, item.warehouseId ?? null, item.isActive ?? 1, item.quickProduct ? 1 : 0
     );
 
     const newId = result.lastInsertRowid as number;
@@ -555,8 +667,11 @@ export function registerIPCHandlers() {
           name = ?, categoryId = ?, sku = ?, barcode = ?, companyName = ?, purchaseUnit = ?, baseUnit = ?, unitsPerPack = ?,
           totalPackQuantity = ?, totalBaseQuantity = ?, packPurchasePrice = ?, basePurchasePrice = ?,
           baseSellingPrice = ?, packSellingPrice = ?, allowSellByBaseUnit = ?, allowSellByPackUnit = ?,
-          expiryDate = ?, qualityGrade = ?, notes = ?, isCredit = ?, supplierPhone = ?,
-          supplierId = ?, reorderPoint = ?, reorderQty = ?, autoReorder = ?
+          expiryDate = ?, qualityGrade = ?, taxType = ?, taxTreatment = ?, notes = ?, isCredit = ?, supplierPhone = ?,
+          supplierId = ?, reorderPoint = ?, reorderQty = ?, autoReorder = ?,
+          image = ?, wholesaleSellingPrice = ?, minWholesaleQty = ?,
+          transportCost = ?, importCost = ?, packagingCost = ?, handlingCost = ?, otherCost = ?, targetMargin = ?,
+          supplierAccount = ?, supplierCallEnabled = ?, warehouseId = ?, isActive = ?, quickProduct = ?
         WHERE id = ? AND businessId = ?
       `);
 
@@ -564,8 +679,11 @@ export function registerIPCHandlers() {
         item.name, item.categoryId || null, item.sku || null, item.barcode || null, item.companyName, item.purchaseUnit, item.baseUnit, unitsPerPack,
         item.totalPackQuantity || 0, item.totalBaseQuantity || 0, item.packPurchasePrice || 0, item.basePurchasePrice || 0,
         item.baseSellingPrice || 0, item.packSellingPrice || 0, item.allowSellByBaseUnit ? 1 : 0, item.allowSellByPackUnit ? 1 : 0,
-        item.expiryDate || null, item.qualityGrade, item.notes, item.isCredit ? 1 : 0, item.supplierPhone,
+        item.expiryDate || null, item.qualityGrade, item.taxType || null, item.taxTreatment || null, item.notes, item.isCredit ? 1 : 0, item.supplierPhone,
         item.supplierId || null, item.reorderPoint ?? 10, item.reorderQty ?? 0, item.autoReorder ? 1 : 0,
+        item.image || null, item.wholesaleSellingPrice ?? null, item.minWholesaleQty ?? null,
+        item.transportCost ?? 0, item.importCost ?? 0, item.packagingCost ?? 0, item.handlingCost ?? 0, item.otherCost ?? 0, item.targetMargin ?? null,
+        item.supplierAccount || null, item.supplierCallEnabled ? 1 : 0, item.warehouseId ?? null, item.isActive ?? 1, item.quickProduct ? 1 : 0,
         id, bizId
       );
 
@@ -580,6 +698,70 @@ export function registerIPCHandlers() {
     const item = db.prepare('SELECT name FROM items WHERE id = ?').get(id) as any;
     db.prepare('UPDATE items SET is_deleted = 1, deleted_by = ?, deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(currentUserName || 'unknown', id);
     return { success: true };
+  });
+
+  ipcMain.handle('generate-shega-code', () => {
+    requirePermission('inventory.add');
+    const bizId = getActiveBusinessId();
+    // Ensure sequence setting exists
+    const seqRow = db.prepare(`SELECT value FROM app_settings WHERE key = 'shega_barcode_seq'`).get() as any;
+    let seq = seqRow ? parseInt(seqRow.value, 10) || 0 : 0;
+    for (let i = 0; i < 100; i++) {
+      seq += 1;
+      const code = 'SHG-' + String(seq).padStart(6, '0');
+      const clash = db.prepare(
+        `SELECT COUNT(*) as n FROM items WHERE (barcode = ? OR sku = ?) AND is_deleted = 0 AND businessId = ?`
+      ).get(code, code, bizId) as any;
+      if (!clash || clash.n === 0) {
+        db.prepare(`INSERT OR REPLACE INTO app_settings (key, value) VALUES ('shega_barcode_seq', ?)`).run(String(seq));
+        return code;
+      }
+    }
+    return 'SHG-' + String(Date.now()).slice(-6);
+  });
+
+  ipcMain.handle('item-barcodes:list', (_, itemId: number) => {
+    return db.prepare(
+      `SELECT * FROM item_barcodes WHERE itemId = ? AND is_deleted = 0 ORDER BY isPrimary DESC, id ASC`
+    ).all(itemId);
+  });
+
+  ipcMain.handle('item-barcodes:add', (_, itemId: number, barcode: string) => {
+    requirePermission('inventory.edit');
+    if (!barcode || !barcode.trim()) throw new Error('Barcode is required');
+    const existing = db.prepare(
+      `SELECT id FROM item_barcodes WHERE itemId = ? AND barcode = ? AND is_deleted = 0`
+    ).get(itemId, barcode.trim());
+    if (existing) throw new Error('Barcode already exists for this item');
+    const hasAny = db.prepare(
+      `SELECT COUNT(*) as n FROM item_barcodes WHERE itemId = ? AND is_deleted = 0`
+    ).get(itemId) as any;
+    const isPrimary = hasAny.n === 0 ? 1 : 0;
+    const result = db.prepare(
+      `INSERT INTO item_barcodes (itemId, barcode, isPrimary) VALUES (?, ?, ?)`
+    ).run(itemId, barcode.trim(), isPrimary);
+    return result.lastInsertRowid;
+  });
+
+  ipcMain.handle('item-barcodes:remove', (_, barcodeId: number) => {
+    requirePermission('inventory.edit');
+    const row = db.prepare(`SELECT itemId, isPrimary FROM item_barcodes WHERE id = ? AND is_deleted = 0`).get(barcodeId) as any;
+    if (!row) return;
+    db.prepare(`UPDATE item_barcodes SET is_deleted = 1, deleted_at = CURRENT_TIMESTAMP WHERE id = ?`).run(barcodeId);
+    if (row.isPrimary) {
+      const next = db.prepare(
+        `SELECT id FROM item_barcodes WHERE itemId = ? AND is_deleted = 0 ORDER BY id ASC LIMIT 1`
+      ).get(row.itemId) as any;
+      if (next) db.prepare(`UPDATE item_barcodes SET isPrimary = 1 WHERE id = ?`).run(next.id);
+    }
+  });
+
+  ipcMain.handle('item-barcodes:set-primary', (_, barcodeId: number) => {
+    requirePermission('inventory.edit');
+    const row = db.prepare(`SELECT itemId FROM item_barcodes WHERE id = ? AND is_deleted = 0`).get(barcodeId) as any;
+    if (!row) return;
+    db.prepare(`UPDATE item_barcodes SET isPrimary = 0 WHERE itemId = ? AND is_deleted = 0`).run(row.itemId);
+    db.prepare(`UPDATE item_barcodes SET isPrimary = 1 WHERE id = ?`).run(barcodeId);
   });
 
   ipcMain.handle('get-low-stock-items', () => {
@@ -627,22 +809,26 @@ export function registerIPCHandlers() {
     `).all(supplierId, bizId);
   });
 
-  ipcMain.handle('restock-item', (_, id: number, quantity: number) => {
+  ipcMain.handle('restock-item', (_, id: number, quantity: number, unit?: 'single' | 'pack') => {
     requirePermission('inventory.adjust');
     const bizId = getActiveBusinessId();
     const item = db.prepare('SELECT name, unitsPerPack FROM items WHERE id = ? AND businessId = ?').get(id, bizId) as any;
     if (!item) throw new Error('Item not found');
     const qty = validatePositive(quantity, 'Restock quantity');
-    const packQty = Math.round((qty / (item.unitsPerPack || 1)) * 1e6) / 1e6;
-    const result = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity + ?, totalPackQuantity = totalPackQuantity + ? WHERE id = ?').run(qty, packQty, id);
+    const unitsPerPack = item.unitsPerPack || 1;
+    // 'pack' means quantity is in packs — convert to individual units; 'single' (default) is already in units.
+    const baseQty = unit === 'pack' ? Math.round(qty * unitsPerPack * 1e6) / 1e6 : qty;
+    const packQty = Math.round((baseQty / unitsPerPack) * 1e6) / 1e6;
+    const result = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity + ?, totalPackQuantity = totalPackQuantity + ? WHERE id = ?').run(baseQty, packQty, id);
     const defWhId = getDefaultWarehouseId();
     const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, id) as any;
     if (whRow) {
-      db.prepare('UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(qty, whRow.id);
+      db.prepare('UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(baseQty, whRow.id);
     } else {
-      db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, id, qty);
+      db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, id, baseQty);
     }
-    db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)').run(defWhId, id, 'restock_in', qty, 'restock', `Restocked ${qty} ${item.name}`);
+    const unitLabel = unit === 'pack' ? `pack(s) of ${unitsPerPack}` : 'unit(s)';
+    db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)').run(defWhId, id, 'restock_in', baseQty, 'restock', `Restocked ${qty} ${unitLabel} of ${item.name}`);
     return { success: true };
   });
 
@@ -663,6 +849,16 @@ export function registerIPCHandlers() {
     if (options.paymentStatus) {
       conditions.push('sales.paymentStatus = ?');
       params.push(options.paymentStatus);
+    }
+
+    if (options.createdBy) {
+      conditions.push('sales.createdBy = ?');
+      params.push(options.createdBy);
+    }
+
+    if (options.cashier) {
+      conditions.push('sales.createdBy = ?');
+      params.push(options.cashier);
     }
 
     if (options.category && options.category !== 'All') {
@@ -728,14 +924,15 @@ export function registerIPCHandlers() {
           INSERT INTO sales (
             businessId, itemId, quantity, unit, unitType, discount, vat, totalPrice, 
             paymentMethod, paymentStatus, customerName, customerPhone, packId, dueDate, paidAmount,
-            overrideBy, overrideReason
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            createdBy, overrideBy, overrideReason
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = stmt.run(
           bizId, sale.itemId, sale.quantity, sale.unit, sale.unitType, sale.discount || 0, sale.vat || 0, sale.totalPrice,
           sale.paymentMethod, sale.paymentStatus, sale.customerName, sale.customerPhone, sale.packId || null, 
           sale.dueDate || null, sale.paidAmount || 0,
+          currentUserName || null,
           gate.requiresOverride && gate.approved ? currentUserName || 'unknown' : null,
           gate.requiresOverride && gate.approved ? (gate.overrideReason || overrideReason) : null
         );
@@ -1134,156 +1331,6 @@ export function registerIPCHandlers() {
     params.push(listLimit, offset);
 
     return db.prepare(query).all(...params);
-  });
-
-  ipcMain.handle('insert-expense', (_, expense: any) => {
-    requirePermission('expenses.add');
-    const bizId = getActiveBusinessId();
-    const result = db.prepare('INSERT INTO expenses (businessId, name, amount, category, date, isRecurring, frequency, nextBillingDate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
-      bizId, expense.name, expense.amount, expense.category, expense.date, expense.isRecurring ? 1 : 0, expense.frequency, expense.nextBillingDate
-    );
-
-    // Check budgets and create alerts
-    try {
-      const expenseDate = new Date(expense.date || new Date());
-      const month = String(expenseDate.getMonth() + 1).padStart(2, '0');
-      const year = String(expenseDate.getFullYear());
-      const startDate = `${year}-${month}-01`;
-      const endDate = new Date(expenseDate.getFullYear(), expenseDate.getMonth() + 1, 0).toISOString().split('T')[0];
-
-      const budget = db.prepare('SELECT id, amount FROM budgets WHERE businessId = ? AND category = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)').get(bizId, expense.category, month, year) as any;
-      if (budget && budget.amount > 0) {
-        const spentRow = db.prepare('SELECT SUM(amount) as total FROM expenses WHERE businessId = ? AND category = ? AND date >= ? AND date <= ? AND is_deleted = 0').get(bizId, expense.category, startDate, endDate) as any;
-        const totalSpent = spentRow?.total || 0;
-        const usagePercent = (totalSpent / budget.amount) * 100;
-
-        if (totalSpent >= budget.amount) {
-          const existingAlert = db.prepare('SELECT id FROM budget_alerts WHERE businessId = ? AND category = ? AND alertType = ? AND month = ? AND year = ?').get(bizId, expense.category, 'budget_exceeded', month, year);
-          if (!existingAlert) {
-            db.prepare('INSERT INTO budget_alerts (businessId, category, alertType, threshold, message, month, year) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-              bizId, expense.category, 'budget_exceeded', 100,
-              `${expense.category} budget of ETB ${budget.amount.toLocaleString()} has been exceeded (Total: ETB ${totalSpent.toLocaleString()})`,
-              month, year
-            );
-          }
-        } else if (usagePercent >= 80) {
-          const existingAlert = db.prepare('SELECT id FROM budget_alerts WHERE businessId = ? AND category = ? AND alertType = ? AND month = ? AND year = ?').get(bizId, expense.category, 'budget_warning', month, year);
-          if (!existingAlert) {
-            db.prepare('INSERT INTO budget_alerts (businessId, category, alertType, threshold, message, month, year) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-              bizId, expense.category, 'budget_warning', 80,
-              `${expense.category} has reached ${Math.round(usagePercent)}% of its ETB ${budget.amount.toLocaleString()} budget`,
-              month, year
-            );
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Budget alert check failed:', err);
-    }
-
-    return result.lastInsertRowid;
-  });
-
-  ipcMain.handle('update-expense', (_, id: number, expense: any) => {
-    requirePermission('expenses.add');
-    const result = db.prepare('UPDATE expenses SET name = ?, amount = ?, category = ?, date = ?, isRecurring = ?, frequency = ?, nextBillingDate = ? WHERE id = ?').run(
-      expense.name, expense.amount, expense.category, expense.date, expense.isRecurring ? 1 : 0, expense.frequency, expense.nextBillingDate, id
-    );
-    return result;
-  });
-
-  ipcMain.handle('delete-expense', (_, id: number) => {
-    requirePermission('expenses.delete');
-    const exp = db.prepare('SELECT name FROM expenses WHERE id = ?').get(id) as any;
-    db.prepare('DELETE FROM expenses WHERE id = ?').run(id);
-  });
-
-  // ========== ADJUSTMENTS ==========
-  ipcMain.handle('get-adjustments', (_, options: any = {}) => {
-    requirePermission('inventory.view');
-    const bizId = getActiveBusinessId();
-    let query = 'SELECT adjustments.*, items.name as itemName FROM adjustments LEFT JOIN items ON adjustments.itemId = items.id';
-    const params: any[] = [];
-    const conditions: string[] = ['adjustments.businessId = ?'];
-    params.push(bizId);
-
-    if (options.itemId) {
-      conditions.push('adjustments.itemId = ?');
-      params.push(options.itemId);
-    }
-
-    if (conditions.length > 0) {
-      query += ' WHERE ' + conditions.join(' AND ');
-    }
-
-    query += ' ORDER BY adjustments.createdAt DESC';
-
-    const listLimit = options.limit ?? DEFAULT_LIST_LIMIT;
-    const offset = options.offset ?? 0;
-    query += ' LIMIT ? OFFSET ?';
-    params.push(listLimit, offset);
-
-    return db.prepare(query).all(...params);
-  });
-
-  ipcMain.handle('insert-adjustment', async (event, adjustment: any) => {
-    requirePermission('inventory.adjust');
-    if (!(await gateSensitiveAction(event.sender, { context: `Stock/price adjustment (${adjustment?.type ?? 'unknown'})` }))) {
-      throw new Error('Manager approval required — action not executed');
-    }
-    const validTypes = ['damage', 'loss', 'add_stock', 'price_increase', 'price_decrease'];
-    if (!validTypes.includes(adjustment.type)) throw new Error(`Invalid adjustment type: ${adjustment.type}`);
-    if (['damage', 'loss', 'add_stock'].includes(adjustment.type)) {
-      validatePositive(adjustment.quantity, 'Adjustment quantity');
-    }
-    const bizId = getActiveBusinessId();
-    const transaction = db.transaction(() => {
-      const result = db.prepare('INSERT INTO adjustments (businessId, itemId, type, oldValue, newValue, quantity, unitType, reason, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-        bizId, adjustment.itemId, adjustment.type, adjustment.oldValue, adjustment.newValue, adjustment.quantity, adjustment.unitType, adjustment.reason, adjustment.date
-      );
-
-      // Apply stock changes for damage/loss/add_stock types
-      let invDelta = 0;
-      if (adjustment.type === 'damage' && adjustment.quantity) {
-        const adjResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(adjustment.quantity, adjustment.itemId, adjustment.quantity);
-        if (adjResult.changes === 0) throw new Error(`Insufficient stock for damage adjustment: item has less than ${adjustment.quantity} units`);
-        invDelta = -adjustment.quantity;
-      }
-      if (adjustment.type === 'loss' && adjustment.quantity) {
-        const adjResult = db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ? AND totalBaseQuantity >= ?').run(adjustment.quantity, adjustment.itemId, adjustment.quantity);
-        if (adjResult.changes === 0) throw new Error(`Insufficient stock for loss adjustment: item has less than ${adjustment.quantity} units`);
-        invDelta = -adjustment.quantity;
-      }
-      if (adjustment.type === 'add_stock' && adjustment.quantity) {
-        db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity + ? WHERE id = ?').run(adjustment.quantity, adjustment.itemId);
-        invDelta = adjustment.quantity;
-      }
-      if (invDelta !== 0) {
-        const defWhId = getDefaultWarehouseId();
-        const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, adjustment.itemId) as any;
-        if (whRow) {
-          db.prepare('UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(invDelta, whRow.id);
-        } else if (invDelta > 0) {
-          db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, adjustment.itemId, invDelta);
-        }
-        db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(defWhId, adjustment.itemId, `adj_${adjustment.type}`, Math.abs(invDelta), 'adjustment', adjustment.reason || null);
-      }
-      if (adjustment.type === 'price_increase' || adjustment.type === 'price_decrease') {
-        if (adjustment.unitType === 'base') {
-          db.prepare('UPDATE items SET baseSellingPrice = ? WHERE id = ?').run(adjustment.newValue, adjustment.itemId);
-        } else {
-          db.prepare('UPDATE items SET packSellingPrice = ? WHERE id = ?').run(adjustment.newValue, adjustment.itemId);
-        }
-      }
-
-      const adjustmentId = result.lastInsertRowid;
-      const item = db.prepare('SELECT name FROM items WHERE id = ?').get(adjustment.itemId) as any;
-      const typeLabel = adjustment.type.replace('_', ' ');
-      return adjustmentId;
-    });
-
-    return transaction();
   });
 
   // ========== NOTIFICATIONS ==========
@@ -2015,8 +2062,12 @@ export function registerIPCHandlers() {
     }
 
     const sales = db.prepare(`
-      SELECT 'sale' as type, 'sale-' || s.id as id, s.totalPrice as amount, s.createdAt as date, i.name as description, s.customerName as extra
+      SELECT 'sale' as type, 'sale-' || s.id as id, s.totalPrice as amount, s.createdAt as date, i.name as description, s.customerName as extra,
+        COALESCE(e.firstName || ' ' || e.lastName, u.name) as userName,
+        COALESCE(e.avatar, u.avatar) as userAvatar
       FROM sales s LEFT JOIN items i ON s.itemId = i.id
+      LEFT JOIN employees e ON s.createdBy = e.id
+      LEFT JOIN users u ON s.createdBy = u.id
       ${dateFilter}
       ORDER BY s.createdAt DESC LIMIT ?
     `).all(...params, limit);
@@ -2029,13 +2080,27 @@ export function registerIPCHandlers() {
     const adjFilter = dateFilter.replace(/s\.createdAt/g, 'a.createdAt').replace(/s\.businessId/g, 'a.businessId');
 
     const adjustments = db.prepare(`
-      SELECT 'adjustment' as type, 'adj-' || a.id as id, a.newValue as amount, a.createdAt as date, i.name as description, a.type as extra
+      SELECT 'adjustment' as type, 'adj-' || a.id as id, a.newValue as amount, a.createdAt as date, i.name as description, a.type as extra,
+        COALESCE(e.avatar, u.avatar) as userAvatar, COALESCE(e.firstName || ' ' || e.lastName, u.name) as userName
       FROM adjustments a LEFT JOIN items i ON a.itemId = i.id
+      LEFT JOIN employees e ON a.user_id = e.id
+      LEFT JOIN users u ON a.user_id = u.id
       ${adjFilter}
       ORDER BY a.createdAt DESC LIMIT ?
     `).all(...params, limit);
 
-    const all = [...sales, ...expenses, ...adjustments] as any[];
+    const attendance = db.prepare(`
+      SELECT CASE WHEN a.clockOut IS NOT NULL THEN 'clock_out' ELSE 'clock_in' END as type,
+             'att-' || a.id as id, 0 as amount,
+             CASE WHEN a.clockOut IS NOT NULL THEN a.clockOut ELSE a.clockIn END as date,
+             e.firstName || ' ' || e.lastName as userName,
+             a.status as description
+      FROM attendance a LEFT JOIN employees e ON a.employeeId = e.id
+      WHERE e.businessId = ?
+      ORDER BY date DESC LIMIT ?
+    `).all(bizId, limit);
+
+    const all = [...sales, ...expenses, ...adjustments, ...attendance] as any[];
     all.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     return all.slice(0, limit);
   });
@@ -2366,87 +2431,6 @@ export function registerIPCHandlers() {
     return { startDate, endDate, lines: sorted, totals };
   });
 
-  // 4.12: Gift cards / store credit.
-  const giftCode = () => `GC-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-
-  ipcMain.handle('get-gift-cards', () => {
-    requirePermission('inventory.view');
-    const bizId = getActiveBusinessId();
-    return db.prepare('SELECT * FROM gift_cards WHERE businessId = ? AND (is_deleted = 0 OR is_deleted IS NULL) ORDER BY createdAt DESC LIMIT ?').all(bizId, DEFAULT_LIST_LIMIT);
-  });
-
-  ipcMain.handle('issue-gift-card', (_, data: any) => {
-    requirePermission('inventory.edit');
-    const bizId = getActiveBusinessId();
-    const balance = validatePositive(data.balance, 'Card balance');
-    const code = data.code?.trim() || giftCode();
-    const result = db.transaction(() => {
-      const r = db.prepare(`
-        INSERT INTO gift_cards (businessId, code, cardName, initialBalance, balance, issuedTo, issuedBy, expiryDate, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(bizId, code, data.cardName || null, balance, balance, data.issuedTo || null, currentUserName || null, data.expiryDate || null, data.notes || null);
-      const id = r.lastInsertRowid as number;
-      db.prepare('INSERT INTO gift_card_transactions (giftCardId, type, amount, note, createdBy) VALUES (?, ?, ?, ?, ?)')
-        .run(id, 'issue', balance, data.notes || 'Gift card issued', currentUserName || null);
-      insertAuditLog('issue_gift_card', 'gift_cards', id, 'balance', '0', String(balance), `Gift card ${code} issued`);
-      return { id, code };
-    })();
-    return result;
-  });
-
-  ipcMain.handle('redeem-gift-card', (_, data: any) => {
-    requirePermission('sales.create');
-    const bizId = getActiveBusinessId();
-    const code = (data.code || '').trim();
-    const amount = validatePositive(data.amount, 'Redeem amount');
-    const card = db.prepare('SELECT * FROM gift_cards WHERE code = ? AND businessId = ? AND (is_deleted = 0 OR is_deleted IS NULL)').get(code, bizId) as any;
-    if (!card) throw new Error('Gift card not found');
-    if (card.status !== 'active') throw new Error('Gift card is not active');
-    if (card.expiryDate && card.expiryDate < new Date().toISOString().split('T')[0]) throw new Error('Gift card has expired');
-    if ((card.balance || 0) < amount) throw new Error(`Insufficient gift card balance (${card.balance})`);
-    const result = db.transaction(() => {
-      db.prepare('UPDATE gift_cards SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, card.id);
-      db.prepare('INSERT INTO gift_card_transactions (giftCardId, type, amount, refType, refId, note, createdBy) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(card.id, 'redeem', amount, data.refType || null, data.refId || null, data.note || 'Gift card redeemed', currentUserName || null);
-      insertAuditLog('redeem_gift_card', 'gift_cards', card.id, 'balance', String(card.balance), String(card.balance - amount), `Gift card ${code} redeemed ${amount}`);
-      return { success: true, balance: card.balance - amount };
-    })();
-    return result;
-  });
-
-  ipcMain.handle('topup-gift-card', (_, data: any) => {
-    requirePermission('inventory.edit');
-    const bizId = getActiveBusinessId();
-    const card = db.prepare('SELECT * FROM gift_cards WHERE id = ? AND businessId = ? AND (is_deleted = 0 OR is_deleted IS NULL)').get(data.id, bizId) as any;
-    if (!card) throw new Error('Gift card not found');
-    const amount = validatePositive(data.amount, 'Top-up amount');
-    const result = db.transaction(() => {
-      db.prepare('UPDATE gift_cards SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(amount, card.id);
-      db.prepare('INSERT INTO gift_card_transactions (giftCardId, type, amount, note, createdBy) VALUES (?, ?, ?, ?, ?)')
-        .run(card.id, 'topup', amount, data.note || 'Gift card top-up', currentUserName || null);
-      insertAuditLog('topup_gift_card', 'gift_cards', card.id, 'balance', String(card.balance), String(card.balance + amount), `Gift card top-up ${amount}`);
-      return { success: true, balance: card.balance + amount };
-    })();
-    return result;
-  });
-
-  ipcMain.handle('void-gift-card', (_, id: number) => {
-    requirePermission('inventory.delete');
-    const bizId = getActiveBusinessId();
-    const card = db.prepare('SELECT * FROM gift_cards WHERE id = ? AND businessId = ?').get(id, bizId) as any;
-    if (!card) throw new Error('Gift card not found');
-    db.prepare("UPDATE gift_cards SET status = 'void', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
-    db.prepare('INSERT INTO gift_card_transactions (giftCardId, type, amount, note, createdBy) VALUES (?, ?, ?, ?, ?)')
-      .run(id, 'void', 0, 'Gift card voided', currentUserName || null);
-    insertAuditLog('void_gift_card', 'gift_cards', id, 'status', card.status, 'void', `Gift card ${card.code} voided`);
-    return { success: true };
-  });
-
-  ipcMain.handle('get-gift-card-transactions', (_, cardId: number) => {
-    requirePermission('inventory.view');
-    return db.prepare('SELECT * FROM gift_card_transactions WHERE giftCardId = ? ORDER BY createdAt DESC LIMIT ?').all(cardId, DEFAULT_LIST_LIMIT);
-  });
-
   ipcMain.handle('get-customers', (_, options?: { limit?: number; offset?: number }) => {
     requirePermission('customers.view');
     const bizId = getActiveBusinessId();
@@ -2723,6 +2707,212 @@ export function registerIPCHandlers() {
   });
 
   // ========== ADMIN MANAGEMENT ==========
+  // ---------- Who's using Shega? (device-local user profiles for PIN login) ----------
+  // Returns every authorized person on this install: local admins, bridged
+  // employees, and roster users synced from other devices. Never leaks PIN
+  // hashes — only avatar/name/role for the picker UI.
+  ipcMain.handle('get-login-users', () => {
+    type LoginUser = { key: string; source: 'admin' | 'employee' | 'roster'; id: number; name: string; username: string | null; role: string; roleName: string; avatar: string | null; isOwner: boolean };
+    const seen = new Set<string>();
+    const out: LoginUser[] = [];
+    const push = (u: LoginUser) => {
+      const dupKey = (u.username || u.name || '').toLowerCase();
+      if (!dupKey || seen.has(dupKey)) return;
+      seen.add(dupKey);
+      out.push(u);
+    };
+    try {
+      const admins = db.prepare('SELECT id, name, username, role, roleName, avatar, isActive FROM admins WHERE isActive = 1').all() as any[];
+      for (const a of admins) {
+        push({
+          key: `admin:${a.id}`, source: 'admin', id: a.id,
+          name: a.name || a.username || 'User', username: a.username ?? null,
+          role: a.role === 'super_admin' || a.role === 'admin' ? 'owner' : (a.role || 'staff'),
+          roleName: a.roleName || (a.role === 'super_admin' || a.role === 'admin' ? 'Owner' : a.role || 'Staff'),
+          avatar: a.avatar ?? null, isOwner: a.role === 'super_admin' || a.role === 'admin',
+        });
+      }
+    } catch { /* admins table may not exist pre-init */ }
+    try {
+      const emps = db.prepare(`
+        SELECT e.id, e.firstName, e.lastName, e.avatar, ea.username, ea.isActive,
+               e.role_key, r.name as roleName
+        FROM employees e
+        LEFT JOIN employee_accounts ea ON ea.employeeId = e.id
+        LEFT JOIN employee_roles r ON r.id = e.roleId
+        WHERE ea.isActive = 1
+      `).all() as any[];
+      for (const e of emps) {
+        const name = `${e.firstName || ''} ${e.lastName || ''}`.trim() || e.username || `Employee ${e.id}`;
+        push({
+          key: `employee:${e.id}`, source: 'employee', id: e.id,
+          name, username: e.username ?? null,
+          role: e.role_key || 'cashier', roleName: e.roleName || 'Cashier',
+          avatar: e.avatar ?? null, isOwner: e.role_key === 'owner',
+        });
+      }
+    } catch { /* ignore */ }
+    try {
+      const roster = db.prepare('SELECT id, name, username, email, role, roleName, avatar, isOwner FROM users WHERE is_deleted = 0 AND isActive = 1 AND (pinHash IS NOT NULL AND pinHash != \'\'\')').all() as any[];
+      for (const u of roster) {
+        push({
+          key: `roster:${u.id}`, source: 'roster', id: u.id,
+          name: u.name || u.username || 'User', username: u.username ?? u.email ?? null,
+          role: u.role || 'cashier', roleName: u.roleName || u.role || 'Cashier',
+          avatar: u.avatar ?? null, isOwner: !!u.isOwner || u.role === 'owner',
+        });
+      }
+    } catch { /* ignore */ }
+    return out;
+  });
+
+  // PIN-only login for a picked profile. Verifies against the source row's
+  // scrypt hash and sets the same session state as `login` so permissions,
+  // business context, and activity attribution switch with the user.
+  ipcMain.handle('login-by-user', (_e, source: 'admin' | 'employee' | 'roster', id: number, pin: string) => {
+    if (!pin || !/^\d{4}$/.test(String(pin))) return { success: false, error: 'Enter your 4-digit PIN' };
+    if (source === 'admin') {
+      const admin = db.prepare('SELECT id, name, username, role, permissions, isActive, businessId, avatar, pin FROM admins WHERE id = ?').get(id) as any;
+      if (!admin) return { success: false, error: 'User not found' };
+      if (!admin.isActive) return { success: false, error: 'Account deactivated' };
+      if (admin.lockedUntil && new Date(admin.lockedUntil) > new Date()) return { success: false, error: 'Account is locked. Try again later.' };
+      if (!verifyPin(pin, admin.pin)) {
+        const attempts = (admin.failedLoginAttempts || 0) + 1;
+        if (attempts >= 5) {
+          const lockUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+          db.prepare('UPDATE admins SET failedLoginAttempts = ?, lockedUntil = ? WHERE id = ?').run(attempts, lockUntil, admin.id);
+          return { success: false, error: 'Account locked due to too many failed attempts.' };
+        }
+        db.prepare('UPDATE admins SET failedLoginAttempts = ? WHERE id = ?').run(attempts, admin.id);
+        return { success: false, error: 'Wrong PIN' };
+      }
+      db.prepare('UPDATE admins SET lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL WHERE id = ?').run(admin.id);
+      db.prepare('INSERT INTO login_history (action) VALUES (?)').run(`login: admin ${admin.id}`);
+      currentAdminId = admin.id;
+      currentUserName = admin.name;
+      currentUserRole = admin.role || 'admin';
+      currentUserPermissions = admin.permissions ? JSON.parse(admin.permissions) : ['*'];
+      currentUserBusinessId = admin.businessId ?? null;
+      currentUserSharedPerms = null;
+      // Roster identity wins when this person exists in the synced membership
+      // table (same person across devices, same role/permissions).
+      const rosterId = resolveRosterIdentity();
+      if (rosterId) {
+        currentUserRole = rosterId.isOwner ? 'super_admin' : rosterId.role;
+        currentUserPermissions = rosterId.permissions;
+        currentUserSharedPerms = rosterId.isOwner ? null : rosterId.sharedPerms;
+        if (rosterId.businessId) {
+          currentUserBusinessId = rosterId.businessId;
+          setActiveBusinessId(rosterId.businessId);
+        }
+      }
+      return {
+        success: true,
+        admin: {
+          ...admin,
+          pin: undefined,
+          role: currentUserRole,
+          permissions: currentUserPermissions,
+          isEmployee: rosterId ? !rosterId.isOwner : false,
+          roleKey: rosterId?.role ?? null,
+          sharedPermissions: currentUserSharedPerms,
+        },
+      };
+    }
+    if (source === 'roster') {
+      const roster = db.prepare('SELECT * FROM users WHERE id = ? AND is_deleted = 0 AND isActive = 1').get(id) as any;
+      if (!roster) return { success: false, error: 'User not found or deactivated' };
+      const hasPin = !!roster.pinHash;
+      if (hasPin && !verifyPin(pin, `${roster.pinSalt ?? ''}:${roster.pinHash}`)) {
+        db.prepare('INSERT INTO login_history (action) VALUES (?)').run(`failed_login: roster ${roster.id} wrong pin`);
+        return { success: false, error: 'Wrong PIN' };
+      }
+      const isOwner = !!roster.isOwner || roster.role === 'owner' || roster.role === 'super_admin';
+      const rawPerms: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(roster.permissions || '{}');
+        if (parsed && typeof parsed === 'object') Object.assign(rawPerms, parsed);
+        if (Array.isArray(parsed)) for (const k of parsed) if (typeof k === 'string') rawPerms[k] = true;
+      } catch { /* keep {} */ }
+      const legacyPerms = Object.keys(rawPerms).filter((k) => !['*'].includes(k));
+      currentAdminId = roster.id;
+      currentUserName = roster.name;
+      currentUserRole = isOwner ? 'super_admin' : (roster.roleName || roster.role || 'cashier');
+      currentUserPermissions = isOwner ? ['*'] : (legacyPerms.length ? legacyPerms : ['*']);
+      currentUserSharedPerms = isOwner ? null : resolveSharedPermissions(roster.role, roster.permissions);
+      currentUserBusinessId = roster.businessId ?? null;
+      if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
+      db.prepare('INSERT INTO login_history (action) VALUES (?)').run(`login: roster ${roster.id}`);
+      return {
+        success: true,
+        admin: {
+          id: roster.id,
+          name: roster.name,
+          username: roster.username,
+          role: currentUserRole,
+          permissions: currentUserPermissions,
+          isActive: roster.isActive,
+          avatar: roster.avatar || undefined,
+          isEmployee: !isOwner,
+          roleKey: roster.role,
+          sharedPermissions: currentUserSharedPerms,
+        },
+      };
+    }
+    // employee
+    const account = db.prepare(`
+      SELECT ea.*, e.firstName, e.lastName, e.id as employeeId, e.roleId,
+        e.businessId as employeeBusinessId, e.avatar as employeeAvatar,
+        e.role_key as roleKey, e.permissions_json as permissionsJson,
+        r.name as roleName, r.permissions as rolePermissions
+      FROM employee_accounts ea
+      LEFT JOIN employees e ON ea.employeeId = e.id
+      LEFT JOIN employee_roles r ON e.roleId = r.id
+      WHERE ea.employeeId = ?
+    `).get(id) as any;
+    if (!account) return { success: false, error: 'User not found' };
+    if (account.lockedUntil && new Date(account.lockedUntil) > new Date()) return { success: false, error: 'Account is locked. Try again later.' };
+    if (!account.isActive) return { success: false, error: 'Account deactivated' };
+    if (!verifyPin(pin, account.pin)) {
+      const attempts = (account.failedLoginAttempts || 0) + 1;
+      if (attempts >= 5) {
+        const lockUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+        db.prepare('UPDATE employee_accounts SET failedLoginAttempts = ?, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(attempts, lockUntil, account.id);
+        return { success: false, error: 'Account locked due to too many failed attempts.' };
+      }
+      db.prepare('UPDATE employee_accounts SET failedLoginAttempts = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(attempts, account.id);
+      return { success: false, error: 'Wrong PIN' };
+    }
+    db.prepare('UPDATE employee_accounts SET lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(account.id);
+    db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'login');
+    currentAdminId = account.id;
+    currentUserName = `${account.firstName} ${account.lastName}`.trim();
+    currentUserRole = account.roleName || 'employee';
+    const rolePerms: string[] = account.rolePermissions ? JSON.parse(account.rolePermissions) : [];
+    currentUserPermissions = rolePerms.length > 0 ? rolePerms : ['*'];
+    currentUserBusinessId = account.employeeBusinessId ?? null;
+    currentUserSharedPerms = resolveSharedPermissions(account.roleKey, account.permissionsJson);
+    if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
+    return {
+      success: true,
+      admin: {
+        id: account.employeeId,
+        accountId: account.id,
+        username: account.username,
+        firstName: account.firstName,
+        lastName: account.lastName,
+        avatar: account.employeeAvatar || undefined,
+        businessId: account.employeeBusinessId ?? null,
+        roleName: account.roleName,
+        roleId: account.roleId,
+        permissions: rolePerms,
+        roleKey: account.roleKey || null,
+        sharedPermissions: currentUserSharedPerms,
+        forcePasswordChange: account.forcePasswordChange,
+      },
+    };
+  });
+
   ipcMain.handle('login', (_, username: string, pin: string) => {
     // Check admins table first
     const admin = db.prepare(
@@ -2750,11 +2940,36 @@ export function registerIPCHandlers() {
       currentUserPermissions = admin.permissions ? JSON.parse(admin.permissions) : ['*'];
       currentUserBusinessId = null;
       currentUserSharedPerms = null;
+
+      // Identity resolution against the synced `users` roster: when this person
+      // already exists on the roster (the canonical cross-device membership
+      // record synced from another install / the backend), their role and
+      // permissions MUST come from that membership so the same account is the
+      // same user with the same role here. Only fall back to the local admin
+      // seed when no roster row exists (fresh install before first sync).
+      const rosterId = resolveRosterIdentity();
+      if (rosterId) {
+        // Owners stay FULL-ACCESS super_admin at the legacy renderer layer
+        // (mapped back to 'owner' by the shared model's getUserRole), so the
+        // existing UI gates are unchanged; the roster is still the source that
+        // this person is the SAME owner across devices.
+        currentUserRole = rosterId.isOwner ? 'super_admin' : rosterId.role;
+        currentUserPermissions = rosterId.permissions;
+        currentUserSharedPerms = rosterId.isOwner ? null : rosterId.sharedPerms;
+        if (rosterId.businessId) {
+          currentUserBusinessId = rosterId.businessId;
+          setActiveBusinessId(rosterId.businessId);
+        }
+      }
       return {
         success: true,
         admin: {
           ...admin,
-          permissions: admin.permissions ? JSON.parse(admin.permissions) : []
+          role: currentUserRole,
+          permissions: currentUserPermissions,
+          isEmployee: rosterId ? !rosterId.isOwner : false,
+          roleKey: rosterId?.role ?? null,
+          sharedPermissions: currentUserSharedPerms
         }
       };
     }
@@ -2762,6 +2977,7 @@ export function registerIPCHandlers() {
     const account = db.prepare(`
       SELECT ea.*, e.id as employeeId, e.firstName, e.lastName,
         e.businessId as employeeBusinessId,
+        e.avatar as employeeAvatar,
         e.role_key as roleKey, e.permissions_json as permissionsJson,
         r.name as roleName, r.permissions as rolePermissions
       FROM employee_accounts ea
@@ -2770,6 +2986,48 @@ export function registerIPCHandlers() {
       WHERE ea.username = ?
     `).get(username) as any;
     if (!account) {
+      // Cross-platform sign-in: accept a business user synced from Mobile via
+      // the `users` roster (username/PIN lives in pinHash:pinSalt). Desktop
+      // staff were bridged into the same table, so this is the unified path.
+      const roster = findRosterLogin(username);
+      if (roster) {
+        const hasPin = !!roster.pinHash;
+        if (hasPin && !verifyPin(pin, `${roster.pinSalt ?? ''}:${roster.pinHash}`)) {
+          db.prepare('INSERT INTO login_history (action) VALUES (?)').run('failed_login: roster wrong pin');
+          return { success: false, error: 'Invalid credentials' };
+        }
+        const isOwner = !!roster.isOwner || roster.role === 'owner' || roster.role === 'super_admin';
+        const rawPerms: Record<string, unknown> = {};
+        try {
+          const parsed = JSON.parse(roster.permissions || '{}');
+          if (parsed && typeof parsed === 'object') Object.assign(rawPerms, parsed);
+          if (Array.isArray(parsed)) for (const k of parsed) if (typeof k === 'string') rawPerms[k] = true;
+        } catch (e) { /* keep {} */ }
+        const legacyPerms = Object.keys(rawPerms).filter((k) => !['*'].includes(k));
+        currentAdminId = roster.id;
+        currentUserName = roster.name;
+        currentUserRole = isOwner ? 'super_admin' : (roster.roleName || roster.role || 'cashier');
+        currentUserPermissions = isOwner ? ['*'] : (legacyPerms.length ? legacyPerms : ['*']);
+        currentUserSharedPerms = isOwner ? null : resolveSharedPermissions(roster.role, roster.permissions);
+        currentUserBusinessId = roster.businessId ?? null;
+        if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
+        return {
+          success: true,
+          admin: {
+            id: roster.id,
+            name: roster.name,
+            username: roster.username,
+            role: currentUserRole,
+            permissions: currentUserPermissions,
+            isActive: roster.isActive,
+            avatar: roster.avatar || undefined,
+            isEmployee: !isOwner,
+            roleKey: roster.role,
+            sharedPermissions: currentUserSharedPerms,
+            forcePasswordChange: hasPin ? 0 : 1
+          }
+        };
+      }
       db.prepare('INSERT INTO login_history (action) VALUES (?)').run('failed_login: employee not found');
       return { success: false, error: 'Invalid credentials' };
     }
@@ -2812,7 +3070,7 @@ export function registerIPCHandlers() {
         role: account.roleName || 'employee',
         permissions: account.rolePermissions ? JSON.parse(account.rolePermissions) : [],
         isActive: account.isActive,
-        avatar: undefined,
+        avatar: account.employeeAvatar || undefined,
         isEmployee: true,
         roleKey: account.roleKey || null,
         sharedPermissions: currentUserSharedPerms
@@ -2828,13 +3086,40 @@ export function registerIPCHandlers() {
     }));
   });
 
-  ipcMain.handle('get-current-admin', (_, id: number) => {
+  ipcMain.handle('get-current-admin', (_, id: number, isEmployee?: boolean) => {
+    if (isEmployee) {
+      const account = db.prepare(`
+        SELECT ea.*, e.id as employeeId, e.firstName, e.lastName,
+          e.businessId as employeeBusinessId, e.avatar as employeeAvatar,
+          e.role_key as roleKey, e.permissions_json as permissionsJson,
+          r.name as roleName, r.permissions as rolePermissions
+        FROM employee_accounts ea
+        LEFT JOIN employees e ON ea.employeeId = e.id
+        LEFT JOIN employee_roles r ON e.roleId = r.id
+        WHERE ea.employeeId = ?
+      `).get(id) as any;
+      if (!account) return null;
+      return {
+        id: account.employeeId,
+        name: `${account.firstName || ''} ${account.lastName || ''}`.trim() || account.username,
+        username: account.username,
+        role: account.roleName || 'employee',
+        permissions: account.rolePermissions ? JSON.parse(account.rolePermissions) : [],
+        isActive: account.isActive,
+        avatar: account.employeeAvatar || undefined,
+        isEmployee: true,
+        roleKey: account.roleKey || null,
+        sharedPermissions: resolveSharedPermissions(account.roleKey, account.permissionsJson)
+      };
+    }
     const admin = db.prepare('SELECT id, name, username, role, permissions, isActive, avatar FROM admins WHERE id = ?').get(id) as any;
-    if (!admin) return null;
-    return {
-      ...admin,
-      permissions: admin.permissions ? JSON.parse(admin.permissions) : []
-    };
+    if (admin) {
+      return {
+        ...admin,
+        permissions: admin.permissions ? JSON.parse(admin.permissions) : []
+      };
+    }
+    return null;
   });
 
   ipcMain.handle('insert-admin', (_, admin: any) => {
@@ -2854,6 +3139,7 @@ export function registerIPCHandlers() {
       JSON.stringify(admin.permissions || []),
       admin.businessId || null
     );
+    bridgeAdminUser(Number(result.lastInsertRowid));
     return { success: true, id: result.lastInsertRowid };
   });
 
@@ -2893,6 +3179,7 @@ export function registerIPCHandlers() {
         empValues.push(id);
         db.prepare(`UPDATE employees SET ${empFields.join(', ')}, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`).run(...empValues);
       }
+      bridgeEmployeeUser(id);
       return { success: true };
     }
 
@@ -2912,6 +3199,7 @@ export function registerIPCHandlers() {
 
     values.push(id);
     db.prepare(`UPDATE admins SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    bridgeAdminUser(id);
     return { success: true };
   });
 
@@ -2926,57 +3214,8 @@ export function registerIPCHandlers() {
       }
     }
     db.prepare('DELETE FROM admins WHERE id = ?').run(id);
+    bridgeDeleteBySource('admin', id);
     return { success: true };
-  });
-
-  ipcMain.handle('insert-bulk-adjustments', async (event, adjustments: any[]) => {
-    requirePermission('inventory.adjust');
-    if (!(await gateSensitiveAction(event.sender, { context: `Bulk stock/price adjustments (${Array.isArray(adjustments) ? adjustments.length : 0})` }))) {
-      throw new Error('Manager approval required — action not executed');
-    }
-    const bizId = getActiveBusinessId();
-    const transaction = db.transaction(() => {
-      let count = 0;
-      for (const adj of adjustments) {
-        db.prepare('INSERT INTO adjustments (businessId, itemId, type, oldValue, newValue, quantity, unitType, reason, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-          bizId, adj.itemId, adj.type, adj.oldValue, adj.newValue, adj.quantity, adj.unitType, adj.reason, adj.date
-        );
-
-        if (adj.type === 'damage' || adj.type === 'loss') {
-          db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity - ? WHERE id = ?').run(adj.quantity, adj.itemId);
-          // Sync default warehouse inventory
-          const defWhId = getDefaultWarehouseId();
-          const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, adj.itemId) as any;
-          if (whRow) {
-            db.prepare('UPDATE warehouse_inventory SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(adj.quantity, whRow.id);
-          }
-          db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)')
-            .run(defWhId, adj.itemId, `adj_${adj.type}`, adj.quantity, 'adjustment', adj.reason || null);
-        } else if (adj.type === 'add_stock') {
-          db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity + ? WHERE id = ?').run(adj.quantity, adj.itemId);
-          // Sync default warehouse inventory
-          const defWhId = getDefaultWarehouseId();
-          const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, adj.itemId) as any;
-          if (whRow) {
-            db.prepare('UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(adj.quantity, whRow.id);
-          } else {
-            db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, adj.itemId, adj.quantity);
-          }
-          db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)')
-            .run(defWhId, adj.itemId, `adj_${adj.type}`, adj.quantity, 'adjustment', adj.reason || null);
-        } else if (adj.type === 'price_increase' || adj.type === 'price_decrease') {
-          if (adj.unitType === 'base') {
-            db.prepare('UPDATE items SET baseSellingPrice = ? WHERE id = ?').run(adj.newValue, adj.itemId);
-          } else {
-            db.prepare('UPDATE items SET packSellingPrice = ? WHERE id = ?').run(adj.newValue, adj.itemId);
-          }
-        }
-        count++;
-      }
-      return count;
-    });
-
-    return transaction();
   });
 
   // ========== WAREHOUSES ==========
@@ -3324,6 +3563,7 @@ export function registerIPCHandlers() {
       data.employmentStatus || 'active', data.avatar || null,
       data.hireDate || null, data.notes || null
     );
+    bridgeEmployeeUser(Number(result.lastInsertRowid));
     return result.lastInsertRowid;
   });
 
@@ -3346,23 +3586,32 @@ export function registerIPCHandlers() {
       data.employmentStatus || 'active', data.avatar || null,
       data.hireDate || null, data.notes || null, id, getActiveBusinessId()
     );
+    bridgeEmployeeUser(id);
     return result;
   });
 
   ipcMain.handle('delete-employee', (_, id: number) => {
     requirePermission('employees.delete');
     db.prepare('DELETE FROM employees WHERE id = ? AND businessId = ?').run(id, getActiveBusinessId());
+    bridgeDeleteBySource('employee', id);
   });
 
   ipcMain.handle('archive-employee', (_, id: number) => {
     requirePermission('employees.delete');
     const result = db.prepare("UPDATE employees SET employmentStatus = 'inactive', isActive = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(id, getActiveBusinessId());
+    bridgeEmployeeUser(id);
+    // Push an immediate lock to any devices signed in as this employee.
+    try {
+      const emp = db.prepare('SELECT uuid FROM employees WHERE id = ?').get(id) as any;
+      if (emp?.uuid) p2pSync.kickUserDevices(String(emp.uuid), 'Your access was deactivated by the owner.');
+    } catch { /* best effort */ }
     return result;
   });
 
   ipcMain.handle('reactivate-employee', (_, id: number) => {
     requirePermission('employees.delete');
     const result = db.prepare("UPDATE employees SET employmentStatus = 'active', isActive = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?").run(id, getActiveBusinessId());
+    bridgeEmployeeUser(id);
     return result;
   });
 
@@ -3370,7 +3619,7 @@ export function registerIPCHandlers() {
   ipcMain.handle('get-employee-accounts', () => {
     requirePermission('settings.users');
     return db.prepare(`
-      SELECT ea.*, e.firstName, e.lastName, e.employeeCode, r.name as roleName
+      SELECT ea.*, e.firstName, e.lastName, e.employeeCode, e.avatar as avatar, r.name as roleName
       FROM employee_accounts ea
       LEFT JOIN employees e ON ea.employeeId = e.id
       LEFT JOIN employee_roles r ON e.roleId = r.id
@@ -3388,12 +3637,13 @@ export function registerIPCHandlers() {
     const hash = hashPin(data.pin);
     const result = db.prepare('INSERT INTO employee_accounts (employeeId, username, pin, forcePasswordChange) VALUES (?, ?, ?, ?)')
       .run(data.employeeId, data.username, hash, data.forcePasswordChange ? 1 : 0);
+    bridgeEmployeeUser(data.employeeId);
     return result.lastInsertRowid;
   });
 
   ipcMain.handle('update-employee-account', (_, id: number, data: any) => {
     requirePermission('settings.users');
-    const acctBiz = db.prepare('SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?').get(id) as any;
+    const acctBiz = db.prepare('SELECT e.businessId, ea.employeeId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?').get(id) as any;
     if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error('Account not found in this business');
     if (data.pin) {
     const hash = hashPin(data.pin);
@@ -3403,28 +3653,32 @@ export function registerIPCHandlers() {
       db.prepare('UPDATE employee_accounts SET username = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?')
         .run(data.username, data.isActive !== undefined ? (data.isActive ? 1 : 0) : 1, data.forcePasswordChange ? 1 : 0, id);
     }
+    bridgeEmployeeUser(acctBiz.employeeId);
   });
 
   ipcMain.handle('delete-employee-account', (_, id: number) => {
     requirePermission('settings.users');
-    const acctBiz = db.prepare('SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?').get(id) as any;
+    const acctBiz = db.prepare('SELECT e.businessId, ea.employeeId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?').get(id) as any;
     if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error('Account not found in this business');
     db.prepare('DELETE FROM employee_accounts WHERE id = ?').run(id);
+    bridgeEmployeeUser(acctBiz.employeeId);
   });
 
   ipcMain.handle('lock-employee-account', (_, id: number) => {
     requirePermission('settings.users');
-    const acctBiz = db.prepare('SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?').get(id) as any;
+    const acctBiz = db.prepare('SELECT e.businessId, ea.employeeId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?').get(id) as any;
     if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error('Account not found in this business');
     const lockUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     db.prepare('UPDATE employee_accounts SET isActive = 0, lockedUntil = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(lockUntil, id);
+    bridgeEmployeeUser(acctBiz.employeeId);
   });
 
   ipcMain.handle('unlock-employee-account', (_, id: number) => {
     requirePermission('settings.users');
-    const acctBiz = db.prepare('SELECT e.businessId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?').get(id) as any;
+    const acctBiz = db.prepare('SELECT e.businessId, ea.employeeId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?').get(id) as any;
     if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error('Account not found in this business');
     db.prepare('UPDATE employee_accounts SET isActive = 1, lockedUntil = NULL, failedLoginAttempts = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+    bridgeEmployeeUser(acctBiz.employeeId);
   });
 
   ipcMain.handle('reset-employee-password', (_, id: number, newPin: string) => {
@@ -3434,6 +3688,7 @@ export function registerIPCHandlers() {
     if (acct.roleName === 'Owner') return { success: false, error: 'Cannot reset PIN for Owner role' };
     const hash = hashPin(newPin);
     db.prepare('UPDATE employee_accounts SET pin = ?, forcePasswordChange = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(hash, id);
+    bridgeEmployeeUser(acct.employeeId);
     db.prepare('INSERT INTO pin_history (entityType, entityId, action, performedBy, performedById, details) VALUES (?, ?, ?, ?, ?, ?)')
       .run('employee_account', id, 'pin_reset', currentUserName || 'unknown', null, 'PIN reset by super admin');
     insertAuditLog('pin_reset', 'employee_account', id, 'pin', 'REDACTED', 'REDACTED', `PIN reset for account #${id} by ${currentUserName || 'unknown'}`);
@@ -3701,7 +3956,7 @@ export function registerIPCHandlers() {
 
   ipcMain.handle('get-attendance', (_, options?: any) => {
     let query = `
-      SELECT a.*, e.firstName, e.lastName, e.employeeCode, r.name as roleName
+      SELECT a.*, e.firstName, e.lastName, e.employeeCode, e.avatar as avatar, r.name as roleName
       FROM attendance a
       LEFT JOIN employees e ON a.employeeId = e.id
       LEFT JOIN employee_roles r ON e.roleId = r.id
@@ -3736,7 +3991,7 @@ export function registerIPCHandlers() {
   ipcMain.handle('get-today-attendance', () => {
     const today = new Date().toISOString().split('T')[0];
     return db.prepare(`
-      SELECT a.*, e.firstName, e.lastName, e.employeeCode, r.name as roleName
+      SELECT a.*, e.firstName, e.lastName, e.employeeCode, e.avatar as avatar, r.name as roleName
       FROM attendance a
       LEFT JOIN employees e ON a.employeeId = e.id
       LEFT JOIN employee_roles r ON e.roleId = r.id
@@ -4576,224 +4831,7 @@ export function registerIPCHandlers() {
     return db.prepare('DELETE FROM draft_sales WHERE id = ? AND businessId = ?').run(id, bizId);
   });
 
-  // ========== CONTACTS ==========
-  ipcMain.handle('get-contacts', (_, options?: any) => {
-    const bizId = getActiveBusinessId();
-    let q = 'SELECT * FROM contacts WHERE businessId = ?';
-    const params: any[] = [bizId];
-    if (options?.category) { q += ' AND category = ?'; params.push(options.category); }
-    q += ' ORDER BY name ASC';
-    return db.prepare(q).all(...params);
-  });
-
-  ipcMain.handle('insert-contact', (_, data: any) => {
-    requirePermission('contacts.add');
-    const bizId = getActiveBusinessId();
-    const r = db.prepare('INSERT INTO contacts (businessId, name, phone, category, subCategory, notes) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(bizId, data.name, data.phone, data.category || 'other', data.subCategory || null, data.notes || null);
-    return { success: true, id: r.lastInsertRowid };
-  });
-
-  ipcMain.handle('update-contact', (_, id: number, data: any) => {
-    requirePermission('contacts.edit');
-    const bizId = getActiveBusinessId();
-    db.prepare('UPDATE contacts SET name = ?, phone = ?, category = ?, subCategory = ?, notes = ? WHERE id = ? AND businessId = ?')
-      .run(data.name, data.phone, data.category || 'other', data.subCategory || null, data.notes || null, id, bizId);
-    return { success: true };
-  });
-
-  ipcMain.handle('delete-contact', (_, id: number) => {
-    requirePermission('contacts.delete');
-    const bizId = getActiveBusinessId();
-    db.prepare('DELETE FROM contacts WHERE id = ? AND businessId = ?').run(id, bizId);
-    return { success: true };
-  });
-
-  // ========== BUDGETS ==========
-  ipcMain.handle('get-budgets', (_, options?: any) => {
-    const bizId = getActiveBusinessId();
-    let q = 'SELECT * FROM budgets WHERE businessId = ?';
-    const params: any[] = [bizId];
-    if (options?.period) { q += ' AND period = ?'; params.push(options.period); }
-    if (options?.month) { q += ' AND month = ?'; params.push(options.month); }
-    if (options?.year) { q += ' AND year = ?'; params.push(options.year); }
-    if (options?.budgetType) { q += ' AND budgetType = ?'; params.push(options.budgetType); }
-    if (options?.category) { q += ' AND category = ?'; params.push(options.category); }
-    q += ' ORDER BY category ASC';
-    const budgets = db.prepare(q).all(...params) as any[];
-
-    // Compute spent amounts for each budget
-    const targetMonth = options?.month || String(new Date().getMonth() + 1).padStart(2, '0');
-    const targetYear = options?.year || String(new Date().getFullYear());
-    const startDate = `${targetYear}-${targetMonth}-01`;
-    const endDate = new Date(parseInt(targetYear), parseInt(targetMonth), 0).toISOString().split('T')[0];
-
-    const expenses = db.prepare(
-      'SELECT category, SUM(amount) as spent FROM expenses WHERE businessId = ? AND date >= ? AND date <= ? AND is_deleted = 0 GROUP BY category'
-    ).all(bizId, startDate, endDate) as any[];
-    const spentMap: Record<string, number> = {};
-    for (const e of expenses) { spentMap[e.category] = e.spent; }
-
-    return budgets.map(b => ({
-      ...b,
-      spent: spentMap[b.category] || 0,
-      remaining: b.amount - (spentMap[b.category] || 0),
-      usagePercent: b.amount > 0 ? Math.round(((spentMap[b.category] || 0) / b.amount) * 100) : 0,
-    }));
-  });
-
-  ipcMain.handle('set-budget', (_, data: any) => {
-    requirePermission('budgets.manage');
-    const bizId = getActiveBusinessId();
-    const existing = db.prepare(
-      'SELECT id FROM budgets WHERE businessId = ? AND category = ? AND period = ? AND budgetType = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)'
-    ).get(bizId, data.category, data.period || 'monthly', data.budgetType || 'business', data.month || null, data.year || null);
-    if (existing) {
-      db.prepare('UPDATE budgets SET amount = ?, notes = ?, isRecurring = ?, referenceName = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?')
-        .run(data.amount, data.notes || null, data.isRecurring ? 1 : 0, data.referenceName || null, (existing as any).id);
-      return { success: true, id: (existing as any).id };
-    }
-    const r = db.prepare(
-      'INSERT INTO budgets (businessId, category, amount, period, month, year, budgetType, referenceName, isRecurring, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(bizId, data.category, data.amount, data.period || 'monthly', data.month || null, data.year || null, data.budgetType || 'business', data.referenceName || null, data.isRecurring ? 1 : 0, data.notes || null);
-    return { success: true, id: r.lastInsertRowid };
-  });
-
-  ipcMain.handle('delete-budget', (_, id: number) => {
-    requirePermission('budgets.manage');
-    const bizId = getActiveBusinessId();
-    return db.prepare('DELETE FROM budgets WHERE id = ? AND businessId = ?').run(id, bizId);
-  });
-
-  ipcMain.handle('get-budget-adjustments', (_, budgetId: number) => {
-    return db.prepare('SELECT * FROM budget_adjustments WHERE budgetId = ? ORDER BY createdAt DESC').all(budgetId);
-  });
-
-  ipcMain.handle('create-budget-adjustment', (_, data: any) => {
-    requirePermission('budgets.manage');
-    const bizId = getActiveBusinessId();
-    const r = db.prepare(
-      'INSERT INTO budget_adjustments (budgetId, businessId, previousAmount, newAmount, reason, status, requestedBy) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(data.budgetId, bizId, data.previousAmount, data.newAmount, data.reason, data.status || 'pending', data.requestedBy || null);
-    return { success: true, id: r.lastInsertRowid };
-  });
-
-  ipcMain.handle('approve-budget-adjustment', (_, id: number, approvedBy: string) => {
-    requirePermission('budgets.manage');
-    const adj = db.prepare('SELECT * FROM budget_adjustments WHERE id = ?').get(id) as any;
-    if (!adj) return { success: false, error: 'Adjustment not found' };
-    db.prepare("UPDATE budget_adjustments SET status = 'approved', approvedBy = ?, approvedAt = CURRENT_TIMESTAMP WHERE id = ?").run(approvedBy, id);
-    db.prepare('UPDATE budgets SET amount = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(adj.newAmount, adj.budgetId);
-    return { success: true };
-  });
-
-  ipcMain.handle('duplicate-budget', (_, fromData: any, toMonth: string, toYear: string) => {
-    requirePermission('budgets.manage');
-    const bizId = getActiveBusinessId();
-    const sourceBudgets = db.prepare(
-      'SELECT * FROM budgets WHERE businessId = ? AND month = ? AND year = ?'
-    ).all(bizId, fromData.month, fromData.year) as any[];
-    let count = 0;
-    for (const b of sourceBudgets) {
-      const existing = db.prepare(
-        'SELECT id FROM budgets WHERE businessId = ? AND category = ? AND period = ? AND month = ? AND year = ? AND budgetType = ?'
-      ).get(bizId, b.category, b.period, toMonth, toYear, b.budgetType);
-      if (!existing) {
-        db.prepare(
-          'INSERT INTO budgets (businessId, category, amount, period, month, year, budgetType, referenceName, isRecurring, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-        ).run(bizId, b.category, b.amount, b.period, toMonth, toYear, b.budgetType, b.referenceName, b.isRecurring, b.notes);
-        count++;
-      }
-    }
-    return { success: true, count };
-  });
-
-  ipcMain.handle('get-budget-alerts', (_, options?: any) => {
-    const bizId = getActiveBusinessId();
-    let q = 'SELECT * FROM budget_alerts WHERE businessId = ?';
-    const params: any[] = [bizId];
-    if (options?.acknowledged !== undefined) { q += ' AND acknowledged = ?'; params.push(options.acknowledged ? 1 : 0); }
-    if (options?.alertType) { q += ' AND alertType = ?'; params.push(options.alertType); }
-    q += ' ORDER BY createdAt DESC';
-    if (options?.limit) { q += ' LIMIT ?'; params.push(options.limit); }
-    return db.prepare(q).all(...params);
-  });
-
-  ipcMain.handle('acknowledge-budget-alert', (_, id: number) => {
-    requirePermission('budgets.manage');
-    db.prepare('UPDATE budget_alerts SET acknowledged = 1 WHERE id = ?').run(id);
-    return { success: true };
-  });
-
-  ipcMain.handle('get-budget-report', (_, options?: any) => {
-    const bizId = getActiveBusinessId();
-    const month = options?.month || String(new Date().getMonth() + 1).padStart(2, '0');
-    const year = options?.year || String(new Date().getFullYear());
-    const startDate = `${year}-${month}-01`;
-    const endDate = new Date(parseInt(year), parseInt(month), 0).toISOString().split('T')[0];
-
-    const budgets = db.prepare('SELECT * FROM budgets WHERE businessId = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)').all(bizId, month, year) as any[];
-    const expenses = db.prepare('SELECT category, SUM(amount) as spent FROM expenses WHERE businessId = ? AND date >= ? AND date <= ? AND is_deleted = 0 GROUP BY category').all(bizId, startDate, endDate) as any[];
-    const totalExpenses = db.prepare('SELECT SUM(amount) as total FROM expenses WHERE businessId = ? AND date >= ? AND date <= ? AND is_deleted = 0').get(bizId, startDate, endDate) as any;
-
-    const totalPlanned = budgets.reduce((s: number, b: any) => s + b.amount, 0);
-    const totalSpent = totalExpenses?.total || 0;
-    const spentMap: Record<string, number> = {};
-    for (const e of expenses) { spentMap[e.category] = e.spent; }
-
-    const categories = budgets.map((b: any) => ({
-      category: b.category,
-      planned: b.amount,
-      actual: spentMap[b.category] || 0,
-      remaining: b.amount - (spentMap[b.category] || 0),
-      usagePercent: b.amount > 0 ? Math.round(((spentMap[b.category] || 0) / b.amount) * 100) : 0,
-      status: (spentMap[b.category] || 0) > b.amount ? 'exceeded' : (spentMap[b.category] || 0) > b.amount * 0.8 ? 'warning' : 'ok',
-    }));
-
-    return {
-      month, year, totalPlanned, totalSpent,
-      remaining: totalPlanned - totalSpent,
-      usagePercent: totalPlanned > 0 ? Math.round((totalSpent / totalPlanned) * 100) : 0,
-      categories,
-      health: totalPlanned > 0
-        ? (totalSpent > totalPlanned ? 'critical' : totalSpent > totalPlanned * 0.8 ? 'warning' : 'healthy')
-        : 'healthy',
-    };
-  });
-
-  ipcMain.handle('get-budget-forecast', (_, options?: any) => {
-    const bizId = getActiveBusinessId();
-    const months = options?.months || 3;
-    const now = new Date();
-    const forecasts = [];
-
-    // Get average monthly spending per category from last 6 months
-    const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, 1).toISOString().split('T')[0];
-    const avgSpending = db.prepare(
-      "SELECT category, AVG(monthly) as avgMonthly FROM (SELECT category, strftime('%Y-%m', date) as ym, SUM(amount) as monthly FROM expenses WHERE businessId = ? AND date >= ? AND is_deleted = 0 GROUP BY category, ym) GROUP BY category"
-    ).all(bizId, sixMonthsAgo) as any[];
-
-    for (let i = 1; i <= months; i++) {
-      const forecastMonth = now.getMonth() + i;
-      const forecastYear = now.getFullYear() + Math.floor(forecastMonth / 12);
-      const m = String((forecastMonth % 12) + 1).padStart(2, '0');
-      const y = String(forecastYear);
-
-      // Get budgets for this future month if they exist
-      const budgets = db.prepare('SELECT SUM(amount) as total FROM budgets WHERE businessId = ? AND (month = ? OR month IS NULL) AND (year = ? OR year IS NULL)').get(bizId, m, y) as any;
-
-      const estimatedSpend = avgSpending.reduce((s: number, a: any) => s + a.avgMonthly, 0);
-      forecasts.push({
-        month: m,
-        year: y,
-        label: `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(m)-1]} ${y}`,
-        planned: budgets?.total || 0,
-        estimated: Math.round(estimatedSpend),
-      });
-    }
-
-    return forecasts;
-  });
+  
 
   // ========== SUPPLIER PRICE CHECKS ==========
   ipcMain.handle('get-supplier-price-checks', (_, supplierId?: number) => {
@@ -4871,6 +4909,7 @@ export function registerIPCHandlers() {
         const paid = sale.paidAmount || sale.totalPrice;
         const change = sale.paymentMethod === 'Cash' && sale.paymentStatus !== 'Debt' && paid > sale.totalPrice ? paid - sale.totalPrice : 0;
         const commands = buildReceiptCommands({
+          paperWidth: cfg.paperWidth,
           lines: [{ name: sale.itemName || 'Item', quantity: sale.quantity, unit: sale.unit || 'pcs', unitPrice, total: sale.totalPrice }],
           subtotal: sale.totalPrice + (sale.discount || 0) - (sale.vat || 0),
           discount: sale.discount || 0,
@@ -4964,9 +5003,54 @@ export function registerIPCHandlers() {
     }
   });
 
+  ipcMain.handle('barcode-png', async (_e, value: string) => {
+    try {
+      const { barcodePng } = await import('@shega/shared');
+      const png = barcodePng(value);
+      if (!png) return { success: false, error: 'Cannot encode barcode value' };
+      const { dialog } = await import('electron');
+      const { BrowserWindow } = await import('electron');
+      const win = BrowserWindow.getAllWindows()[0];
+      const res = await dialog.showSaveDialog(win, {
+        defaultPath: `${value.replace(/[^0-9A-Za-z\-]/g, '_')}.png`,
+        filters: [{ name: 'PNG image', extensions: ['png'] }],
+      });
+      if (res.canceled || !res.filePath) return { success: false, canceled: true };
+      const fs = await import('fs');
+      fs.writeFileSync(res.filePath, Buffer.from(png));
+      return { success: true, path: res.filePath };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('barcode-png-dataurl', async (_e, value: string) => {
+    try {
+      const { barcodePng } = await import('@shega/shared');
+      const png = barcodePng(value);
+      if (!png) return { success: false, error: 'Cannot encode barcode value' };
+      return { success: true, dataUrl: 'data:image/png;base64,' + Buffer.from(png).toString('base64') };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('simulate-scan', async (_e, code?: string) => {
+    try {
+      const value = code && code.trim() ? code.trim() : String(Math.floor(100000000000 + Math.random() * 899999999999));
+      const win = (await import('electron')).BrowserWindow.getAllWindows()[0];
+      win?.webContents.executeJavaScript(
+        `window.dispatchEvent(new CustomEvent('shega:barcode-scan', { detail: ${JSON.stringify(value)} }))`,
+      );
+      return { success: true, value };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
   ipcMain.handle('print-test-page', async () => {
     try {
-      await printRaw(buildTestPageCommands());
+      await printRaw(buildTestPageCommands(getPrinterConfig().paperWidth));
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -5036,47 +5120,6 @@ export function registerIPCHandlers() {
   ipcMain.handle('sync:log', (_e, limit = 100) => {
     const rows = db.prepare('SELECT device_id, entity, entity_uuid, op, detail, created_at FROM sync_log ORDER BY id DESC LIMIT ?').all(limit) as any[];
     return rows;
-  });
-
-  // --- Cloud relay (3.6) — opt-in, no-op until backend configured ---
-  ipcMain.handle('cloud:status', () => getCloudStatus());
-  ipcMain.handle('cloud:sync', async () => {
-    return syncToCloud();
-  });
-  ipcMain.handle('cloud:save-config', (_e, url: string, key: string) => {
-    const urlStr = typeof url === 'string' ? url.trim() : '';
-    const keyStr = typeof key === 'string' ? key.trim() : '';
-    // Only http(s) cloud endpoints are ever dialed (no file:/javascript: etc.).
-    let parsed: URL;
-    try {
-      parsed = new URL(urlStr);
-    } catch {
-      return { ok: false, error: 'invalid cloud URL', configured: false };
-    }
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      return { ok: false, error: 'cloud URL must be http(s)', configured: false };
-    }
-    if (urlStr.length > 512 || keyStr.length > 256) {
-      return { ok: false, error: 'cloud config too long', configured: false };
-    }
-    if (!keyStr) {
-      return { ok: false, error: 'device key is required', configured: false };
-    }
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_url', ?)").run(urlStr);
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_device_key', ?)").run(keyStr);
-    return { ok: true, configured: true };
-  });
-  ipcMain.handle('cloud:set-enabled', (_e, enabled: boolean) => {
-    if (typeof enabled !== 'boolean') return { ok: false, error: 'expected boolean' };
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_enabled', ?)").run(String(enabled));
-    return { ok: true, enabled };
-  });
-  // 3.6 — observe this device's roster status from the cloud (remote block/disable).
-  ipcMain.handle('cloud:self-status', async () => {
-    await refreshCloudStatus();
-    const status = (db.prepare("SELECT value FROM settings WHERE key = 'cloud_device_status'").get() as any)?.value ?? null;
-    const blocked = (db.prepare("SELECT value FROM settings WHERE key = 'cloud_device_blocked'").get() as any)?.value === 'true';
-    return { status, blocked };
   });
 
   // --- Backup & Restore ---
@@ -5389,65 +5432,7 @@ export function registerIPCHandlers() {
     return { success: true };
   });
 
-  ipcMain.handle('reverse-adjustment', async (event, data: { adjustmentId: number; reason: string }) => {
-    requirePermission('adjustments.reverse');
-    if (!(await gateSensitiveAction(event.sender, { context: `Reverse adjustment #${data.adjustmentId}` }))) {
-      throw new Error('Manager approval required — action not executed');
-    }
-    const adjustment = db.prepare('SELECT * FROM adjustments WHERE id = ?').get(data.adjustmentId) as any;
-    if (!adjustment) throw new Error('Adjustment not found');
-    if (adjustment.reversalId) throw new Error('Adjustment has already been reversed');
-
-    const bizId = getActiveBusinessId();
-
-    const transaction = db.transaction(() => {
-      // Mark original as reversed
-      db.prepare('UPDATE adjustments SET reversalId = id, reversalReason = ?, reversedBy = ?, reversalDate = CURRENT_TIMESTAMP WHERE id = ?')
-        .run(data.reason, currentUserName || 'unknown', data.adjustmentId);
-
-      // Create compensating adjustment
-      let compensationType = adjustment.type;
-      if (adjustment.type === 'damage') compensationType = 'add_stock';
-      else if (adjustment.type === 'loss') compensationType = 'add_stock';
-      else if (adjustment.type === 'add_stock') compensationType = 'damage';
-      // Price adjustments: create opposite
-      else if (adjustment.type === 'price_increase') compensationType = 'price_decrease';
-      else if (adjustment.type === 'price_decrease') compensationType = 'price_increase';
-
-      const compResult = db.prepare('INSERT INTO adjustments (businessId, itemId, type, oldValue, newValue, quantity, unitType, reason, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-        bizId, adjustment.itemId, compensationType, adjustment.newValue, adjustment.oldValue, adjustment.quantity, adjustment.unitType, `Reversal of adjustment #${data.adjustmentId}: ${data.reason}`, new Date().toISOString().split('T')[0]
-      );
-
-      // Restore stock for stock-affecting types
-      if (['damage', 'loss', 'add_stock'].includes(adjustment.type) && adjustment.quantity) {
-        const restoreQty = (adjustment.type === 'damage' || adjustment.type === 'loss') ? adjustment.quantity : -adjustment.quantity;
-        db.prepare('UPDATE items SET totalBaseQuantity = totalBaseQuantity + ? WHERE id = ?').run(restoreQty, adjustment.itemId);
-
-        const defWhId = getDefaultWarehouseId();
-        const whRow = db.prepare('SELECT id FROM warehouse_inventory WHERE warehouseId = ? AND itemId = ?').get(defWhId, adjustment.itemId) as any;
-        if (whRow) {
-          db.prepare('UPDATE warehouse_inventory SET quantity = quantity + ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(restoreQty, whRow.id);
-        } else if (restoreQty > 0) {
-          db.prepare('INSERT INTO warehouse_inventory (warehouseId, itemId, quantity) VALUES (?, ?, ?)').run(defWhId, adjustment.itemId, restoreQty);
-        }
-        db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(defWhId, adjustment.itemId, `adj_reversal`, Math.abs(restoreQty), 'adjustment', `Reversal of adjustment #${data.adjustmentId}: ${data.reason}`);
-      }
-
-      // Restore price for price-affecting types
-      if (adjustment.type === 'price_increase' || adjustment.type === 'price_decrease') {
-        if (adjustment.unitType === 'base') {
-          db.prepare('UPDATE items SET baseSellingPrice = ? WHERE id = ?').run(adjustment.oldValue, adjustment.itemId);
-        } else {
-          db.prepare('UPDATE items SET packSellingPrice = ? WHERE id = ?').run(adjustment.oldValue, adjustment.itemId);
-        }
-      }
-    });
-
-    transaction();
-    insertAuditLog('reverse_adjustment', 'adjustment', data.adjustmentId, 'reversalId', null, String(data.adjustmentId), `Adjustment #${data.adjustmentId} reversed by ${currentUserName || 'unknown'}. Reason: ${data.reason}`);
-    return { success: true };
-  });
+  
 
   ipcMain.handle('get-audit-logs', (_, options?: { limit?: number; offset?: number; entityType?: string; entityId?: number; action?: string; fromDate?: string; toDate?: string }) => {
     requirePermission('audit.view');
@@ -6058,7 +6043,6 @@ export function registerIPCHandlers() {
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000).toISOString().split('T')[0];
     const sixtyDaysAgo = new Date(now.getTime() - 60 * 86400000).toISOString().split('T')[0];
     const ninetyDaysAgo = new Date(now.getTime() - 90 * 86400000).toISOString().split('T')[0];
-    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
 
     const factors: { name: string; score: number; weight: number; status: 'good' | 'warning' | 'critical'; detail: string }[] = [];
     const recommendations: string[] = [];
@@ -6111,27 +6095,7 @@ export function registerIPCHandlers() {
       if (margin < 20) recommendations.push('Your gross profit margin is low. Review pricing strategy and negotiate better purchase prices from suppliers.');
     } catch (e) { console.error('[Search]', e); }
 
-    // 3. Expense Control (weight: 15)
-    try {
-      const totalExpenses = db.prepare(
-        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND date <= ? AND businessId = ?"
-      ).get(thirtyDaysAgo, today, bizId) as any;
-      const last30Rev = db.prepare(
-        "SELECT COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) >= ? AND DATE(createdAt) <= ? AND businessId = ?"
-      ).get(thirtyDaysAgo, today, bizId) as any;
-      const expenseRatio = last30Rev.revenue > 0 ? (totalExpenses.total / last30Rev.revenue) * 100 : 0;
-      let expenseScore = Math.min(100, Math.max(0, 100 - expenseRatio * 2));
-      factors.push({
-        name: 'Expense Control',
-        score: Math.round(expenseScore),
-        weight: 15,
-        status: expenseRatio <= 30 ? 'good' : expenseRatio <= 60 ? 'warning' : 'critical',
-        detail: `Expenses are ${expenseRatio.toFixed(1)}% of revenue (ETB ${(totalExpenses.total || 0).toLocaleString()})`
-      });
-      if (expenseRatio > 50) recommendations.push('Expenses are eating into profits. Review and cut non-essential spending.');
-    } catch (e) { console.error('[Search]', e); }
-
-    // 4. Inventory Health (weight: 15)
+    // 3. Inventory Health (weight: 15)
     try {
       const totalItems = db.prepare("SELECT COUNT(*) as count FROM items WHERE businessId = ? AND is_deleted = 0").get(bizId) as any;
       const lowStock = db.prepare("SELECT COUNT(*) as count FROM items WHERE totalBaseQuantity < 10 AND businessId = ? AND is_deleted = 0").get(bizId) as any;
@@ -6176,30 +6140,7 @@ export function registerIPCHandlers() {
       if (slowMoving.count > 5) recommendations.push('You have slow-moving inventory. Consider discounts or bundles to clear stagnant stock.');
     } catch (e) { console.error('[Search]', e); }
 
-    // 6. Budget Utilization (weight: 10)
-    try {
-      const budgets = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total FROM budgets WHERE businessId = ? AND year = ? AND (month = ? OR month IS NULL)").get(bizId, String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0')) as any;
-      if (budgets.count > 0) {
-        const expenses = db.prepare(
-          "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE businessId = ? AND date >= ? AND date <= ?"
-        ).get(bizId, monthStart, today) as any;
-        const budgetUsage = budgets.total > 0 ? (expenses.total / budgets.total) * 100 : 0;
-        let budgetScore = budgetUsage <= 100 ? Math.round(100 - Math.abs(budgetUsage - 50) * 0.5) : Math.max(0, Math.round(100 - (budgetUsage - 100) * 1.5));
-        factors.push({
-          name: 'Budget Adherence',
-          score: budgetScore,
-          weight: 10,
-          status: budgetUsage <= 100 ? 'good' : 'critical',
-          detail: `${budgetUsage.toFixed(1)}% of budget used (ETB ${(expenses.total || 0).toLocaleString()} / ETB ${(budgets.total || 0).toLocaleString()})`
-        });
-        if (budgetUsage > 100) recommendations.push('You have exceeded your budget. Review spending and adjust budget allocations.');
-      } else {
-        factors.push({ name: 'Budget Adherence', score: 50, weight: 10, status: 'warning', detail: 'No budgets set for this period. Set budgets to track spending.' });
-        recommendations.push('Set up monthly budgets to better track and control your expenses.');
-      }
-    } catch (e) { console.error('[Search]', e); }
-
-    // 7. Customer Activity (weight: 10)
+    // 6. Customer Activity (weight: 10)
     try {
       const activeCustomers = db.prepare(`
         SELECT COUNT(DISTINCT TRIM(customerName)) as count FROM sales
@@ -6218,7 +6159,7 @@ export function registerIPCHandlers() {
       if (custScore < 40) recommendations.push('Customer engagement is low. Launch a loyalty program or email campaign to bring customers back.');
     } catch (e) { console.error('[Search]', e); }
 
-    // 8. Revenue Growth Trend (weight: 5)
+    // 7. Revenue Growth Trend (weight: 5)
     try {
       const currentMonthRev = db.prepare(
         "SELECT COALESCE(SUM(totalPrice), 0) as revenue FROM sales WHERE DATE(createdAt) >= ? AND businessId = ?"
@@ -6369,51 +6310,6 @@ export function registerIPCHandlers() {
           type: 'overstocked', severity: 'info',
           title: 'Overstocked Items',
           message: `${overstocked.map((i: any) => `${i.name} (${i.totalBaseQuantity} ${i.baseUnit})`).join(', ')}. Consider reducing future orders.`,
-        });
-      }
-    } catch (e) { console.error('[Search]', e); }
-
-    // Unusual Expense Increase
-    try {
-      const currentExpenses = db.prepare(
-        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND businessId = ?"
-      ).get(thirtyDaysAgo, bizId) as any;
-      const prevExpenses = db.prepare(
-        "SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND date < ? AND businessId = ?"
-      ).get(sixtyDaysAgo, thirtyDaysAgo, bizId) as any;
-      if (prevExpenses.total > 0) {
-        const change = ((currentExpenses.total - prevExpenses.total) / prevExpenses.total) * 100;
-        if (change > 30) {
-          const topCategory = db.prepare(`
-            SELECT category, SUM(amount) as total FROM expenses
-            WHERE date >= ? AND businessId = ? GROUP BY category ORDER BY total DESC LIMIT 1
-          `).get(thirtyDaysAgo, bizId) as any;
-          insights.push({
-            type: 'expense_increase', severity: 'warning',
-            title: 'Expenses Up Significantly',
-            message: `Expenses increased ${change.toFixed(0)}% vs last month${topCategory ? `. Top category: ${topCategory.category} (ETB ${(topCategory.total || 0).toLocaleString()})` : ''}. Review for potential savings.`,
-            action: { label: 'View Expenses', route: '/expenses' }
-          });
-        }
-      }
-    } catch (e) { console.error('[Search]', e); }
-
-    // Budget Overruns
-    try {
-      const overrunBudgets = db.prepare(`
-        SELECT b.category, b.amount as budgetAmount,
-          COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) as spent
-        FROM budgets b
-        WHERE b.businessId = ? AND b.month = ? AND b.year = ?
-          AND COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) > b.amount
-        ORDER BY (COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.businessId = ? AND e.category = b.category AND e.date >= ? AND e.date <= ?), 0) - b.amount) DESC LIMIT 3
-      `).all(bizId, monthStart, today, bizId, String(now.getMonth() + 1).padStart(2, '0'), String(now.getFullYear()), bizId, monthStart, today, bizId, monthStart, today) as any[];
-      if (overrunBudgets.length > 0) {
-        insights.push({
-          type: 'budget_overrun', severity: 'critical',
-          title: 'Budget Overruns Detected',
-          message: overrunBudgets.map((b: any) => `${b.category}: ETB ${(b.spent || 0).toLocaleString()} / ETB ${(b.budgetAmount || 0).toLocaleString()}`).join(' · '),
-          action: { label: 'View Budgets', route: '/budgets' }
         });
       }
     } catch (e) { console.error('[Search]', e); }
@@ -6906,13 +6802,49 @@ export function registerIPCHandlers() {
   });
 
   // ========== POS MODULE: SHIFTS ==========
+  ipcMain.handle('pos:products', () => {
+    requirePermission('sales.create');
+    const bizId = getActiveBusinessId();
+    return db.prepare(`
+      SELECT i.*, c.name as categoryName
+      FROM items i
+      LEFT JOIN categories c ON i.categoryId = c.id
+      WHERE i.businessId = ? AND i.is_deleted = 0 AND (i.isActive = 1 OR i.isActive IS NULL)
+      ORDER BY i.name COLLATE NOCASE
+    `).all(bizId);
+  });
+
+  ipcMain.handle('pos:categories', () => {
+    requirePermission('sales.create');
+    const bizId = getActiveBusinessId();
+    return db.prepare(`
+      SELECT DISTINCT c.id, c.name, c.icon
+      FROM items i
+      LEFT JOIN categories c ON i.categoryId = c.id
+      WHERE i.businessId = ? AND i.is_deleted = 0 AND i.categoryId IS NOT NULL
+      ORDER BY c.name COLLATE NOCASE
+    `).all(bizId);
+  });
+
+  ipcMain.handle('pos:shift-by-register', () => {
+    const bizId = getActiveBusinessId();
+    return db.prepare(`
+      SELECT r.id, r.name, s.id as shiftId, s.status, s.openedAt, s.openingFloat, s.expectedCash,
+        s.cashierId
+      FROM registers r
+      LEFT JOIN shifts s ON s.registerId = r.id AND s.status IN ('open', 'mid_audit', 'blind_count')
+      WHERE r.businessId = ? AND r.isActive = 1 AND r.is_deleted = 0
+      ORDER BY r.name COLLATE NOCASE
+    `).all(bizId);
+  });
+
   ipcMain.handle('shift:open', (_, data: { registerId: number; cashierId: number; openingFloat: number }) => {
     const bizId = getActiveBusinessId();
     return shifts.openShift(bizId, data.registerId, data.cashierId, data.openingFloat);
   });
 
-  ipcMain.handle('shift:close', (_, shiftId: number, data: { closedBy: number; closingCash: number; notes?: string }) => {
-    return shifts.closeShift(shiftId, data.closedBy, data.closingCash, data.notes);
+  ipcMain.handle('shift:close', (_, shiftId: number, data: { closingCash: number; cashDrawerCounts?: any[]; notes?: string }) => {
+    return shifts.closeShift(shiftId, data.closingCash, data.cashDrawerCounts || [], data.notes);
   });
 
   ipcMain.handle('shift:mid-audit', (_, shiftId: number, countedCash: number, notes?: string) => {
@@ -6931,6 +6863,10 @@ export function registerIPCHandlers() {
     return shifts.getShiftById(shiftId);
   });
 
+  ipcMain.handle('shift:last-by-cashier', (_, cashierId: number) => {
+    return shifts.getLastShiftByCashier(cashierId);
+  });
+
   ipcMain.handle('shift:transactions', (_, shiftId: number) => {
     return shifts.getShiftTransactions(shiftId);
   });
@@ -6939,8 +6875,8 @@ export function registerIPCHandlers() {
     return shifts.generateShiftReport(shiftId);
   });
 
-  ipcMain.handle('shift:record-transaction', (_, data: { shiftId: number; type: string; amount: number; saleId?: number; paymentMethod?: string; notes?: string }) => {
-    return shifts.addShiftTransaction(data.shiftId, data.type, data.amount, data.saleId, data.paymentMethod, data.notes);
+  ipcMain.handle('shift:record-transaction', (_, data: { shiftId: number; saleId?: number | null; paymentMethod: string; amount: number; notes?: string }) => {
+    return shifts.addShiftTransaction(data.shiftId, data.saleId ?? null, data.paymentMethod, data.amount);
   });
 
   // ========== POS MODULE: REPORTS ==========
@@ -7091,6 +7027,8 @@ export function registerIPCHandlers() {
   registerBusinessDomainHandlers({
     getActiveBusinessId,
     isOwnerOrSuper: () => currentUserRole === 'super_admin' || currentUserRole === 'owner',
+    getUserRole: () =>
+      currentUserRole === 'super_admin' ? 'owner' : (currentUserRole ?? 'cashier'),
     buildPermissionContext: () => {
       // Employees resolve from their canonical @shega/shared role; local admins
       // and owner-level sessions keep full access to the shared business model.

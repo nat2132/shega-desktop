@@ -6,34 +6,28 @@ const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Inventory = lazy(() => import('./pages/Inventory'))
 const Sales = lazy(() => import('./pages/Sales'))
 const SaleDetail = lazy(() => import('./pages/SaleDetail'))
-const Expenses = lazy(() => import('./pages/Expenses'))
 const Customers = lazy(() => import('./pages/Customers'))
 const Analytics = lazy(() => import('./pages/Analytics'))
 const Settings = lazy(() => import('./pages/Settings'))
-const Adjustments = lazy(() => import('./pages/Adjustments'))
 const Warehouses = lazy(() => import('./pages/Warehouses'))
 const Employees = lazy(() => import('./pages/Employees'))
 const Shipments = lazy(() => import('./pages/Shipments'))
 const AuditLogs = lazy(() => import('./pages/AuditLogs'))
 const UsersEmployees = lazy(() => import('./pages/UsersEmployees'))
-const BusinessCenter = lazy(() => import('./pages/BusinessCenter'))
 const Suppliers = lazy(() => import('./pages/Suppliers'))
-const AdminManagement = lazy(() => import('./pages/AdminManagement'))
 const DebtManagement = lazy(() => import('./pages/DebtManagement'))
-const ReminderHistory = lazy(() => import('./pages/ReminderHistory'))
 const Reports = lazy(() => import('./pages/Reports'))
-const BudgetManagement = lazy(() => import('./pages/BudgetManagement'))
-const Contacts = lazy(() => import('./pages/Contacts'))
-const Orders = lazy(() => import('./pages/Orders'))
-const OrderDetail = lazy(() => import('./pages/OrderDetail'))
 const SubscriptionDashboard = lazy(() => import('./pages/SubscriptionDashboard'))
 const SubscriptionPayment = lazy(() => import('./pages/SubscriptionPayment'))
-const GiftCards = lazy(() => import('./pages/GiftCards'))
 const Register = lazy(() => import('./pages/Register'))
+const CashierLayout = lazy(() => import('./layouts/CashierLayout'))
+const CashierPOS = lazy(() => import('./pages/cashier/CashierPOS'))
+const CashierMySales = lazy(() => import('./pages/cashier/CashierMySales'))
 import { useAuth } from './context/AuthContext'
 import { useSettings } from './context/SettingsContext'
 import { SubscriptionProvider, useSubscription } from './context/SubscriptionContext'
 import { TutorialOverlay } from './components/tutorial'
+import ErrorBoundary from './components/ErrorBoundary'
 import DeviceLockOverlay from './components/DeviceLockOverlay'
 import PinApprovalProvider from './components/PinApprovalProvider'
 import { initSound, playSound } from './utils/sound'
@@ -73,14 +67,19 @@ function ProtectedRoute({ children, permission, moduleId }: { children: React.Re
   return <>{children}</>;
 }
 
-function SuperAdminRoute({ children }: { children: React.ReactNode }) {
-  const { isSuperAdmin } = useAuth();
-  
-  if (!isSuperAdmin) {
-    return <Navigate to="/" replace />;
+function TeamAdminRoute({ children }: { children: React.ReactNode }) {
+  const { isSuperAdmin, hasPermission } = useAuth();
+  const { isModuleEnabled } = useSettings();
+  const { isPremium, isTrial } = useSubscription();
+  const location = useLocation();
+
+  if (isSuperAdmin) return <>{children}</>;
+  if (isPremium || isTrial) {
+    if (!isModuleEnabled('employees')) return <Navigate to="/" replace />;
+    if (!hasPermission('employees')) return <Navigate to="/" replace />;
+    return <>{children}</>;
   }
-  
-  return <>{children}</>;
+  return <Navigate to="/subscription" state={{ lockedFeature: 'users', from: location }} replace />;
 }
 
 function PremiumRoute({ children, premiumFeature }: { children: React.ReactNode; premiumFeature: string }) {
@@ -95,7 +94,7 @@ function PremiumRoute({ children, premiumFeature }: { children: React.ReactNode;
 }
 
 function App() {
-  const { isAuthenticated, login } = useAuth();
+  const { isAuthenticated, login, isCashier } = useAuth();
   const location = useLocation();
   const [phase, setPhase] = useState<AppPhase>('splash');
   const [hasAdmins, setHasAdmins] = useState(true);
@@ -107,6 +106,17 @@ function App() {
   useEffect(() => {
     checkSystemState();
     initSound().then(() => playSound('start'));
+
+    // Business switched elsewhere (Settings/BusinessCenter): reload the
+    // current route so no data from the previous business stays visible.
+    const onBizChanged = () => {
+      try { window.location.reload(); } catch {}
+    };
+    window.api?.onBusinessChanged?.(onBizChanged);
+    window.addEventListener('business-changed', onBizChanged);
+    return () => {
+      window.removeEventListener('business-changed', onBizChanged);
+    };
   }, []);
 
   const checkSystemState = async () => {
@@ -138,6 +148,28 @@ function App() {
     return result;
   };
 
+  /** PIN-only login for a picked profile (Who's using Shega?). */
+  const handleLoginByUser = async (source: 'admin' | 'employee' | 'roster', id: number, pin: string) => {
+    const result = await window.api.loginByUser(source, id, pin);
+    if (result?.success) {
+      setCurrentAdminFromResult(result);
+      if (isFirstTime) {
+        setPhase('business-setup');
+      } else {
+        setPhase('loading');
+      }
+    }
+    return result;
+  };
+
+  /** Apply a login-by-user result to the auth context (mirrors useAuth.login). */
+  const setCurrentAdminFromResult = (result: any) => {
+    // The AuthContext is updated by the useAuth().loginByUser below via
+    // window event; simplest reliable path is dispatching a login event the
+    // context listens to. See AuthContext loginByUser implementation.
+    window.dispatchEvent(new CustomEvent('shega:login-by-user', { detail: result.admin }));
+  };
+
   const handleRegister = async (name: string, username: string, pin: string, role: string = 'super_admin', permissions: string[] = []) => {
     try {
       const result = await window.api?.insertAdmin({
@@ -164,6 +196,16 @@ function App() {
     } catch (err: any) {
       return { success: false, error: err.message || 'Registration failed' };
     }
+  };
+
+  // Employee joined an existing business on this desktop: the main process has
+  // already created the local PIN identity + cloud config once the owner
+  // approved. Sign them in and go straight to the app (no first-run wizard).
+  const handleJoin = async (username: string, pin: string) => {
+    try { await window.api?.setSetting('onboarding_completed', 'true'); } catch (err) { /* non-fatal */ }
+    const result = await login(username, pin);
+    if (result.success) setPhase('loading');
+    return result;
   };
 
   const handleRecoveryKeyAcknowledged = () => {
@@ -218,7 +260,9 @@ function App() {
     return (
       <AuthScreen
         onLogin={handleLogin}
+        onLoginByUser={handleLoginByUser}
         onRegister={handleRegister}
+        onJoin={handleJoin}
         hasAdmins={hasAdmins}
       />
     );
@@ -255,6 +299,39 @@ function App() {
     return <LoadingScreen onComplete={handleLoadingComplete} />;
   }
 
+  // Phase: Ready — cashier uses a dedicated POS-first shell
+  if (isCashier) {
+    return (
+      <TooltipProvider>
+        <Toaster />
+        <Suspense fallback={<div className="flex h-screen items-center justify-center"><div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" /></div>}>
+          <CashierLayout>
+            {(() => {
+              if (location.pathname.startsWith('/cashier')) {
+                return (
+                  <Routes>
+                    <Route path="/cashier/sales" element={<CashierMySales />} />
+                    <Route path="/cashier/customers" element={<ProtectedRoute permission="customers" moduleId="customers"><Customers /></ProtectedRoute>} />
+                    <Route path="*" element={<Navigate to="/pos" replace />} />
+                  </Routes>
+                );
+              }
+              return (
+                <Routes>
+                  <Route path="/" element={<Navigate to="/pos" replace />} />
+                  <Route path="/pos" element={<ProtectedRoute permission="sales.create"><CashierPOS /></ProtectedRoute>} />
+                  <Route path="*" element={<Navigate to="/pos" replace />} />
+                </Routes>
+              );
+            })()}
+          </CashierLayout>
+        </Suspense>
+        <PinApprovalProvider />
+        <DeviceLockOverlay />
+      </TooltipProvider>
+    );
+  }
+
   // Phase: Ready — main app
   return (
     <SubscriptionProvider>
@@ -289,28 +366,20 @@ function App() {
                     <Route path="/inventory" element={<ProtectedRoute permission="inventory" moduleId="inventory"><Inventory /></ProtectedRoute>} />
                     <Route path="/sales" element={<ProtectedRoute permission="sales" moduleId="sales"><Sales /></ProtectedRoute>} />
                     <Route path="/sales/:id" element={<ProtectedRoute permission="sales" moduleId="sales"><SaleDetail /></ProtectedRoute>} />
-                    <Route path="/expenses" element={<ProtectedRoute permission="expenses" moduleId="expenses"><Expenses /></ProtectedRoute>} />
                     <Route path="/customers" element={<ProtectedRoute permission="customers" moduleId="customers"><Customers /></ProtectedRoute>} />
                     <Route path="/analytics" element={<ProtectedRoute permission="analytics" moduleId="analytics"><Analytics /></ProtectedRoute>} />
-                    <Route path="/adjustments" element={<ProtectedRoute permission="adjustments" moduleId="adjustments"><Adjustments /></ProtectedRoute>} />
                     <Route path="/warehouses" element={<ProtectedRoute permission="warehouses" moduleId="warehouses"><Warehouses /></ProtectedRoute>} />
                     <Route path="/employees" element={<PremiumRoute premiumFeature="employees"><ProtectedRoute permission="employees" moduleId="employees"><Employees /></ProtectedRoute></PremiumRoute>} />
-                    <Route path="/users" element={<PremiumRoute premiumFeature="users"><ProtectedRoute permission="employees" moduleId="employees"><UsersEmployees /></ProtectedRoute></PremiumRoute>} />
-                    <Route path="/business" element={<ProtectedRoute permission="dashboard"><BusinessCenter /></ProtectedRoute>} />
+                    <Route path="/users" element={<TeamAdminRoute><UsersEmployees /></TeamAdminRoute>} />
+                    <Route path="/business" element={<ProtectedRoute permission="dashboard"><Dashboard /></ProtectedRoute>} />
                     <Route path="/shipments" element={<PremiumRoute premiumFeature="shipments"><ProtectedRoute permission="shipments" moduleId="shipments"><Shipments /></ProtectedRoute></PremiumRoute>} />
                     <Route path="/suppliers" element={<PremiumRoute premiumFeature="suppliers"><ProtectedRoute permission="suppliers" moduleId="suppliers"><Suppliers /></ProtectedRoute></PremiumRoute>} />
                     <Route path="/audit-logs" element={<PremiumRoute premiumFeature="audit"><ProtectedRoute permission="audit.view"><AuditLogs /></ProtectedRoute></PremiumRoute>} />
                     <Route path="/debt-management" element={<ProtectedRoute permission="customers" moduleId="customers"><DebtManagement /></ProtectedRoute>} />
-                    <Route path="/reminders" element={<ProtectedRoute permission="dashboard"><ReminderHistory /></ProtectedRoute>} />
                     <Route path="/reports" element={<PremiumRoute premiumFeature="reports"><ProtectedRoute permission="analytics" moduleId="analytics"><Reports /></ProtectedRoute></PremiumRoute>} />
-                    <Route path="/budgets" element={<ProtectedRoute permission="expenses" moduleId="expenses"><BudgetManagement /></ProtectedRoute>} />
-                    <Route path="/gift-cards" element={<ProtectedRoute permission="inventory" moduleId="inventory"><GiftCards /></ProtectedRoute>} />
-                    <Route path="/contacts" element={<ProtectedRoute permission="customers" moduleId="customers"><Contacts /></ProtectedRoute>} />
-                    <Route path="/orders" element={<ProtectedRoute permission="orders.view" moduleId="sales"><Orders /></ProtectedRoute>} />
-                    <Route path="/orders/:id" element={<ProtectedRoute permission="orders.view" moduleId="sales"><OrderDetail /></ProtectedRoute>} />
                     <Route path="/subscription" element={<ProtectedRoute permission="dashboard"><SubscriptionDashboard /></ProtectedRoute>} />
                     <Route path="/subscription/payment" element={<ProtectedRoute permission="dashboard"><SubscriptionPayment /></ProtectedRoute>} />
-                    <Route path="/admin-management" element={<SuperAdminRoute><AdminManagement /></SuperAdminRoute>} />
+                    <Route path="/admin-management" element={<Navigate to="/users" replace />} />
                     <Route path="/settings" element={<ProtectedRoute permission="settings"><Settings /></ProtectedRoute>} />
                   </Routes>
                 </motion.div>
@@ -321,7 +390,9 @@ function App() {
         </SidebarInset>
       </SidebarProvider>
       <NotificationModal />
-      <TutorialOverlay />
+      <ErrorBoundary>
+        <TutorialOverlay />
+      </ErrorBoundary>
       <DeviceLockOverlay />
       <PinApprovalProvider />
     </TooltipProvider>

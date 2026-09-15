@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, screen } from 'electron';
 import { join } from 'path';
 import { initDB } from './database';
 import { registerIPCHandlers } from './ipc-handlers';
@@ -30,11 +30,25 @@ function createWindow() {
     } catch {}
   }
 
+  if (windowState.x !== undefined && windowState.y !== undefined) {
+    const visible = screen.getAllDisplays().some(({ workArea }) => {
+      const right = windowState.x! + Math.min(windowState.width, workArea.width);
+      const bottom = windowState.y! + Math.min(windowState.height, workArea.height);
+      return right > workArea.x && bottom > workArea.y
+        && windowState.x! < workArea.x + workArea.width
+        && windowState.y! < workArea.y + workArea.height;
+    });
+    if (!visible) {
+      delete windowState.x;
+      delete windowState.y;
+    }
+  }
+
   const mainWindow = new BrowserWindow({
     width: windowState.width,
     height: windowState.height,
     ...(windowState.x !== undefined && windowState.y !== undefined ? { x: windowState.x, y: windowState.y } : {}),
-    show: false,
+    show: true,
     autoHideMenuBar: true,
     icon: join(__dirname, '../../src/assets/images/logo.ico'),
     webPreferences: {
@@ -59,6 +73,14 @@ function createWindow() {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show();
+    mainWindow.focus();
+  });
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
   });
 
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -80,6 +102,7 @@ function createWindow() {
     if (isMain) {
       logger.error('did-fail-load', { code, desc, url });
       console.error('[Did Fail Load]', code, desc, url);
+      mainWindow.show();
     }
   });
   mainWindow.webContents.on('render-process-gone', (_e, details) => {

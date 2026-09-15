@@ -1,3 +1,5 @@
+import type { MorVerification } from '@shega/shared';
+
 export interface ElectronAPI {
   // Businesses
   getActiveBusiness: () => Promise<any>;
@@ -16,6 +18,11 @@ export interface ElectronAPI {
 
   // Items
   getItems: (options?: any) => Promise<any[]>;
+  generateShegaCode: () => Promise<string>;
+  itemBarcodesList: (itemId: number) => Promise<any[]>;
+  itemBarcodesAdd: (itemId: number, barcode: string) => Promise<number>;
+  itemBarcodesRemove: (barcodeId: number) => Promise<void>;
+  itemBarcodesSetPrimary: (barcodeId: number) => Promise<void>;
   getItem: (id: number) => Promise<any>;
   insertItem: (item: any) => Promise<number>;
   updateItem: (id: number, item: any) => Promise<any>;
@@ -24,12 +31,6 @@ export interface ElectronAPI {
   getReorderSuggestions: () => Promise<any[]>;
   getReportDrilldowns: (range: { start: string; end: string }) => Promise<any>;
   getGlJournal: (range: { start: string; end: string }) => Promise<any>;
-  getGiftCards: () => Promise<any[]>;
-  issueGiftCard: (data: any) => Promise<any>;
-  redeemGiftCard: (data: any) => Promise<any>;
-  topupGiftCard: (data: any) => Promise<any>;
-  voidGiftCard: (id: number) => Promise<any>;
-  getGiftCardTransactions: (cardId: number) => Promise<any[]>;
   getExpiringItems: () => Promise<any[]>;
   getItemsBySupplier: (supplierId: number) => Promise<any[]>;
   restockItem: (id: number, quantity: number) => Promise<{ success: boolean }>;
@@ -51,18 +52,6 @@ export interface ElectronAPI {
   getReturns: (options?: any) => Promise<any[]>;
   voidSale: (data: any) => Promise<any>;
   reverseDebtPayment: (data: any) => Promise<any>;
-
-  // Expenses
-  getExpenses: (options?: any) => Promise<any[]>;
-  insertExpense: (expense: any) => Promise<number>;
-  updateExpense: (id: number, expense: any) => Promise<any>;
-  deleteExpense: (id: number) => Promise<any>;
-
-  // Adjustments
-  getAdjustments: (options?: any) => Promise<any[]>;
-  insertAdjustment: (adjustment: any) => Promise<number>;
-  insertBulkAdjustments: (adjustments: any[]) => Promise<number>;
-  reverseAdjustment: (data: any) => Promise<any>;
 
   // Notifications
   checkNotifications: () => Promise<any>;
@@ -107,6 +96,14 @@ export interface ElectronAPI {
   // Analytics / Dashboard
   getDashboardStats: () => Promise<any>;
   getRecentActivity: (limit?: number, dateRange?: { start: string; end: string }) => Promise<any[]>;
+
+  // P2P Yjs + WebRTC sync
+  p2pHealth: () => Promise<any>;
+  p2pDevices: () => Promise<any[]>;
+  p2pAnnounce: () => Promise<boolean>;
+  p2pRevokeDevice: (deviceId: string) => Promise<boolean>;
+  p2pRenameDevice: (deviceId: string, name: string) => Promise<boolean>;
+  p2pRecordCounts: () => Promise<Record<string, number>>;
   getAnalytics: (period: string, dateRange?: { start: string; end: string }) => Promise<any>;
   getVatReport: (dateRange?: { start: string; end: string }) => Promise<any>;
   getVoidedSales: (options?: any) => Promise<any>;
@@ -132,7 +129,9 @@ export interface ElectronAPI {
   // Admin Management
   login: (username: string, pin: string) => Promise<any>;
   getAdmins: () => Promise<any[]>;
-  getCurrentAdmin: (id: number) => Promise<any>;
+  getLoginUsers: () => Promise<Array<{ key: string; source: 'admin' | 'employee' | 'roster'; id: number; name: string; username: string | null; role: string; roleName: string; avatar: string | null; isOwner: boolean }>>;
+  loginByUser: (source: 'admin' | 'employee' | 'roster', id: number, pin: string) => Promise<any>;
+  getCurrentAdmin: (id: number, isEmployee?: boolean) => Promise<any>;
   insertAdmin: (admin: any) => Promise<any>;
   updateAdmin: (id: number, admin: any) => Promise<any>;
   deleteAdmin: (id: number) => Promise<any>;
@@ -258,31 +257,15 @@ export interface ElectronAPI {
 
   // Receipt Printing
   printReceipt: (sale: any) => Promise<{ success: boolean; error?: string }>;
+  barcodePng: (value: string) => Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }>;
+  barcodePngDataUrl: (value: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
+  simulateScan: (code?: string) => Promise<{ success: boolean; value?: string; error?: string }>;
 
   // Draft Sales
   getDraftSales: () => Promise<any[]>;
   getDraftSale: (id: number) => Promise<any>;
   saveDraftSale: (data: any) => Promise<{ success: boolean; id?: number }>;
   deleteDraftSale: (id: number) => Promise<any>;
-
-  // Contacts
-  getContacts: (options?: any) => Promise<any[]>;
-  insertContact: (data: any) => Promise<{ success: boolean; id?: number }>;
-  updateContact: (id: number, data: any) => Promise<{ success: boolean }>;
-  deleteContact: (id: number) => Promise<{ success: boolean }>;
-
-  // Budgets
-  getBudgets: (options?: any) => Promise<any[]>;
-  setBudget: (data: any) => Promise<{ success: boolean; id?: number }>;
-  deleteBudget: (id: number) => Promise<any>;
-  getBudgetAdjustments: (budgetId: number) => Promise<any[]>;
-  createBudgetAdjustment: (data: any) => Promise<{ success: boolean; id?: number }>;
-  approveBudgetAdjustment: (id: number, approvedBy: string) => Promise<{ success: boolean }>;
-  duplicateBudget: (fromData: any, toMonth: string, toYear: string) => Promise<{ success: boolean; count?: number }>;
-  getBudgetAlerts: (options?: any) => Promise<any[]>;
-  acknowledgeBudgetAlert: (id: number) => Promise<{ success: boolean }>;
-  getBudgetReport: (options?: any) => Promise<any>;
-  getBudgetForecast: (options?: any) => Promise<any>;
 
   // Supplier Price Checks
   getSupplierPriceChecks: (supplierId?: number) => Promise<any[]>;
@@ -349,6 +332,20 @@ export interface ElectronAPI {
   onUpdateError: (callback: (data: { message: string }) => void) => void;
   removeUpdateListeners: () => void;
 
+  // POS Shifts (cashier)
+  posProducts: () => Promise<any[]>;
+  posCategories: () => Promise<any[]>;
+  posRegisters: () => Promise<any[]>;
+  posLastShift: (cashierId: number) => Promise<any>;
+  shiftOpen: (data: { registerId: number; cashierId: number; openingFloat: number; notes?: string }) => Promise<number>;
+  shiftClose: (shiftId: number, data: { closingCash: number; cashDrawerCounts?: any[]; notes?: string }) => Promise<any>;
+  shiftMidAudit: (shiftId: number, countedCash: number, notes?: string) => Promise<any>;
+  shiftActive: (registerId: number) => Promise<any>;
+  shiftById: (shiftId: number) => Promise<any>;
+  shiftTransactions: (shiftId: number) => Promise<any[]>;
+  shiftSummary: (shiftId: number) => Promise<any>;
+  shiftRecordTransaction: (data: { shiftId: number; saleId?: number | null; paymentMethod: string; amount: number; notes?: string }) => Promise<any>;
+
   // Shared Business Model (registers, devices, roles, people)
   businessListRegisters: () => Promise<any[]>;
   businessAddRegister: (name: string, locationId?: number) => Promise<any>;
@@ -374,8 +371,36 @@ export interface ElectronAPI {
   pairingList: () => Promise<any[]>;
   pairingInvite: (input: { employeeName?: string; role?: string; register?: string; location?: string }) => Promise<any>;
   pairingRevoke: (id: number) => Promise<any>;
-  pairingDecide: (id: number, decision: 'approve' | 'reject') => Promise<any>;
+  pairingDecide: (id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>) => Promise<any>;
   pairingQrCode: (text: string) => Promise<string>;
+
+  // Join an existing business (desktop employee onboarding via 6-digit code)
+  joinLookup: (code: string) => Promise<{ business_id: number; business_name: string; employee_name: string | null; role: string; register: string | null; location: string | null; expires_at: string }>;
+  joinAccept: (input: { code: string; email: string; password: string; name?: string; deviceName?: string }) => Promise<{ status: 'pending' | 'active'; invitation_id: number | null; device_key: string | null; device_id: string; business_name: string | null; role: string | null; email: string }>;
+  joinStatus: (invitationId?: number) => Promise<{ phase: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'expired' | 'error' | 'none'; status?: string; business_name?: string | null; role?: string | null; device_status?: string | null; email?: string | null; error?: string }>;
+  joinActivate: (pin: string) => Promise<{ success: boolean; username: string }>;
+  joinCancel: () => Promise<{ cancelled: boolean }>;
+
+  taxCalculateWht: (input: any) => Promise<any>;
+  taxCalculateVatReturn: (input: any) => Promise<any>;
+  taxCalculateTotReturn: (input: any) => Promise<any>;
+  taxCalculateMat: (grossTurnover: number) => Promise<number>;
+  taxCalculateAdvance: (estimatedAnnualTax: number) => Promise<number>;
+  taxCalculatePaye: (input: any) => Promise<any>;
+  taxCalculatePension: (input: any) => Promise<any>;
+  morQrGenerate: (data: any) => Promise<any>;
+  morQrValidate: (payload: string) => Promise<any>;
+  morQrPrintReceipt: (data: any) => Promise<{ success: boolean }>;
+  complianceCheck: (context: any, rules?: any[]) => Promise<any>;
+  complianceValidateTin: (tin: string) => Promise<any>;
+  complianceReport: (fromDate: string, toDate: string) => Promise<any>;
+
+  // §U — Ministry of Revenues taxpayer verification
+  morVerify: (tin: string, subTin?: string | null, force?: boolean) => Promise<MorVerification>;
+  morGet: (tin: string, subTin?: string | null) => Promise<MorVerification | null>;
+  morList: () => Promise<{ verification: MorVerification; fresh: boolean }[]>;
+  morClear: (tin: string) => Promise<{ cleared: boolean }>;
+  morIsVerified: (tin: string, subTin?: string | null) => Promise<{ verified: boolean }>;
 
   // §15 — Manager PIN approval
   onApprovalPrompt: (callback: (payload: {
@@ -387,6 +412,19 @@ export interface ElectronAPI {
   }) => void) => void;
   onApprovalPinInvalid: (callback: (payload: { requestId: string }) => void) => void;
   approveWithPin: (requestId: string, pin: string) => Promise<boolean>;
+
+  // Business scope switching — pushed when the active business changes
+  onBusinessChanged: (callback: (payload: { businessId: number; name: string }) => void) => void;
+
+  // Phone-peripherals: use a connected phone as scanner / camera
+  peripheralPhones: () => Promise<Array<{ deviceId: string; name: string; model?: string; platform: string; kinds: string[] }>>;
+  peripheralScan: (deviceId: string, timeoutMs?: number) => Promise<{ barcode: string; symbology?: string; deviceId: string }>;
+  peripheralCapture: (deviceId: string, mode: 'photo' | 'barcode' | 'qr', timeoutMs?: number) => Promise<{ dataUrl?: string; text?: string; mode: string; deviceId: string }>;
+  peripheralCancel: (deviceId: string, requestId: string) => Promise<boolean>;
+  // QR user invites (Teams → Add User)
+  inviteCreate: (opts?: { suggestedRole?: string }) => Promise<any>;
+  inviteList: () => Promise<any[]>;
+  inviteDecide: (inviteId: string, decision: 'approved' | 'rejected', opts?: { role?: string }) => Promise<any>;
   cancelApproval: (requestId: string) => Promise<boolean>;
 }
 
@@ -423,7 +461,7 @@ export interface UpdateStatusResult {
 }
 
 export interface GlobalSearchResult {
-  type: 'item' | 'sale' | 'customer' | 'supplier' | 'expense' | 'budget' | 'category' | 'warehouse' | 'purchase' | 'adjustment' | 'notification' | 'draft';
+  type: 'item' | 'sale' | 'customer' | 'supplier' | 'category' | 'warehouse' | 'purchase' | 'adjustment' | 'notification' | 'draft';
   id: number;
   title: string;
   subtitle: string;

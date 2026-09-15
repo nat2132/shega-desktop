@@ -23,19 +23,18 @@ contextBridge.exposeInMainWorld('api', {
   insertItem: (item: any) => ipcRenderer.invoke('insert-item', item),
   updateItem: (id: number, item: any) => ipcRenderer.invoke('update-item', id, item),
   deleteItem: (id: number) => ipcRenderer.invoke('delete-item', id),
+  generateShegaCode: () => ipcRenderer.invoke('generate-shega-code'),
+  itemBarcodesList: (itemId: number) => ipcRenderer.invoke('item-barcodes:list', itemId),
+  itemBarcodesAdd: (itemId: number, barcode: string) => ipcRenderer.invoke('item-barcodes:add', itemId, barcode),
+  itemBarcodesRemove: (barcodeId: number) => ipcRenderer.invoke('item-barcodes:remove', barcodeId),
+  itemBarcodesSetPrimary: (barcodeId: number) => ipcRenderer.invoke('item-barcodes:set-primary', barcodeId),
   getLowStockItems: () => ipcRenderer.invoke('get-low-stock-items'),
   getReorderSuggestions: () => ipcRenderer.invoke('get-reorder-suggestions'),
   getReportDrilldowns: (range: { start: string; end: string }) => ipcRenderer.invoke('get-report-drilldowns', range),
   getGlJournal: (range: { start: string; end: string }) => ipcRenderer.invoke('get-gl-journal', range),
-  getGiftCards: () => ipcRenderer.invoke('get-gift-cards'),
-  issueGiftCard: (data: any) => ipcRenderer.invoke('issue-gift-card', data),
-  redeemGiftCard: (data: any) => ipcRenderer.invoke('redeem-gift-card', data),
-  topupGiftCard: (data: any) => ipcRenderer.invoke('topup-gift-card', data),
-  voidGiftCard: (id: number) => ipcRenderer.invoke('void-gift-card', id),
-  getGiftCardTransactions: (cardId: number) => ipcRenderer.invoke('get-gift-card-transactions', cardId),
   getExpiringItems: () => ipcRenderer.invoke('get-expiring-items'),
   getItemsBySupplier: (supplierId: number) => ipcRenderer.invoke('get-items-by-supplier', supplierId),
-  restockItem: (id: number, quantity: number) => ipcRenderer.invoke('restock-item', id, quantity),
+  restockItem: (id: number, quantity: number, unit?: 'single' | 'pack') => ipcRenderer.invoke('restock-item', id, quantity, unit),
   archiveItem: (data: any) => ipcRenderer.invoke('archive-item', data),
   restoreItem: (data: any) => ipcRenderer.invoke('restore-item', data),
   getDeletedItems: () => ipcRenderer.invoke('get-deleted-items'),
@@ -54,18 +53,6 @@ contextBridge.exposeInMainWorld('api', {
   reverseDebtPayment: (data: any) => ipcRenderer.invoke('reverse-debt-payment', data),
   createReturn: (data: any) => ipcRenderer.invoke('create-return', data),
   getReturns: (options?: any) => ipcRenderer.invoke('get-returns', options),
-
-  // Expenses
-  getExpenses: (options?: any) => ipcRenderer.invoke('get-expenses', options),
-  insertExpense: (expense: any) => ipcRenderer.invoke('insert-expense', expense),
-  updateExpense: (id: number, expense: any) => ipcRenderer.invoke('update-expense', id, expense),
-  deleteExpense: (id: number) => ipcRenderer.invoke('delete-expense', id),
-
-  // Adjustments
-  getAdjustments: (options?: any) => ipcRenderer.invoke('get-adjustments', options),
-  insertAdjustment: (adjustment: any) => ipcRenderer.invoke('insert-adjustment', adjustment),
-  insertBulkAdjustments: (adjustments: any[]) => ipcRenderer.invoke('insert-bulk-adjustments', adjustments),
-  reverseAdjustment: (data: any) => ipcRenderer.invoke('reverse-adjustment', data),
 
   // Notifications
   checkNotifications: () => ipcRenderer.invoke('check-notifications'),
@@ -110,6 +97,14 @@ contextBridge.exposeInMainWorld('api', {
   // Analytics / Dashboard
   getDashboardStats: () => ipcRenderer.invoke('get-dashboard-stats'),
   getRecentActivity: (limit?: number, dateRange?: { start: string; end: string }) => ipcRenderer.invoke('get-recent-activity', limit, dateRange),
+
+  // P2P Yjs + WebRTC sync
+  p2pHealth: () => ipcRenderer.invoke('p2p:health'),
+  p2pDevices: () => ipcRenderer.invoke('p2p:devices'),
+  p2pAnnounce: () => ipcRenderer.invoke('p2p:announce'),
+  p2pRevokeDevice: (deviceId: string) => ipcRenderer.invoke('p2p:revoke-device', deviceId),
+  p2pRenameDevice: (deviceId: string, name: string) => ipcRenderer.invoke('p2p:rename-device', deviceId, name),
+  p2pRecordCounts: () => ipcRenderer.invoke('p2p:record-counts'),
   getAnalytics: (period: string, dateRange?: { start: string; end: string }) => ipcRenderer.invoke('get-analytics', period, dateRange),
   getVatReport: (dateRange?: { start: string; end: string }) => ipcRenderer.invoke('get-vat-report', dateRange),
   getVoidedSales: (options?: any) => ipcRenderer.invoke('get-voided-sales', options),
@@ -135,7 +130,9 @@ contextBridge.exposeInMainWorld('api', {
   // Admin Management
   login: (username: string, pin: string) => ipcRenderer.invoke('login', username, pin),
   getAdmins: () => ipcRenderer.invoke('get-admins'),
-  getCurrentAdmin: (id: number) => ipcRenderer.invoke('get-current-admin', id),
+  getLoginUsers: () => ipcRenderer.invoke('get-login-users'),
+  loginByUser: (source: 'admin' | 'employee' | 'roster', id: number, pin: string) => ipcRenderer.invoke('login-by-user', source, id, pin),
+  getCurrentAdmin: (id: number, isEmployee?: boolean) => ipcRenderer.invoke('get-current-admin', id, isEmployee),
   insertAdmin: (admin: any) => ipcRenderer.invoke('insert-admin', admin),
   updateAdmin: (id: number, admin: any) => ipcRenderer.invoke('update-admin', id, admin),
   deleteAdmin: (id: number) => ipcRenderer.invoke('delete-admin', id),
@@ -277,6 +274,9 @@ contextBridge.exposeInMainWorld('api', {
   openCashDrawer: () => ipcRenderer.invoke('open-cash-drawer'),
   printTestPage: () => ipcRenderer.invoke('print-test-page'),
   printLabel: (label: any) => ipcRenderer.invoke('print-label', label),
+  barcodePng: (value: string) => ipcRenderer.invoke('barcode-png', value),
+  barcodePngDataUrl: (value: string) => ipcRenderer.invoke('barcode-png-dataurl', value),
+  simulateScan: (code?: string) => ipcRenderer.invoke('simulate-scan', code),
   getPrintStatus: () => ipcRenderer.invoke('get-print-status'),
   setPrinterConfig: (cfg: any) => ipcRenderer.invoke('set-printer-config', cfg),
   parseScaleReading: (line: string) => ipcRenderer.invoke('parse-scale-reading', line),
@@ -286,11 +286,6 @@ contextBridge.exposeInMainWorld('api', {
   syncVerify: () => ipcRenderer.invoke('sync:verify'),
   syncLog: (limit: number) => ipcRenderer.invoke('sync:log', limit),
   syncResync: (deviceId: string) => ipcRenderer.invoke('sync:resync', deviceId),
-  cloudStatus: () => ipcRenderer.invoke('cloud:status'),
-  cloudSync: () => ipcRenderer.invoke('cloud:sync'),
-  saveCloudConfig: (url: string, key: string) => ipcRenderer.invoke('cloud:save-config', url, key),
-  cloudEnabled: (enabled: boolean) => ipcRenderer.invoke('cloud:set-enabled', enabled),
-  cloudSelfStatus: () => ipcRenderer.invoke('cloud:self-status'),
 
   // Audit (Phase 4)
   verifyAuditChain: () => ipcRenderer.invoke('verify-audit-chain'),
@@ -300,25 +295,6 @@ contextBridge.exposeInMainWorld('api', {
   getDraftSale: (id: number) => ipcRenderer.invoke('get-draft-sale', id),
   saveDraftSale: (data: any) => ipcRenderer.invoke('save-draft-sale', data),
   deleteDraftSale: (id: number) => ipcRenderer.invoke('delete-draft-sale', id),
-
-  // Contacts
-  getContacts: (options?: any) => ipcRenderer.invoke('get-contacts', options),
-  insertContact: (data: any) => ipcRenderer.invoke('insert-contact', data),
-  updateContact: (id: number, data: any) => ipcRenderer.invoke('update-contact', id, data),
-  deleteContact: (id: number) => ipcRenderer.invoke('delete-contact', id),
-
-  // Budgets
-  getBudgets: (options?: any) => ipcRenderer.invoke('get-budgets', options),
-  setBudget: (data: any) => ipcRenderer.invoke('set-budget', data),
-  deleteBudget: (id: number) => ipcRenderer.invoke('delete-budget', id),
-  getBudgetAdjustments: (budgetId: number) => ipcRenderer.invoke('get-budget-adjustments', budgetId),
-  createBudgetAdjustment: (data: any) => ipcRenderer.invoke('create-budget-adjustment', data),
-  approveBudgetAdjustment: (id: number, approvedBy: string) => ipcRenderer.invoke('approve-budget-adjustment', id, approvedBy),
-  duplicateBudget: (fromData: any, toMonth: string, toYear: string) => ipcRenderer.invoke('duplicate-budget', fromData, toMonth, toYear),
-  getBudgetAlerts: (options?: any) => ipcRenderer.invoke('get-budget-alerts', options),
-  acknowledgeBudgetAlert: (id: number) => ipcRenderer.invoke('acknowledge-budget-alert', id),
-  getBudgetReport: (options?: any) => ipcRenderer.invoke('get-budget-report', options),
-  getBudgetForecast: (options?: any) => ipcRenderer.invoke('get-budget-forecast', options),
 
   // Supplier Price Checks
   getSupplierPriceChecks: (supplierId?: number) => ipcRenderer.invoke('get-supplier-price-checks', supplierId),
@@ -405,6 +381,23 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.removeAllListeners('update:error');
   },
 
+  // POS Products & Categories (cashier-safe)
+  posProducts: () => ipcRenderer.invoke('pos:products'),
+  posCategories: () => ipcRenderer.invoke('pos:categories'),
+  posRegisters: () => ipcRenderer.invoke('pos:shift-by-register'),
+
+  // POS Shifts (cashier)
+  posLastShift: (cashierId: number) => ipcRenderer.invoke('shift:last-by-cashier', cashierId),
+  shiftOpen: (data: { registerId: number; cashierId: number; openingFloat: number; notes?: string }) => ipcRenderer.invoke('shift:open', data),
+  shiftClose: (shiftId: number, data: { closingCash: number; cashDrawerCounts?: any[]; notes?: string }) => ipcRenderer.invoke('shift:close', shiftId, data),
+  shiftMidAudit: (shiftId: number, countedCash: number, notes?: string) => ipcRenderer.invoke('shift:mid-audit', shiftId, countedCash, notes),
+  shiftActive: (registerId: number) => ipcRenderer.invoke('shift:active', registerId),
+  shiftById: (shiftId: number) => ipcRenderer.invoke('shift:by-id', shiftId),
+  shiftTransactions: (shiftId: number) => ipcRenderer.invoke('shift:transactions', shiftId),
+  shiftSummary: (shiftId: number) => ipcRenderer.invoke('shift:summary', shiftId),
+  shiftRecordTransaction: (data: { shiftId: number; saleId?: number | null; paymentMethod: string; amount: number; notes?: string }) =>
+    ipcRenderer.invoke('shift:record-transaction', data),
+
   // Shared Business Model (registers, devices, roles, people)
   businessListRegisters: () => ipcRenderer.invoke('business:list-registers'),
   businessAddRegister: (name: string, locationId?: number) => ipcRenderer.invoke('business:add-register', name, locationId),
@@ -430,13 +423,61 @@ contextBridge.exposeInMainWorld('api', {
   pairingList: () => ipcRenderer.invoke('pairing:list'),
   pairingInvite: (input: { employeeName?: string; role?: string; register?: string; location?: string }) => ipcRenderer.invoke('pairing:invite', input),
   pairingRevoke: (id: number) => ipcRenderer.invoke('pairing:revoke', id),
-  pairingDecide: (id: number, decision: 'approve' | 'reject') => ipcRenderer.invoke('pairing:decide', id, decision),
+  pairingDecide: (id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>) => ipcRenderer.invoke('pairing:decide', id, decision, role, permissions),
   pairingQrCode: (text: string) => ipcRenderer.invoke('pairing:qr-code', text),
+  joinLookup: (code: string) => ipcRenderer.invoke('join:lookup', code),
+  joinAccept: (input: { code: string; email: string; password: string; name?: string; deviceName?: string }) => ipcRenderer.invoke('join:accept', input),
+  joinStatus: (invitationId?: number) => ipcRenderer.invoke('join:status', invitationId),
+  joinActivate: (pin: string) => ipcRenderer.invoke('join:activate', pin),
+  joinCancel: () => ipcRenderer.invoke('join:cancel'),
+
+  // Tax computation (existing pos modules, now reachable)
+  taxCalculateWht: (input: any) => ipcRenderer.invoke('tax:wht', input),
+  taxCalculateVatReturn: (input: any) => ipcRenderer.invoke('tax:vat-return', input),
+  taxCalculateTotReturn: (input: any) => ipcRenderer.invoke('tax:tot-return', input),
+  taxCalculateMat: (grossTurnover: number) => ipcRenderer.invoke('tax:mat', grossTurnover),
+  taxCalculateAdvance: (estimatedAnnualTax: number) => ipcRenderer.invoke('tax:advance', estimatedAnnualTax),
+  taxCalculatePaye: (input: any) => ipcRenderer.invoke('tax:paye', input),
+  taxCalculatePension: (input: any) => ipcRenderer.invoke('tax:pension', input),
+  morQrGenerate: (data: any) => ipcRenderer.invoke('mor-qr:generate', data),
+  morQrValidate: (payload: string) => ipcRenderer.invoke('mor-qr:validate', payload),
+  morQrPrintReceipt: (data: any) => ipcRenderer.invoke('mor-qr:print-receipt', data),
+  complianceCheck: (context: any, rules?: any[]) => ipcRenderer.invoke('compliance:check', context, rules),
+  complianceValidateTin: (tin: string) => ipcRenderer.invoke('compliance:validate-tin', tin),
+  complianceReport: (fromDate: string, toDate: string) => ipcRenderer.invoke('compliance:report', fromDate, toDate),
+
+  // §U — Ministry of Revenues taxpayer verification
+  morVerify: (tin: string, subTin?: string | null, force?: boolean) =>
+    ipcRenderer.invoke('mor:verify', tin, subTin, force),
+  morGet: (tin: string, subTin?: string | null) => ipcRenderer.invoke('mor:get', tin, subTin),
+  morList: () => ipcRenderer.invoke('mor:list'),
+  morClear: (tin: string) => ipcRenderer.invoke('mor:clear', tin),
+  morIsVerified: (tin: string, subTin?: string | null) =>
+    ipcRenderer.invoke('mor:is-verified', tin, subTin),
 
   // §15 — Manager PIN approval prompt (main → renderer event + renderer → main)
   onApprovalPrompt: (callback: (payload: any) => void) => {
     ipcRenderer.on('approval:prompt', (_event, payload) => callback(payload));
   },
+  onBusinessChanged: (callback: (payload: { businessId: number; name: string }) => void) => {
+    ipcRenderer.on('business-changed', (_event, payload) => callback(payload));
+  },
+  onDataChanged: (callback: (stats: { applied: number; conflicts: number; changes: number; source: string; at: string }) => void) => {
+    ipcRenderer.on('data:changed', (_event, stats) => callback(stats));
+  },
+  removeDataChangedListeners: () => {
+    ipcRenderer.removeAllListeners('data:changed');
+  },
+
+  // Phone-peripherals: use a connected phone as scanner / camera
+  peripheralPhones: () => ipcRenderer.invoke('peripheral:phones'),
+  peripheralScan: (deviceId: string, timeoutMs?: number) => ipcRenderer.invoke('peripheral:scan', deviceId, timeoutMs),
+  peripheralCapture: (deviceId: string, mode: 'photo' | 'barcode' | 'qr', timeoutMs?: number) => ipcRenderer.invoke('peripheral:capture', deviceId, mode, timeoutMs),
+  peripheralCancel: (deviceId: string, requestId: string) => ipcRenderer.invoke('peripheral:cancel', deviceId, requestId),
+  // QR user invites (Teams → Add User)
+  inviteCreate: (opts: { suggestedRole?: string } = {}) => ipcRenderer.invoke('invites:create', opts),
+  inviteList: () => ipcRenderer.invoke('invites:list'),
+  inviteDecide: (inviteId: string, decision: 'approved' | 'rejected', opts: { role?: string } = {}) => ipcRenderer.invoke('invites:decide', inviteId, decision, opts),
   onApprovalPinInvalid: (callback: (payload: { requestId: string }) => void) => {
     ipcRenderer.on('approval:pin-invalid', (_event, payload) => callback(payload));
   },
