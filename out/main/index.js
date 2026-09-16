@@ -24378,7 +24378,7 @@ function registerIPCHandlers() {
   });
   electron.ipcMain.handle("get-sale", (_, id2) => {
     requirePermission("sales.view");
-    return dbProxy.prepare("SELECT sales.*, items.name as itemName FROM sales LEFT JOIN items ON sales.itemId = items.id WHERE sales.id = ?").get(id2);
+    return dbProxy.prepare("SELECT sales.*, items.name as itemName, items.image as itemImage FROM sales LEFT JOIN items ON sales.itemId = items.id WHERE sales.id = ?").get(id2);
   });
   electron.ipcMain.handle("insert-sales-batch", async (event, sales) => {
     requirePermission("sales.create");
