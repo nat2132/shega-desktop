@@ -8,8 +8,6 @@ import { useSettings } from "../context/SettingsContext"
 import { useLocation } from "react-router-dom"
 import NotificationCenter from "./NotificationCenter"
 import { GlobalSearch } from "./GlobalSearch"
-import TutorialButton from "./tutorial/TutorialButton"
-import ErrorBoundary from "./ErrorBoundary"
 import { BusinessSwitcher } from "./BusinessSwitcher"
 
 export function SiteHeader() {
@@ -45,10 +43,6 @@ export function SiteHeader() {
 
         <div className="ml-auto flex items-center gap-2">
           <NotificationCenter />
-
-          <ErrorBoundary>
-            <TutorialButton />
-          </ErrorBoundary>
 
           <Button
             variant="ghost"

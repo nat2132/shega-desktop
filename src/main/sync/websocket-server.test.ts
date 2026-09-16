@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import WebSocket from 'ws';
 
 vi.mock('electron', () => {
@@ -238,6 +239,140 @@ describe('Sync hub — WebSocket path (real WsSyncServer + ws clients)', () => {
     const resp = await changesP;
     const dup = (resp.payload.changes ?? []).find((c: any) => c.entity_uuid === CAT_UUID);
     expect(dup).toBeUndefined();
+    phone.close();
+  });
+
+  function phoneChecksum(change: {
+    entity: string;
+    entity_uuid: string;
+    op: string;
+    payload: Record<string, any>;
+  }): string {
+    const canonical = `${change.entity}|${change.entity_uuid}|${change.op}|${JSON.stringify(change.payload)}`;
+    return createHash('sha256').update(canonical).digest('hex');
+  }
+
+  it('A change with a phone-computed checksum is accepted (applied, not skipped)', async () => {
+    const phone = await openPhone('ws-phone-CHK');
+    await pair(phone, 'ws-phone-CHK');
+    const ackP = phone.next('SYNC_ACK');
+    const goodUuid = 'a1c4e7f2-0000-4000-8000-666666666666';
+    const payload = {
+      businessId: BIZ_UUID,
+      name: 'WS Checked Snacks',
+      is_deleted: 0,
+      uuid: goodUuid,
+      created_at: '2026-09-15T12:30:00.000Z',
+      updated_at: '2026-09-15T12:30:00.000Z',
+    };
+    const checksum = phoneChecksum({ entity: 'categories', entity_uuid: goodUuid, op: 'INSERT', payload });
+    phone.send(
+      'SYNC_PUSH',
+      {
+        changes: [{ entity: 'categories', entity_uuid: goodUuid, op: 'INSERT', client_seq: 70, checksum, payload }],
+        client_seq: 70,
+      },
+      'rpush-chk'
+    );
+    const ack = await ackP;
+    expect(ack.payload.skipped).toBe(0);
+    expect(ack.payload.applied).toBe(1);
+    expect(ack.payload.results[0].status).toBe('applied');
+    const row = db.prepare('SELECT * FROM categories WHERE uuid = ?').get(goodUuid) as any;
+    expect(row).toBeTruthy();
+    expect(row.name).toBe('WS Checked Snacks');
+    phone.close();
+  });
+
+  it('Phone-shaped UPDATE subscriptions with businessId null lands on default business (was NOT NULL error)', async () => {
+    const phone = await openPhone('ws-phone-SUB');
+    await pair(phone, 'ws-phone-SUB');
+    const ackP = phone.next('SYNC_ACK');
+    const subUuid = 'a1c4e7f2-0000-4000-8000-777777777777';
+    const payload = {
+      plan: 'premium',
+      planId: null,
+      tier: 'premium',
+      status: 'active',
+      businessId: null, // phone rows predating the multi-business model
+      startedAt: '2026-09-15T09:00:00.000Z',
+      expiresAt: '2026-09-16T09:00:00.000Z',
+      trialStartedAt: null,
+      trialEndsAt: null,
+      isTrial: 0,
+      autoRenew: 1,
+      currency: 'ETB',
+      is_deleted: 0,
+      uuid: subUuid,
+      created_at: '2026-09-15T08:00:00.000Z',
+      updated_at: '2026-09-15T09:00:00.000Z',
+    };
+    const checksum = phoneChecksum({ entity: 'subscriptions', entity_uuid: subUuid, op: 'UPDATE', payload });
+    phone.send(
+      'SYNC_PUSH',
+      {
+        changes: [
+          { entity: 'subscriptions', entity_uuid: subUuid, op: 'UPDATE', client_seq: 80, checksum, payload },
+        ],
+        client_seq: 80,
+      },
+      'rpush-sub'
+    );
+    const ack = await ackP;
+    expect(ack.payload.skipped).toBe(0);
+    expect(ack.payload.applied).toBe(1);
+    expect(ack.payload.results[0].status).toBe('applied');
+    const row = db.prepare('SELECT * FROM subscriptions WHERE uuid = ?').get(subUuid) as any;
+    expect(row).toBeTruthy();
+    expect(row.tier).toBe('premium');
+    expect(row.status).toBe('active');
+    // businessId must be resolved to the hub's default business, not null
+    expect(Number(row.businessId)).toBe(db.prepare("SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1").get()?.id);
+    phone.close();
+  });
+
+  it('A phone re-push of the same subscriptions row with null businessId is idempotent (no NOT NULL error)', async () => {
+    const phone = await openPhone('ws-phone-SUB2');
+    await pair(phone, 'ws-phone-SUB2');
+    const ackP = phone.next('SYNC_ACK');
+    const subUuid = 'a1c4e7f2-0000-4000-8000-777777777777';
+    const payload = {
+      plan: 'premium',
+      planId: null,
+      tier: 'premium',
+      status: 'expired',
+      businessId: null,
+      startedAt: '2026-09-15T09:00:00.000Z',
+      expiresAt: '2026-09-16T09:00:00.000Z',
+      trialStartedAt: null,
+      trialEndsAt: null,
+      isTrial: 0,
+      autoRenew: 1,
+      currency: 'ETB',
+      is_deleted: 0,
+      uuid: subUuid,
+      created_at: '2026-09-15T08:00:00.000Z',
+      updated_at: '2026-09-15T10:00:00.000Z',
+    };
+    const checksum = phoneChecksum({ entity: 'subscriptions', entity_uuid: subUuid, op: 'UPDATE', payload });
+    phone.send(
+      'SYNC_PUSH',
+      {
+        changes: [
+          { entity: 'subscriptions', entity_uuid: subUuid, op: 'UPDATE', client_seq: 81, checksum, payload },
+        ],
+        client_seq: 81,
+      },
+      'rpush-sub2'
+    );
+    const ack = await ackP;
+    expect(ack.payload.skipped).toBe(0);
+    expect(ack.payload.applied).toBe(1);
+    expect(ack.payload.results[0].status).toBe('applied');
+    const row = db.prepare('SELECT * FROM subscriptions WHERE uuid = ?').get(subUuid) as any;
+    expect(row).toBeTruthy();
+    expect(row.status).toBe('expired');
+    expect(Number(row.businessId)).toBe(db.prepare("SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1").get()?.id);
     phone.close();
   });
 

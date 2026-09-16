@@ -9,6 +9,7 @@ import {
   getPairingToken,
   ensureHubDeviceId,
   registerDevice,
+  isDeviceRevoked,
   requestDeviceResync,
   syncHubBus,
 } from '../sync-hub';
@@ -231,6 +232,14 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     const hubToken = getPairingToken();
     if (token && token.trim().toUpperCase() !== hubToken) {
       this.sendError(ws, 'PAIR_FAILED', 'Invalid pairing token');
+      return;
+    }
+
+    // A revoked/unpaired device is refused even with a valid token — it must
+    // be re-approved by an owner (new pairing/authorization) first.
+    if (isDeviceRevoked(device_id)) {
+      this.sendError(ws, 'PAIR_FAILED', 'Device was unpaired by the owner. A new pairing is required.');
+      logger.warn(`[WS] Refused re-pair from revoked device ${device_id}`);
       return;
     }
 

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import {
   AlertTriangle,
   Banknote, Search, ChevronDown, ChevronUp,
-  CircleDollarSign, History, X,
+  CircleDollarSign, History, Package, X,
   MoreHorizontal, Filter, Ban, Plus, ShoppingCart
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -47,6 +47,7 @@ interface DebtSale {
   customerName: string;
   customerPhone: string;
   dueDate: string;
+  itemImage?: string;
   createdAt: string;
 }
 
@@ -436,7 +437,18 @@ const DebtManagement: React.FC = () => {
                           )}
                         </div>
                       </td>
-                      <td className="px-5 py-4 font-medium">{debt.itemName}</td>
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center overflow-hidden shrink-0">
+                            {debt.itemImage ? (
+                              <img src={debt.itemImage} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              <Package className="h-4 w-4 text-muted-foreground" />
+                            )}
+                          </div>
+                          <span className="font-medium">{debt.itemName}</span>
+                        </div>
+                      </td>
                       <td className="px-5 py-4 text-right font-bold">
                         {t('common.etb')} {debt.totalPrice.toLocaleString()}
                       </td>

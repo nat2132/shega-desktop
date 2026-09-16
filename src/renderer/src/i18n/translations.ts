@@ -1,4 +1,4 @@
-﻿export const translations: Record<string, any> = {
+export const translations: Record<string, any> = {
   en: {
     kpi: {
       show: 'Show KPIs',
@@ -2238,16 +2238,6 @@
     'settings.avatar_alt': 'Profile Avatar',
     'settings.theme_light_desc': 'Clean, bright interface',
     'settings.theme_dark_desc': 'Easy on the eyes, dark background',
-    'settings.theme_midnight': 'Midnight',
-    'settings.theme_midnight_desc': 'Deep blue dark theme',
-    'settings.theme_emerald': 'Emerald',
-    'settings.theme_emerald_desc': 'Green-inspired theme',
-    'settings.theme_charcoal': 'Charcoal',
-    'settings.theme_charcoal_desc': 'Dark gray sophistication',
-    'settings.theme_slate': 'Slate',
-    'settings.theme_slate_desc': 'Balanced gray tones',
-    'settings.theme_cocoa': 'Cocoa',
-    'settings.theme_cocoa_desc': 'Warm brown theme',
     'settings.modules': 'Modules',
     'settings.modules_desc': 'Enable or disable business modules',
     'settings.modules_hint': 'Changes take effect immediately',
@@ -2514,27 +2504,6 @@
     'onboarding.feat_debt_management': 'Debt management',
     'onboarding.feat_payment_history': 'Payment history',
 
-    // Tutorial
-    'tutorial.step_of': 'Step {current} of {total}',
-    'tutorial.restart': 'Restart tutorial',
-    'tutorial.resume': 'Resume',
-    'tutorial.pause': 'Pause',
-    'tutorial.skip_tutorial': 'Skip tutorial',
-    'tutorial.done_next': 'Done! Moving to next step...',
-    'tutorial.interact_continue': 'Interact with the highlighted element to continue',
-    'tutorial.back': 'Back',
-    'tutorial.skip': 'Skip',
-    'tutorial.next': 'Next',
-    'tutorial.complete': 'Complete',
-    'tutorial.scroll_find': 'Scroll to find the highlighted element...',
-    'tutorial.click_element': 'Click or tap this element',
-    'tutorial.example': 'Example',
-    'tutorial.how_to_use': 'How to Use',
-    'tutorial.resume_tutorial': 'Resume Tutorial',
-    'tutorial.completed': 'Tutorial completed',
-    'tutorial.replay': 'Replay Tutorial',
-    'tutorial.start_beginning': 'Start from Beginning',
-    'tutorial.step_n': 'Step {n}',
 
     // Nav
     'nav.quick_create': 'Quick Create',
@@ -4553,16 +4522,6 @@
     'settings.avatar_alt': 'Profile Avatar',
     'settings.theme_light_desc': 'Clean, bright interface',
     'settings.theme_dark_desc': 'Easy on the eyes, dark background',
-    'settings.theme_midnight': 'Midnight',
-    'settings.theme_midnight_desc': 'Deep blue dark theme',
-    'settings.theme_emerald': 'Emerald',
-    'settings.theme_emerald_desc': 'Green-inspired theme',
-    'settings.theme_charcoal': 'Charcoal',
-    'settings.theme_charcoal_desc': 'Dark gray sophistication',
-    'settings.theme_slate': 'Slate',
-    'settings.theme_slate_desc': 'Balanced gray tones',
-    'settings.theme_cocoa': 'Cocoa',
-    'settings.theme_cocoa_desc': 'Warm brown theme',
     'settings.modules': 'Modules',
     'settings.modules_desc': 'Enable or disable business modules',
     'settings.modules_hint': 'Changes take effect immediately',
@@ -4835,21 +4794,6 @@
     'onboarding.feat_debt_management': 'የድንጋይ አስተዳደር',
     'onboarding.feat_payment_history': 'የክፍያ ታሪክ',
 
-    // Tutorial
-    'tutorial.step_of': 'ደረጃ {current} ከ{total}',
-    'tutorial.restart': 'ትUTORIAL እንደገና ጀምር',
-    'tutorial.resume': 'ቀጥል',
-    'tutorial.pause': 'አቁም',
-    'tutorial.skip_tutorial': 'ትUTORIAL ቆይ',
-    'tutorial.done_next': 'ተከናውኗል! ወደ ቀጣይ ደረጃ ይንቀሳቃሳል...',
-    'tutorial.interact_continue': 'ለመቀጠል ከተጠቀሰው አካል ጋር ይግባኝ',
-    'tutorial.back': 'ተመለስ',
-    'tutorial.skip': 'ቃይ',
-    'tutorial.next': 'ቀጥል',
-    'tutorial.complete': 'ጨርስ',
-    'tutorial.scroll_find': 'የተጠቀሰውን አካል ለማግኘት ይሸከሙ...',
-    'tutorial.click_element': 'ይህን አካል ጠቅ ወይም ንካ ያድርጉ',
-    'tutorial.example': 'ምሳሌ',
 
     // Auth Recovery
     'auth.forgot_pin': 'ፒን ረሳችሁ?',
@@ -4955,13 +4899,6 @@
     'subscription.phone_placeholder': '09XX XXX XXX',
     'subscription.upgrade_access': '{feature} ባህሪያትን ለማግኘት ያድርጉ።',
 
-    // Tutorial Button
-    'tutorial.how_to_use': 'እንዴት እንደሚጠቀሙ',
-    'tutorial.resume_tutorial': 'ትምህርቱን ቀጥል',
-    'tutorial.completed': 'ትምህርቱ ተጠናቋል',
-    'tutorial.replay': 'ትምህርቱን ደግም',
-    'tutorial.start_beginning': 'ከመጀመሪያ ጀምር',
-    'tutorial.step_n': 'ደረጃ {n}',
 
     // Nav
     'nav.quick_create': 'ፈጣን ፍጠር',
@@ -6956,16 +6893,6 @@
     'settings.avatar_alt': 'Profile Avatar',
     'settings.theme_light_desc': 'Clean, bright interface',
     'settings.theme_dark_desc': 'Easy on the eyes, dark background',
-    'settings.theme_midnight': 'Midnight',
-    'settings.theme_midnight_desc': 'Deep blue dark theme',
-    'settings.theme_emerald': 'Emerald',
-    'settings.theme_emerald_desc': 'Green-inspired theme',
-    'settings.theme_charcoal': 'Charcoal',
-    'settings.theme_charcoal_desc': 'Dark gray sophistication',
-    'settings.theme_slate': 'Slate',
-    'settings.theme_slate_desc': 'Balanced gray tones',
-    'settings.theme_cocoa': 'Cocoa',
-    'settings.theme_cocoa_desc': 'Warm brown theme',
     'settings.modules': 'Modules',
     'settings.modules_desc': 'Enable or disable business modules',
     'settings.modules_hint': 'Changes take effect immediately',
@@ -7238,21 +7165,6 @@
     'onboarding.feat_debt_management': 'Qabxii bulchiinsa',
     'onboarding.feat_payment_history': 'Seenaa kaffaltii',
 
-    // Tutorial
-    'tutorial.step_of': 'Boqonnaa {current}/{total}',
-    'tutorial.restart': 'Embarsa darbee jalqabi',
-    'tutorial.resume': 'Itti fufi',
-    'tutorial.pause': 'Aduu',
-    'tutorial.skip_tutorial': 'Embarsa darbee daayi',
-    'tutorial.done_next': 'Kan qabame! Boqonnaa itti aanuutti...',
-    'tutorial.interact_continue': 'Itti fufuuf qabamamee keessatti hojiin godhi',
-    'tutorial.back': 'Ergi',
-    'tutorial.skip': 'Daayi',
-    'tutorial.next': 'Itti aanu',
-    'tutorial.complete': 'Xumuri',
-    'tutorial.scroll_find': 'Qabamamee argachuuf sirba...',
-    'tutorial.click_element': 'Qabaa kana cuquli insa tuqi',
-    'tutorial.example': 'Fakkiin',
 
     // Auth Recovery
     'auth.forgot_pin': 'PIN dhiifte?',
@@ -7358,13 +7270,6 @@
     'subscription.phone_placeholder': '09XX XXX XXX',
     'subscription.upgrade_access': '{feature} cuqaasisuuf.',
 
-    // Tutorial Button
-    'tutorial.how_to_use': 'Akkam fayyadamuu',
-    'tutorial.resume_tutorial': 'Tutorial itti fufi',
-    'tutorial.completed': 'Tutorial xumurame',
-    'tutorial.replay': 'Tutorial irra deebi',
-    'tutorial.start_beginning': 'Irra jalqabaa eegali',
-    'tutorial.step_n': 'Tarkaanfii {n}',
 
     // Nav
     'nav.quick_create': 'Duwwaa uumi',
@@ -9356,16 +9261,6 @@
     'settings.avatar_alt': 'Profile Avatar',
     'settings.theme_light_desc': 'Clean, bright interface',
     'settings.theme_dark_desc': 'Easy on the eyes, dark background',
-    'settings.theme_midnight': 'Midnight',
-    'settings.theme_midnight_desc': 'Deep blue dark theme',
-    'settings.theme_emerald': 'Emerald',
-    'settings.theme_emerald_desc': 'Green-inspired theme',
-    'settings.theme_charcoal': 'Charcoal',
-    'settings.theme_charcoal_desc': 'Dark gray sophistication',
-    'settings.theme_slate': 'Slate',
-    'settings.theme_slate_desc': 'Balanced gray tones',
-    'settings.theme_cocoa': 'Cocoa',
-    'settings.theme_cocoa_desc': 'Warm brown theme',
     'settings.modules': 'Modules',
     'settings.modules_desc': 'Enable or disable business modules',
     'settings.modules_hint': 'Changes take effect immediately',
@@ -9637,21 +9532,6 @@
     'onboarding.feat_debt_management': 'ድንጋይ ኣስተዳደር',
     'onboarding.feat_payment_history': 'ክፍሊት ታሪخ',
 
-    // Tutorial
-    'tutorial.step_of': 'ደረጃ {current} ካብ {total}',
-    'tutorial.restart': 'ትUTOrial እንደገና ጀምር',
-    'tutorial.resume': 'ቀጥል',
-    'tutorial.pause': 'ኣቁም',
-    'tutorial.skip_tutorial': 'ትUTOrial ቆይ',
-    'tutorial.done_next': 'ተከናውኗል! ናብ ዝቕatrice ደረጃ...',
-    'tutorial.interact_continue': 'ንመቀጠል ካብ ዝተጠቀሰ ኣካል ግባኝ',
-    'tutorial.back': 'ተመለስ',
-    'tutorial.skip': 'ቆይ',
-    'tutorial.next': 'ቀጥል',
-    'tutorial.complete': 'ጨርስ',
-    'tutorial.scroll_find': 'ዝተጠቀሰ ኣካል ንምግኘት ሰምጥ...',
-    'tutorial.click_element': 'እቲ ኣካል ጠቅ ወይ ንካ ኣድርገ舦',
-    'tutorial.example': 'ምሳል',
 
     // Auth Recovery
     'auth.forgot_pin': 'ፒን ረሳይ?',
@@ -9757,13 +9637,6 @@
     'subscription.phone_placeholder': '09XX XXX XXX',
     'subscription.upgrade_access': '{feature} ባህሪያት ንምግኘት ኣድርግ።',
 
-    // Tutorial Button
-    'tutorial.how_to_use': 'ከመይ ጌርካ ከም እትጠቅሞ',
-    'tutorial.resume_tutorial': 'ትምህርቲ ቀጽል',
-    'tutorial.completed': 'ትምህርቲ ተዛዚሙ',
-    'tutorial.replay': 'ትምህርቲ ደገም',
-    'tutorial.start_beginning': 'ካብ መበል ጀምር',
-    'tutorial.step_n': 'ደረጃ {n}',
 
     // Nav
     'nav.quick_create': 'ቅልጡፍ ፍጠር',

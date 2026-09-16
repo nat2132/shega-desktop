@@ -26,7 +26,6 @@ const CashierMySales = lazy(() => import('./pages/cashier/CashierMySales'))
 import { useAuth } from './context/AuthContext'
 import { useSettings } from './context/SettingsContext'
 import { SubscriptionProvider, useSubscription } from './context/SubscriptionContext'
-import { TutorialOverlay } from './components/tutorial'
 import ErrorBoundary from './components/ErrorBoundary'
 import DeviceLockOverlay from './components/DeviceLockOverlay'
 import PinApprovalProvider from './components/PinApprovalProvider'
@@ -390,9 +389,6 @@ function App() {
         </SidebarInset>
       </SidebarProvider>
       <NotificationModal />
-      <ErrorBoundary>
-        <TutorialOverlay />
-      </ErrorBoundary>
       <DeviceLockOverlay />
       <PinApprovalProvider />
     </TooltipProvider>

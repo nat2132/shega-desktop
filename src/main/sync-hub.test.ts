@@ -211,6 +211,39 @@ describe('Sync hub — all device directions (real HTTP)', () => {
     }
   });
 
+  it('E2E regression: push with an UNKNOWN business UUID still lands business-visible', async () => {
+    // The exact failure users saw: a peer whose business UUID differs from the
+    // hub's (or that predates shared business rows) pushed rows that the hub
+    // stored with businessId = NULL — synced, connected, yet invisible to
+    // every business-scoped query. The hub must fall back to its active
+    // (default) business: the push is token-authenticated, so the row belongs
+    // to the business this hub serves.
+    const UNKNOWN_BIZ = '00000000-aaaa-4bbb-8ccc-000000000999';
+    const ITEM_UUID_UNKNOWN = 'c3e6a9b2-0000-4000-a000-000000000010';
+    const ts = '2026-09-16 10:00:00';
+    const res = await phonePush('phone-unknown-biz', [
+      {
+        entity: 'items', entity_uuid: ITEM_UUID_UNKNOWN, op: 'INSERT', client_seq: 1,
+        payload: {
+          businessId: UNKNOWN_BIZ, // no businesses row with this uuid locally
+          name: 'Unknown-Biz Product', baseSellingPrice: 30, totalBaseQuantity: 10,
+          isActive: 1, is_deleted: 0, uuid: ITEM_UUID_UNKNOWN, created_at: ts, updated_at: ts,
+        },
+      },
+    ]);
+    expect(res.ok).toBe(true);
+    expect(res.applied).toBe(1);
+
+    const row = db.prepare('SELECT * FROM items WHERE uuid = ?').get(ITEM_UUID_UNKNOWN) as any;
+    expect(row).toBeTruthy();
+    const defaultBiz = db.prepare('SELECT id FROM businesses WHERE isDefault = 1').get() as any;
+    expect(row.businessId).toBe(defaultBiz.id); // NOT NULL — visible to UI queries
+
+    // And a business-scoped read — the shape every screen actually runs — sees it.
+    const visible = db.prepare('SELECT name FROM items WHERE businessId = ? AND is_deleted = 0 AND uuid = ?').get(defaultBiz.id, ITEM_UUID_UNKNOWN) as any;
+    expect(visible?.name).toBe('Unknown-Biz Product');
+  });
+
   it('Idempotent re-push: same INSERT after apply is a conflict, never duplicated', async () => {
     const res = await phonePush('phone-C', [mobileCategory('INSERT', 'Beverages', '2026-09-15 09:00:00')]);
     expect(res.conflicts).toBe(1);

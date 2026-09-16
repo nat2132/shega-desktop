@@ -185,8 +185,11 @@ function isVirtualAdapterName(name: string): boolean {
 }
 
 export function registerDevice(deviceId: string, name?: string): void {
-  const existing = db.prepare('SELECT id FROM devices WHERE device_id = ?').get(deviceId) as any;
+  const existing = db.prepare('SELECT id, status FROM devices WHERE device_id = ?').get(deviceId) as any;
   if (existing) {
+    // A revoked/unpaired device must complete a new pairing/authorization
+    // before it can sync again — it never re-registers silently.
+    if ((existing.status || 'active') === 'revoked') return;
     db.prepare('UPDATE devices SET last_seen_at = ? WHERE device_id = ?').run(new Date().toISOString(), deviceId);
     return;
   }
@@ -196,6 +199,16 @@ export function registerDevice(deviceId: string, name?: string): void {
     new Date().toISOString(),
     deviceId
   );
+}
+
+/** True when the device has been revoked/unpaired and may not reconnect. */
+export function isDeviceRevoked(deviceId: string): boolean {
+  try {
+    const d = db.prepare('SELECT status FROM devices WHERE device_id = ?').get(deviceId) as any;
+    if (d && (d.status || 'active') === 'revoked') return true;
+    const r = db.prepare("SELECT status FROM roster_devices WHERE uuid = ? OR id = ?").get(deviceId, deviceId) as any;
+    return !!(r && (r.status || '') === 'revoked');
+  } catch { return false; }
 }
 
 function logSync(deviceId: string | undefined, entity: string, entityUuid: string, op: string, detail: string): void {
@@ -372,7 +385,8 @@ const CORE_BUSINESS_SCOPED_ENTITIES: readonly string[] = [
   'categories', 'items', 'item_packs', 'item_barcodes', 'quick_products',
   'sales', 'debt_payments', 'adjustments', 'customers',
   'warehouses', 'returns',
-  'employee_roles', 'employees', 'employee_accounts', 'attendance', 'employee_performance'
+  'employee_roles', 'employees', 'employee_accounts', 'attendance', 'employee_performance',
+  'subscriptions'
 ];
 
 function businessIntToUuid(int: number | null | undefined): string | null {
@@ -390,6 +404,19 @@ function businessUuidToInt(uuid: string | null | undefined): number | null {
   try {
     const row = db.prepare('SELECT id FROM businesses WHERE uuid = ?').get(String(uuid)) as any;
     return row?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The hub's primary business id (isDefault=1, else the first one). Used to
+ * attach rows from peers that never set a business key (subscriptions). */
+function getDefaultBusinessId(): number | null {
+  try {
+    const row = db.prepare("SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1").get() as any;
+    if (row?.id != null) return Number(row.id);
+    const first = db.prepare('SELECT id FROM businesses ORDER BY id LIMIT 1').get() as any;
+    return first?.id != null ? Number(first.id) : null;
   } catch {
     return null;
   }
@@ -461,13 +488,23 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
 
   // Normalize the cross-wire business key for core tables: peers send the
   // business UUID (mobile) or the desktop id; store the desktop INTEGER id so
-  // business-scoped reads keep working. A uuid with no local business row is
-  // stored as-is (NULL on the INT column won't match any filter — isolated).
-  if (CORE_BUSINESS_SCOPED_ENTITIES.includes(entity) && data.businessId != null) {
-    const asStr = String(data.businessId);
-    if (!/^[0-9]+$/.test(asStr)) {
-      data.businessId = businessUuidToInt(asStr) ?? null;
+  // business-scoped reads keep working. An unknown UUID falls back to the
+  // default business — the push was token-authenticated, so the row belongs
+  // to the business this hub serves. Storing NULL (the old behavior) made
+  // every such row invisible to business-scoped queries, which looked exactly
+  // like "sync works but nothing appears".
+  if (CORE_BUSINESS_SCOPED_ENTITIES.includes(entity)) {
+    if (data.businessId != null && !/^[0-9]+$/.test(String(data.businessId))) {
+      data.businessId = businessUuidToInt(String(data.businessId)) ?? getDefaultBusinessId();
+    } else if (data.businessId == null) {
+      data.businessId = getDefaultBusinessId();
     }
+  }
+  // Subscriptions carry businessId NOT NULL on the hub; a peer that never set
+  // it (pre-multi-business mobile rows) must attach to the default business
+  // instead of tripping the constraint.
+  if (entity === 'subscriptions' && (data.businessId == null || data.businessId === '')) {
+    data.businessId = getDefaultBusinessId();
   }
 
   // §32: audit events are append-only — never LWW-updated. Incoming changes are
@@ -853,6 +890,7 @@ export class SyncHub {
           if (!validToken(token)) return sendJson(res, 403, { ok: false, error: 'invalid pairing token' });
           const deviceId = String(body.device_id || body.device || '');
           if (!deviceId) return sendJson(res, 400, { ok: false, error: 'device_id required' });
+          if (isDeviceRevoked(deviceId)) return sendJson(res, 403, { ok: false, error: 'device was unpaired — new pairing required' });
           registerDevice(deviceId, body.name);
           sendJson(res, 200, { ok: true, hub: this.deviceId });
           return;
@@ -863,6 +901,7 @@ export class SyncHub {
           if (!validToken(token)) return sendJson(res, 403, { ok: false, error: 'invalid pairing token' });
           const deviceId = String(url.searchParams.get('device') || '');
           if (!deviceId) return sendJson(res, 400, { ok: false, error: 'device required' });
+          if (isDeviceRevoked(deviceId)) return sendJson(res, 403, { ok: false, error: 'device was unpaired — new pairing required' });
           registerDevice(deviceId);
           const force = takeResyncRequest(deviceId);
           const since = Number(url.searchParams.get('since') || '0');
@@ -882,6 +921,7 @@ export class SyncHub {
           if (!validToken(token)) return sendJson(res, 403, { ok: false, error: 'invalid pairing token' });
           const deviceId = String(body.device_id || body.device || '');
           if (!deviceId) return sendJson(res, 400, { ok: false, error: 'device_id required' });
+          if (isDeviceRevoked(deviceId)) return sendJson(res, 403, { ok: false, error: 'device was unpaired — new pairing required' });
           registerDevice(deviceId);
           const changes: Change[] = Array.isArray(body.changes) ? body.changes : [];
           const result = applyPush(deviceId, changes);

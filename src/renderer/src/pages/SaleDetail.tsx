@@ -440,8 +440,12 @@ const SaleDetail: React.FC = () => {
                   <tr className="border-t border-border/40">
                     <td className="px-5 py-4">
                       <div className="flex items-center gap-3">
-                        <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center">
-                          <ShoppingBag className="h-4 w-4 text-muted-foreground" />
+                        <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center overflow-hidden">
+                          {sale.itemImage ? (
+                            <img src={sale.itemImage} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <ShoppingBag className="h-4 w-4 text-muted-foreground" />
+                          )}
                         </div>
                         <span className="font-bold text-sm">{sale.itemName}</span>
                       </div>

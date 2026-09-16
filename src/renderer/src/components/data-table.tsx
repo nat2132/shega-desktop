@@ -132,7 +132,6 @@ export function DataTable<TData, TValue>({
           <div className="relative flex-1 max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
             <Input
-              data-tutorial-section="table-search"
               placeholder={t('data_table.search_items', 'Search items...')}
               value={globalFilter ?? ""}
               onChange={(e) => setGlobalFilter(e.target.value)}

@@ -1,22 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { translations } from '../i18n/translations';
-import { TUTORIAL_TRANSLATIONS } from '../i18n/tutorial-translations';
 import { formatDate as formatEtDate } from '../utils/ethiopian-calendar';
 import { ALL_MODULES } from '../utils/feature-modules';
-
-// Merge tutorial translations into main translations
-const mergedTranslations: Record<string, Record<string, string>> = {};
-for (const lang of ['en', 'am', 'om', 'ti'] as const) {
-  mergedTranslations[lang] = {
-    ...(translations[lang] || {}),
-    ...(TUTORIAL_TRANSLATIONS[lang] || {}),
-  };
-}
 
 export type Language = 'en' | 'am' | 'om' | 'ti';
 export type CalendarType = 'ethiopian' | 'gregorian';
 export type TimeSystem = 'device' | 'ethiopian';
-export type Theme = 'light' | 'dark' | 'midnight' | 'emerald' | 'charcoal' | 'slate' | 'cocoa';
+export type Theme = 'light' | 'dark';
 
 interface SettingsContextType {
   language: Language;
@@ -157,21 +147,21 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       interpolateParams = fallbackOrParams;
     }
 
-    let translation = getNestedValue(mergedTranslations[language], key);
+    let translation = getNestedValue(translations[language], key);
     
     // Fallback to flat keys before trying English
     if (!translation) {
-      translation = mergedTranslations[language]?.[key];
+      translation = translations[language]?.[key];
     }
     
     // Try English nested
     if (!translation) {
-      translation = getNestedValue(mergedTranslations['en'], key);
+      translation = getNestedValue(translations['en'], key);
     }
     
     // Try English flat key
     if (!translation) {
-      translation = mergedTranslations['en']?.[key];
+      translation = translations['en']?.[key];
     }
 
     // Use fallback if no translation found

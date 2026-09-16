@@ -409,6 +409,18 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
     load();
   };
 
+  const unpairDevice = async (d: any) => {
+    const name = d.name || d.deviceName || d.device_id || 'this device';
+    if (!window.confirm(`Unpair "${name}"?\n\nIt will immediately stop syncing and lose access to this business. Business data is kept on your remaining devices. The device must be paired and approved again before it can sync.`)) return;
+    try {
+      await window.api.p2pRevokeDevice(d.device_id ?? d.id);
+      toast.success('Device unpaired — it must be paired again to sync.');
+    } catch (e: any) {
+      toast.error(e?.message || 'Unpair failed');
+    }
+    load();
+  };
+
   const confirmRename = async () => {
     if (!renaming || !renameValue.trim()) return;
     await window.api.businessRenameDevice(renaming.device_id ?? renaming.id, renameValue.trim());
@@ -752,6 +764,11 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
                               <Button size="sm" variant={st.label === 'Active' ? 'outline' : 'secondary'} onClick={() => toggleDeviceStatus(d)}>
                                 {st.label === 'Active' ? <><Lock className="h-3.5 w-3.5 mr-1" /> Lock</> : <><Unlock className="h-3.5 w-3.5 mr-1" /> Unlock</>}
                               </Button>
+                              {st.label !== 'Removed' && (
+                                <Button size="sm" variant="destructive" onClick={() => unpairDevice(d)}>
+                                  <Ban className="h-3.5 w-3.5 mr-1" /> Unpair
+                                </Button>
+                              )}
                             </>
                           )}
                         </div>

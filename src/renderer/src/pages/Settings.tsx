@@ -3,7 +3,7 @@ import {
   Palette, Globe, Building2,
   CheckCircle, UploadCloud,
   ShieldCheck, Database, Sun, Moon, Trash2, Upload, Bell, HardDrive, RotateCcw, FileText,
-  Sparkles, Leaf, Flame, Gem, Coffee, Clock, Headphones,
+  Clock, Headphones,
   Phone, HeartPulse, Info, RefreshCw, Download,
   Printer, Server, Percent
 } from 'lucide-react';
@@ -333,15 +333,10 @@ const Settings: React.FC = () => {
                        {[
                           { id: 'light', name: t('settings.light_mode'), icon: Sun, desc: t('settings.theme_light_desc', 'Clean & bright') },
                           { id: 'dark', name: t('settings.dark_mode'), icon: Moon, desc: t('settings.theme_dark_desc', 'Classic dark') },
-                          { id: 'midnight', name: t('settings.theme_midnight', 'Midnight'), icon: Sparkles, desc: t('settings.theme_midnight_desc', 'Blue + gold') },
-                          { id: 'emerald', name: t('settings.theme_emerald', 'Emerald'), icon: Leaf, desc: t('settings.theme_emerald_desc', 'Green + sand') },
-                          { id: 'charcoal', name: t('settings.theme_charcoal', 'Charcoal'), icon: Flame, desc: t('settings.theme_charcoal_desc', 'Red + amber') },
-                          { id: 'slate', name: t('settings.theme_slate', 'Slate'), icon: Gem, desc: t('settings.theme_slate_desc', 'Violet + gold') },
-                          { id: 'cocoa', name: t('settings.theme_cocoa', 'Cocoa'), icon: Coffee, desc: t('settings.theme_cocoa_desc', 'Copper + cream') },
                         ].map((t_item) => (
                          <div 
                            key={t_item.id}
-                           onClick={() => setTheme(t_item.id as any)}
+                           onClick={() => setTheme(t_item.id)}
                            className={cn(
                              "p-4 rounded-2xl border-2 cursor-pointer transition-all flex flex-col items-center gap-3 text-center",
                              theme === t_item.id ? "border-primary bg-primary/5 shadow-sm" : "border-transparent bg-muted/20 hover:border-muted-foreground/30"

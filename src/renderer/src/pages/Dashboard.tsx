@@ -314,7 +314,7 @@ const Dashboard: React.FC = () => {
 
               {empStats && (
                 <motion.div variants={itemVariants} className="px-4 lg:px-6">
-                  <div data-tutorial-section="employee-stats" className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                     {[
                       { label: t('dashboard.total_employees'), value: empStats.total || 0, color: 'text-foreground' },
                       { label: t('common.active'), value: empStats.active || 0, color: 'text-emerald-600' },
@@ -331,12 +331,12 @@ const Dashboard: React.FC = () => {
                 </motion.div>
               )}
 
-              <motion.div data-tutorial-section="business-assistant" variants={itemVariants} className="px-4 lg:px-6">
+              <motion.div variants={itemVariants} className="px-4 lg:px-6">
                 <BusinessAssistant />
               </motion.div>
 
               <motion.div variants={itemVariants} className="px-4 lg:px-6">
-                <Card data-tutorial-section="revenue-chart" className="@container/card">
+                <Card className="@container/card">
                   <CardHeader>
                     <CardTitle>{t('dashboard.revenue_intelligence')}</CardTitle>
                     <CardDescription>
@@ -398,7 +398,7 @@ const Dashboard: React.FC = () => {
               </motion.div>
 
               <motion.div variants={itemVariants} className="px-4 lg:px-6">
-                <Card data-tutorial-section="recent-activity">
+                <Card>
                   <CardHeader>
                     <CardTitle>{t('analytics.recent_activity')}</CardTitle>
                     <CardDescription>{t('dashboard.recent_activity_desc', 'Latest actions across your team')}</CardDescription>

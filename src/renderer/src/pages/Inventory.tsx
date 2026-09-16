@@ -722,7 +722,7 @@ const Inventory: React.FC = () => {
             <Button variant="outline" size="sm" onClick={openPOCreator} className="border-primary/20 text-primary hover:bg-primary/5 h-8 px-3">
               <FileText className="mr-1.5 h-3.5 w-3.5" /> {t('inventory.create_po')}
             </Button>
-            <Button data-tutorial-section="add-item-btn" size="sm" onClick={() => { resetForm(); setEditingItem(null); setShowModal(true); }} className="h-8 px-4 shadow-md shadow-primary/20">
+            <Button size="sm" onClick={() => { resetForm(); setEditingItem(null); setShowModal(true); }} className="h-8 px-4 shadow-md shadow-primary/20">
               <Plus className="mr-1.5 h-3.5 w-3.5" /> {t('inventory.add_product')}
             </Button>
           </div>
@@ -1263,7 +1263,6 @@ const Inventory: React.FC = () => {
           <div className="space-y-3">
             <div className="flex items-center gap-3">
               <Input
-                data-tutorial-section="po-search"
                 placeholder={t('inventory.search_placeholder') || 'Search products...'}
                 value={poSearchQuery}
                 onChange={e => setPoSearchQuery(e.target.value)}

@@ -93,6 +93,7 @@ class P2pSyncManager {
     yjsManager.setDeviceId(deviceId);
     desktopWebRtc.init(deviceId, businessUuid);
     yjsManager.bootstrapBusiness(businessRowId, businessUuid);
+    this.repairOrphanedRows();
 
     // Local doc changes → broadcast over WebRTC.
     this.unsubs.push(
@@ -129,6 +130,32 @@ class P2pSyncManager {
     } catch { this.lastOutboxSeq = 0; }
     if (this.outboxTimer) clearInterval(this.outboxTimer);
     this.outboxTimer = setInterval(() => this.pumpOutbox(), 1500);
+  }
+
+  /**
+   * One-time repair: rows synced from peers before the business-UUID fallback
+   * existed landed with businessId = NULL and were invisible to every
+   * business-scoped query. Re-attach them to this hub's active business.
+   */
+  private repairOrphanedRows(): void {
+    if (!this.businessRowId) return;
+    const tables = ['items', 'categories', 'sales', 'sale_items', 'debt_payments', 'adjustments', 'customers', 'suppliers', 'returns', 'stock_movements'];
+    let fixed = 0;
+    for (const table of tables) {
+      try {
+        const cols = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map((c) => c.name);
+        if (!cols.includes('businessId') || !cols.includes('uuid')) continue;
+        const r = db.prepare(`UPDATE ${table} SET businessId = ? WHERE businessId IS NULL AND uuid IS NOT NULL`).run(this.businessRowId);
+        fixed += r.changes;
+      } catch { /* table may not exist */ }
+    }
+    if (fixed > 0) {
+      console.log(`[p2p] re-attached ${fixed} orphaned row(s) to the active business`);
+      // Re-broadcast the repaired rows so peers get the corrected scope too.
+      try {
+        yjsManager.bootstrapBusiness(this.businessRowId, this.businessUuid);
+      } catch { /* non-fatal */ }
+    }
   }
 
   private pumpOutbox(): void {
@@ -198,13 +225,18 @@ class P2pSyncManager {
       // Desktop business columns are INTEGER ids of the local `businesses`
       // rows, while every Yjs record carries the business UUID. Translate the
       // UUID back to the local INTEGER id (numeric values pass through for
-      // compatibility with pre-UUID peers); an unknown UUID is stored as NULL
-      // so the row stays isolated and never surfaces under another business.
+      // compatibility with pre-UUID peers). A UUID with no local business row
+      // falls back to THIS hub's active business — the peer was already
+      // membership-verified to share it, so its rows must be visible here.
+      // Storing NULL (the old behavior) made every synced row invisible to
+      // business-scoped queries, which looked like "sync doesn't work".
       if (hasBiz) {
         let biz = record.businessId;
         if (biz != null && !/^[0-9]+$/.test(String(biz))) {
           const row = db.prepare('SELECT id FROM businesses WHERE uuid = ?').get(String(biz)) as any;
-          biz = row?.id ?? null;
+          biz = row?.id ?? this.businessRowId ?? null;
+        } else if (biz == null) {
+          biz = this.businessRowId ?? null;
         }
         data.businessId = biz ?? null;
       }
