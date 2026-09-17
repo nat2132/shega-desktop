@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, KeyRound, ArrowLeft, UserRound, Users } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, ArrowLeft, UserRound, Users, Store } from 'lucide-react';
 import { useSettings, Language } from '../../context/SettingsContext';
 import { BrandedLogo } from '../branded-logo';
 import { Avatar, AvatarImage, AvatarFallback } from '../ui/avatar';
@@ -49,6 +49,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
   const [showPin, setShowPin] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [selectedRole, setSelectedRole] = useState(ROLE_OPTIONS[0].value);
+  const [intent, setIntent] = useState<'welcome' | 'create' | 'join'>('welcome');
   const [recoveryMode, setRecoveryMode] = useState<'idle' | 'verify' | 'reset' | 'done'>('idle');
   const [recoveryKey, setRecoveryKey] = useState('');
   const [newPin, setNewPin] = useState('');
@@ -232,6 +233,10 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     setJoinStarted(false);
     setJoinNote('');
     setError('');
+    setIntent(i => (i === 'join' ? 'welcome' : i));
+    setPickedUser(null);
+    setUserPin('');
+    setUserError('');
   };
 
   const handleCheckJoinCode = async (e: React.FormEvent) => {
@@ -582,6 +587,11 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                     </button>
                   ))}
                 </div>
+                <button type="button" onClick={() => { setJoinMode('form'); setError(''); }}
+                  className="w-full text-center text-xs font-black uppercase tracking-widest text-foreground/60 hover:text-foreground/90 transition-colors py-2 border-t border-border/40"
+                >
+                  Join an existing business with a 6-digit code
+                </button>
               </div>
             ) : (
               <div className="space-y-5">
@@ -787,6 +797,37 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
               {t('auth.back_to_login')}
             </button>
           </div>
+        ) : intent === 'welcome' ? (
+          <div className="space-y-3 py-3">
+            <div className="text-left space-y-1 mb-2">
+              <h2 className="text-sm font-black text-foreground tracking-tight uppercase">Welcome to Shega</h2>
+              <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50">
+                Start a new business or join one with a 6-digit code
+              </p>
+            </div>
+            <button type="button" onClick={() => setIntent('create')}
+              className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 bg-muted/40 hover:bg-muted/70 border-transparent hover:border-foreground/10 text-left transition-all active:scale-[0.99]"
+            >
+              <div className="h-11 w-11 rounded-xl bg-foreground text-background flex items-center justify-center shrink-0">
+                <Store size={18} />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-black text-foreground">Start a new business</p>
+                <p className="text-xs font-bold text-muted-foreground/70">Set up this terminal as a brand-new Shega business</p>
+              </div>
+            </button>
+            <button type="button" onClick={() => { setIntent('join'); setJoinMode('form'); setError(''); }}
+              className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 bg-muted/40 hover:bg-muted/70 border-transparent hover:border-foreground/10 text-left transition-all active:scale-[0.99]"
+            >
+              <div className="h-11 w-11 rounded-xl bg-muted text-foreground flex items-center justify-center shrink-0">
+                <Users size={18} />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-black text-foreground">Join an existing business</p>
+                <p className="text-xs font-bold text-muted-foreground/70">Pair this terminal using a 6-digit code from your owner</p>
+              </div>
+            </button>
+          </div>
         ) : (
           <form onSubmit={handleRegister} className="space-y-4">
             <div className="space-y-1.5 text-left">
@@ -856,6 +897,12 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
               className="w-full py-5 bg-foreground text-background rounded-2xl font-black uppercase tracking-[0.3em] text-sm hover:bg-foreground/90 active:scale-[0.98] transition-all disabled:opacity-30"
             >
               {loading ? t('auth.creating_account') : t('auth.initialize_admin')}
+            </button>
+            <button type="button" onClick={() => { setIntent('welcome'); setError(''); }}
+              className="w-full text-center text-xs font-bold uppercase tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors py-1"
+            >
+              <ArrowLeft size={10} className="inline mr-1.5 -mt-0.5" />
+              Back to choice
             </button>
             <button type="button" onClick={() => { setJoinMode('form'); setError(''); }}
               className="w-full text-center text-xs font-black uppercase tracking-widest text-foreground/60 hover:text-foreground/90 transition-colors py-2"

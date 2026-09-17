@@ -1,6 +1,8 @@
 import { ipcMain, BrowserWindow, shell } from 'electron';
 import type { WebContents } from 'electron';
-import db, { validateDBFile, reopenDB, getDemoMode, setDemoMode, resetDemoDb, getCurrentDb } from './database';
+import db, { validateDBFile, reopenDB, getDemoMode, setDemoMode, resetDemoDb, getCurrentDb, factoryResetDb } from './database';
+import { stopPeerSync } from './peer-sync';
+import { wsSyncServer } from './sync/websocket-server';
 import { insertAudit, verifyAuditChain } from './audit-chain';
 import crypto from 'crypto';
 import { statSync, copyFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs';
@@ -2614,6 +2616,23 @@ export function registerIPCHandlers() {
     return data;
   });
 
+  // DEV/TEST ONLY — full fresh-install reset: deletes the SQLite database
+  // (businesses, users, products, sales, debts, sync queues/history, device
+  // registrations, pairing tokens) plus persisted Yjs docs and the demo copy.
+  // The app must be restarted afterwards; the schema re-initializes itself.
+  ipcMain.handle('factory-reset', () => {
+    requirePermission('settings.manage');
+    const result = factoryResetDb();
+    if (result.ok) {
+      try { stopPeerSync(); } catch {}
+      try { wsSyncServer.stop(); } catch {}
+      try { p2pSync.shutdown(); } catch {}
+    }
+    return result;
+  });
+
+  ipcMain.handle('app:quit', () => { app.quit(); });
+
   ipcMain.handle('reset-data', (_, mode: 'transactions' | 'all' | 'factory' = 'transactions') => {
     requirePermission('settings.manage');
     const bizId = getActiveBusinessId();
@@ -3123,7 +3142,11 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('insert-admin', (_, admin: any) => {
-    requirePermission('settings.users');
+    // Bootstrap: when the install has zero admins (fresh install after the
+    // seed removal, or clean reset), the first owner must be creatable
+    // without an existing session — otherwise nothing can ever log in.
+    const adminTotal = (db.prepare('SELECT COUNT(*) AS c FROM admins').get() as any).c;
+    if (adminTotal > 0) requirePermission('settings.users');
     // Check for duplicate username
     const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get(admin.username);
     if (existing) return { success: false, error: 'Username already exists' };

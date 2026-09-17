@@ -126,6 +126,8 @@ contextBridge.exposeInMainWorld('api', {
   // Data Management
   exportData: () => ipcRenderer.invoke('export-data'),
   resetData: (mode: 'transactions' | 'all' | 'factory' = 'all') => ipcRenderer.invoke('reset-data', mode),
+  factoryReset: () => ipcRenderer.invoke('factory-reset'),
+  quitApp: () => ipcRenderer.invoke('app:quit'),
 
   // Admin Management
   login: (username: string, pin: string) => ipcRenderer.invoke('login', username, pin),

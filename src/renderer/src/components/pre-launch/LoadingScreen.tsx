@@ -6,31 +6,103 @@ interface LoadingScreenProps {
   onComplete: () => void;
 }
 
+interface SyncStatusData {
+  running: boolean;
+  hubId: string;
+  lanUrl: string;
+  port: number;
+  peers: Array<{ deviceId: string; name: string; lastSeenAt: string | null; cursorSeq: number; lastSyncAt: string | null; stale: boolean }>;
+  pendingOutbox: number;
+  conflicts: number;
+}
+
 const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
-  const { t } = useSettings();
+  const { t, settingsLoaded } = useSettings();
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
 
-  const loadingSteps = [
-    { label: t('loading.step_1'), delay: 400 },
-    { label: t('loading.step_2'), delay: 800 },
-    { label: t('loading.step_3'), delay: 1200 },
-    { label: t('loading.step_4'), delay: 1800 },
-  ];
-  const [completedSteps, setCompletedSteps] = useState<number[]>([]);
   const [mounted, setMounted] = useState(false);
+  const [minShown, setMinShown] = useState(false);
+  // Live status from the main process — no fake timers.
+  const [status, setStatus] = useState<SyncStatusData | null>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
 
   useEffect(() => {
-    setTimeout(() => setMounted(true), 100);
-
-    loadingSteps.forEach((step, i) => {
-      setTimeout(() => {
-        setCompletedSteps(prev => [...prev, i]);
-      }, step.delay);
-    });
-
-    setTimeout(() => onCompleteRef.current(), 2400);
+    const t1 = setTimeout(() => setMounted(true), 100);
+    const t2 = setTimeout(() => setMinShown(true), 1200);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let failures = 0;
+    const poll = async () => {
+      try {
+        const s = await window.api?.syncStatus?.();
+        if (cancelled) return;
+        setStatus(s ?? null);
+        setPollError(null);
+        failures = 0;
+      } catch (err: any) {
+        if (cancelled) return;
+        setPollError(err?.message || 'Sync status unavailable');
+        if (++failures >= 2) setStatus(null);
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 1200);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  // Finish once the business data is actually loaded and a short minimum has
+  // elapsed so the screen never flashes.
+  useEffect(() => {
+    if (!settingsLoaded || !minShown) return;
+    const t = setTimeout(() => onCompleteRef.current(), 300);
+    return () => clearTimeout(t);
+  }, [settingsLoaded, minShown]);
+
+  const stepRows = [
+    {
+      label: t('loading.step_1'),
+      sub: settingsLoaded ? 'Ready' : 'Reading this terminal’s local data',
+      done: settingsLoaded,
+    },
+    {
+      label: status == null
+        ? (pollError ? t('loading.wait') : 'Contacting the sync hub…')
+        : status.pendingOutbox > 0
+          ? `${status.pendingOutbox} pending change${status.pendingOutbox === 1 ? '' : 's'} to push`
+          : 'All changes synced',
+      sub: status == null
+        ? (pollError || 'Starting the LAN hub…')
+        : status.pendingOutbox > 0
+          ? 'Flushing your offline changes to the hub'
+          : 'Nothing waiting in the outbox',
+      done: !!status && status.pendingOutbox === 0,
+    },
+    {
+      label: status == null
+        ? 'Checking connected devices…'
+        : status.peers.length > 0
+          ? `${status.peers.length} device${status.peers.length === 1 ? '' : 's'} on the LAN hub`
+          : status.running ? 'Hub is live — waiting for other devices on Wi-Fi' : 'Sync hub is starting…',
+      sub: status?.lanUrl ? `Hub at ${status.lanUrl}` : undefined,
+      done: !!status && status.running && status.peers.length > 0,
+    },
+    {
+      label: status == null
+        ? 'Verifying sync health…'
+        : status.conflicts > 0
+          ? `${status.conflicts} conflict${status.conflicts === 1 ? '' : 's'} to review`
+          : 'Sync healthy — no conflicts',
+      sub: status == null ? undefined : status.conflicts > 0 ? 'Check Sync Settings after you sign in' : 'All devices in agreement',
+      done: !!status && status.conflicts === 0,
+    },
+  ];
+
+  const completedSteps = stepRows.filter(r => r.done).length;
+  const activeIdx = stepRows.findIndex(r => !r.done);
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center" style={{ background: '#0B0705' }}>
@@ -47,9 +119,9 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
         </div>
 
         <div className="space-y-3">
-          {loadingSteps.map((step, i) => {
-            const isCompleted = completedSteps.includes(i);
-            const isActive = !isCompleted && (i === 0 || completedSteps.includes(i - 1));
+          {stepRows.map((step, i) => {
+            const isCompleted = step.done;
+            const isActive = !isCompleted && (i === 0 || stepRows[i - 1].done);
 
             return (
               <div key={i} className={`flex items-center gap-4 p-4 rounded-xl transition-all duration-500 ${
@@ -66,21 +138,26 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
                     <div className="h-1.5 w-1.5 rounded-full bg-white/10" />
                   )}
                 </div>
-                <span className={`text-[11px] font-bold uppercase tracking-widest transition-all duration-300 ${
-                  isCompleted ? 'text-white/50' : 'text-white/15'
-                }`}>
-                  {step.label}
-                </span>
+                <div className="min-w-0 flex-1">
+                  <p className={`text-[11px] font-bold uppercase tracking-widest truncate transition-all duration-300 ${
+                    isCompleted ? 'text-white/50' : isActive || i === activeIdx ? 'text-white/70' : 'text-white/15'
+                  }`}>
+                    {step.label}
+                  </p>
+                  {step.sub && (
+                    <p className="text-[10px] font-bold text-white/20 tracking-wide truncate mt-0.5">{step.sub}</p>
+                  )}
+                </div>
               </div>
             );
           })}
         </div>
 
-        {/* Progress bar */}
+        {/* Real progress from the main process */}
         <div className="mt-8 h-[2px] w-full bg-white/5 rounded-full overflow-hidden">
           <div
             className="h-full bg-white/20 rounded-full transition-all duration-500 ease-out"
-            style={{ width: `${(completedSteps.length / loadingSteps.length) * 100}%` }}
+            style={{ width: `${(completedSteps / stepRows.length) * 100}%` }}
           />
         </div>
       </div>

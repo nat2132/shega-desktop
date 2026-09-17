@@ -184,7 +184,7 @@ function isVirtualAdapterName(name: string): boolean {
   return virtual.some((v) => n.includes(v));
 }
 
-export function registerDevice(deviceId: string, name?: string): void {
+export function registerDevice(deviceId: string, name?: string, platform?: string): void {
   const existing = db.prepare('SELECT id, status FROM devices WHERE device_id = ?').get(deviceId) as any;
   if (existing) {
     // A revoked/unpaired device must complete a new pairing/authorization
@@ -193,10 +193,11 @@ export function registerDevice(deviceId: string, name?: string): void {
     db.prepare('UPDATE devices SET last_seen_at = ? WHERE device_id = ?').run(new Date().toISOString(), deviceId);
     return;
   }
-  db.prepare('INSERT INTO devices (device_id, name, last_seen_at, uuid) VALUES (?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO devices (device_id, name, last_seen_at, platform, uuid) VALUES (?, ?, ?, ?, ?)').run(
     deviceId,
     name || deviceId.slice(0, 8),
     new Date().toISOString(),
+    platform === 'mobile' ? 'mobile' : 'desktop',
     deviceId
   );
 }
@@ -486,6 +487,20 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
     : payload;
   const data = cleanPayload(entity, bridgeHistoryColumns(entity, adapterData));
 
+  // Peer subscriptions may carry status values (e.g. mobile's 'trial') that
+  // the hub's CHECK constraint does not allow. Map them onto the nearest
+  // legal value instead of failing the whole change.
+  if (entity === 'subscriptions') {
+    const VALID_SUB_STATUS = ['active', 'expired', 'cancelled', 'pending'];
+    if (data.status != null && !VALID_SUB_STATUS.includes(String(data.status))) {
+      data.status = 'active';
+    }
+    const VALID_SUB_TIER = ['basic', 'premium', 'trial'];
+    if (data.tier != null && !VALID_SUB_TIER.includes(String(data.tier))) {
+      data.tier = 'basic';
+    }
+  }
+
   // Normalize the cross-wire business key for core tables: peers send the
   // business UUID (mobile) or the desktop id; store the desktop INTEGER id so
   // business-scoped reads keep working. An unknown UUID falls back to the
@@ -522,6 +537,10 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
         payload.deleted_at ?? new Date().toISOString(),
         entity_uuid
       );
+      logSync(deviceId, entity, entity_uuid, op, 'applied');
+    }
+    else {
+      logSync(deviceId, entity, entity_uuid, op, 'skipped unknown entity row (nothing to delete)');
     }
     return 'applied';
   }
@@ -555,7 +574,16 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
     }
     if (entity === 'stock_movements' && insertData.warehouseId != null) {
       const hubWhId = resolveFk(deviceId, 'warehouses', insertData.warehouseId);
-      if (hubWhId != null) insertData.warehouseId = hubWhId;
+      // Null out an unresolvable warehouse rather than keeping the peer's raw
+      // id — that row is a local id from another device and would violate the FK.
+      insertData.warehouseId = hubWhId;
+    }
+    if (entity === 'stock_movements' && insertData.referenceId != null && insertData.referenceType === 'sale') {
+      // The referenced sale may not have arrived yet (peer outbox ordering);
+      // drop the dangling reference instead of failing the FK constraint.
+      const hubSaleId = resolveFk(deviceId, 'sales', insertData.referenceId);
+      if (hubSaleId == null) delete insertData.referenceId;
+      else insertData.referenceId = hubSaleId;
     }
     const cols = columnsOf(entity).filter((c) => c in insertData);
     const placeholders = cols.map(() => '?').join(', ');
@@ -564,6 +592,7 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
     if (Number.isFinite(remoteId) && remoteId > 0) {
       recordRef(deviceId, entity, { id: remoteId, uuid: entity_uuid });
     }
+    logSync(deviceId, entity, entity_uuid, op, pending ? 'pending_item (inserted, waiting for parent row)' : 'applied');
     return pending ? 'pending' : 'applied';
   }
 
@@ -579,6 +608,21 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
     const updateData: Record<string, any> = { ...data };
     delete updateData.id;
     updateData.device_id = deviceId;
+    // The insert path resolves peer FKs (itemId/warehouseId) to hub-local ids;
+    // the update path must do the same or a movement whose parent sale/item
+    // arrived under a different local id trips FOREIGN KEY constraint failed.
+    if (entity === 'stock_movements' || entity === 'sales' || entity === 'returns') {
+      if (updateData.itemId != null) {
+        const hubItemId = resolveFk(deviceId, 'items', updateData.itemId);
+        if (hubItemId != null) updateData.itemId = hubItemId;
+        else delete updateData.itemId; // keep the existing local value rather than crash
+      }
+      if (entity === 'stock_movements' && updateData.warehouseId != null) {
+        const hubWhId = resolveFk(deviceId, 'warehouses', updateData.warehouseId);
+        if (hubWhId != null) updateData.warehouseId = hubWhId;
+        else delete updateData.warehouseId;
+      }
+    }
     const cols = columnsOf(entity).filter((c) => c in updateData && c !== 'id' && c !== 'uuid');
     if (cols.length) {
       const sets = cols.map((c) => `${c} = ?`).join(', ');
@@ -586,6 +630,7 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
       db.prepare(`UPDATE ${tbl(entity)} SET ${sets} WHERE uuid = ?`).run(...values, entity_uuid);
     }
     recordRef(deviceId, entity, data);
+    logSync(deviceId, entity, entity_uuid, op, 'applied');
     return 'applied';
   }
   logSync(deviceId, entity, entity_uuid, op, 'conflict_rejected');
@@ -743,6 +788,9 @@ export function applyPush(deviceId: string, changes: Change[]): ApplyResult {
   if (result.applied > 0) {
     notifyDataApplied({ applied: result.applied, conflicts: result.conflicts, changes: changes.length, source: 'hub' });
     syncHubBus.emit('applied', { applied: result.applied });
+    // Keep the activity log bounded — pruning after each batch prevents the
+    // sync_log table from growing without limit.
+    db.prepare('DELETE FROM sync_log WHERE id NOT IN (SELECT id FROM sync_log ORDER BY id DESC LIMIT 5000)').run();
   }
   return result;
 }
@@ -891,7 +939,7 @@ export class SyncHub {
           const deviceId = String(body.device_id || body.device || '');
           if (!deviceId) return sendJson(res, 400, { ok: false, error: 'device_id required' });
           if (isDeviceRevoked(deviceId)) return sendJson(res, 403, { ok: false, error: 'device was unpaired — new pairing required' });
-          registerDevice(deviceId, body.name);
+          registerDevice(deviceId, body.name, body.platform);
           sendJson(res, 200, { ok: true, hub: this.deviceId });
           return;
         }
@@ -922,7 +970,7 @@ export class SyncHub {
           const deviceId = String(body.device_id || body.device || '');
           if (!deviceId) return sendJson(res, 400, { ok: false, error: 'device_id required' });
           if (isDeviceRevoked(deviceId)) return sendJson(res, 403, { ok: false, error: 'device was unpaired — new pairing required' });
-          registerDevice(deviceId);
+          registerDevice(deviceId, body.name, body.platform);
           const changes: Change[] = Array.isArray(body.changes) ? body.changes : [];
           const result = applyPush(deviceId, changes);
           sendJson(res, 200, { ok: true, ...result, serverSeq: maxSeq() });

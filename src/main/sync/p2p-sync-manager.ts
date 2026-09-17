@@ -211,6 +211,11 @@ class P2pSyncManager {
       if (hasUuid) data.uuid = record.uuid;
       if (record.deleted) {
         if (hasUuid) db.prepare(`UPDATE ${table} SET is_deleted = 1, is_synced = 1 WHERE uuid = ?`).run(record.uuid);
+        try {
+          db.prepare('INSERT INTO sync_log (device_id, entity, entity_uuid, op, detail) VALUES (?, ?, ?, ?, ?)').run(
+            record.deviceId ? String(record.deviceId) : null, table, record.uuid, 'DELETE', 'applied (p2p)'
+          );
+        } catch { /* logging must never break the apply */ }
         return;
       }
       // Dedup on uuid — the sync PK. Append-only tables simply ignore repeats.
@@ -231,7 +236,7 @@ class P2pSyncManager {
       // Storing NULL (the old behavior) made every synced row invisible to
       // business-scoped queries, which looked like "sync doesn't work".
       if (hasBiz) {
-        let biz = record.businessId;
+        let biz: unknown = record.businessId;
         if (biz != null && !/^[0-9]+$/.test(String(biz))) {
           const row = db.prepare('SELECT id FROM businesses WHERE uuid = ?').get(String(biz)) as any;
           biz = row?.id ?? this.businessRowId ?? null;
@@ -242,6 +247,7 @@ class P2pSyncManager {
       }
       const keys = Object.keys(data).filter((k) => cols.includes(k));
       if (keys.length === 0) return;
+      const action = rowId ? 'UPDATE' : 'INSERT';
       if (rowId) {
         const setSql = keys.map((k) => `${k} = ?`).join(', ');
         db.prepare(`UPDATE ${table} SET ${setSql}, is_synced = 1 WHERE id = ?`).run(...keys.map((k) => data[k]), rowId.id);
@@ -250,6 +256,18 @@ class P2pSyncManager {
         const ph = keys.map(() => '?').join(', ');
         db.prepare(`INSERT INTO ${table} (${colSql}, is_synced) VALUES (${ph}, 1)`).run(...keys.map((k) => data[k]));
       }
+      // Write into sync_log so the Sync Hub's "Sync activity" panel shows
+      // changes arriving over the Yjs/WebRTC transport (it previously only
+      // logged the LAN/WS hub path).
+      try {
+        db.prepare('INSERT INTO sync_log (device_id, entity, entity_uuid, op, detail) VALUES (?, ?, ?, ?, ?)').run(
+          record.deviceId ? String(record.deviceId) : null,
+          table,
+          record.uuid,
+          action,
+          'applied (p2p)'
+        );
+      } catch { /* logging must never break the apply */ }
       notifyDataApplied({ applied: 1, conflicts: 0, changes: 1, source: 'p2p' });
     } catch (e) {
       console.warn(`[p2p] apply ${collection}/${record.uuid} failed:`, e);

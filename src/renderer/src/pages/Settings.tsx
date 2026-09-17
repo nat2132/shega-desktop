@@ -53,6 +53,7 @@ const Settings: React.FC = () => {
   const [updateDialogAction, setUpdateDialogAction] = useState<'check' | 'auto'>('auto');
   const [appVersion, setAppVersion] = useState('');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showFactoryReset, setShowFactoryReset] = useState(false);
   const [showDataTransfer, setShowDataTransfer] = useState(false);
   const [avatar, setAvatar] = useState<string | null>(null);
   const currentAvatar = avatar ?? (currentAdmin?.avatar && currentAdmin.avatar.startsWith('profile') ? currentAdmin.avatar : null);
@@ -151,6 +152,17 @@ const Settings: React.FC = () => {
       toast.success(t('settings.backup_created'));
     } else {
       toast.error(result?.error || t('settings.backup_error'));
+    }
+  };
+
+  // DEV ONLY — full fresh-install reset (deletes DB + Yjs docs, then quits).
+  const handleFactoryReset = async () => {
+    try {
+      const res = await window.api?.factoryReset?.();
+      if (res?.ok) await window.api?.quitApp?.();
+      else toast.error(res?.error || 'Factory reset failed');
+    } catch (err: any) {
+      toast.error(err?.message || 'Factory reset failed');
     }
   };
 
@@ -525,6 +537,13 @@ const Settings: React.FC = () => {
                           <p className="text-sm font-black uppercase tracking-widest">{t('settings.purge_system')}</p>
                           <p className="text-xs text-muted-foreground font-bold uppercase mt-2">{t('settings.purge_desc')}</p>
                        </div>
+                       {import.meta.env.DEV && (
+                          <div className="p-8 rounded-2xl border border-dashed bg-muted/10 hover:border-destructive transition-all cursor-pointer group" onClick={() => setShowFactoryReset(true)}>
+                             <Trash2 size={24} className="mb-4 text-muted-foreground group-hover:text-destructive transition-colors" />
+                             <p className="text-sm font-black uppercase tracking-widest">Fresh Install Reset (DEV)</p>
+                             <p className="text-xs text-muted-foreground font-bold uppercase mt-2">Delete DB + devices + sync history, restart like a new install</p>
+                          </div>
+                       )}
                     </div>
                 </div>
               )}
@@ -678,6 +697,25 @@ const Settings: React.FC = () => {
               </div>
              </>
            )}
+         </div>
+      </Modal>
+
+      {/* DEV ONLY — fresh-install factory reset (dev/test environments) */}
+      <Modal isOpen={showFactoryReset} onClose={() => setShowFactoryReset(false)} title="Fresh Install Reset (DEV)" size="sm">
+         <div className="text-center space-y-6">
+            <div className="h-20 w-20 rounded-full bg-destructive/10 flex items-center justify-center text-destructive mx-auto">
+               <Trash2 size={32} />
+            </div>
+            <div className="space-y-2">
+               <h4 className="text-lg font-black tracking-tight">Delete everything and restart?</h4>
+               <p className="text-xs font-black uppercase tracking-widest text-muted-foreground leading-relaxed">
+                  Removes the database (all businesses, users, products, sales, debts, devices, pairing, sync history) and Yjs docs. The app quits and re-initializes like a brand-new install. No backup.
+               </p>
+            </div>
+            <div className="flex gap-4">
+               <Button variant="destructive" className="flex-1" onClick={handleFactoryReset}>Delete & Restart</Button>
+               <Button variant="outline" className="flex-1" onClick={() => setShowFactoryReset(false)}>{t('common.abort')}</Button>
+            </div>
          </div>
       </Modal>
 

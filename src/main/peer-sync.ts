@@ -226,10 +226,17 @@ async function performLanSync(): Promise<void> {
   const discovered = mdnsDiscovery.getDiscoveredServices();
   if (discovered.length === 0) return;
 
-  // For each discovered peer hub, perform a bidirectional sync
+  // For each discovered peer hub, perform a bidirectional sync.
+  // Mobile phones acting as POS Hubs speak the TCP JSON protocol, not HTTP —
+  // route those to the dedicated mobile-hub client.
+  const { isMobileHub, syncWithMobileHub } = await import('./sync/mobile-hub-client');
   for (const peer of discovered) {
     try {
-      await syncWithPeerHub(peer);
+      if (isMobileHub(peer)) {
+        await syncWithMobileHub(peer);
+      } else {
+        await syncWithPeerHub(peer);
+      }
     } catch (e: any) {
       logger.warn('Sync with peer hub failed', { peerId: peer.deviceId, error: e?.message });
     }

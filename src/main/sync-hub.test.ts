@@ -250,4 +250,59 @@ describe('Sync hub — all device directions (real HTTP)', () => {
     const count = db.prepare('SELECT COUNT(*) AS c FROM categories WHERE uuid = ?').get(CAT_UUID) as any;
     expect(count.c).toBe(1);
   });
+
+  it('Subscriptions UPDATE with an illegal status (mobile "trial") is normalized, not rejected', async () => {
+    // Mobile sends status values the hub CHECK constraint does not allow;
+    // the hub must map them onto a legal status instead of erroring.
+    const SUB_UUID = 'd1a5a9b2-0000-4000-a000-000000000021';
+    const defaultBiz = db.prepare('SELECT id FROM businesses WHERE isDefault = 1').get() as any;
+    const ts = '2026-09-16 11:00:00';
+    const push1 = await phonePush('phone-sub', [
+      { entity: 'subscriptions', entity_uuid: SUB_UUID, op: 'INSERT', client_seq: 1,
+        payload: { businessId: defaultBiz.id, tier: 'trial', status: 'trial', isTrial: 1, is_deleted: 0, uuid: SUB_UUID, updated_at: ts } },
+    ]) as any;
+    expect(push1.ok).toBe(true);
+    const row = db.prepare('SELECT * FROM subscriptions WHERE uuid = ?').get(SUB_UUID) as any;
+    expect(row).toBeTruthy();
+    expect(['active', 'expired', 'cancelled', 'pending']).toContain(row.status);
+
+    // A follow-up UPDATE with the same illegal value must not throw either.
+    const push2 = await phonePush('phone-sub', [
+      { entity: 'subscriptions', entity_uuid: SUB_UUID, op: 'UPDATE', client_seq: 2,
+        payload: { businessId: defaultBiz.id, tier: 'trial', status: 'trial', isTrial: 1, is_deleted: 0, uuid: SUB_UUID, updated_at: '2026-09-16 11:05:00' } },
+    ]) as any;
+    expect(push2.ok).toBe(true);
+    expect(db.prepare('SELECT status FROM subscriptions WHERE uuid = ?').get(SUB_UUID) as any).toBeTruthy();
+  });
+
+  it('stock_movements UPDATE with a peer itemId that maps to a hub item applies without FK error', async () => {
+    // Phone inserts a movement; then UPDATEs it — the update path must
+    // resolve the peer itemId/warehouseId to hub-local ids like the insert
+    // path does, or the FK constraint fails.
+    const phoneItem = db.prepare("SELECT uuid FROM sync_refs WHERE device_id = 'phone-A' AND entity = 'items' LIMIT 1").get() as any;
+    const itemUuid = phoneItem?.uuid ?? CAT_UUID;
+    const item = db.prepare('SELECT id FROM items WHERE uuid = ?').get(itemUuid) as any;
+    const ref = db.prepare("SELECT local_id FROM sync_refs WHERE device_id = 'phone-A' AND entity = 'items' LIMIT 1").get() as any;
+    const MV_UUID = 'e2b6a9b2-0000-4000-a000-000000000031';
+    const ts = '2026-09-16 12:00:00';
+    if (!ref) return; // no prior items ref in this fixture — skip defensively
+    const push1 = await phonePush('phone-A', [
+      { entity: 'stock_movements', entity_uuid: MV_UUID, op: 'INSERT', client_seq: 1,
+        payload: { itemId: ref.remote_id, warehouseId: 1, type: 'restock_in', quantity: 5, referenceType: 'manual', is_deleted: 0, uuid: MV_UUID, updated_at: ts } },
+    ]) as any;
+    expect(push1.ok).toBe(true);
+    const mv = db.prepare('SELECT * FROM stock_movements WHERE uuid = ?').get(MV_UUID) as any;
+    expect(mv).toBeTruthy();
+    expect(mv.itemId).toBe(item.id); // resolved to the hub-local item id
+
+    const push2 = await phonePush('phone-A', [
+      { entity: 'stock_movements', entity_uuid: MV_UUID, op: 'UPDATE', client_seq: 2,
+        payload: { itemId: ref.remote_id, warehouseId: 1, type: 'restock_in', quantity: 9, referenceType: 'manual', is_deleted: 0, uuid: MV_UUID, updated_at: '2026-09-16 12:05:00' } },
+    ]) as any;
+    expect(push2.ok).toBe(true);
+    expect(push2.applied).toBe(1);
+    const updated = db.prepare('SELECT itemId, quantity FROM stock_movements WHERE uuid = ?').get(MV_UUID) as any;
+    expect(updated.itemId).toBe(item.id); // still the local id, no FK error
+    expect(updated.quantity).toBe(9);
+  });
 });

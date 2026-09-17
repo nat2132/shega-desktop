@@ -2504,40 +2504,10 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     db.prepare('UPDATE admins SET pin = ? WHERE id = ?').run(hashed, a.id);
   }
 
-  // Seed default super admin if no admins exist, and migrate to employee system
-  const adminCount = db.prepare('SELECT COUNT(*) as count FROM admins').get() as any;
-  if (adminCount.count === 0) {
-    const ownerRole = db.prepare("SELECT id FROM employee_roles WHERE name = 'Owner' LIMIT 1").get() as any;
-    const roleId = ownerRole?.id || 1;
-    const empResult = db.prepare(
-      'INSERT INTO employees (firstName, lastName, roleId, isActive, hireDate) VALUES (?, ?, ?, ?, ?)'
-    ).run('Super', 'Admin', roleId, 1, new Date().toISOString().split('T')[0]);
-    const empId = empResult.lastInsertRowid as number;
-    const hash = hashPin('1234');
-    db.prepare(
-      'INSERT INTO employee_accounts (employeeId, username, pin, isActive, forcePasswordChange) VALUES (?, ?, ?, ?, ?)'
-    ).run(empId, 'admin', hash, 1, 1);
-    db.prepare(
-      'INSERT INTO admins (name, username, pin, role, permissions) VALUES (?, ?, ?, ?, ?)'
-    ).run('Super Admin', 'admin', hash, 'super_admin', JSON.stringify(ALL_PERMISSIONS));
-
-    // The owner also exists as a canonical `users` roster row (v27) so this
-    // person can be recognized across devices and platforms as the SAME owner.
-    // Role/permissions live on this membership record (isOwner, role='owner'),
-    // which is what other installs sync and adopt — never a per-device identity.
-    const usersMissingPinHash = db.prepare("SELECT COUNT(*) AS c FROM users WHERE isOwner = 1").get() as any;
-    if ((usersMissingPinHash.c ?? 0) === 0) {
-      db.prepare(
-        `INSERT INTO users (businessId, name, phone, email, role, roleName, permissions, isActive, isOwner, pinHash, pinSalt, uuid)
-         VALUES (?, 'Super Admin', NULL, 'admin', 'owner', 'Owner', ?, 1, 1, ?, NULL, ?)`
-      ).run(
-        businessId,
-        JSON.stringify({ '*': true }),
-        hash,
-        crypto.randomUUID()
-      );
-    }
-  }
+  // No default super admin seeding: a fresh install starts with zero users.
+  // The first owner account is created through onboarding (create business /
+  // join via pairing). The built-in PIN `1234` fallback was removed because it
+  // reappeared after every data reset and defeated the clean-install test.
 
   // Migration: Import existing customer names from sales into customers table
   const existingCustomerNames = db.prepare("SELECT DISTINCT customerName, customerPhone FROM sales WHERE customerName IS NOT NULL AND customerName != ''").all() as any[];
@@ -2724,4 +2694,43 @@ export function reopenDB(): void {
   db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
   (module as any).exports.default = db;
+}
+
+/**
+ * FACTORY RESET (dev/testing) — delete the SQLite file (plus WAL/SHM and the
+ * demo copy and persisted Yjs docs) so the next launch re-creates everything
+ * from scratch, exactly like a brand-new install. Source code, schema and
+ * migrations are untouched. The caller must quit the app afterwards.
+ */
+export function factoryResetDb(): { ok: boolean; deleted: string[]; error?: string } {
+  const deleted: string[] = [];
+  try {
+    try { db.close(); } catch {}
+    try { demoDb?.close(); } catch {}
+    demoDb = null;
+    const targets = [
+      dbPath, `${dbPath}-wal`, `${dbPath}-shm`,
+      demoDbPath, `${demoDbPath}-wal`, `${demoDbPath}-shm`,
+    ];
+    // Yjs persisted docs (peer replication state) — safe to remove for a
+    // fresh install; they are re-created per business on bootstrap.
+    const yjsDir = path.join(process.cwd(), 'shega-yjs-docs');
+    try {
+      if (existsSync(yjsDir)) {
+        const rmSync = require('fs').rmSync as typeof import('fs').rmSync;
+        rmSync(yjsDir, { recursive: true, force: true });
+        deleted.push(yjsDir);
+      }
+    } catch {}
+    for (const f of targets) {
+      try {
+        if (existsSync(f)) { unlinkSync(f); deleted.push(f); }
+      } catch (e: any) {
+        return { ok: false, deleted, error: `could not delete ${f}: ${e?.message}` };
+      }
+    }
+    return { ok: true, deleted };
+  } catch (e: any) {
+    return { ok: false, deleted, error: e?.message };
+  }
 }

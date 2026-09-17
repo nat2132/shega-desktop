@@ -2,10 +2,11 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
   Clock, AlertCircle, RefreshCw, LayoutDashboard, Building2,
-  Loader2, TrendingUp, Activity
+  Loader2, TrendingUp, Activity, Package, ShoppingCart,
+  ChevronRight
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Cell } from 'recharts';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { resolveAvatar } from '../lib/avatar';
 
 import { useSettings } from '../context/SettingsContext';
@@ -60,6 +61,7 @@ const Dashboard: React.FC = () => {
   const { t, formatDate, formatTime, calendarType, language } = useSettings();
   const { currentAdmin } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const queryTab = useMemo(() => {
     const params = new URLSearchParams(location.search);
     return params.get('tab');
@@ -243,6 +245,12 @@ const Dashboard: React.FC = () => {
     },
   ], [stats]);
 
+  // Fresh business — no sales and no products yet: show first-launch CTAs.
+  const isFresh = !!stats &&
+    (stats.todaySales || 0) === 0 &&
+    (stats.yesterdaySales || 0) === 0 &&
+    (stats.totalItems || 0) === 0;
+
   return (
     <motion.div
       className="flex flex-col gap-4 py-4 md:gap-6 md:py-6"
@@ -307,6 +315,46 @@ const Dashboard: React.FC = () => {
               <motion.div variants={itemVariants}>
                 <SectionCards cards={kpiCards} />
               </motion.div>
+
+              {/* First-launch steps — fresh business with no products or sales yet */}
+              {isFresh && (
+                <motion.div variants={itemVariants} className="px-4 lg:px-6">
+                  <Card className="@container/card">
+                    <CardHeader className="pb-3">
+                      <CardTitle>{t('dashboard.get_selling', 'Let\'s get selling')}</CardTitle>
+                      <CardDescription>
+                        {t('dashboard.first_steps_hint', 'Two quick steps to start using Shega.')}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 @[600px]/card:grid-cols-2">
+                      <button type="button" onClick={() => navigate('/inventory')}
+                        className="flex items-center gap-4 rounded-2xl border border-border/60 bg-muted/30 p-4 text-left transition-all hover:bg-muted/60 hover:border-foreground/20 active:scale-[0.99]"
+                      >
+                        <div className="h-11 w-11 rounded-xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                          <Package className="h-5 w-5" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold">{t('dashboard.add_first_product', 'Add your first product')}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{t('dashboard.add_first_product_hint', 'Create an inventory item to sell')}</p>
+                        </div>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground/50 shrink-0" />
+                      </button>
+                      <button type="button" onClick={() => navigate('/register')}
+                        className="flex items-center gap-4 rounded-2xl border border-border/60 bg-muted/30 p-4 text-left transition-all hover:bg-muted/60 hover:border-foreground/20 active:scale-[0.99]"
+                      >
+                        <div className="h-11 w-11 rounded-xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                          <ShoppingCart className="h-5 w-5" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold">{t('dashboard.first_sale', 'Make your first sale')}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{t('dashboard.first_sale_hint', 'Open the register and start selling')}</p>
+                        </div>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground/50 shrink-0" />
+                      </button>
+                    </CardContent>
+                  </Card>
+                </motion.div>
+              )}
 
               <motion.div variants={itemVariants} className="px-4 lg:px-6">
                 <DashboardAlerts />

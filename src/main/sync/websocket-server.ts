@@ -222,7 +222,7 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
 
   private handlePairRequest(clientId: string, client: WsClient, msg: WsMessage): void {
     const ws = client.ws;
-    const { device_id, name, token } = msg.payload || {};
+    const { device_id, name, token, platform } = msg.payload || {};
 
     if (!device_id) {
       this.sendError(ws, 'PAIR_FAILED', 'device_id required');
@@ -243,7 +243,7 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       return;
     }
 
-    registerDevice(device_id, name);
+    registerDevice(device_id, name, platform);
     client.deviceId = device_id;
     client.paired = true;
 

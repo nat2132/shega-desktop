@@ -125,6 +125,8 @@ export interface ElectronAPI {
   // Data Management
   exportData: () => Promise<any>;
   resetData: (mode?: 'transactions' | 'all' | 'factory') => Promise<any>;
+  factoryReset: () => Promise<{ ok: boolean; deleted: string[]; error?: string }>;
+  quitApp: () => Promise<void>;
 
   // Admin Management
   login: (username: string, pin: string) => Promise<any>;

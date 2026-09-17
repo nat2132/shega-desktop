@@ -39,6 +39,7 @@ import BusinessSetup from './components/pre-launch/BusinessSetup'
 import OnboardingWizard from './components/pre-launch/OnboardingWizard'
 import SubscriptionWelcome from './components/pre-launch/SubscriptionWelcome'
 import LoadingScreen from './components/pre-launch/LoadingScreen'
+import GuidedTour, { TOUR_DONE_KEY as GuidedTourTourKey } from './components/GuidedTour'
 import ErrorScreen from './components/pre-launch/ErrorScreen'
 
 
@@ -100,6 +101,7 @@ function App() {
   const [errorMsg, setErrorMsg] = useState('');
   const [isFirstTime, setIsFirstTime] = useState(false);
   const [recoveryKeyData, setRecoveryKeyData] = useState<{ key: string; username: string } | null>(null);
+  const [showTour, setShowTour] = React.useState(false);
 
   // Check system state on mount
   useEffect(() => {
@@ -238,6 +240,15 @@ function App() {
     }
   }, [settingsLoaded, phase]);
 
+  // First-time guided tour — once per install, skippable, never forced.
+  useEffect(() => {
+    if (phase === 'ready' && !isFirstTime) {
+      window.api?.getSetting(GuidedTourTourKey).then((done) => {
+        if (!done) setShowTour(true);
+      }).catch(() => {});
+    }
+  }, [phase, isFirstTime]);
+
   const handleRetry = () => {
     setPhase('splash');
     setErrorMsg('');
@@ -326,7 +337,8 @@ function App() {
           </CashierLayout>
         </Suspense>
         <PinApprovalProvider />
-        <DeviceLockOverlay />
+        {showTour && <GuidedTour onDone={() => setShowTour(false)} />}
+      <DeviceLockOverlay />
       </TooltipProvider>
     );
   }

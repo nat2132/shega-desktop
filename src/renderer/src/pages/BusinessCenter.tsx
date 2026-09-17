@@ -95,12 +95,16 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
   const load = async () => {
     setLoading(true);
     try {
+      // Resolve each independently: one failing call (e.g. roles) must not
+      // blank out the whole tab — previously a single rejection threw away
+      // the entire Promise.all result, so Devices showed "No devices
+      // registered yet" even when paired devices existed.
       const [regs, locs, devs, rols, ppl, bizs] = await Promise.all([
-        window.api.businessListRegisters(),
-        window.api.businessListLocations(),
-        window.api.businessListDevices(),
-        window.api.businessRoles(),
-        window.api.businessListPeople(),
+        window.api.businessListRegisters().catch((e) => { console.error('registers', e); return []; }),
+        window.api.businessListLocations().catch((e) => { console.error('locations', e); return []; }),
+        window.api.businessListDevices().catch((e) => { console.error('devices', e); return []; }),
+        window.api.businessRoles().catch((e) => { console.error('roles', e); return { builtin: [], order: [], custom: [] }; }),
+        window.api.businessListPeople().catch((e) => { console.error('people', e); return []; }),
         window.api.businessList().catch(() => []),
       ]);
       setRegisters(regs || []);
@@ -749,6 +753,21 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
                           {renderField('App', d.appVersion)}
                           {renderField('Primary', d.isPrimary ? 'Yes' : 'No')}
                           {renderField('ID', d.device_id)}
+                          {d.last_seen_at && (
+                            <div className="flex justify-between">
+                              <span>Last seen</span>
+                              <span className="font-medium" title={d.last_seen_at}>
+                                {(() => {
+                                  const mins = Math.floor((Date.now() - new Date(d.last_seen_at).getTime()) / 60000);
+                                  if (mins < 2) return 'Just now';
+                                  if (mins < 60) return `${mins} min ago`;
+                                  const hrs = Math.floor(mins / 60);
+                                  if (hrs < 24) return `${hrs} hr ago`;
+                                  return new Date(d.last_seen_at).toLocaleDateString();
+                                })()}
+                              </span>
+                            </div>
+                          )}
                         </div>
                         <div className="flex gap-2 pt-2">
                           {isOwner && (
