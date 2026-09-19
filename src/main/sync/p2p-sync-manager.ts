@@ -11,7 +11,8 @@ import db from '../database';
 import { yjsManager } from './yjs-manager';
 import { desktopWebRtc } from './webrtc-manager';
 import { notifyDataApplied } from './notify';
-import { getActiveBusinessId } from '../ipc-handlers';import {
+import { getActiveBusinessId } from '../ipc-handlers';
+import { mdnsDiscovery } from './discovery';import {
   COLLECTION_TABLE,
   APPEND_ONLY,
   isYjsCollection,
@@ -381,6 +382,61 @@ class P2pSyncManager {
   announce(): void {
     // Ask the hub to relay our hello so peers can dial us.
     this.signalingRelay?.('__broadcast__', { t: 'hello', deviceId: yjsManager.getDeviceId(), deviceType: 'desktop', businessId: this.businessUuid });
+  }
+
+  /**
+   * Explicit desktop↔desktop pairing approval (J4). The renderer's pair modal
+   * "Approve & Start Sync" used to only re-broadcast a LAN hello — a placebo:
+   * nothing was persisted, so the admitted peer never surfaced in Connected
+   * Devices and was never registered as a trusted device. This grants every
+   * desktop peer currently discovered on this LAN: it is registered in the hub
+   * pairing registry (`devices`) and the active business roster
+   * (`roster_devices`) as an active desktop device — visible, revocable, and
+   * granted; returns the granted device ids ([] = nothing on the LAN to
+   * approve).
+   *
+   * When a `code` is passed (PairDeviceModal "Enter pairing code"), only the
+   * peer whose mDNS-advertised pairing token matches is granted — the code is
+   * never decorative. Without a code (QR path) every discovered desktop peer
+   * is granted.
+   */
+  approveIncoming(name?: string, code?: string): string[] {
+    const granted: string[] = [];
+    try {
+      const want = code ? String(code).trim().toUpperCase() : null;
+      const peers = mdnsDiscovery
+        .getDiscoveredServices()
+        .filter((p) => !(p.capabilities || []).includes('mobile'))
+        .filter((p) => (want == null ? true : String(p.pairingToken || 'p').toUpperCase() === want));
+      const bizId = this.businessRowId || null;
+      for (const peer of peers) {
+        const peerId = String(peer.deviceId || '').trim();
+        if (!peerId) continue;
+        const display = name || peer.name || peerId;
+        // 1) Hub pairing registry (idempotent by the unique device_id).
+        const reg = db.prepare('SELECT device_id FROM devices WHERE device_id = ?').get(peerId) as any;
+        if (reg) {
+          db.prepare('UPDATE devices SET name = COALESCE(?, name), businessId = ?, last_seen_at = ? WHERE device_id = ?')
+            .run(display, bizId, new Date().toISOString(), peerId);
+        } else {
+          db.prepare('INSERT INTO devices (device_id, name, businessId, last_seen_at) VALUES (?, ?, ?, ?)')
+            .run(peerId, display, bizId, new Date().toISOString());
+        }
+        // 2) Business roster so the owner's Connected Devices list + revoke see it.
+        if (bizId != null) {
+          const roster = db.prepare('SELECT id FROM roster_devices WHERE businessId = ? AND device_id = ?').get(bizId, peerId) as any;
+          if (roster) {
+            db.prepare("UPDATE roster_devices SET status = 'active', name = ?, platform = 'desktop', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+              .run(display, roster.id);
+          } else {
+            db.prepare("INSERT INTO roster_devices (businessId, name, platform, status, isPrimary, uuid, device_id, updated_at) VALUES (?, ?, 'desktop', 'active', 0, ?, ?, CURRENT_TIMESTAMP)")
+              .run(bizId, display, peerId, peerId);
+          }
+        }
+        granted.push(peerId);
+      }
+    } catch { /* a grant failure must never break the UI path */ }
+    return granted;
   }
 
   /** Send our full doc state to a newly connected peer (initial catch-up). */

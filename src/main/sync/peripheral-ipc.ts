@@ -83,12 +83,19 @@ export function registerPeripheralHandlers(): void {
   // ---------- QR user invites (Teams → Add User) ----------
 
   ipcMain.handle('invites:create', (_, opts: { suggestedRole?: string } = {}) => {
-    return createUserInvite(getActiveBusinessId() ?? 1, { suggestedRole: opts?.suggestedRole, createdBy: undefined });
+    const invite = createUserInvite(getActiveBusinessId() ?? 1, { suggestedRole: opts?.suggestedRole, createdBy: undefined });
+    // Bluetooth-style discovery: advertise the open invite as a pairing beacon
+    // so nearby devices see this business in their join discovery list.
+    import('./pairing-beacon').then(({ startPairingBeaconForInvite }) => startPairingBeaconForInvite(invite)).catch(() => {});
+    return invite;
   });
 
   ipcMain.handle('invites:list', () => listUserInvites(getActiveBusinessId() ?? 1));
 
-  ipcMain.handle('invites:decide', (_, inviteId: string, decision: 'approved' | 'rejected', opts: { role?: string } = {}) => {
+  ipcMain.handle('invites:decide', async (_, inviteId: string, decision: 'approved' | 'rejected', opts: { role?: string } = {}) => {
+    // Pairing concluded (either way) — take the beacon off the air.
+    const { pairingBeacon } = await import('./pairing-beacon');
+    pairingBeacon.stopPublishing();
     return decideUserInvite(inviteId, decision, { role: opts?.role });
   });
 

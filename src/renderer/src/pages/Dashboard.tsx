@@ -528,7 +528,7 @@ const Dashboard: React.FC = () => {
                                         alt=""
                                         className="h-4 w-4 rounded-full object-cover"
                                       />
-                                      <span className="text-primary font-bold">{activity.userName}</span>
+                                      <span className="text-primary font-bold">{activity.isMe ? t('common.me', 'Me') : activity.userName}</span>
                                     </span>
                                   )}
                                   {activity.userName ? ' · ' : ''}

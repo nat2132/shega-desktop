@@ -222,7 +222,7 @@ export function stopPeerSync(): void {
  * mobile hub just as it can with another desktop (or vice-versa). No platform
  * is assumed to always be the server.
  */
-async function performLanSync(): Promise<void> {
+export async function performLanSync(): Promise<void> {
   const discovered = mdnsDiscovery.getDiscoveredServices();
   if (discovered.length === 0) return;
 

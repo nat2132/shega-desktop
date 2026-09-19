@@ -121,6 +121,7 @@ app.whenReady().then(() => {
   registerIPCHandlers();
   registerPairingCloudHandlers();
   registerPeripheralHandlers();
+  import('./sync/pairing-beacon').then(({ registerPairingBeaconHandlers }) => registerPairingBeaconHandlers()).catch(() => {});
   registerMorHandlers();
   syncHub.start(SYNC_PORT);
   startPeerSync();

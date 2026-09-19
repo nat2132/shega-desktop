@@ -102,6 +102,7 @@ contextBridge.exposeInMainWorld('api', {
   p2pHealth: () => ipcRenderer.invoke('p2p:health'),
   p2pDevices: () => ipcRenderer.invoke('p2p:devices'),
   p2pAnnounce: () => ipcRenderer.invoke('p2p:announce'),
+  p2pApprove: (name?: string, code?: string) => ipcRenderer.invoke('p2p:approve', name, code),
   p2pRevokeDevice: (deviceId: string) => ipcRenderer.invoke('p2p:revoke-device', deviceId),
   p2pRenameDevice: (deviceId: string, name: string) => ipcRenderer.invoke('p2p:rename-device', deviceId, name),
   p2pRecordCounts: () => ipcRenderer.invoke('p2p:record-counts'),
@@ -432,6 +433,10 @@ contextBridge.exposeInMainWorld('api', {
   joinStatus: (invitationId?: number) => ipcRenderer.invoke('join:status', invitationId),
   joinActivate: (pin: string) => ipcRenderer.invoke('join:activate', pin),
   joinCancel: () => ipcRenderer.invoke('join:cancel'),
+  // Bluetooth-style pairing-beacon discovery
+  pairBeaconStart: (invite: any) => ipcRenderer.invoke('pair-beacon:start', invite),
+  pairBeaconStop: () => ipcRenderer.invoke('pair-beacon:stop'),
+  pairBeaconNearby: () => ipcRenderer.invoke('pair-beacon:nearby'),
 
   // Tax computation (existing pos modules, now reachable)
   taxCalculateWht: (input: any) => ipcRenderer.invoke('tax:wht', input),

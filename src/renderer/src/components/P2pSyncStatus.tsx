@@ -322,11 +322,18 @@ function PairDeviceModal({ onClose, recordCounts, businessName }: {
   const approveIncoming = async () => {
     setApproving(true);
     try {
-      // Incoming pairing requests surface via the hub's device-join approvals;
-      // once approved, the peer connects over WebRTC and Yjs bootstrap runs.
+      // Real trust grant: register the desktop peer on this LAN as an active
+      // device in the registry + business roster. In "Enter pairing code" mode
+      // the typed code resolves to that exact peer (matched against its
+      // advertised token) — it is never decorative. Then re-announce so the
+      // granted peer dials us and the Yjs full-state bootstrap runs.
+      const wantCode = mode === 'enter' ? code.trim() : '';
+      const granted = await window.api?.p2pApprove?.(undefined, wantCode || undefined) ?? [];
+      const scope = wantCode ? `with code ${wantCode}` : 'on this network';
+      if (granted.length === 0) toast.info(`No desktop peer ${scope} — keep this window open and try the other device again.`);
       await window.api?.p2pAnnounce?.();
-      toast.success('Approval sent — syncing business data to the new device…');
-      setTimeout(onClose, 1200);
+      toast.success(granted.length > 0 ? `Approved ${granted.length} device(s) ${scope} — syncing business data…` : `Ready — waiting for a desktop peer ${scope}…`);
+      setTimeout(onClose, granted.length > 0 ? 1200 : 4000);
     } finally {
       setApproving(false);
     }

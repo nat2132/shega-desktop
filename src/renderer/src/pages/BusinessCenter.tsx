@@ -83,6 +83,8 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
   const [qrInvite, setQrInvite] = useState<any>(null);
   const [now, setNow] = useState(Date.now());
   const [deciding, setDeciding] = useState<number | null>(null);
+  // Incoming-join approval: role is picked at approval time (Owner/Cashier/Custom).
+  const [roleRequest, setRoleRequest] = useState<{ id: number; name: string } | null>(null);
   const [personBusy, setPersonBusy] = useState<number | null>(null);
 
   const isOwner = access['*'] === true || access['business.manage'] === true;
@@ -260,11 +262,14 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
 
   /** Approve with a chosen final role (Owner / Cashier / Custom). */
   const decideWithRole = (id: number, name: string) => {
-    const choice = window.prompt(`Assign role for ${name}:\n\nowner — full equal owner\ncashier — point of sale access\ncustom — type a role key (manager, inventory, accountant, reports, warehouse)`, 'cashier');
-    if (choice === null) return;
-    const role = choice.trim().toLowerCase();
-    if (!role) return;
-    void decide(id, 'approve', role);
+    setRoleRequest({ id, name });
+  };
+
+  const applyRoleRequest = async (role?: string) => {
+    if (!roleRequest) return;
+    const { id } = roleRequest;
+    setRoleRequest(null);
+    await decide(id, 'approve', role);
   };
 
   const applyRole = async (p: any, roleKey: string) => {
@@ -1210,6 +1215,41 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
           </div>
           <Button className="w-full" disabled={pairing} onClick={issueQr}>
             {pairing ? 'Issuing…' : 'Generate QR'}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Owner-approval role picker (Owner / Cashier / Custom) */}
+      <Modal isOpen={!!roleRequest} onClose={() => setRoleRequest(null)} title={roleRequest ? `New team member — ${roleRequest.name}` : 'Approve'}>
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            <span className="font-black text-foreground">{roleRequest?.name}</span> wants to join this business from a new device.
+            Choose their role, then approve — initial data sync begins immediately.
+          </p>
+          <div className="grid gap-2">
+            {[
+              { key: 'owner', label: 'Owner', desc: 'Full equal owner — manage everything' },
+              { key: 'cashier', label: 'Cashier', desc: 'Point-of-sale and daily sales operations' },
+              { key: 'custom', label: 'Custom', desc: 'Pick from your custom roles below' },
+            ].map((o) => (
+              <button
+                key={o.key}
+                type="button"
+                onClick={() => o.key === 'custom'
+                  ? window.setTimeout(() => { const r = window.prompt(`Custom role key (one of: ${pairingRoles.map((x) => x.key).join(', ')})`, pairingRoles[0]?.key || 'manager'); if (r?.trim()) void applyRoleRequest(r.trim()); }, 0)
+                  : void applyRoleRequest(o.key)}
+                className="text-left p-3 rounded-xl border-2 border-transparent hover:border-foreground/10 bg-muted/40 hover:bg-muted/70 transition-all"
+              >
+                <p className="text-sm font-black text-foreground">{o.label}</p>
+                <p className="text-xs font-bold text-muted-foreground/70">{o.desc}</p>
+              </button>
+            ))}
+          </div>
+          <Button className="w-full" onClick={() => roleRequest && void applyRoleRequest(undefined as any)} disabled={deciding != null}>
+            ✓ Approve & Sync
+          </Button>
+          <Button variant="outline" className="w-full text-red-500 hover:text-red-600" onClick={() => { const id = roleRequest?.id; setRoleRequest(null); if (id != null) void decide(id, 'reject'); }}>
+            Decline request
           </Button>
         </div>
       </Modal>

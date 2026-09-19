@@ -350,6 +350,7 @@ export function registerIPCHandlers() {
   ipcMain.handle('p2p:health', () => p2pSync.getHealth());
   ipcMain.handle('p2p:devices', () => p2pSync.getDevices());
   ipcMain.handle('p2p:announce', () => { p2pSync.announce(); return true; });
+  ipcMain.handle('p2p:approve', (_: any, name?: string, code?: string) => p2pSync.approveIncoming(name, code));
   ipcMain.handle('p2p:revoke-device', (_, deviceId: string) => { p2pSync.revokeDevice(deviceId); return true; });
   ipcMain.handle('p2p:rename-device', (_, deviceId: string, name: string) => p2pSync.renameDevice(deviceId, name));
   ipcMain.handle('p2p:record-counts', () => p2pSync.getRecordCounts());
@@ -372,8 +373,8 @@ export function registerIPCHandlers() {
   ipcMain.handle('business:create', (_, data: any) => {
     if (!data?.businessName?.trim()) throw new Error('Business name is required');
     const isFirst = (db.prepare('SELECT COUNT(*) c FROM businesses WHERE is_deleted = 0').get() as any).c === 0;
-    const result = db.prepare('INSERT INTO businesses (businessName, storeName, logo, address, phone, email, currency, isDefault) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(data.businessName.trim(), data.storeName?.trim() || data.businessName.trim(), data.logo || null, data.address || null, data.phone || null, data.email || null, data.currency || 'ETB', 0);
+    const result = db.prepare('INSERT INTO businesses (businessName, storeName, logo, address, phone, email, currency, isDefault, uuid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(data.businessName.trim(), data.storeName?.trim() || data.businessName.trim(), data.logo || null, data.address || null, data.phone || null, data.email || null, data.currency || 'ETB', 0, crypto.randomUUID());
     const bizId = result.lastInsertRowid as number;
     const whRes = db.prepare('INSERT INTO warehouses (businessId, name, location, managerName) VALUES (?, ?, ?, ?)')
       .run(bizId, 'Main Warehouse', data.address || 'Headquarters', 'Operations Manager');
@@ -2104,6 +2105,12 @@ export function registerIPCHandlers() {
 
     const all = [...sales, ...expenses, ...adjustments, ...attendance] as any[];
     all.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    // "Me" display: when the acting user is the currently signed-in user on
+    // this device, flag the row so the UI shows "Me" instead of their full name.
+    const me = (currentUserName || '').trim().toLowerCase();
+    for (const row of all) {
+      row.isMe = !!me && !!row.userName && row.userName.trim().toLowerCase() === me;
+    }
     return all.slice(0, limit);
   });
 

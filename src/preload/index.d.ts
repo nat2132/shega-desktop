@@ -101,6 +101,7 @@ export interface ElectronAPI {
   p2pHealth: () => Promise<any>;
   p2pDevices: () => Promise<any[]>;
   p2pAnnounce: () => Promise<boolean>;
+  p2pApprove: (name?: string, code?: string) => Promise<string[]>;
   p2pRevokeDevice: (deviceId: string) => Promise<boolean>;
   p2pRenameDevice: (deviceId: string, name: string) => Promise<boolean>;
   p2pRecordCounts: () => Promise<Record<string, number>>;
@@ -382,6 +383,9 @@ export interface ElectronAPI {
   joinStatus: (invitationId?: number) => Promise<{ phase: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'expired' | 'error' | 'none'; status?: string; business_name?: string | null; role?: string | null; device_status?: string | null; email?: string | null; error?: string }>;
   joinActivate: (pin: string) => Promise<{ success: boolean; username: string }>;
   joinCancel: () => Promise<{ cancelled: boolean }>;
+  pairBeaconStart: (invite: any) => Promise<{ publishing: boolean }>;
+  pairBeaconStop: () => Promise<{ publishing: boolean }>;
+  pairBeaconNearby: () => Promise<Array<{ beacon: any; host: string; platform: string }>>;
 
   taxCalculateWht: (input: any) => Promise<any>;
   taxCalculateVatReturn: (input: any) => Promise<any>;

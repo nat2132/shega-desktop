@@ -2456,8 +2456,8 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
   let businessId = 1;
   const bizCount = db.prepare('SELECT COUNT(*) as count FROM businesses').get() as any;
   if (bizCount.count === 0) {
-    const res = db.prepare('INSERT INTO businesses (businessName, storeName, isDefault) VALUES (?, ?, 1)')
-      .run('Shega Enterprise', 'Main Branch');
+    const res = db.prepare('INSERT INTO businesses (businessName, storeName, isDefault, uuid) VALUES (?, ?, 1, ?)')
+      .run('Shega Enterprise', 'Main Branch', crypto.randomUUID());
     businessId = res.lastInsertRowid as number;
     db.prepare('UPDATE categories SET businessId = ? WHERE businessId IS NULL').run(businessId);
     db.prepare('UPDATE items SET businessId = ? WHERE businessId IS NULL').run(businessId);

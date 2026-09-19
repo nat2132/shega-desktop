@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, KeyRound, ArrowLeft, UserRound, Users, Store } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, ArrowLeft, UserRound, Users, Store, ScanLine, Radar, Smartphone, MonitorSmartphone } from 'lucide-react';
 import { useSettings, Language } from '../../context/SettingsContext';
 import { BrandedLogo } from '../branded-logo';
 import { Avatar, AvatarImage, AvatarFallback } from '../ui/avatar';
@@ -65,6 +65,26 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
   const [userError, setUserError] = useState('');
   const [userLoading, setUserLoading] = useState(false);
   const [joinCode, setJoinCode] = useState('');
+  const [joinScanBusy, setJoinScanBusy] = useState(false);
+  // Bluetooth-style discovery list: nearby owners broadcasting pairing beacons.
+  const [nearbyOwners, setNearbyOwners] = useState<Array<{ beacon: { businessId: string; businessName: string; code: string; owner: { deviceName: string; platform: string }; expiresAt: string } }>>([]);
+  const [scanningNearby, setScanningNearby] = useState(false);
+
+  const scanNearbyOwners = async () => {
+    setScanningNearby(true);
+    try {
+      const list = await window.api.pairBeaconNearby?.();
+      setNearbyOwners(Array.isArray(list) ? list : []);
+    } catch { setNearbyOwners([]); }
+    finally { setScanningNearby(false); }
+  };
+
+  const pickNearbyOwner = (b: { businessName: string; code: string }) => {
+    setJoinCode(b.code.toUpperCase());
+    setError('');
+    // Reuse the code path: resolve the code into a preview.
+    void handleCheckJoinCode(undefined, b.code.toUpperCase());
+  };
   const [joinEmail, setJoinEmail] = useState('');
   const [joinPass, setJoinPass] = useState('');
   const [joinName, setJoinName] = useState('');
@@ -239,12 +259,13 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     setUserError('');
   };
 
-  const handleCheckJoinCode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!joinCode.trim()) { setError(t('auth.fields_required')); return; }
+  const handleCheckJoinCode = async (e?: React.FormEvent, overrideCode?: string) => {
+    e?.preventDefault?.();
+    const code = overrideCode ?? joinCode;
+    if (!code.trim()) { setError(t('auth.fields_required')); return; }
     setLoading(true); setError('');
     try {
-      const data = await window.api.joinLookup(joinCode.trim());
+      const data = await window.api.joinLookup(code.trim());
       setJoinPreview(data);
       setError('');
     } catch (err: any) {
@@ -253,18 +274,46 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     setLoading(false);
   };
 
+  // Scan the owner's invitation QR with a connected phone acting as a camera
+  // peripheral (best-effort — manual code entry always remains available).
+  const handleScanJoinQr = async () => {
+    setError('');
+    try {
+      const phones = await window.api.peripheralPhones?.();
+      const phone = Array.isArray(phones) ? phones[0] : null;
+      if (!phone?.deviceId) { setError('No phone is connected to scan with. Enter the pairing code instead.'); return; }
+      setJoinScanBusy(true);
+      const res = await window.api.peripheralCapture(phone.deviceId, 'qr', 90000);
+      const text: string = res?.text || res?.dataUrl || '';
+      // Owner QRs come in two shapes: shega://join?...c=CODE (invitation) or
+      // a bare code — extract whatever code is present.
+      const m = /[?&]c(?:ode)?=([A-Za-z0-9-]+)/.exec(text);
+      const code = m?.[1] ?? (/^[A-Za-z0-9-]{4,}$/.test(text.trim()) ? text.trim() : null);
+      if (!code) { setError('That QR is not a Shega invitation.'); return; }
+      setJoinCode(code.toUpperCase());
+      const data = await window.api.joinLookup(code);
+      setJoinPreview(data);
+    } catch (err: any) {
+      setError(err?.message || 'Scan failed. Enter the pairing code instead.');
+    } finally {
+      setJoinScanBusy(false);
+    }
+  };
+
   const handleSubmitJoin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!joinCode.trim() || !joinEmail.trim() || !joinPass.trim()) { setError(t('auth.fields_required')); return; }
-    if (!joinPin || joinPin.length < 4) { setError(t('auth.pin_length')); return; }
-    if (joinPin !== joinConfirmPin) { setError(t('auth.pin_mismatch')); return; }
+    if (!joinCode.trim()) { setError(t('auth.fields_required')); return; }
+    const name = joinName.trim() || 'Team Member';
     setLoading(true); setError('');
     try {
+      // Minimal join: no email/password at pairing time. A deterministic
+      // pairing identity (invite code + device) is used only to authenticate
+      // the join request; the owner's approval is the real authorization.
       const result = await window.api.joinAccept({
         code: joinCode.trim(),
-        email: joinEmail.trim(),
-        password: joinPass,
-        name: joinName.trim() || undefined,
+        email: `join+${joinCode.trim().toLowerCase().replace(/[^a-z0-9]/g, '')}@shega.local`,
+        password: `${joinCode.trim()}-shega-pairing`,
+        name,
         deviceName: joinDeviceName.trim() || undefined,
       });
       setJoinStarted(true);
@@ -401,99 +450,95 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
 
             {joinMode === 'form' ? (
               <form onSubmit={joinPreview ? handleSubmitJoin : handleCheckJoinCode} className="space-y-4">
-                <div className="space-y-1.5 text-left">
-                  <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">6-digit code</label>
-                  <input
-                    type="text" maxLength={6} value={joinCode} disabled={!!joinStarted}
-                    onChange={e => { setJoinCode(e.target.value.replace(/\D/g, '')); setError(''); setJoinPreview(null); }}
-                    className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.5em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30 disabled:opacity-40"
-                    placeholder="000000" autoFocus
-                  />
-                </div>
+                {!joinStarted && (
+                  <>
+                    {/* Bluetooth-style discovery: nearby owners with open beacons */}
+                    <div className="space-y-1.5 text-left">
+                      <button type="button" onClick={scanNearbyOwners} disabled={scanningNearby}
+                        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-muted-foreground/20 text-[11px] font-black uppercase tracking-widest text-muted-foreground hover:bg-muted/40 transition-all disabled:opacity-40"
+                      >
+                        <Radar size={13} className={scanningNearby ? 'animate-pulse' : ''} />
+                        {scanningNearby ? 'Scanning nearby…' : `Nearby businesses${nearbyOwners.length ? ` (${nearbyOwners.length})` : ''}`}
+                      </button>
+                      {nearbyOwners.length > 0 && (
+                        <div className="space-y-1.5">
+                          {nearbyOwners.map((o) => (
+                            <button key={o.beacon.businessId + o.beacon.code} type="button" onClick={() => pickNearbyOwner(o.beacon)}
+                              className="w-full flex items-center gap-3 p-3 rounded-xl border bg-muted/30 hover:bg-muted/60 transition-all text-left"
+                            >
+                              <span className="h-8 w-8 rounded-lg bg-emerald-500/15 grid place-items-center text-emerald-400">
+                                {o.beacon.owner?.platform === 'mobile' ? <Smartphone size={15} /> : <MonitorSmartphone size={15} />}
+                              </span>
+                              <span className="flex-1 min-w-0">
+                                <span className="block text-sm font-black text-foreground truncate">{o.beacon.businessName}</span>
+                                <span className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
+                                  {o.beacon.owner?.platform || 'device'} · nearby
+                                </span>
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <button type="button" onClick={handleScanJoinQr} disabled={joinScanBusy || loading}
+                      className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl border-2 border-dashed border-muted-foreground/30 text-sm font-black uppercase tracking-widest text-foreground/70 hover:bg-muted/40 transition-all disabled:opacity-40"
+                    >
+                      <ScanLine size={15} />
+                      {joinScanBusy ? 'Waiting for phone… approve the scan there' : 'Scan QR with connected phone'}
+                    </button>
+                    <p className="text-center text-[11px] font-black uppercase tracking-widest text-muted-foreground/40">or enter the pairing code</p>
+                    <div className="space-y-1.5 text-left">
+                      <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Pairing code</label>
+                      <input
+                        type="text" maxLength={12} value={joinCode}
+                        onChange={e => { setJoinCode(e.target.value.toUpperCase()); setError(''); setJoinPreview(null); }}
+                        className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.25em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30"
+                        placeholder="K2M-4NP-QW8" autoFocus
+                      />
+                    </div>
+                  </>
+                )}
 
                 {joinPreview && (
                   <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-left space-y-1">
-                    <p className="text-xs font-black uppercase tracking-widest text-emerald-400">{joinPreview.business_name}</p>
-                    <p className="text-sm font-bold text-foreground">{joinPreview.employee_name || 'Employee'}</p>
-                    <p className="text-[11px] font-black uppercase tracking-widest text-muted-foreground/60">
-                      Role: {String(joinPreview.role || 'cashier').toUpperCase()}
-                    </p>
+                    <p className="text-xs font-black uppercase tracking-widest text-emerald-400">{joinPreview.business_name || 'Business'}</p>
+                    {joinPreview.role && (
+                      <p className="text-[11px] font-black uppercase tracking-widest text-muted-foreground/60">
+                        Requested role: {String(joinPreview.role).toUpperCase()}
+                      </p>
+                    )}
                   </div>
                 )}
 
-                <div className="space-y-1.5 text-left">
-                  <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Your email</label>
-                  <input
-                    type="email" value={joinEmail} disabled={!!joinStarted}
-                    onChange={e => { setJoinEmail(e.target.value); setError(''); }}
-                    className="w-full bg-muted/50 rounded-2xl text-sm px-6 py-4 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40 disabled:opacity-40"
-                    placeholder="you@example.com"
-                  />
-                </div>
+                {joinPreview && !joinStarted && (
+                  <div className="space-y-1.5 text-left">
+                    <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">What's your name?</label>
+                    <input
+                      type="text" value={joinName}
+                      onChange={e => { setJoinName(e.target.value); setError(''); }}
+                      className="w-full bg-muted/50 rounded-2xl text-sm px-6 py-4 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40"
+                      placeholder="e.g. Abebe"
+                    />
+                  </div>
+                )}
+
                 {joinStarted && joinPreview && (
                   <p className="text-xs text-muted-foreground/50 text-left px-1">
-                    {joinPreview.business_name} — your request is pending approval.
+                    {joinPreview.business_name || 'This business'} — your request is pending approval.
                   </p>
                 )}
-                <div className="space-y-1.5 text-left">
-                  <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Password</label>
-                  <input
-                    type="password" value={joinPass} disabled={!!joinStarted}
-                    onChange={e => { setJoinPass(e.target.value); setError(''); }}
-                    className="w-full bg-muted/50 rounded-2xl text-sm px-6 py-4 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40 disabled:opacity-40"
-                    placeholder="Your Shega account password"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5 text-left">
-                    <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Full name</label>
-                    <input
-                      type="text" value={joinName} disabled={!!joinStarted}
-                      onChange={e => { setJoinName(e.target.value); setError(''); }}
-                      className="w-full bg-muted/50 rounded-2xl text-sm px-4 py-4 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40 disabled:opacity-40"
-                      placeholder="Optional"
-                    />
-                  </div>
-                  <div className="space-y-1.5 text-left">
-                    <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Terminal name</label>
-                    <input
-                      type="text" value={joinDeviceName} disabled={!!joinStarted}
-                      onChange={e => { setJoinDeviceName(e.target.value); setError(''); }}
-                      className="w-full bg-muted/50 rounded-2xl text-sm px-4 py-4 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40 disabled:opacity-40"
-                      placeholder="e.g. Front Desk"
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5 text-left">
-                    <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Terminal PIN</label>
-                    <input
-                      type={showPin ? 'text' : 'password'} maxLength={4} value={joinPin} disabled={!!joinStarted}
-                      onChange={e => { setJoinPin(e.target.value.replace(/\D/g, '')); setError(''); }}
-                      className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.4em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30 disabled:opacity-40"
-                      placeholder="••••"
-                    />
-                  </div>
-                  <div className="space-y-1.5 text-left">
-                    <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Confirm PIN</label>
-                    <input
-                      type={showPin ? 'text' : 'password'} maxLength={4} value={joinConfirmPin} disabled={!!joinStarted}
-                      onChange={e => { setJoinConfirmPin(e.target.value.replace(/\D/g, '')); setError(''); }}
-                      className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.4em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30 disabled:opacity-40"
-                      placeholder="••••"
-                    />
-                  </div>
-                </div>
                 {error && (
                   <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20">
                     <p className="text-red-400 text-xs font-black uppercase tracking-widest">{error}</p>
                   </div>
                 )}
-                <button type="submit" disabled={loading}
-                  className="w-full py-5 bg-foreground text-background rounded-2xl font-black uppercase tracking-[0.3em] text-sm hover:bg-foreground/90 active:scale-[0.98] transition-all disabled:opacity-30"
-                >
-                  {loading ? 'Working…' : joinPreview ? 'Submit & wait for owner approval' : 'Check code'}
-                </button>
+                {!joinStarted && (
+                  <button type="submit" disabled={loading}
+                    className="w-full py-5 bg-foreground text-background rounded-2xl font-black uppercase tracking-[0.3em] text-sm hover:bg-foreground/90 active:scale-[0.98] transition-all disabled:opacity-30"
+                  >
+                    {loading ? 'Working…' : joinPreview ? 'Join business' : 'Continue'}
+                  </button>
+                )}
               </form>
             ) : joinMode === 'pin' ? (
               <form onSubmit={handleActivateJoinPin} className="space-y-4 py-2">

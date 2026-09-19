@@ -104,6 +104,12 @@ function setCursor(deviceId: string, since: number): void {
 export async function syncWithMobileHub(peer: DiscoveredService): Promise<boolean> {
   const host = peer.host || peer.addresses?.[0];
   if (!host) return false;
+  // The pairing code is no longer broadcast over mDNS; without an explicitly
+  // configured token the phone hub will (correctly) reject the pair.
+  if (!peer.pairingToken) {
+    logger.debug('Skipping mobile hub without an explicit pairing token', { host });
+    return false;
+  }
   const port = peer.port || MOBILE_HUB_PORT;
   const hubId = ensureHubDeviceId();
 

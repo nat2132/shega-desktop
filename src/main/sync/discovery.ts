@@ -1,6 +1,6 @@
 import { Bonjour } from 'bonjour-service';
 import { EventEmitter } from 'events';
-import { ensureHubDeviceId, getPairingToken, SYNC_PORT } from '../sync-hub';
+import { ensureHubDeviceId, SYNC_PORT } from '../sync-hub';
 
 export interface ServiceInfo {
   deviceId: string;
@@ -51,7 +51,6 @@ export class MdnsDiscovery extends EventEmitter<DiscoveryEventMap> {
     if (!this.bonjour || this.isPublishing) return;
 
     const deviceId = ensureHubDeviceId();
-    const pairingToken = getPairingToken();
     const port = SYNC_PORT;
 
     // Get business ID for peer verification
@@ -65,7 +64,6 @@ export class MdnsDiscovery extends EventEmitter<DiscoveryEventMap> {
 
     const txtRecord = {
       device_id: deviceId,
-      pairing_token: pairingToken,
       schema_version: '21',
       port: String(port),
       platform: 'desktop',

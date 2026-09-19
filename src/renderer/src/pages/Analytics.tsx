@@ -1029,7 +1029,7 @@ const Analytics: React.FC = () => {
                             {activity.userName && (
                               <span className="inline-flex items-center gap-1">
                                 <img src={resolveAvatar(activity.userAvatar)} alt="" className="h-4 w-4 rounded-full object-cover" />
-                                <span className="text-primary font-bold">{activity.userName}</span>
+                                <span className="text-primary font-bold">{activity.isMe ? t('common.me', 'Me') : activity.userName}</span>
                               </span>
                             )}
                             {activity.userName ? " · " : ""}

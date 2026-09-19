@@ -123,6 +123,14 @@ export function decideUserInvite(
   }
   db.prepare('UPDATE user_invites SET status = ?, decided_at = CURRENT_TIMESTAMP WHERE id = ?')
     .run(decision, inviteId);
+
+  if (decision === 'approved') {
+    // "Approve & Sync": kick an immediate LAN/P2P cycle so the new device
+    // starts pulling its initial SQLite snapshot right away instead of
+    // waiting for the next periodic tick.
+    import('../peer-sync').then((ps) => ps.performLanSync()).catch(() => {});
+  }
+
   return rowToInvite(db.prepare('SELECT * FROM user_invites WHERE id = ?').get(inviteId));
 }
 

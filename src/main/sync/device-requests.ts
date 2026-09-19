@@ -9,7 +9,7 @@
  * and relays them over the WS channel; the approving owner turns a decision
  * into real user/device rows.
  */
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import db from '../database';
 import {
   DeviceJoinRequest,
@@ -18,6 +18,160 @@ import {
 } from '@shega/shared';
 
 const now = () => new Date().toISOString();
+const normalizeCode = (code: string) => String(code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const CODE_EQ = "replace(replace(upper(coalesce(code,'')), '-', ''), ' ', '') = ?";
+
+const columnCache = new Map<string, Set<string>>();
+function tableColumns(table: string): Set<string> {
+  let cols = columnCache.get(table);
+  if (!cols) {
+    try {
+      cols = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map((c) => c.name));
+    } catch {
+      cols = new Set<string>();
+    }
+    columnCache.set(table, cols);
+  }
+  return cols;
+}
+
+/** Map the hub's businessId reference (int string or uuid) to the integer business row id. */
+function resolveBusinessId(bizText: string): number | null {
+  if (!bizText) return null;
+  try {
+    const row = db.prepare('SELECT id FROM businesses WHERE uuid = ? OR CAST(id AS TEXT) = ? LIMIT 1').get(bizText, bizText) as any;
+    return row ? Number(row.id) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Create (or promote) the joiner's `devices` roster row on the hub so the
+ * owner's BusinessCenter "Pending device approvals" list surfaces it. Column
+ * set is guarded because older hubs may lack the extended roster columns.
+ */
+function upsertJoinDevice(
+  rec: DeviceJoinRequestRecord,
+  status: 'pending' | 'active' | 'revoked',
+  userId: number | null,
+  role: string | null,
+  bizId: number | null,
+): void {
+  try {
+    const cols = tableColumns('devices');
+    if (!cols.has('device_id')) return;
+    const nowIso = now();
+    const name = String(rec.joinerName || rec.joinerUser || rec.joinerDeviceId.slice(0, 8));
+    const existing = db.prepare('SELECT id FROM devices WHERE device_id = ?').get(rec.joinerDeviceId) as any;
+
+    const updates: string[] = ['status = ?'];
+    const vals: (string | number | null)[] = [status];
+    const assign = (col: string, v: string | number | null) => {
+      if (cols.has(col)) { updates.push(`${col} = ?`); vals.push(v); }
+    };
+    assign('name', name);
+    assign('businessId', bizId);
+    assign('platform', rec.platform ?? 'mobile');
+    assign('userId', userId);
+    assign('role', role);
+    assign('uuid', rec.joinerDeviceId);
+    assign('updated_at', nowIso);
+    assign('is_synced', 1);
+
+    if (existing) {
+      db.prepare(`UPDATE devices SET ${updates.join(', ')} WHERE device_id = ?`).run(...vals, rec.joinerDeviceId);
+      return;
+    }
+
+    const insert: Record<string, string | number | null> = {
+      device_id: rec.joinerDeviceId,
+      name,
+      platform: rec.platform ?? 'mobile',
+      status,
+      uuid: rec.joinerDeviceId,
+      row_version: 1,
+      created_at: nowIso,
+      updated_at: nowIso,
+      is_deleted: 0,
+      is_synced: 1,
+    };
+    if (bizId != null) insert.businessId = bizId;
+    if (userId != null) insert.userId = userId;
+    if (role) insert.role = role;
+    const keys = Object.keys(insert).filter((k) => cols.has(k));
+    if (keys.length) {
+      db.prepare(`INSERT INTO devices (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`)
+        .run(...keys.map((k) => insert[k]));
+    }
+  } catch (e: any) {
+    // The devices registry may be missing/incompatible on this hub build —
+    // the join request and its decision stand alone, so provisioning degrades
+    // quietly instead of failing the whole join.
+    console.warn('[device-requests] upsertJoinDevice skipped:', e?.message);
+  }
+}
+
+/** Find an active member on a business, or create one for the approved joiner. */
+function findOrCreateMember(bizId: number, name: string, role: string): number | null {
+  try {
+    const cols = tableColumns('users');
+    if (!cols.has('id') || !cols.has('businessId') || !cols.has('name')) return null;
+    const existing = db.prepare(
+      `SELECT id FROM users WHERE businessId = ? AND name = ? COLLATE NOCASE AND isActive = 1 AND is_deleted = 0 LIMIT 1`
+    ).get(bizId, name) as any;
+    if (existing) return Number(existing.id);
+
+    const nowIso = now();
+    const insert: Record<string, string | number | null> = {
+      businessId: bizId,
+      name,
+      role,
+      roleName: role,
+      permissions: '{}',
+      isActive: 1,
+      isOwner: 0,
+      uuid: randomUUID(),
+      row_version: 1,
+      created_at: nowIso,
+      updated_at: nowIso,
+      is_deleted: 0,
+      is_synced: 1,
+    };
+    const keys = Object.keys(insert).filter((k) => cols.has(k));
+    const info = db.prepare(`INSERT INTO users (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`)
+      .run(...keys.map((k) => insert[k]));
+    return Number(info.lastInsertRowid);
+  } catch (e: any) {
+    console.warn('[device-requests] findOrCreateMember skipped:', e?.message);
+    return null;
+  }
+}
+
+/** Consume the open invitation tied to an approved join (one device per invite). */
+function markInvitationUsed(code: string | null): void {
+  if (!code) return;
+  const n = normalizeCode(code);
+  db.prepare(`UPDATE invitations SET status = 'used' WHERE ${CODE_EQ} AND status = 'open'`).run(n);
+}
+
+/**
+ * Turn an approved join decision into real roster rows (user + active device)
+ * and consume the invitation. Idempotent: re-deciding an already-approved
+ * request re-runs the same writes without creating duplicates.
+ */
+function applyApproval(rec: DeviceJoinRequestRecord): void {
+  const bizId = resolveBusinessId(rec.businessId);
+  const role = String(rec.role ?? 'cashier');
+  const personName = String(rec.joinerUser || rec.joinerName || 'Team Member').trim();
+  const userId = bizId != null ? findOrCreateMember(bizId, personName, role) : null;
+  upsertJoinDevice(rec, 'active', userId, role, bizId);
+  markInvitationUsed(rec.code);
+}
+
+function applyRejection(rec: DeviceJoinRequestRecord): void {
+  upsertJoinDevice(rec, 'revoked', null, null, resolveBusinessId(rec.businessId));
+}
 
 function rowToRecord(row: any): DeviceJoinRequestRecord {
   return {
@@ -52,7 +206,11 @@ export function submitDeviceJoinRequest(req: DeviceJoinRequest): DeviceJoinReque
     id, req.businessId, req.code ?? null, req.joinerDeviceId, req.joinerName ?? null,
     req.joinerModel ?? null, req.joinerUser, req.role ?? 'cashier', req.platform ?? 'mobile', now()
   );
-  return rowToRecord(db.prepare('SELECT * FROM device_requests WHERE id = ?').get(id));
+  const rec = rowToRecord(db.prepare('SELECT * FROM device_requests WHERE id = ?').get(id));
+  // Surface the joiner device on the hub roster so the desktop owner's
+  // BusinessCenter "Pending device approvals" list shows it immediately.
+  upsertJoinDevice(rec, 'pending', null, null, resolveBusinessId(rec.businessId));
+  return rec;
 }
 
 /** Return pending (and recently decided) requests for a business. */
@@ -66,12 +224,38 @@ export function listDeviceJoinRequests(businessId: string, limit = 100): DeviceJ
 
 /** Record an owner/manager decision. Returns the updated record or null. */
 export function decideDeviceJoinRequest(decision: DeviceJoinDecision): DeviceJoinRequestRecord | null {
+  if (!['approved', 'rejected'].includes(decision.decision)) return null;
   const row = db.prepare('SELECT * FROM device_requests WHERE id = ?').get(decision.requestId) as any;
   if (!row) return null;
+  const rec = rowToRecord(row);
   db.prepare('UPDATE device_requests SET status = ?, decided_at = ? WHERE id = ?').run(
     decision.decision, now(), decision.requestId
   );
+  // Approval is the point where the join becomes *real*: create the member's
+  // user row, promote the device to active, consume the invitation.
+  if (decision.decision === 'approved') {
+    applyApproval(rec);
+  } else {
+    applyRejection(rec);
+  }
   return rowToRecord(db.prepare('SELECT * FROM device_requests WHERE id = ?').get(decision.requestId));
+}
+
+/**
+ * Desktop BusinessCenter approve path (`business:set-device-status -> active`):
+ * mirror that approval into the pending join request — decision + provisioning —
+ * so the joiner's STATUS poll flips and member/device rows are created even
+ * though the desktop approve UI never touches the DEVICE_JOIN channel.
+ */
+export function provisionJoinForDevice(deviceId: string): void {
+  const row = db.prepare(
+    `SELECT * FROM device_requests WHERE joiner_device_id = ? AND status = 'pending'
+     ORDER BY created_at ASC LIMIT 1`
+  ).get(String(deviceId ?? '')) as any;
+  if (!row) return;
+  const rec = rowToRecord(row);
+  db.prepare('UPDATE device_requests SET status = ?, decided_at = ? WHERE id = ?').run('approved', now(), rec.requestId);
+  applyApproval(rec);
 }
 
 /**
@@ -79,11 +263,13 @@ export function decideDeviceJoinRequest(decision: DeviceJoinDecision): DeviceJoi
  * invite code + joiner device, so the joiner can learn whether the owner
  * approved it. Returns the most recent request matching, or null.
  */
+/** Owner can re-invite with the same code; dedup on business + joinerDeviceId. */
 export function getDeviceJoinRequestBy(code: string, joinerDeviceId: string): DeviceJoinRequestRecord | null {
+  const n = normalizeCode(code);
   const row = db.prepare(
-    `SELECT * FROM device_requests WHERE code = ? AND joiner_device_id = ?
+    `SELECT * FROM device_requests WHERE ${CODE_EQ} AND joiner_device_id = ?
      ORDER BY created_at DESC LIMIT 1`
-  ).get(code, joinerDeviceId) as any;
+  ).get(n, joinerDeviceId) as any;
   return row ? rowToRecord(row) : null;
 }
 
@@ -97,6 +283,44 @@ export interface HubInvitation {
   role: string | null;
   platform: string | null;
   expiresAt: string | null;
+  businessName?: string | null;
+}
+
+/**
+ * Canonicalize a stored business reference (int id string OR uuid) to the
+ * business's stable UUID for the joiner wire. Joining devices key their local
+ * business identity by UUID, so a desktop-created invite (stored as the int id
+ * string) must resolve to the real uuid — otherwise the same business would be
+ * known by two identities across platforms (the "business-uuid split").
+ */
+export function canonicalBusinessUuid(bizText: string): string {
+  if (!bizText) return bizText;
+  try {
+    const row = db.prepare('SELECT id, uuid FROM businesses WHERE uuid = ? OR CAST(id AS TEXT) = ? LIMIT 1')
+      .get(bizText, bizText) as any;
+    if (!row) return bizText;
+    if (row.uuid) return row.uuid;
+    // Desktop-created business with no uuid yet — materialize one so the joiner
+    // adopts the same uuid the relay emits, never the raw int or a fabricated
+    // sentinel.
+    const uuid = randomUUID();
+    db.prepare('UPDATE businesses SET uuid = ? WHERE id = ?').run(uuid, Number(row.id));
+    return uuid;
+  } catch {
+    return bizText;
+  }
+}
+
+/** Human business name for a stored int-id string or uuid reference. */
+export function businessDisplayName(bizText: string): string | null {
+  if (!bizText) return null;
+  try {
+    const row = db.prepare('SELECT businessName, storeName FROM businesses WHERE uuid = ? OR CAST(id AS TEXT) = ? LIMIT 1')
+      .get(bizText, bizText) as any;
+    return row?.businessName || row?.storeName || null;
+  } catch {
+    return null;
+  }
 }
 
 /** Owner publishes an active invitation to the hub so joiners can resolve it by code. */
@@ -112,9 +336,10 @@ export function publishInvitation(inv: {
 
 /** Resolve a code to an open invitation (used by the joiner device). */
 export function resolveInvitation(code: string): HubInvitation | null {
+  const n = normalizeCode(code);
   const row = db.prepare(
-    `SELECT * FROM invitations WHERE code = ? AND status = 'open'`
-  ).get(code) as any;
+    `SELECT * FROM invitations WHERE ${CODE_EQ} AND status = 'open'`
+  ).get(n) as any;
   if (!row) return null;
   if (row.expires_at && row.expires_at < now()) {
     db.prepare(`UPDATE invitations SET status = 'expired' WHERE id = ?`).run(row.id);
@@ -122,11 +347,12 @@ export function resolveInvitation(code: string): HubInvitation | null {
   }
   return {
     id: row.id,
-    businessId: row.business_id,
+    businessId: canonicalBusinessUuid(String(row.business_id)),
     code: row.code,
     name: row.name,
     role: row.role,
     platform: row.platform,
     expiresAt: row.expires_at,
+    businessName: businessDisplayName(String(row.business_id)),
   };
 }

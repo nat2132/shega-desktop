@@ -22,6 +22,8 @@ import {
   publishInvitation,
   resolveInvitation,
   getDeviceJoinRequestBy,
+  canonicalBusinessUuid,
+  businessDisplayName,
 } from './device-requests';
 import { DEVICE_JOIN_MSG, PERIPHERAL_MSG } from '@shega/shared';
 import { p2pSync } from './p2p-sync-manager';
@@ -198,6 +200,7 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
         break;
 
       case 'P2P_SIGNAL':
+        if (!client.paired) { this.sendError(ws, 'NOT_PAIRED', 'Device not paired'); break; }
         // Signaling only — relay SDP/ICE between paired clients. Never carries
         // business data; Yjs updates flow directly over WebRTC DataChannels.
         {
@@ -230,8 +233,8 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     }
 
     const hubToken = getPairingToken();
-    if (token && token.trim().toUpperCase() !== hubToken) {
-      this.sendError(ws, 'PAIR_FAILED', 'Invalid pairing token');
+    if (String(token ?? '').trim().toUpperCase() !== hubToken) {
+      this.sendError(ws, 'PAIR_FAILED', token ? 'Invalid pairing token' : 'Pairing token required');
       return;
     }
 
@@ -253,7 +256,6 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       payload: {
         success: true,
         hubId: ensureHubDeviceId(),
-        pairingToken: hubToken,
         schemaVersion: 21,
       },
     });
@@ -264,13 +266,17 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
 
   private handleDeviceJoinSubmit(clientId: string, client: WsClient, msg: WsMessage): void {
     const ws = client.ws;
-    if (!client.paired) { this.sendError(ws, 'NOT_PAIRED', 'Device not paired'); return; }
     const payload = msg.payload || {};
-    if (!payload.businessId || !payload.joinerDeviceId) {
-      this.sendError(ws, 'DEVICE_JOIN_FAILED', 'businessId and joinerDeviceId required');
+    if (!payload.code || !payload.joinerDeviceId) {
+      this.sendError(ws, 'DEVICE_JOIN_FAILED', 'code and joinerDeviceId required');
       return;
     }
-    const rec = submitDeviceJoinRequest(payload);
+    // The invite code is the authorization for an unpaired joiner: a request may
+    // only be staged for the business the code resolves to — never by guessing
+    // business/device ids.
+    const inv = resolveInvitation(payload.code);
+    if (!inv) { this.sendError(ws, 'INVITE_INVALID', 'Invitation not found or expired'); return; }
+    const rec = submitDeviceJoinRequest({ ...payload, businessId: inv.businessId });
     this.send(ws, { type: DEVICE_JOIN_MSG.ACK, requestId: msg.requestId, payload: { requestId: rec.requestId, status: rec.status } });
     logger.info(`[WS] Device join request staged: ${rec.joinerDeviceId} -> ${rec.businessId}`);
   }
@@ -321,7 +327,14 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     const { code, joinerDeviceId } = msg.payload || {};
     if (!code || !joinerDeviceId) { this.sendError(ws, 'DEVICE_JOIN_FAILED', 'code and joinerDeviceId required'); return; }
     const rec = getDeviceJoinRequestBy(code, joinerDeviceId);
-    this.send(ws, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload: { record: rec } });
+    const payload: any = { record: rec };
+    // Approval hands the admitted device its pairing credential in-band: the
+    // joiner knows the invite code AND its own device id, and was explicitly
+    // admitted — without it the approved join could never pair/sync on the LAN.
+    if (rec && rec.status === 'approved') {
+      payload.pairingToken = getPairingToken();
+    }
+    this.send(ws, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload });
   }
 
   // ---------- Phone-peripheral channel (scanner / camera) ----------
@@ -381,8 +394,8 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     const { claimUserInvite } = require('./user-invites');
     const rec = claimUserInvite(String(code).trim().toUpperCase(), String(name || 'New user').trim(), joinerDeviceId);
     if (!rec) { this.sendError(ws, 'INVITE_INVALID', 'Invitation not found or already used'); return; }
-    const biz = db.prepare('SELECT businessName FROM businesses WHERE id = ?').get(rec.businessId) as any;
-    this.send(ws, { type: 'INVITE_RESPONSE', requestId: msg.requestId, payload: { invite: { id: rec.id, status: rec.status, businessId: rec.businessId, suggestedRole: rec.suggestedRole, businessName: biz?.businessName || `Business ${rec.businessId}` } } });
+    const bizRef = String(rec.businessId);
+    this.send(ws, { type: 'INVITE_RESPONSE', requestId: msg.requestId, payload: { invite: { id: rec.id, status: rec.status, businessId: canonicalBusinessUuid(bizRef), suggestedRole: rec.suggestedRole, businessName: businessDisplayName(bizRef) || `Business ${rec.businessId}` } } });
   }
 
   /** Joiner polls the decision on their invite. */
@@ -392,8 +405,13 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     const { getUserInviteStatus } = require('./user-invites');
     const rec = getUserInviteStatus(String(code).trim().toUpperCase());
     if (!rec) { this.send(ws, { type: 'INVITE_RESPONSE', requestId: msg.requestId, payload: { invite: null } }); return; }
-    const biz = db.prepare('SELECT businessName FROM businesses WHERE id = ?').get(rec.businessId) as any;
-    this.send(ws, { type: 'INVITE_RESPONSE', requestId: msg.requestId, payload: { invite: { id: rec.id, status: rec.status, businessId: rec.businessId, suggestedRole: rec.suggestedRole, businessName: biz?.businessName || `Business ${rec.businessId}` } } });
+    const bizRef = String(rec.businessId);
+    const payload = { type: 'INVITE_RESPONSE', requestId: msg.requestId, payload: { invite: { id: rec.id, status: rec.status, businessId: canonicalBusinessUuid(bizRef), suggestedRole: rec.suggestedRole, businessName: businessDisplayName(bizRef) || `Business ${rec.businessId}` } as any } };
+    // An approved user invite admits the device — hand it the hub pairing
+    // credential so the joiner can pair + sync, exactly like the device-join
+    // STATUS grant (J1).
+    if (rec.status === 'approved') payload.payload.invite.pairingToken = getPairingToken();
+    this.send(ws, payload);
   }
 
   private async handleSyncPush(clientId: string, client: WsClient, msg: WsMessage): Promise<void> {

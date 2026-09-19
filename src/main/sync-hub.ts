@@ -393,8 +393,17 @@ const CORE_BUSINESS_SCOPED_ENTITIES: readonly string[] = [
 function businessIntToUuid(int: number | null | undefined): string | null {
   if (int == null) return null;
   try {
-    const row = db.prepare('SELECT uuid FROM businesses WHERE id = ?').get(Number(int)) as any;
-    return row?.uuid ?? null;
+    const row = db.prepare('SELECT id, uuid FROM businesses WHERE id = ?').get(Number(int)) as any;
+    if (!row) return null;
+    if (row.uuid) return row.uuid;
+    // Desktop-created businesses can reach the wire without a uuid (the 5.7
+    // migration backfilled existing rows, but new `business:create` inserts
+    // ran without one). Materialize a real uuid on first wire contact — never
+    // the fabricated `biz-<id>` sentinel, which splits the business identity
+    // across platforms (mobile keyed the business by uuid, desktop by int).
+    const uuid = randomUUID();
+    db.prepare('UPDATE businesses SET uuid = ? WHERE id = ?').run(uuid, Number(int));
+    return uuid;
   } catch {
     return null;
   }

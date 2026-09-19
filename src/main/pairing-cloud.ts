@@ -26,6 +26,13 @@ function getBaseUrl(): string {
   return (getSetting('cloud_sync_url') || process.env.SHEGA_API_URL || DEFAULT_BASE).replace(/\/+$/, '');
 }
 
+/** Normalize an invite code so dashless/pastable variants still match. */
+function normalizeCode(code: string): string {
+  return String(code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+/** SQL fragment that compares a stored `code` column format-insensitively. */
+const CODE_EQ = "replace(replace(upper(coalesce(code,'')), '-', ''), ' ', '') = ?";
+
 let authPromise: ReturnType<typeof doAuthRequest> | null = null;
 
 async function doAuthRequest(
@@ -58,7 +65,13 @@ async function doAuthRequest(
     if (refreshed) return doAuthRequest(path, body, { method, body, auth, retried: true, tokenKey });
   }
   if (!res.ok) {
-    const msg = data?.detail ?? data?.error ?? (typeof data === 'string' ? data : `HTTP ${res.status}`);
+    let msg = data?.detail ?? data?.error ?? (typeof data === 'string' ? data : `HTTP ${res.status}`);
+    // A proxied/captive portal 404 returns HTML — never surface that raw.
+    if (typeof msg === 'string' && /<!doctype|<html/i.test(msg)) {
+      msg = res.status === 404
+        ? 'This pairing service is not available on the server.'
+        : `Server error (HTTP ${res.status}).`;
+    }
     const err: any = new Error(typeof msg === 'object' ? msg.detail ?? JSON.stringify(msg) : String(msg));
     err.status = res.status;
     err.detail = data?.detail ?? null;
@@ -165,9 +178,68 @@ export function registerPairingCloudHandlers(): void {
   // machine's hub device id, and the one-time device key issued at accept time
   // becomes the cloud transport credential once the owner approves.
   ipcMain.handle('join:lookup', async (_e, code: string) => {
-    const c = String(code ?? '').trim();
+    const c = String(code ?? '').trim().toUpperCase();
     if (!c) throw new Error('Enter the 6-digit code');
-    return doAuthRequest('/api/sync/pairing/lookup/', { code: c }, { method: 'POST' });
+
+    // 1) Local invitation store first — pairing works fully offline. The
+    //    desktop hub keeps both its own user_invites and any invitations
+    //    published to it by mobile peers (DEVICE_JOIN.PUBLISH).
+    const n = normalizeCode(c);
+    try {
+      const local = db.prepare(
+        `SELECT * FROM user_invites WHERE ${CODE_EQ} AND status IN ('open','pending') ORDER BY created_at DESC LIMIT 1`
+      ).get(n) as any;
+      if (local) {
+        const biz = db.prepare('SELECT uuid, businessName FROM businesses WHERE id = ?').get(local.business_id) as any;
+        return {
+          business_id: biz?.uuid ?? String(local.business_id),
+          business_name: biz?.businessName ?? `Business ${local.business_id}`,
+          employee_name: local.joiner_name ?? null,
+          role: local.suggested_role ?? 'cashier',
+          register: null,
+          location: null,
+          expires_at: local.expires_at ?? null,
+          source: 'local',
+          invite_id: local.id,
+        };
+      }
+      const published = db.prepare(
+        `SELECT * FROM invitations WHERE ${CODE_EQ} AND status = 'open' ORDER BY created_at DESC LIMIT 1`
+      ).get(n) as any;
+      if (published) {
+        if (!published.expires_at || published.expires_at > new Date().toISOString()) {
+          const biz = db.prepare('SELECT uuid, businessName FROM businesses WHERE id = ?').get(published.business_id) as any;
+          return {
+            business_id: published.business_id ?? biz?.uuid ?? '',
+            business_name: biz?.businessName ?? published.name ?? 'Business',
+            employee_name: published.name ?? null,
+            role: published.role ?? 'cashier',
+            register: null,
+            location: null,
+            expires_at: published.expires_at ?? null,
+            source: 'local',
+            invite_id: published.id,
+          };
+        }
+      }
+    } catch { /* tables may not exist on a brand-new install */ }
+
+    // 2) Cloud lookup fallback (backend pairing endpoints).
+    try {
+      return await doAuthRequest('/api/sync/pairing/lookup/', { code: c }, { method: 'POST' });
+    } catch (err: any) {
+      // The deployed backend does not (yet) ship /api/sync/pairing/*. Never
+      // surface that as a generic failure — point the user at the offline path
+      // that actually works (same network + invitation published to this hub).
+      if (err?.status === 404 || /not available on the server/i.test(String(err?.message ?? ''))) {
+        throw new Error(
+          "That code isn't available on this device, and the cloud pairing service isn't reachable. " +
+          "Make sure the owner's phone is on the same Wi-Fi, connected to this computer as its hub, " +
+          'then generate a fresh invite code and try again.'
+        );
+      }
+      throw err;
+    }
   });
 
   ipcMain.handle('join:accept', async (_e, input: { code: string; email: string; password: string; name?: string; deviceName?: string }) => {
@@ -177,6 +249,61 @@ export function registerPairingCloudHandlers(): void {
     if (!code || !email || !password) throw new Error('Code, email and password are required');
 
     // 1) Preview the invitation (validation only — never consumes it).
+    //    Local invitations (offline-first) skip the cloud entirely: the join
+    //    request is staged in the hub's device_requests and the owner approves
+    //    it from Connected Devices / Team — the same path mobile joiners use.
+    const deviceId0 = ensureHubDeviceId();
+    const localInvite = ((): any | null => {
+      try {
+        const n = normalizeCode(code);
+        const li = db.prepare(
+          `SELECT * FROM user_invites WHERE ${CODE_EQ} AND status IN ('open','pending') ORDER BY created_at DESC LIMIT 1`
+        ).get(n) as any;
+        if (li) return { kind: 'user_invite', id: li.id, businessId: li.business_id, role: li.suggested_role ?? 'cashier' };
+        const pub = db.prepare(
+          `SELECT * FROM invitations WHERE ${CODE_EQ} AND status = 'open' ORDER BY created_at DESC LIMIT 1`
+        ).get(n) as any;
+        if (pub && (!pub.expires_at || pub.expires_at > new Date().toISOString())) {
+          return { kind: 'invitation', id: pub.id, businessId: pub.business_id, role: pub.role ?? 'cashier' };
+        }
+      } catch { /* tables may not exist yet */ }
+      return null;
+    })();
+    if (localInvite) {
+      const biz = db.prepare('SELECT uuid, businessName FROM businesses WHERE id = ?').get(localInvite.businessId) as any;
+      const businessUuid = biz?.uuid ?? String(localInvite.businessId);
+      const displayName = String(input?.name || '').trim() || 'Team Member';
+      try {
+        const { submitDeviceJoinRequest } = await import('./sync/device-requests');
+        submitDeviceJoinRequest({
+          businessId: businessUuid,
+          code,
+          joinerDeviceId: deviceId0,
+          joinerName: displayName,
+          joinerModel: 'Desktop',
+          joinerUser: displayName,
+          role: localInvite.role,
+          platform: 'desktop',
+        } as any);
+      } catch { /* device_requests table may be missing — approval still possible via user_invites */ }
+      setSetting('join_invitation_id', localInvite.id);
+      setSetting('join_device_id', deviceId0);
+      setSetting('join_business_name', String(biz?.businessName ?? ''));
+      setSetting('join_role', String(localInvite.role));
+      setSetting('join_display_name', displayName);
+      setSetting('join_local', '1');
+      setSetting('join_code', code.toUpperCase());
+      return {
+        status: 'pending',
+        invitation_id: localInvite.id,
+        device_key: null,
+        device_id: deviceId0,
+        business_name: biz?.businessName ?? null,
+        role: localInvite.role,
+        email: '',
+      };
+    }
+
     let preview: any;
     try {
       preview = await doAuthRequest('/api/sync/pairing/lookup/', { code }, { method: 'POST' });
@@ -246,6 +373,32 @@ export function registerPairingCloudHandlers(): void {
   ipcMain.handle('join:status', async (_e, invitationId?: number) => {
     const id = invitationId ?? Number(getSetting('join_invitation_id') || 0);
     const token = getSetting('join_access_token');
+
+    // Local join: poll the staged device_requests row for the owner's decision.
+    if (getSetting('join_local') === '1') {
+      const localDeviceId = String(getSetting('join_device_id') || '');
+      try {
+        const { getDeviceJoinRequestBy } = await import('./sync/device-requests');
+        const rec = getDeviceJoinRequestBy(String(getSetting('join_code') || ''), localDeviceId);
+        if (rec) {
+          const st = String(rec.status);
+          return {
+            phase: st === 'approved' ? 'approved'
+              : (st === 'rejected' || st === 'cancelled' || st === 'expired') ? st
+              : 'pending',
+            status: st,
+            business_name: getSetting('join_business_name'),
+            role: rec.role ?? getSetting('join_role'),
+            device_status: null,
+            email: '',
+          };
+        }
+        return { phase: 'pending', business_name: getSetting('join_business_name'), role: getSetting('join_role'), email: '' };
+      } catch {
+        return { phase: 'pending', business_name: getSetting('join_business_name'), role: getSetting('join_role'), email: '' };
+      }
+    }
+
     if (!id || !token) return { phase: 'none', invitation: null };
 
     const fetchOnce = async (): Promise<any> => {
@@ -288,9 +441,29 @@ export function registerPairingCloudHandlers(): void {
     const key = getSetting('join_device_key');
     const email = getSetting('join_account_email');
     const id = getSetting('join_invitation_id');
-    if (!key || !email || !id) throw new Error('No active join in progress');
     const pinStr = String(pin ?? '');
     if (!/^\d{4}$/.test(pinStr)) throw new Error('PIN must be 4 digits');
+
+    // Local join: create a local terminal identity bound to the joined
+    // business. The business roster/sync arrives over LAN + P2P.
+    if (getSetting('join_local') === '1') {
+      const displayName = getSetting('join_display_name') || 'Team Member';
+      const username = `local-${String(id)}`;
+      const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get(username) as any;
+      if (!existing) {
+        db.prepare('INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)').run(
+          displayName,
+          username,
+          joinHashPin(pinStr),
+          'cashier',
+          JSON.stringify(['dashboard', 'inventory', 'sales', 'customers', 'analytics']),
+          null,
+        );
+      }
+      db.prepare("DELETE FROM settings WHERE key LIKE 'join_%'").run();
+      return { success: true, username };
+    }
+    if (!key || !email || !id) throw new Error('No active join in progress');
 
     // Cloud transport config: this machine now authenticates with the device
     // key the backend issued exactly once at accept time (inert until then).

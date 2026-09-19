@@ -157,7 +157,8 @@ export const translations: Record<string, any> = {
       default: 'Default business',
     },
     common: {
-      save: 'Save',
+
+      me: 'Me',      save: 'Save',
       cancel: 'Cancel',
       search: 'Search',
       edit: 'Edit',
@@ -2765,7 +2766,8 @@ export const translations: Record<string, any> = {
       default: 'ነባሪ ንግድ',
     },
     common: {
-      save: 'አስቀምጥ',
+
+      me: 'እኔ',      save: 'አስቀምጥ',
       cancel: 'ሰርዝ',
       search: 'ፈልግ',
       edit: 'አስተካክል',
@@ -5129,7 +5131,8 @@ export const translations: Record<string, any> = {
       default: 'Dhiyeessa durtii',
     },
     common: {
-      save: "Ol kaa'i",
+
+      me: 'Ana',      save: "Ol kaa'i",
       cancel: 'Haquu',
       search: 'Barbaadi',
       edit: 'Sirreessi',
@@ -7500,7 +7503,8 @@ export const translations: Record<string, any> = {
       default: 'ትሕቲ ንግዲ',
     },
     common: {
-      save: 'ደሓን ኣብዝሕ',
+
+      me: 'እኔ',      save: 'ደሓን ኣብዝሕ',
       cancel: 'ኣትውሓዝ',
       search: 'ድለይ',
       edit: 'ኣስተካክል',

@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { ipcMain } from 'electron';
 import db from './database';
 import { ensureHubDeviceId } from './sync-hub';
+import { provisionJoinForDevice } from './sync/device-requests';
 import {
   getBuiltinRole, SURFACED_BUILTIN_ROLES, DEFAULT_ROLE_SETS, can, PermissionContext,
 } from '@shega/shared';
@@ -114,6 +115,12 @@ export function registerBusinessDomainHandlers(config: BusinessDomainConfig) {
     }
     db.prepare('UPDATE devices SET status = ?, updated_at = ? WHERE device_id = ? OR id = ?')
       .run(status, new Date().toISOString(), deviceId, deviceId);
+    // Approving a pending joiner (the "Pending device approvals" list) is the
+    // desktop-side accept for a LAN device join: mirror the decision into the
+    // join request and provision the member's user + device rows.
+    if (status === 'active') {
+      try { provisionJoinForDevice(String(deviceId)); } catch (e: any) { console.warn('[business-domain] provision join skipped:', e?.message); }
+    }
     config.audit('device.changed', 'device', null, `Device ${deviceId} -> ${status}`);
     return { ok: true };
   });
