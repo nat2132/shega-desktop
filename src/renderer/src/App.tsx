@@ -97,7 +97,7 @@ function App() {
   const { isAuthenticated, login, isCashier } = useAuth();
   const location = useLocation();
   const [phase, setPhase] = useState<AppPhase>('splash');
-  const [hasAdmins, setHasAdmins] = useState(true);
+  const [hasAdmins, setHasAdmins] = useState<boolean | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [isFirstTime, setIsFirstTime] = useState(false);
   const [recoveryKeyData, setRecoveryKeyData] = useState<{ key: string; username: string } | null>(null);
@@ -124,15 +124,21 @@ function App() {
     try {
       const admins = await window.api?.getAdmins();
       setHasAdmins(admins && admins.length > 0);
-      
+
       const onboardingDone = await window.api?.getSetting('onboarding_completed');
       setIsFirstTime(!onboardingDone);
     } catch (err) {
       console.error('System check failed:', err);
+      // If the state probe fails we can't prove admins exist — never strand a
+      // fresh install on a login screen; fall back to the create-account flow.
+      setHasAdmins(false);
     }
   };
 
-  const handleSplashComplete = useCallback(() => {
+  const handleSplashComplete = useCallback(async () => {
+    // Resolve the system state BEFORE the auth screen mounts: AuthScreen picks
+    // login-vs-register from hasAdmins, and a brand-new install has zero admins.
+    await checkSystemState();
     setPhase('auth');
   }, []);
 
@@ -267,6 +273,12 @@ function App() {
 
   // Phase: Auth (login or register)
   if (phase === 'auth' || !isAuthenticated) {
+    // The state probe may not have resolved yet (e.g. a slow first run);
+    // keep the splash up rather than mounting AuthScreen with an unknown
+    // hasAdmins — its login-vs-register mode depends on that value.
+    if (hasAdmins === null) {
+      return <SplashScreen onComplete={handleSplashComplete} />;
+    }
     return (
       <AuthScreen
         onLogin={handleLogin}
@@ -274,6 +286,7 @@ function App() {
         onRegister={handleRegister}
         onJoin={handleJoin}
         hasAdmins={hasAdmins}
+        isFirstTime={isFirstTime}
       />
     );
   }

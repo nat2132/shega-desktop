@@ -375,6 +375,7 @@ export interface ElectronAPI {
   pairingInvite: (input: { employeeName?: string; role?: string; register?: string; location?: string }) => Promise<any>;
   pairingRevoke: (id: number) => Promise<any>;
   pairingDecide: (id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>) => Promise<any>;
+  pairingAssignIdentity: (id: number, identity: { name?: string; avatar?: string | null }) => Promise<boolean>;
   pairingQrCode: (text: string) => Promise<string>;
 
   // Join an existing business (desktop employee onboarding via 6-digit code)
@@ -384,8 +385,10 @@ export interface ElectronAPI {
   joinActivate: (pin: string) => Promise<{ success: boolean; username: string }>;
   joinCancel: () => Promise<{ cancelled: boolean }>;
   pairBeaconStart: (invite: any) => Promise<{ publishing: boolean }>;
+  pairBeaconDiscoverable: (on: boolean, businessName?: string, role?: 'owner' | 'team') => Promise<{ publishing: boolean }>;
   pairBeaconStop: () => Promise<{ publishing: boolean }>;
   pairBeaconNearby: () => Promise<Array<{ beacon: any; host: string; platform: string }>>;
+  deviceName: () => Promise<string>;
 
   taxCalculateWht: (input: any) => Promise<any>;
   taxCalculateVatReturn: (input: any) => Promise<any>;
@@ -430,7 +433,8 @@ export interface ElectronAPI {
   // QR user invites (Teams → Add User)
   inviteCreate: (opts?: { suggestedRole?: string }) => Promise<any>;
   inviteList: () => Promise<any[]>;
-  inviteDecide: (inviteId: string, decision: 'approved' | 'rejected', opts?: { role?: string }) => Promise<any>;
+  inviteDecide: (inviteId: string, decision: 'approved' | 'rejected', opts?: { role?: string; name?: string; avatar?: string | null; permissions?: Record<string, unknown> }) => Promise<any>;
+  inviteAssignIdentity: (inviteId: string, identity: { name?: string; avatar?: string | null; role?: string; permissions?: Record<string, unknown> }) => Promise<boolean>;
   cancelApproval: (requestId: string) => Promise<boolean>;
 }
 

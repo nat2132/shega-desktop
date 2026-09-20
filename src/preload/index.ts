@@ -427,6 +427,7 @@ contextBridge.exposeInMainWorld('api', {
   pairingInvite: (input: { employeeName?: string; role?: string; register?: string; location?: string }) => ipcRenderer.invoke('pairing:invite', input),
   pairingRevoke: (id: number) => ipcRenderer.invoke('pairing:revoke', id),
   pairingDecide: (id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>) => ipcRenderer.invoke('pairing:decide', id, decision, role, permissions),
+  pairingAssignIdentity: (id: number, identity: { name?: string; avatar?: string | null }) => ipcRenderer.invoke('pairing:assign-identity', id, identity),
   pairingQrCode: (text: string) => ipcRenderer.invoke('pairing:qr-code', text),
   joinLookup: (code: string) => ipcRenderer.invoke('join:lookup', code),
   joinAccept: (input: { code: string; email: string; password: string; name?: string; deviceName?: string }) => ipcRenderer.invoke('join:accept', input),
@@ -435,8 +436,10 @@ contextBridge.exposeInMainWorld('api', {
   joinCancel: () => ipcRenderer.invoke('join:cancel'),
   // Bluetooth-style pairing-beacon discovery
   pairBeaconStart: (invite: any) => ipcRenderer.invoke('pair-beacon:start', invite),
+  pairBeaconDiscoverable: (on: boolean, businessName?: string, role?: 'owner' | 'team') => ipcRenderer.invoke('pair-beacon:discoverable', on, businessName, role),
   pairBeaconStop: () => ipcRenderer.invoke('pair-beacon:stop'),
   pairBeaconNearby: () => ipcRenderer.invoke('pair-beacon:nearby'),
+  deviceName: () => ipcRenderer.invoke('device:name'),
 
   // Tax computation (existing pos modules, now reachable)
   taxCalculateWht: (input: any) => ipcRenderer.invoke('tax:wht', input),
@@ -484,7 +487,8 @@ contextBridge.exposeInMainWorld('api', {
   // QR user invites (Teams → Add User)
   inviteCreate: (opts: { suggestedRole?: string } = {}) => ipcRenderer.invoke('invites:create', opts),
   inviteList: () => ipcRenderer.invoke('invites:list'),
-  inviteDecide: (inviteId: string, decision: 'approved' | 'rejected', opts: { role?: string } = {}) => ipcRenderer.invoke('invites:decide', inviteId, decision, opts),
+  inviteDecide: (inviteId: string, decision: 'approved' | 'rejected', opts: { role?: string; name?: string; avatar?: string | null; permissions?: Record<string, unknown> } = {}) => ipcRenderer.invoke('invites:decide', inviteId, decision, opts),
+  inviteAssignIdentity: (inviteId: string, identity: { name?: string; avatar?: string | null; role?: string; permissions?: Record<string, unknown> }) => ipcRenderer.invoke('invites:assign-identity', inviteId, identity),
   onApprovalPinInvalid: (callback: (payload: { requestId: string }) => void) => {
     ipcRenderer.on('approval:pin-invalid', (_event, payload) => callback(payload));
   },

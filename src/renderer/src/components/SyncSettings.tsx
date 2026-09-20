@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Network, RefreshCw, ShieldCheck, ScrollText, Server, Users, Wifi, WifiOff, QrCode, Copy, Check, AlertTriangle, RotateCcw } from 'lucide-react';
+import {  Network, RefreshCw, ShieldCheck, ScrollText, Server, Users, Wifi, WifiOff, Radar, Copy, Check, AlertTriangle, RotateCcw } from 'lucide-react';
 import QRCode from 'qrcode';
+import { RadarPulse } from './RadarPulse';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
@@ -35,6 +36,48 @@ const SyncSettings: React.FC = () => {
   const [verifying, setVerifying] = useState(false);
   const [qrData, setQrData] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Discovery radar: this device advertises itself while the card is visible
+  // and lists every nearby Shega device by name.
+  const [selfName, setSelfName] = useState('This computer');
+  const [nearby, setNearby] = useState<Array<{ id: string; name: string; platform?: string }>>([]);
+  const [showPairingDetails, setShowPairingDetails] = useState(false);
+
+  const connectPeer = async (deviceName?: string) => {
+    try {
+      const granted = await window.api?.p2pApprove?.(deviceName) ?? [];
+      await window.api?.p2pAnnounce?.();
+      toast.success(granted.length > 0
+        ? `Approved ${granted.length} device(s) — syncing business data…`
+        : 'Ready — keep both devices on this Wi-Fi and try again.');
+    } catch {
+      toast.error('Could not connect that device.');
+    }
+  };
+
+  useEffect(() => {
+    let stopped = false;
+    window.api?.deviceName?.().then((n) => { if (n) setSelfName(n); }).catch(() => {});
+    (async () => {
+      try { await window.api?.pairBeaconDiscoverable?.(true, undefined, 'owner'); } catch { /* ignore */ }
+      while (!stopped) {
+        try {
+          const list = await window.api?.pairBeaconNearby?.();
+          if (!stopped && Array.isArray(list)) {
+            setNearby(list.map((e: any) => ({
+              id: e.beacon?.owner?.deviceId || e.beacon?.businessId || String(Math.random()),
+              name: e.beacon?.owner?.deviceName || 'Nearby device',
+              platform: e.beacon?.owner?.platform,
+            })));
+          }
+        } catch { /* ignore */ }
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    })();
+    return () => {
+      stopped = true;
+      window.api?.pairBeaconDiscoverable?.(false).catch(() => {});
+    };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -224,35 +267,57 @@ const SyncSettings: React.FC = () => {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2"><QrCode size={16} /> Pair a device</CardTitle>
-          <CardDescription>Scan with the phone's Settings → Sync, or enter the code manually</CardDescription>
+          <CardTitle className="flex items-center gap-2"><Radar size={16} /> Add Team / Device</CardTitle>
+          <CardDescription>Nearby Shega devices appear automatically — no QR, no code</CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col sm:flex-row items-center gap-6">
-          {qrData ? (
-            <img src={qrData} alt="Pairing QR" className="rounded-xl border bg-white p-2" width={220} height={220} />
-          ) : (
-            <div className="w-[220px] h-[220px] rounded-xl border flex items-center justify-center text-muted-foreground">
-              {loading ? '…' : 'QR unavailable'}
-            </div>
-          )}
-          <div className="space-y-3 flex-1">
-            <div className="space-y-1">
-              <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">Pairing code</p>
-              <div className="flex items-center gap-3">
-                <p className="font-mono text-2xl font-black tracking-[0.35em]">{status?.pairingToken || '—'}</p>
-                <Button size="sm" variant="ghost" onClick={copyPairing} disabled={!status}>
-                  {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
-                </Button>
+        <CardContent className="space-y-4">
+          <RadarPulse
+            deviceName={selfName}
+            status={nearby.length > 0 ? `${nearby.length} device${nearby.length === 1 ? '' : 's'} found` : 'Searching for nearby devices…'}
+            tone={nearby.length > 0 ? 'found' : 'searching'}
+            compact
+            peers={nearby.map((p) => ({ id: p.id, name: p.name, platform: p.platform, detail: 'Tap to connect' }))}
+            onPickPeer={(p) => void connectPeer(p.name)}
+            emptyHint="Open Shega on the other device and go to Settings → Devices → Add Team / Device."
+          />
+
+          <button
+            type="button"
+            onClick={() => setShowPairingDetails((v) => !v)}
+            className="w-full text-center text-[11px] font-black uppercase tracking-widest text-muted-foreground/60 hover:text-foreground/80 transition-colors"
+          >
+            {showPairingDetails ? 'Hide pairing code' : 'Show pairing code instead'}
+          </button>
+
+          {showPairingDetails && (
+            <div className="flex flex-col sm:flex-row items-center gap-6 rounded-xl border p-3">
+              {qrData ? (
+                <img src={qrData} alt="Pairing QR" className="rounded-xl border bg-white p-2" width={180} height={180} />
+              ) : (
+                <div className="w-[180px] h-[180px] rounded-xl border flex items-center justify-center text-muted-foreground">
+                  {loading ? '…' : 'QR unavailable'}
+                </div>
+              )}
+              <div className="space-y-3 flex-1">
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">Pairing code</p>
+                  <div className="flex items-center gap-3">
+                    <p className="font-mono text-2xl font-black tracking-[0.35em]">{status?.pairingToken || '—'}</p>
+                    <Button size="sm" variant="ghost" onClick={copyPairing} disabled={!status}>
+                      {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                    </Button>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">Hub URL</p>
+                  <p className="font-mono text-sm">{status?.lanUrl || '—'}</p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Only needed where device discovery is blocked. On the phone: Settings → Sync → enter this hub URL and code, then tap <b>Pair device</b>.
+                </p>
               </div>
             </div>
-            <div className="space-y-1">
-              <p className="text-xs text-muted-foreground font-black uppercase tracking-widest">Hub URL</p>
-              <p className="font-mono text-sm">{status?.lanUrl || '—'}</p>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              On the phone: Settings → Sync → enter this hub URL and code, then tap <b>Pair device</b>. The phone will then auto-sync sales, items and stock over your local network.
-            </p>
-          </div>
+          )}
         </CardContent>
       </Card>
 

@@ -298,7 +298,19 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       this.sendError(ws, 'DEVICE_JOIN_FAILED', 'requestId and decision required');
       return;
     }
-    const rec = decideDeviceJoinRequest(payload);
+    // Owner-assigned identity (name/avatar/role/permissions) rides on the
+    // decision payload and is applied when the approval materializes the user.
+    const rec = decideDeviceJoinRequest({
+      requestId: String(payload.requestId),
+      businessId: String(payload.businessId ?? ''),
+      joinerDeviceId: String(payload.joinerDeviceId ?? ''),
+      decision: payload.decision,
+      decidedBy: String(payload.decidedBy ?? ''),
+      assignedName: payload.assignedName,
+      assignedAvatar: payload.assignedAvatar ?? null,
+      assignedRole: payload.assignedRole ?? payload.role,
+      assignedPermissions: payload.assignedPermissions ?? payload.permissions,
+    } as any);
     if (!rec) { this.sendError(ws, 'DEVICE_JOIN_FAILED', 'request not found'); return; }
     this.send(ws, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload: { record: rec } });
     logger.info(`[WS] Device join ${payload.decision}: ${rec.joinerDeviceId}`);

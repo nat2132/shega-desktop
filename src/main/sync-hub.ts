@@ -1001,6 +1001,37 @@ export class SyncHub {
           return;
         }
 
+        // ── Unpaired joiner endpoints (invite code is the authorization) ──
+        if (path === '/sync/invitations/resolve' && req.method === 'POST') {
+          const body = JSON.parse(await readBody(req));
+          const { resolveInvitation } = await import('./sync/device-requests');
+          const inv = resolveInvitation(String(body.code ?? ''));
+          if (!inv) return sendJson(res, 404, { ok: false, error: 'Invitation not found or expired' });
+          sendJson(res, 200, { ok: true, invitation: inv });
+          return;
+        }
+
+        if (path === '/sync/join/submit' && req.method === 'POST') {
+          const body = JSON.parse(await readBody(req));
+          const { resolveInvitation, submitDeviceJoinRequest } = await import('./sync/device-requests');
+          const inv = resolveInvitation(String(body.code ?? ''));
+          if (!inv) return sendJson(res, 404, { ok: false, error: 'Invitation not found or expired' });
+          const rec = submitDeviceJoinRequest({ ...body, businessId: inv.businessId });
+          sendJson(res, 200, { ok: true, requestId: rec.requestId, status: rec.status });
+          return;
+        }
+
+        if (path === '/sync/join/status' && req.method === 'POST') {
+          const body = JSON.parse(await readBody(req));
+          const { getDeviceJoinRequestBy } = await import('./sync/device-requests');
+          const rec = getDeviceJoinRequestBy(String(body.code ?? ''), String(body.joinerDeviceId ?? body.joiner_device_id ?? ''));
+          const payload: any = { ok: true, record: rec };
+          // Approval grants the pairing credential in-band (same as WS path).
+          if (rec && rec.status === 'approved') payload.pairingToken = getPairingToken();
+          sendJson(res, 200, payload);
+          return;
+        }
+
         sendJson(res, 404, { ok: false, error: 'not found' });
       } catch (e: any) {
         sendJson(res, 500, { ok: false, error: e?.message ?? 'server error' });

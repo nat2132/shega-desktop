@@ -163,7 +163,33 @@ export function registerPairingCloudHandlers(): void {
     const body: Record<string, unknown> = {};
     if (role) body.role = role;
     if (permissions && typeof permissions === 'object') body.permissions = permissions;
+    // Local (offline-first) path: apply the decision through the hub's join
+    // channel — cloud is only a fallback for invites that came from the cloud.
+    try {
+      const dr = await import('./sync/device-requests');
+      const rec = dr.decideDeviceJoinRequest({
+        requestId: String(id),
+        businessId: '',
+        joinerDeviceId: '',
+        decision: decision === 'approve' ? 'approved' : 'rejected',
+        decidedBy: '',
+        assignedRole: role,
+        assignedPermissions: permissions,
+      } as any);
+      if (rec) return rec;
+    } catch { /* fall through to cloud for cloud-sourced invites */ }
     return doAuthRequest(`/api/sync/pairing/${id}/${decision}/`, body, { method: 'POST', auth: true });
+  });
+
+  // Owner-assigned identity (name + avatar) for a joining member. Applied to
+  // the pending/approved join record and materialized user row.
+  ipcMain.handle('pairing:assign-identity', async (_e, id: number, identity: { name?: string; avatar?: string | null }) => {
+    try {
+      const { assignJoinIdentity } = await import('./sync/device-requests');
+      return assignJoinIdentity(String(id), identity);
+    } catch (e: any) {
+      throw new Error(e?.message || 'Could not assign identity');
+    }
   });
 
   ipcMain.handle('pairing:qr-code', async (_e, text: string) => {
@@ -224,7 +250,36 @@ export function registerPairingCloudHandlers(): void {
       }
     } catch { /* tables may not exist on a brand-new install */ }
 
-    // 2) Cloud lookup fallback (backend pairing endpoints).
+    // 2) Direct probe of nearby mobile hubs: a phone that just created the
+    //    business advertises a pairing beacon over mDNS and serves the join
+    //    channel on its TCP hub (port 5759) — resolve the code there when we
+    //    can see it on the LAN, before falling back to the cloud.
+    try {
+      const { mdnsDiscovery } = await import('./sync/discovery');
+      const { isMobileHub } = await import('./sync/mobile-hub-client');
+      const { probeMobileHubJoin } = await import('./sync/mobile-join-client');
+      const peers = mdnsDiscovery.getDiscoveredServices().filter((p) => isMobileHub(p));
+      for (const peer of peers) {
+        try {
+          const inv = await probeMobileHubJoin(peer, c);
+          if (inv) {
+            return {
+              business_id: inv.businessId,
+              business_name: inv.businessName ?? 'Business',
+              employee_name: inv.name ?? null,
+              role: inv.role ?? 'cashier',
+              register: null,
+              location: null,
+              expires_at: inv.expiresAt ?? null,
+              source: 'mobile-hub',
+              invite_id: inv.id ?? null,
+            };
+          }
+        } catch { /* try the next hub */ }
+      }
+    } catch { /* discovery unavailable */ }
+
+    // 3) Cloud lookup fallback (backend pairing endpoints).
     try {
       return await doAuthRequest('/api/sync/pairing/lookup/', { code: c }, { method: 'POST' });
     } catch (err: any) {
@@ -388,7 +443,12 @@ export function registerPairingCloudHandlers(): void {
               : 'pending',
             status: st,
             business_name: getSetting('join_business_name'),
-            role: rec.role ?? getSetting('join_role'),
+            role: rec.assignedRole || rec.role || getSetting('join_role'),
+            // Owner-assigned identity so the joiner is activated with exactly
+            // the name/avatar/role/permissions the owner configured.
+            assigned_name: rec.assignedName ?? null,
+            assigned_avatar: rec.assignedAvatar ?? null,
+            assigned_permissions: rec.assignedPermissions ?? null,
             device_status: null,
             email: '',
           };
@@ -437,7 +497,7 @@ export function registerPairingCloudHandlers(): void {
     }
   });
 
-  ipcMain.handle('join:activate', (_e, pin: string) => {
+  ipcMain.handle('join:activate', async (_e, pin: string) => {
     const key = getSetting('join_device_key');
     const email = getSetting('join_account_email');
     const id = getSetting('join_invitation_id');
@@ -449,16 +509,45 @@ export function registerPairingCloudHandlers(): void {
     if (getSetting('join_local') === '1') {
       const displayName = getSetting('join_display_name') || 'Team Member';
       const username = `local-${String(id)}`;
+      // Owner-assigned identity from the approval: the member joins with the
+      // exact name, avatar, role and permission set the owner configured.
+      let assignedName: string | null = null;
+      let assignedRole: string | null = null;
+      let assignedAvatar: string | null = null;
+      let assignedPerms: string | null = null;
+      try {
+        const { getDeviceJoinRequestBy } = await import('./sync/device-requests');
+        const rec = getDeviceJoinRequestBy(String(getSetting('join_code') || ''), String(getSetting('join_device_id') || ''));
+        if (rec) {
+          assignedName = rec.assignedName ?? null;
+          assignedRole = rec.assignedRole ?? rec.role ?? null;
+          assignedAvatar = rec.assignedAvatar ?? null;
+          assignedPerms = rec.assignedPermissions ? JSON.stringify(rec.assignedPermissions) : null;
+        }
+      } catch { /* identity lookup is best-effort */ }
+      const finalName = assignedName || displayName;
       const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get(username) as any;
       if (!existing) {
         db.prepare('INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)').run(
-          displayName,
+          finalName,
           username,
           joinHashPin(pinStr),
-          'cashier',
-          JSON.stringify(['dashboard', 'inventory', 'sales', 'customers', 'analytics']),
+          assignedRole || 'cashier',
+          assignedPerms || JSON.stringify(['dashboard', 'inventory', 'sales', 'customers', 'analytics']),
           null,
         );
+        if (assignedAvatar) {
+          try { db.prepare('UPDATE admins SET avatar = ? WHERE username = ?').run(assignedAvatar, username); } catch { /* column-guarded */ }
+        }
+      } else {
+        // Already created: upgrade identity in place.
+        const sets: string[] = [];
+        const vals: any[] = [];
+        if (assignedName) { sets.push('name = ?'); vals.push(assignedName); }
+        if (assignedRole) { sets.push('role = ?'); vals.push(assignedRole); }
+        if (assignedPerms) { sets.push('permissions = ?'); vals.push(assignedPerms); }
+        if (assignedAvatar) { sets.push('avatar = ?'); vals.push(assignedAvatar); }
+        if (sets.length) { vals.push(username); db.prepare(`UPDATE admins SET ${sets.join(', ')} WHERE username = ?`).run(...vals); }
       }
       db.prepare("DELETE FROM settings WHERE key LIKE 'join_%'").run();
       return { success: true, username };

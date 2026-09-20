@@ -18,6 +18,8 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { BusinessHealthScore } from '../components/BusinessHealthScore';
 import { useSettings } from '../context/SettingsContext';
 import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
+import ApprovalConfig from '../components/JoinApprovalConfig';
+import { RadarPulse } from '../components/RadarPulse';
 
 type Tab = 'overview' | 'registers' | 'locations' | 'devices' | 'team' | 'businesses';
 
@@ -81,6 +83,9 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
   const [pairForm, setPairForm] = useState({ employeeName: '', role: 'cashier', register: '', location: '' });
   const [pairing, setPairing] = useState(false);
   const [qrInvite, setQrInvite] = useState<any>(null);
+  // Discovery radar shown in place of the pairing QR.
+  const [pairPeers, setPairPeers] = useState<Array<{ id: string; name: string; platform?: string }>>([]);
+  const [pairSelfName, setPairSelfName] = useState('This computer');
   const [now, setNow] = useState(Date.now());
   const [deciding, setDeciding] = useState<number | null>(null);
   // Incoming-join approval: role is picked at approval time (Owner/Cashier/Custom).
@@ -247,10 +252,15 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
     }
   };
 
-  const decide = async (id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>) => {
+  const decide = async (id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>, assignedName?: string, assignedAvatar?: string | null) => {
     setDeciding(id);
     try {
       await window.api.pairingDecide(id, decision, role, permissions);
+      // Carry the assigned identity into the join-channel decision so the
+      // member's device is provisioned with the owner-chosen name/avatar.
+      if (assignedName || assignedAvatar) {
+        window.api.pairingAssignIdentity?.(id, { name: assignedName, avatar: assignedAvatar }).catch(() => {});
+      }
       toast.success(decision === 'approve' ? `Member approved${role ? ` as ${role}` : ''}` : 'Request rejected');
       void refreshInvites();
     } catch (e: any) {
@@ -345,6 +355,37 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [qrInvite]);
+
+  // While an invitation is open this device stays discoverable and lists the
+  // devices waiting to join, so no code ever has to be typed or scanned.
+  useEffect(() => {
+    if (!qrInvite) return;
+    let stopped = false;
+    window.api?.deviceName?.().then((n) => { if (n) setPairSelfName(n); }).catch(() => {});
+    (async () => {
+      try { await window.api?.pairBeaconDiscoverable?.(true, pairingInfo.businessName || 'Shega', 'owner'); } catch { /* ignore */ }
+      while (!stopped) {
+        try {
+          const list = await window.api?.pairBeaconNearby?.();
+          if (!stopped && Array.isArray(list)) {
+            setPairPeers(list
+              .filter((e: any) => e.beacon?.role === 'team')
+              .map((e: any) => ({
+                id: e.beacon?.owner?.deviceId || e.beacon?.businessId || String(Math.random()),
+                name: e.beacon?.owner?.deviceName || 'Nearby device',
+                platform: e.beacon?.owner?.platform,
+              })));
+          }
+        } catch { /* ignore */ }
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    })();
+    return () => {
+      stopped = true;
+      setPairPeers([]);
+      window.api?.pairBeaconDiscoverable?.(false).catch(() => {});
+    };
+  }, [qrInvite, pairingInfo.businessName]);
 
   const qrRemaining = qrInvite ? Math.max(0, new Date(qrInvite.expiresAt).getTime() - now) : 0;
   const qrMins = Math.floor(qrRemaining / 60000);
@@ -1219,58 +1260,50 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
         </div>
       </Modal>
 
-      {/* Owner-approval role picker (Owner / Cashier / Custom) */}
+      {/* Owner-approval: assign name, avatar, role and custom permissions */}
       <Modal isOpen={!!roleRequest} onClose={() => setRoleRequest(null)} title={roleRequest ? `New team member — ${roleRequest.name}` : 'Approve'}>
-        <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            <span className="font-black text-foreground">{roleRequest?.name}</span> wants to join this business from a new device.
-            Choose their role, then approve — initial data sync begins immediately.
-          </p>
-          <div className="grid gap-2">
-            {[
-              { key: 'owner', label: 'Owner', desc: 'Full equal owner — manage everything' },
-              { key: 'cashier', label: 'Cashier', desc: 'Point-of-sale and daily sales operations' },
-              { key: 'custom', label: 'Custom', desc: 'Pick from your custom roles below' },
-            ].map((o) => (
-              <button
-                key={o.key}
-                type="button"
-                onClick={() => o.key === 'custom'
-                  ? window.setTimeout(() => { const r = window.prompt(`Custom role key (one of: ${pairingRoles.map((x) => x.key).join(', ')})`, pairingRoles[0]?.key || 'manager'); if (r?.trim()) void applyRoleRequest(r.trim()); }, 0)
-                  : void applyRoleRequest(o.key)}
-                className="text-left p-3 rounded-xl border-2 border-transparent hover:border-foreground/10 bg-muted/40 hover:bg-muted/70 transition-all"
-              >
-                <p className="text-sm font-black text-foreground">{o.label}</p>
-                <p className="text-xs font-bold text-muted-foreground/70">{o.desc}</p>
-              </button>
-            ))}
-          </div>
-          <Button className="w-full" onClick={() => roleRequest && void applyRoleRequest(undefined as any)} disabled={deciding != null}>
-            ✓ Approve & Sync
-          </Button>
-          <Button variant="outline" className="w-full text-red-500 hover:text-red-600" onClick={() => { const id = roleRequest?.id; setRoleRequest(null); if (id != null) void decide(id, 'reject'); }}>
-            Decline request
-          </Button>
-        </div>
+        <ApprovalConfig
+          applicantName={roleRequest?.name || ''}
+          busy={deciding != null}
+          onConfirm={(cfg) => {
+            const id = roleRequest?.id;
+            setRoleRequest(null);
+            if (id != null) void decide(id, 'approve', cfg.role, cfg.permissions, cfg.name, cfg.avatar);
+          }}
+          onDecline={() => {
+            const id = roleRequest?.id;
+            setRoleRequest(null);
+            if (id != null) void decide(id, 'reject');
+          }}
+        />
       </Modal>
 
-      {/* QR pairing display */}
-      <Modal isOpen={!!qrInvite} onClose={() => setQrInvite(null)} title={qrInvite ? `Pair ${(qrInvite.form?.employeeName || 'employee')} via QR` : 'QR invite'}>
+      {/* Pairing radar — no QR and no code are shown. */}
+      <Modal isOpen={!!qrInvite} onClose={() => setQrInvite(null)} title={qrInvite ? `Add ${(qrInvite.form?.employeeName || 'team member')}` : 'Add team member'}>
         {qrInvite && (
           <div className="space-y-4 text-center">
-            <div className="mx-auto w-fit rounded-lg border bg-white p-3">
-              {qrInvite.qr
-                ? <img src={qrInvite.qr} alt="Pairing QR code" className="h-56 w-56" />
-                : <div className="h-56 w-56 grid place-items-center text-xs text-muted-foreground">Rendering…</div>}
-            </div>
-            <div>
-              <p className="text-2xl font-mono font-bold tracking-[0.3em]">{qrInvite.code}</p>
-              <p className="text-xs text-muted-foreground mt-1">or enter the code manually</p>
-            </div>
+            <RadarPulse
+              deviceName={pairSelfName}
+              status={pairPeers.length > 0
+                ? `${pairPeers.length} device${pairPeers.length === 1 ? '' : 's'} found`
+                : `Waiting for ${qrInvite.form?.employeeName || 'your team member'} to connect…`}
+              tone={pairPeers.length > 0 ? 'found' : 'searching'}
+              compact
+              peers={pairPeers.map((p) => ({
+                id: p.id,
+                name: p.name,
+                platform: p.platform,
+                detail: 'Tap to send the invitation',
+              }))}
+              onPickPeer={(p) => {
+                void window.api?.pairBeaconDiscoverable?.(true, businessName, 'owner').catch(() => {});
+                toast.success(`Invitation ready — ${p.name} joins as soon as they accept.`);
+              }}
+              emptyHint={`Open Shega on ${qrInvite.form?.employeeName || 'the other device'} and go to Join a Business — it appears here automatically.`}
+            />
             <p className="text-xs text-muted-foreground">
-              The employee scans this from Shega Mobile (Scan QR & Join) to accept the pairing.
               Single use — {qrRemaining === 0
-                ? 'expired, regenerate to issue a new code.'
+                ? 'expired, regenerate to issue a new invitation.'
                 : `expires in ${qrMins}m ${qrSecs}s`}
             </p>
             <div className="flex gap-2">

@@ -2,12 +2,7 @@ import { ipcMain } from 'electron';
 import { peripheralHub } from './peripheral-server';
 import { wsSyncServer } from './websocket-server';
 import { PERIPHERAL_MSG } from '@shega/shared';
-import {
-  createUserInvite,
-  listUserInvites,
-  decideUserInvite,
-  getUserInviteStatus,
-} from './user-invites';
+import { createUserInvite, listUserInvites, decideUserInvite, getUserInviteStatus, assignUserInviteIdentity } from './user-invites';
 import { getActiveBusinessId } from '../ipc-handlers';
 
 /**
@@ -92,12 +87,26 @@ export function registerPeripheralHandlers(): void {
 
   ipcMain.handle('invites:list', () => listUserInvites(getActiveBusinessId() ?? 1));
 
-  ipcMain.handle('invites:decide', async (_, inviteId: string, decision: 'approved' | 'rejected', opts: { role?: string } = {}) => {
-    // Pairing concluded (either way) — take the beacon off the air.
-    const { pairingBeacon } = await import('./pairing-beacon');
-    pairingBeacon.stopPublishing();
-    return decideUserInvite(inviteId, decision, { role: opts?.role });
+  ipcMain.handle('invites:decide', async (_, inviteId: string, decision: 'approved' | 'rejected', opts: { role?: string; name?: string; avatar?: string | null; permissions?: Record<string, unknown> } = {}) => {
+    // Approval provisions the member with the owner-assigned identity, so the
+    // beacon is only taken off the air once the configuration is applied.
+    const invite = decideUserInvite(inviteId, decision, {
+      role: opts?.role,
+      name: opts?.name,
+      avatar: opts?.avatar,
+      permissions: opts?.permissions,
+    });
+    if (decision === 'rejected') {
+      const { pairingBeacon } = await import('./pairing-beacon');
+      pairingBeacon.stopPublishing();
+    }
+    return invite;
   });
+
+  // Radar flow: the owner configures a discovered device before it claims the
+  // invite, so the request carries the assigned identity when it arrives.
+  ipcMain.handle('invites:assign-identity', (_, inviteId: string, identity: { name?: string; avatar?: string | null; role?: string; permissions?: Record<string, unknown> }) =>
+    assignUserInviteIdentity(inviteId, identity));
 
   ipcMain.handle('invites:status', (_, code: string) => getUserInviteStatus(code));
 }

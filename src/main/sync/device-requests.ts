@@ -113,7 +113,7 @@ function upsertJoinDevice(
 }
 
 /** Find an active member on a business, or create one for the approved joiner. */
-function findOrCreateMember(bizId: number, name: string, role: string): number | null {
+function findOrCreateMember(bizId: number, name: string, role: string, decision?: DeviceJoinDecision): number | null {
   try {
     const cols = tableColumns('users');
     if (!cols.has('id') || !cols.has('businessId') || !cols.has('name')) return null;
@@ -128,9 +128,12 @@ function findOrCreateMember(bizId: number, name: string, role: string): number |
       name,
       role,
       roleName: role,
-      permissions: '{}',
+      permissions: decision?.assignedPermissions && typeof decision.assignedPermissions === 'object'
+        ? JSON.stringify(decision.assignedPermissions)
+        : '{}',
+      avatar: decision?.assignedAvatar ?? null as string | null,
       isActive: 1,
-      isOwner: 0,
+      isOwner: role === 'owner' ? 1 : 0,
       uuid: randomUUID(),
       row_version: 1,
       created_at: nowIso,
@@ -160,13 +163,20 @@ function markInvitationUsed(code: string | null): void {
  * and consume the invitation. Idempotent: re-deciding an already-approved
  * request re-runs the same writes without creating duplicates.
  */
-function applyApproval(rec: DeviceJoinRequestRecord): void {
+function applyApproval(rec: DeviceJoinRequestRecord, decision?: DeviceJoinDecision): void {
   const bizId = resolveBusinessId(rec.businessId);
-  const role = String(rec.role ?? 'cashier');
-  const personName = String(rec.joinerUser || rec.joinerName || 'Team Member').trim();
-  const userId = bizId != null ? findOrCreateMember(bizId, personName, role) : null;
+  const role = String(decision?.assignedRole || rec.role || 'cashier');
+  const personName = String(decision?.assignedName || rec.joinerUser || rec.joinerName || 'Team Member').trim();
+  const userId = bizId != null ? findOrCreateMember(bizId, personName, role, decision) : null;
+  // Custom-permission membership: persist the owner's picks on the user row.
+  if (userId != null && decision?.assignedPermissions && typeof decision.assignedPermissions === 'object') {
+    try {
+      db.prepare('UPDATE users SET permissions = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(decision.assignedPermissions), now(), userId);
+    } catch { /* column-guarded installs skip gracefully */ }
+  }
   upsertJoinDevice(rec, 'active', userId, role, bizId);
-  markInvitationUsed(rec.code);
+  markInvitationUsed(rec.code ?? null);
 }
 
 function applyRejection(rec: DeviceJoinRequestRecord): void {
@@ -174,7 +184,7 @@ function applyRejection(rec: DeviceJoinRequestRecord): void {
 }
 
 function rowToRecord(row: any): DeviceJoinRequestRecord {
-  return {
+  const rec: DeviceJoinRequestRecord = {
     requestId: row.id,
     businessId: row.business_id,
     code: row.code,
@@ -188,6 +198,14 @@ function rowToRecord(row: any): DeviceJoinRequestRecord {
     createdAt: row.created_at,
     decidedAt: row.decided_at,
   };
+  // Owner-assigned identity rides along so the joiner is provisioned with it.
+  if (row.assigned_name) rec.assignedName = row.assigned_name;
+  if (row.assigned_avatar) rec.assignedAvatar = row.assigned_avatar;
+  if (row.assigned_permissions) {
+    try { rec.assignedPermissions = JSON.parse(row.assigned_permissions); } catch { /* ignore */ }
+  }
+  if (row.joiner_avatar) rec.assignedAvatar = row.joiner_avatar;
+  return rec;
 }
 
 /** Stage a new join request, idempotent per (business, joiner device). */
@@ -231,10 +249,29 @@ export function decideDeviceJoinRequest(decision: DeviceJoinDecision): DeviceJoi
   db.prepare('UPDATE device_requests SET status = ?, decided_at = ? WHERE id = ?').run(
     decision.decision, now(), decision.requestId
   );
+  // Persist the owner-assigned identity on the record so the joiner's STATUS
+  // poll (and any roster mirror) receives the exact name/avatar/role/permissions.
+  try {
+    const sets: string[] = [];
+    const vals: any[] = [];
+    if (decision.assignedName) { sets.push('assigned_name = ?'); vals.push(decision.assignedName); }
+    if (decision.assignedRole) { sets.push('role = ?'); vals.push(decision.assignedRole); }
+    if (decision.assignedAvatar !== undefined) { sets.push('assigned_avatar = ?'); vals.push(decision.assignedAvatar); }
+    if (decision.assignedPermissions) { sets.push('assigned_permissions = ?'); vals.push(JSON.stringify(decision.assignedPermissions)); }
+    if (sets.length) {
+      vals.push(decision.requestId);
+      db.prepare(`UPDATE device_requests SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+    }
+  } catch {
+    try { db.exec('ALTER TABLE device_requests ADD COLUMN assigned_name TEXT');
+      db.exec('ALTER TABLE device_requests ADD COLUMN assigned_avatar TEXT');
+      db.exec('ALTER TABLE device_requests ADD COLUMN assigned_permissions TEXT'); } catch { /* older schema */ }
+  }
   // Approval is the point where the join becomes *real*: create the member's
-  // user row, promote the device to active, consume the invitation.
+  // user row (with the owner-assigned name/avatar/role/permissions), promote
+  // the device to active, consume the invitation.
   if (decision.decision === 'approved') {
-    applyApproval(rec);
+    applyApproval(rec, decision);
   } else {
     applyRejection(rec);
   }
@@ -255,7 +292,61 @@ export function provisionJoinForDevice(deviceId: string): void {
   if (!row) return;
   const rec = rowToRecord(row);
   db.prepare('UPDATE device_requests SET status = ?, decided_at = ? WHERE id = ?').run('approved', now(), rec.requestId);
-  applyApproval(rec);
+  applyApproval(rec, {
+    requestId: rec.requestId,
+    businessId: rec.businessId,
+    joinerDeviceId: rec.joinerDeviceId,
+    decision: 'approved',
+    decidedBy: '',
+    assignedName: (row as any).joiner_avatar ? rec.joinerUser : rec.joinerUser,
+    assignedAvatar: (row as any).joiner_avatar ?? null,
+  });
+}
+
+/**
+ * Owner-assigned identity for a join request (name + profile picture).
+ * Applies to the pending request's staged user row immediately (or the
+ * already-materialized user once approved) so the member appears in the team
+ * with the owner-chosen identity, and — for approvals — the identity rides
+ * along on the join record the joiner's STATUS poll returns.
+ */
+export function assignJoinIdentity(requestId: string, identity: { name?: string; avatar?: string | null }): boolean {
+  const row = db.prepare('SELECT * FROM device_requests WHERE id = ?').get(requestId) as any;
+  if (!row) return false;
+  const name = identity.name?.trim();
+  const nowIso = now();
+  // Materialized user (approval already happened): update name/avatar there.
+  if (row.status === 'approved') {
+    const bizId = resolveBusinessId(row.business_id);
+    const target = name || row.joiner_user;
+    if (bizId != null && target) {
+      const existing = db.prepare(
+        `SELECT id FROM users WHERE businessId = ? AND name = ? COLLATE NOCASE AND isActive = 1 AND is_deleted = 0 LIMIT 1`
+      ).get(bizId, target) as any;
+      if (existing) {
+        const sets: string[] = [];
+        const vals: any[] = [];
+        if (name) { sets.push('name = ?'); vals.push(name); }
+        if (identity.avatar !== undefined) { sets.push('avatar = ?'); vals.push(identity.avatar); }
+        if (sets.length) {
+          sets.push('updated_at = ?'); vals.push(nowIso);
+          vals.push(existing.id);
+          db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  // Pending: store the identity on the request so applyApproval uses it when
+  // the owner confirms the invitation.
+  if (name) db.prepare('UPDATE device_requests SET joiner_user = ? WHERE id = ?').run(name, requestId);
+  if (identity.avatar !== undefined) {
+    try { db.prepare('UPDATE device_requests SET joiner_avatar = ? WHERE id = ?').run(identity.avatar, requestId); }
+    catch { db.exec('ALTER TABLE device_requests ADD COLUMN joiner_avatar TEXT');
+      db.prepare('UPDATE device_requests SET joiner_avatar = ? WHERE id = ?').run(identity.avatar, requestId); }
+  }
+  return true;
 }
 
 /**

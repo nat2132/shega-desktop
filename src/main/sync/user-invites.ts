@@ -27,6 +27,10 @@ export interface UserInvite {
   createdAt: string;
   expiresAt: string;
   decidedAt: string | null;
+  /** owner-assigned identity (set at approve time, or pre-assigned by radar) */
+  assignedName: string | null;
+  assignedAvatar: string | null;
+  assignedPermissions: Record<string, unknown> | null;
 }
 
 function ensureTable(): void {
@@ -45,6 +49,10 @@ function ensureTable(): void {
       decided_at TEXT
     );
   `);
+  // Owner-assigned identity, added after the first release of this table.
+  for (const col of ['assigned_name TEXT', 'assigned_avatar TEXT', 'assigned_permissions TEXT']) {
+    try { db.exec(`ALTER TABLE user_invites ADD COLUMN ${col}`); } catch { /* already present */ }
+  }
 }
 
 function rowToInvite(row: any): UserInvite {
@@ -60,7 +68,14 @@ function rowToInvite(row: any): UserInvite {
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     decidedAt: row.decided_at,
+    assignedName: row.assigned_name ?? null,
+    assignedAvatar: row.assigned_avatar ?? null,
+    assignedPermissions: row.assigned_permissions ? safeJson(row.assigned_permissions) : null,
   };
+}
+
+function safeJson(raw: string): Record<string, unknown> | null {
+  try { return JSON.parse(raw); } catch { return null; }
 }
 
 function expireStale(): void {
@@ -102,7 +117,14 @@ export function claimUserInvite(code: string, joinerName: string, joinerDeviceId
 export function decideUserInvite(
   inviteId: string,
   decision: 'approved' | 'rejected',
-  opts: { role?: string; decidedBy?: number } = {},
+  opts: {
+    role?: string;
+    decidedBy?: number;
+    /** owner-assigned identity, applied when the member is provisioned */
+    name?: string;
+    avatar?: string | null;
+    permissions?: Record<string, unknown>;
+  } = {},
 ): UserInvite | null {
   ensureTable();
   const row = db.prepare('SELECT * FROM user_invites WHERE id = ?').get(inviteId) as any;
@@ -111,12 +133,27 @@ export function decideUserInvite(
     // Materialize the user inside the target business, inactive until they
     // set up their PIN on first login — matching the desktop employee flow.
     try {
-      const name = row.joiner_name || 'New user';
-      const [first, ...rest] = String(name).split(' ');
+      const name = (opts.name || row.assigned_name || row.joiner_name || 'New user') as string;
+      const avatar = opts.avatar ?? row.assigned_avatar ?? null;
+      const permissions = opts.permissions
+        ?? (row.assigned_permissions ? safeJson(row.assigned_permissions) : null)
+        ?? undefined;
+      const [first] = String(name).split(' ');
       const username = `${String(first || 'user').toLowerCase()}.${randomBytes(2).toString('hex')}`;
-      db.prepare(
-        `INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(name, username, '', opts.role || row.suggested_role || 'cashier', '[]', row.business_id);
+      const role = opts.role || row.suggested_role || 'cashier';
+      const permsJson = permissions ? JSON.stringify(permissions) : '[]';
+      const hasAvatar = !!avatar;
+      try {
+        db.prepare(
+          `INSERT INTO admins (name, username, pin, role, permissions, businessId, avatar) VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(name, username, '', role, permsJson, row.business_id, avatar);
+      } catch {
+        // Older schemas may not have an avatar column on admins.
+        db.prepare(
+          `INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(name, username, '', role, permsJson, row.business_id);
+      }
+      if (hasAvatar) logger.info('[invites] member created with assigned profile picture');
     } catch (e) {
       logger.warn('[invites] failed to materialize user', e);
     }
@@ -132,6 +169,25 @@ export function decideUserInvite(
   }
 
   return rowToInvite(db.prepare('SELECT * FROM user_invites WHERE id = ?').get(inviteId));
+}
+
+/**
+ * Owner-side pre-assignment: the radar lets the owner configure a discovered
+ * device *before* the joiner claims the invite. The identity/role/permissions
+ * are stored here and applied automatically when the request is approved.
+ */
+export function assignUserInviteIdentity(
+  inviteId: string,
+  identity: { name?: string; avatar?: string | null; role?: string; permissions?: Record<string, unknown> },
+): boolean {
+  ensureTable();
+  const row = db.prepare('SELECT * FROM user_invites WHERE id = ?').get(inviteId) as any;
+  if (!row) return false;
+  if (identity.name !== undefined) db.prepare('UPDATE user_invites SET assigned_name = ? WHERE id = ?').run(identity.name, inviteId);
+  if (identity.role !== undefined) db.prepare('UPDATE user_invites SET suggested_role = ? WHERE id = ?').run(identity.role, inviteId);
+  if (identity.avatar !== undefined) db.prepare('UPDATE user_invites SET assigned_avatar = ? WHERE id = ?').run(identity.avatar, inviteId);
+  if (identity.permissions !== undefined) db.prepare('UPDATE user_invites SET assigned_permissions = ? WHERE id = ?').run(JSON.stringify(identity.permissions), inviteId);
+  return true;
 }
 
 /** Joiner-side poll: what happened to my request? */

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Monitor, Smartphone, Wifi, Globe, ShieldOff, RefreshCw, Pencil,
-  CheckCircle2, AlertTriangle, Loader2, XCircle, Plus, QrCode, X, Clock,
+  CheckCircle2, AlertTriangle, Loader2, XCircle, Plus, X, Clock,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
@@ -9,7 +9,7 @@ import { Input } from './ui/input';
 import { toast } from 'sonner';
 import { cn } from '../utils/shadcn';
 import { useSettings } from '../context/SettingsContext';
-import QRCode from 'qrcode';
+import { RadarPulse } from './RadarPulse';
 
 const STATE_DOT: Record<string, string> = {
   synced: 'bg-green-500',
@@ -281,59 +281,79 @@ export default function P2pSyncStatus() {
   );
 }
 
-/** Pair-a-device modal: shows this device's pairing QR/code, or enter a code. */
+/**
+ * Add Device modal — discovery radar, no QR and no pairing code.
+ *
+ * This device advertises itself and browses for other Shega devices on the
+ * LAN, showing each one by name under a pulsing radar. Selecting a device
+ * grants it trust and kicks the Yjs full-state bootstrap. The pairing
+ * credential stays available behind "Show pairing code instead" for networks
+ * where mDNS is blocked.
+ */
 function PairDeviceModal({ onClose, recordCounts, businessName }: {
   onClose: () => void;
   recordCounts: Record<string, number>;
   businessName: string;
 }) {
-  const [mode, setMode] = useState<'show' | 'enter'>('show');
-  const [code, setCode] = useState('');
   const [approving, setApproving] = useState(false);
-  const [qrData, setQrData] = useState<string | null>(null);
+  const [selfName, setSelfName] = useState('This computer');
+  const [peers, setPeers] = useState<Array<{ id: string; name: string; platform?: string }>>([]);
+  const [showDetails, setShowDetails] = useState(false);
   const [pairingToken, setPairingToken] = useState('');
+  const [hubUrl, setHubUrl] = useState('');
 
-  // Build a real pairing QR from the hub's LAN URL + short-lived pairing token.
+  // Advertise while this modal is open, and refresh the nearby list live —
+  // no button press, like a Bluetooth device scan.
   useEffect(() => {
-    let alive = true;
+    let stopped = false;
+    window.api?.deviceName?.().then((n) => { if (n) setSelfName(n); }).catch(() => {});
     (async () => {
       try {
         const s = await window.api?.syncStatus?.();
-        if (!s || !alive) return;
-        setPairingToken(s.pairingToken || '');
-        const payload = s.lanUrl
-          ? `shega://pair?url=${encodeURIComponent(s.lanUrl)}&token=${encodeURIComponent(s.pairingToken)}`
-          : s.pairingToken;
-        if (payload) {
-          setQrData(await QRCode.toDataURL(payload, { width: 340, margin: 2, errorCorrectionLevel: 'M' }));
-        }
-      } catch {
-        if (alive) setQrData(null);
+        setPairingToken(s?.pairingToken || '');
+        setHubUrl(s?.lanUrl || '');
+      } catch { /* hub status unavailable */ }
+    })();
+    (async () => {
+      try { await window.api?.pairBeaconDiscoverable?.(true, businessName, 'owner'); } catch { /* ignore */ }
+      await window.api?.p2pAnnounce?.();
+      while (!stopped) {
+        try {
+          const list = await window.api?.pairBeaconNearby?.();
+          if (!stopped && Array.isArray(list)) {
+            setPeers(list.map((e: any) => ({
+              id: e.beacon?.owner?.deviceId || e.beacon?.businessId || String(Math.random()),
+              name: e.beacon?.owner?.deviceName || 'Nearby device',
+              platform: e.beacon?.owner?.platform,
+            })));
+          }
+        } catch { /* ignore */ }
+        await new Promise((r) => setTimeout(r, 3000));
       }
     })();
-    return () => { alive = false; };
-  }, []);
+    return () => {
+      stopped = true;
+      window.api?.pairBeaconDiscoverable?.(false).catch(() => {});
+    };
+  }, [businessName]);
 
   const copyToken = async () => {
     if (!pairingToken) return;
     try { await navigator.clipboard.writeText(pairingToken); toast.success('Pairing code copied'); } catch { /* ignore */ }
   };
 
-  const approveIncoming = async () => {
+  const approveIncoming = async (deviceName?: string, code?: string) => {
     setApproving(true);
     try {
-      // Real trust grant: register the desktop peer on this LAN as an active
-      // device in the registry + business roster. In "Enter pairing code" mode
-      // the typed code resolves to that exact peer (matched against its
-      // advertised token) — it is never decorative. Then re-announce so the
-      // granted peer dials us and the Yjs full-state bootstrap runs.
-      const wantCode = mode === 'enter' ? code.trim() : '';
-      const granted = await window.api?.p2pApprove?.(undefined, wantCode || undefined) ?? [];
-      const scope = wantCode ? `with code ${wantCode}` : 'on this network';
-      if (granted.length === 0) toast.info(`No desktop peer ${scope} — keep this window open and try the other device again.`);
+      // Real trust grant: register the peer on this LAN as an active device in
+      // the registry + business roster, then re-announce so the granted peer
+      // dials us and the Yjs full-state bootstrap runs.
+      const granted = await window.api?.p2pApprove?.(deviceName, code || undefined) ?? [];
+      const scope = deviceName ? `“${deviceName}”` : 'on this network';
+      if (granted.length === 0) toast.info(`No desktop peer ${scope} yet — keep this window open and try again.`);
       await window.api?.p2pAnnounce?.();
-      toast.success(granted.length > 0 ? `Approved ${granted.length} device(s) ${scope} — syncing business data…` : `Ready — waiting for a desktop peer ${scope}…`);
-      setTimeout(onClose, granted.length > 0 ? 1200 : 4000);
+      toast.success(granted.length > 0 ? `Approved ${granted.length} device(s) ${scope} — syncing business data…` : `Ready — waiting for ${scope}…`);
+      if (granted.length > 0) setTimeout(onClose, 1200);
     } finally {
       setApproving(false);
     }
@@ -343,89 +363,68 @@ function PairDeviceModal({ onClose, recordCounts, businessName }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6" onClick={onClose}>
       <div className="w-full max-w-md rounded-2xl border border-border bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-3 flex items-center justify-between">
-          <p className="text-sm font-bold text-foreground">Connect New Device</p>
+          <p className="text-sm font-bold text-foreground">Add Team / Device</p>
           <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onClose}><X size={14} /></Button>
         </div>
 
-        <div className="mb-4 flex gap-1 rounded-lg bg-muted p-1">
-          <button
-            className={cn('flex-1 rounded-md px-3 py-1.5 text-xs font-bold', mode === 'show' ? 'bg-background shadow' : 'text-muted-foreground')}
-            onClick={() => setMode('show')}
-          >
-            Show pairing QR
-          </button>
-          <button
-            className={cn('flex-1 rounded-md px-3 py-1.5 text-xs font-bold', mode === 'enter' ? 'bg-background shadow' : 'text-muted-foreground')}
-            onClick={() => setMode('enter')}
-          >
-            Enter pairing code
-          </button>
+        <RadarPulse
+          deviceName={selfName}
+          status={peers.length > 0 ? `${peers.length} device${peers.length === 1 ? '' : 's'} found` : 'Searching for nearby devices…'}
+          tone={peers.length > 0 ? 'found' : 'searching'}
+          compact
+          peers={peers.map((p) => ({
+            id: p.id,
+            name: p.name,
+            platform: p.platform,
+            detail: approving ? 'Approving…' : 'Tap to connect',
+            disabled: approving,
+          }))}
+          onPickPeer={(p) => void approveIncoming(p.name)}
+          emptyHint={`Open Shega on the other device (Devices → Add Team / Device). Devices on this Wi-Fi appear here for ${businessName}.`}
+        />
+
+        <div className="mt-4 rounded-lg border border-border bg-muted/40 px-3 py-2 text-center">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Joining</p>
+          <p className="text-sm font-bold text-foreground">{businessName}</p>
         </div>
 
-        {mode === 'show' ? (
-          <div className="text-center">
-            {qrData ? (
-              <img
-                src={qrData}
-                alt="Pairing QR"
-                className="mx-auto size-44 rounded-2xl border-2 border-border bg-white p-2"
-              />
-            ) : (
-              <div className="mx-auto flex size-44 items-center justify-center rounded-2xl border-2 border-dashed border-border bg-background">
-                <Loader2 className="size-6 animate-spin text-muted-foreground" />
-              </div>
-            )}
-            {pairingToken && (
-              <button
-                onClick={copyToken}
-                className="mt-3 rounded-lg border border-border bg-muted/40 px-4 py-2 font-mono text-lg font-black tracking-[0.3em] text-foreground hover:bg-muted"
-                title="Click to copy"
-              >
-                {pairingToken}
-              </button>
-            )}
-            <p className="mt-3 text-xs text-muted-foreground">
-              Open <b>Shega Mobile / Desktop → Devices → Connect New Device</b> on the other device and scan this code,
-              or enter the code above there. The code is short-lived and contains no credentials.
-            </p>
-            <div className="mt-3 rounded-lg border border-border bg-muted/40 px-3 py-2 text-center">
-              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Requesting to join</p>
-              <p className="text-sm font-bold text-foreground">{businessName}</p>
-            </div>
-            {approving && (
-              <div className="mt-3 flex items-center justify-center gap-2 text-xs font-bold text-blue-600">
-                <Loader2 className="size-3.5 animate-spin" /> Syncing business data…
-                <span className="font-normal text-muted-foreground">
-                  {Object.entries(recordCounts).slice(0, 3).map(([k, v]) => `${k}: ${v}`).join(' · ')}
-                </span>
-              </div>
-            )}
-            <Button size="sm" className="mt-4 w-full" onClick={approveIncoming} disabled={approving}>
-              <CheckCircle2 className="mr-1 size-3.5" /> Approve & Start Sync
-            </Button>
+        {approving && (
+          <div className="mt-3 flex items-center justify-center gap-2 text-xs font-bold text-blue-600">
+            <Loader2 className="size-3.5 animate-spin" /> Syncing business data…
+            <span className="font-normal text-muted-foreground">
+              {Object.entries(recordCounts).slice(0, 3).map(([k, v]) => `${k}: ${v}`).join(' · ')}
+            </span>
           </div>
-        ) : (
-          <div>
-            <Input
-              value={code}
-              onChange={(e) => setCode(e.target.value.toUpperCase())}
-              placeholder="e.g. ABC123"
-              maxLength={8}
-              className="h-11 text-center text-lg font-black tracking-widest"
-              autoFocus
-            />
-            <p className="mt-2 text-xs text-muted-foreground">
-              Enter the short-lived code shown on the other Shega device. It expires quickly and never contains credentials.
+        )}
+
+        <Button size="sm" className="mt-4 w-full" onClick={() => void approveIncoming()} disabled={approving}>
+          <CheckCircle2 className="mr-1 size-3.5" /> Approve nearby device & start sync
+        </Button>
+
+        <button
+          type="button"
+          onClick={() => setShowDetails((v) => !v)}
+          className="mt-3 w-full text-center text-[11px] font-black uppercase tracking-widest text-muted-foreground/60 hover:text-foreground/80 transition-colors"
+        >
+          {showDetails ? 'Hide pairing code' : 'Show pairing code instead'}
+        </button>
+
+        {/* Credential fallback for networks where device discovery is blocked. */}
+        {showDetails && (
+          <div className="mt-3 space-y-2 rounded-lg border border-border bg-background p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Pairing code</p>
+              <button onClick={copyToken} className="font-mono text-sm font-black tracking-[0.2em] text-foreground" title="Click to copy">
+                {pairingToken || '—'}
+              </button>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Hub URL</p>
+              <p className="font-mono text-[11px] text-foreground truncate">{hubUrl || '—'}</p>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Enter both on the other Shega device under Devices → Add Team / Device. Short-lived, contains no credentials.
             </p>
-            <Button
-              size="sm"
-              className="mt-4 w-full"
-              disabled={code.trim().length < 4 || approving}
-              onClick={approveIncoming}
-            >
-              {approving ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : <CheckCircle2 className="mr-1 size-3.5" />}
-              {approving ? 'Connecting…' : 'Connect & Approve'}
-            </Button>
           </div>
         )}
       </div>

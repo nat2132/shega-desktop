@@ -18,11 +18,13 @@
  * (default 10 minutes) and disappear when revoked.
  */
 
+import * as os from 'os';
 import { Bonjour } from 'bonjour-service';
 import { EventEmitter } from 'events';
 import { ipcMain } from 'electron';
 import {
   type PairingBeacon,
+  type BeaconRole,
   encodePairingBeacon,
   decodePairingBeacon,
   isBeaconLive,
@@ -108,6 +110,46 @@ class PairingBeaconService extends EventEmitter<BeaconEventMap> {
     return this.published !== null;
   }
 
+  /**
+   * Discovery mode: stay visible without an open invite. Broadcasts a
+   * code-less beacon carrying this device's name so peers see it in their
+   * discovery list; joining still requires a live invite code. `role` tells
+   * peers how to label this device — 'team' when this device is in Joining
+   * Mode (owner lists it as "Team · name"), 'owner' when it's recruiting
+   * (joiners list it as "Owner · name").
+   */
+  setDiscoverable(on: boolean, businessName = 'Shega', role: BeaconRole = 'owner'): void {
+    if (on) {
+      if (this.published) return; // a live invite beacon is already stronger
+      let bizName = businessName;
+      let bizId = 'discovery';
+      try {
+        const row = db.prepare(
+          'SELECT uuid, businessName FROM businesses WHERE isDefault = 1 OR id = 1 LIMIT 1'
+        ).get() as any;
+        if (row) { bizName = row.businessName || bizName; bizId = row.uuid ?? bizId; }
+      } catch { /* brand-new install */ }
+      const beacon: PairingBeacon = {
+        v: 1,
+        businessId: bizId,
+        businessName: bizName,
+        owner: {
+          deviceId: ensureHubDeviceId(),
+          deviceName: getDesktopDeviceName(),
+          platform: 'desktop',
+        },
+        code: '',
+        role,
+        expiresAt: new Date(Date.now() + 12 * 3600_000).toISOString(),
+        suggestedRole: 'cashier' as any,
+      };
+      this.publishBeacon(beacon);
+    } else if (this.published && this.published.beacon.code === '') {
+      // Only stop a discovery-only beacon — never a live invite beacon.
+      this.stopPublishing();
+    }
+  }
+
   // ── Joiner side: browse nearby owners ───────────────────────────────────
 
   startBrowsing(): void {
@@ -174,6 +216,16 @@ export const pairingBeacon = new PairingBeaconService();
  * Build a beacon from an open local invitation and start advertising it.
  * Works identically for desktop-owner and mobile-owner invites stored here.
  */
+/** Real, human-readable device name for discovery lists. */
+function getDesktopDeviceName(): string {
+  try {
+    const host = os.hostname();
+    return host ? `Desktop — ${host}`.slice(0, 48) : 'Shega Desktop';
+  } catch {
+    return 'Shega Desktop';
+  }
+}
+
 export function startPairingBeaconForInvite(invite: {
   id: string;
   code: string;
@@ -190,10 +242,11 @@ export function startPairingBeaconForInvite(invite: {
     businessName: biz?.businessName ?? 'Shega Business',
     owner: {
       deviceId: ensureHubDeviceId(),
-      deviceName: `Shega Desktop`,
+      deviceName: getDesktopDeviceName(),
       platform: 'desktop',
     },
     code: invite.code,
+    role: 'owner',
     expiresAt: invite.expiresAt ?? new Date(Date.now() + 10 * 60_000).toISOString(),
     suggestedRole: (invite.suggestedRole ?? invite.role ?? 'cashier') as any,
   };
@@ -212,8 +265,20 @@ export function registerPairingBeaconHandlers(): void {
     return { publishing: false };
   });
 
+  // Discovery mode: entering Joining Mode / Add-Team keeps this device
+  // visible on the network (device-name beacon without an invite code) so
+  // other devices can find it — never overrides a live invite beacon.
+  ipcMain.handle('pair-beacon:discoverable', (_e, on: boolean, businessName?: string, role?: BeaconRole) => {
+    pairingBeacon.setDiscoverable(!!on, businessName, role ?? 'owner');
+    return { publishing: pairingBeacon.isPublishing() };
+  });
+
   ipcMain.handle('pair-beacon:nearby', () => {
     pairingBeacon.startBrowsing();
     return pairingBeacon.getNearbyOwners();
   });
+
+  // This device's human-readable name, shown in Join Mode / Add Team screens
+  // so peers can identify it the same way they do from a discovery beacon.
+  ipcMain.handle('device:name', () => getDesktopDeviceName());
 }

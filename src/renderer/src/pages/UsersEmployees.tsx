@@ -4,13 +4,15 @@ import {
   Search, Edit, Trash2, Lock, Unlock, Key,
   AlertCircle, Copy, Plus,
   RefreshCw, Eye,
-  ShieldAlert, KeyRound, Crown, Power, Upload, X, EyeOff, QrCode, Check, Hourglass
+  ShieldAlert, KeyRound, Crown, Power, Upload, X, EyeOff, Check, Hourglass, Smartphone, Monitor
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
 import { toast } from 'sonner';
 import Modal from '../components/Modal';
+import { RadarPulse } from '../components/RadarPulse';
+import ApprovalConfig from '../components/JoinApprovalConfig';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
 import { DatePicker } from '../components/DatePicker';
@@ -119,25 +121,92 @@ const UsersEmployees: React.FC = () => {
   // ---------- QR user invites (Teams → Add User) ----------
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [invite, setInvite] = useState<any>(null);
-  const [inviteQr, setInviteQr] = useState('');
   const [invites, setInvites] = useState<any[]>([]);
   const [inviteRoleChoice, setInviteRoleChoice] = useState<Record<string, string>>({});
-  const [copied, setCopied] = useState(false);
+  // Nearby devices in Joining Mode, shown so the owner can identify who's
+  // waiting to join ("Team · device name").
+  const [nearbyTeam, setNearbyTeam] = useState<Array<{ deviceId: string; deviceName: string; platform: string; role?: string }>>([]);
+  const [selfName, setSelfName] = useState('This computer');
+  // Member setup for a discovered (or pending) device: the owner assigns the
+  // name, profile picture, role and permissions before the member joins.
+  const [setupFor, setSetupFor] = useState<{ deviceId: string; deviceName: string; inviteId?: string } | null>(null);
+  // Configurations captured before the joiner's request lands. Keyed by device
+  // id where we know it, with a single "next request" fallback so the handoff
+  // still completes when the joiner reports a different device id.
+  const assignedByDevice = React.useRef<Map<string, any>>(new Map());
+  const assignedLoose = React.useRef<{ at: number; cfg: any } | null>(null);
+  const approvingRef = React.useRef(false);
 
   const loadInvites = async () => {
-    try { setInvites(await window.api?.inviteList?.() || []); } catch (_) {}
+    let list: any[] = [];
+    try { list = (await window.api?.inviteList?.()) || []; } catch { return; }
+    setInvites(list);
+    // Handoff: a device the owner already configured in the radar joins
+    // automatically the moment its request lands — one confirmation, no
+    // second approval step.
+    if (approvingRef.current) return;
+    const pending = list.find((i) => i.status === 'pending');
+    if (!pending) return;
+    const typed = pending.joinerDeviceId ? assignedByDevice.current.get(pending.joinerDeviceId) : null;
+    const loose = assignedLoose.current && Date.now() - assignedLoose.current.at < 3 * 60_000 ? assignedLoose.current.cfg : null;
+    const cfg = typed || loose;
+    if (!cfg) return;
+    approvingRef.current = true;
+    try {
+      if (typed) assignedByDevice.current.delete(pending.joinerDeviceId);
+      assignedLoose.current = null;
+      await window.api.inviteDecide(pending.id, 'approved', cfg);
+      toast.success(`${cfg.name || 'Team member'} joined with the assigned role.`);
+      loadData();
+    } catch {
+      toast.error(t('employees.invite_failed', 'Action failed'));
+    } finally {
+      approvingRef.current = false;
+      try { setInvites((await window.api?.inviteList?.()) || []); } catch { /* ignore */ }
+    }
   };
 
   const openInviteModal = async () => {
     try {
       const inv = await window.api.inviteCreate({});
-      const QR = await import('qrcode');
-      setInviteQr(await QR.toDataURL(JSON.stringify({ t: 'shega-invite', c: inv.code }), { width: 240, margin: 1 }));
       setInvite(inv);
-      setCopied(false);
+      setSetupFor(null);
       setShowInviteModal(true);
+      window.api?.deviceName?.().then((n) => { if (n) setSelfName(n); }).catch(() => {});
     } catch (_) {
       toast.error(t('employees.invite_failed', 'Could not create invitation'));
+    }
+  };
+
+  /** Owner confirmed the member setup for a discovered / pending device. */
+  const confirmSetup = async (cfg: { name: string; avatar: string | null; role: string; permissions?: Record<string, unknown> }) => {
+    const target = setupFor;
+    if (!target) return;
+    const payload = { name: cfg.name, avatar: cfg.avatar, role: cfg.role, permissions: cfg.permissions };
+    try {
+      let already: any = null;
+      for (const i of invites) {
+        if (i.status !== 'pending') continue;
+        const matchesInvite = target.inviteId ? i.id === target.inviteId : false;
+        const matchesDevice = target.deviceId ? i.joinerDeviceId === target.deviceId : false;
+        if (matchesInvite || matchesDevice) { already = i; break; }
+      }
+      if (already) {
+        await window.api.inviteDecide(already.id, 'approved', payload);
+        toast.success(`${cfg.name} joined with the assigned role.`);
+      } else {
+        // No request yet: remember the configuration and pre-assign it on the
+        // open invite so the joiner lands with the right identity.
+        if (target.deviceId) assignedByDevice.current.set(target.deviceId, payload);
+        assignedLoose.current = { at: Date.now(), cfg: payload };
+        if (target.inviteId) await window.api.inviteAssignIdentity?.(target.inviteId, payload);
+        toast.success(`Saved — ${cfg.name} joins as soon as their device connects.`, { duration: 4000 });
+      }
+      setSetupFor(null);
+      loadInvites();
+      loadData();
+    } catch (_) {
+      toast.error(t('employees.invite_failed', 'Could not save the member setup'));
     }
   };
 
@@ -156,7 +225,30 @@ const UsersEmployees: React.FC = () => {
     if (!showInviteModal) return;
     loadInvites();
     const id = setInterval(loadInvites, 4000);
-    return () => clearInterval(id);
+    // This desktop stays discoverable while the invite is open (alias:
+    // Add Team Member), and the nearby list refreshes live so team devices
+    // in Joining Mode appear here by name.
+    void window.api?.pairBeaconDiscoverable?.(true, undefined, 'owner').catch(() => {});
+    const refreshNearby = async () => {
+      try {
+        const list = await window.api?.pairBeaconNearby?.();
+        if (Array.isArray(list)) {
+          setNearbyTeam(list.map((e: any) => ({
+            deviceId: e.beacon?.owner?.deviceId || '',
+            deviceName: e.beacon?.owner?.deviceName || 'Nearby device',
+            platform: e.beacon?.owner?.platform || 'desktop',
+            role: e.beacon?.role,
+          })));
+        }
+      } catch { /* discovery unavailable */ }
+    };
+    refreshNearby();
+    const nearbyTimer = setInterval(refreshNearby, 5000);
+    return () => {
+      clearInterval(id);
+      clearInterval(nearbyTimer);
+      void window.api?.pairBeaconDiscoverable?.(false).catch(() => {});
+    };
   }, [showInviteModal]);
 
   useEffect(() => { loadData(); loadInvites(); }, [search, filterRole, filterStatus]);
@@ -554,6 +646,11 @@ const UsersEmployees: React.FC = () => {
                       {roles.map(r => <option key={r.id} value={String(r.name || r.id)}>{r.name}</option>)}
                     </select>
                     <div className="flex gap-1.5">
+                      <Button size="sm" variant="outline" className="h-8 px-3 gap-1 text-xs font-black uppercase tracking-widest"
+                        onClick={() => { setInvite(inv); setSetupFor({ deviceId: inv.joinerDeviceId || '', deviceName: inv.joinerName || 'New member', inviteId: inv.id }); setShowInviteModal(true); }}
+                      >
+                        <UserPlus size={12} /> {t('employees.set_up', 'Set up')}
+                      </Button>
                       <Button size="sm" className="h-8 px-3 gap-1 text-xs font-black uppercase tracking-widest" onClick={() => decideInvite(inv.id, 'approved')}>
                         <Check size={12} /> {t('employees.approve', 'Approve')}
                       </Button>
@@ -1283,26 +1380,45 @@ const UsersEmployees: React.FC = () => {
         </div>
       </Modal>
 
-      {/* ============ QR INVITE ============ */}
-      <Modal isOpen={showInviteModal} onClose={() => setShowInviteModal(false)} title={t('employees.invite_title', 'Invite a New User')} size="sm">
-        {invite && (
+      {/* ============ ADD TEAM MEMBER (discovery radar, no QR/code) ============ */}
+      <Modal
+        isOpen={showInviteModal}
+        onClose={() => { setShowInviteModal(false); setSetupFor(null); }}
+        title={setupFor ? t('employees.setup_member', 'Set up team member') : t('employees.invite_title', 'Add Team Member')}
+        size="sm"
+      >
+        {setupFor ? (
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground text-left">
+              Assign this member's name, profile picture, role and permissions. They join as soon as their device connects.
+            </p>
+            <ApprovalConfig
+              applicantName={setupFor.deviceName}
+              busy={false}
+              onConfirm={(cfg) => void confirmSetup(cfg)}
+              onDecline={() => setSetupFor(null)}
+            />
+          </div>
+        ) : (
           <div className="space-y-4 text-center">
-            <p className="text-xs text-muted-foreground">
-              {t('employees.invite_scan_hint', 'Have your teammate open Shega Mobile → Join a Business, then scan this code.')}
-            </p>
-            {inviteQr && <img src={inviteQr} alt="Invite QR" className="mx-auto rounded-xl border bg-white p-2" width={220} height={220} />}
-            <button
-              type="button"
-              onClick={() => {
-                navigator.clipboard.writeText(invite.code).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+            <RadarPulse
+              deviceName={selfName}
+              status={`${nearbyTeam.length} device${nearbyTeam.length === 1 ? '' : 's'} found`}
+              tone={nearbyTeam.length > 0 ? 'found' : 'searching'}
+              compact
+              peers={nearbyTeam.map((d, i) => ({
+                id: String(i),
+                name: d.deviceName,
+                platform: d.platform,
+                detail: 'Waiting to join · tap to set up',
+              }))}
+              onPickPeer={(p) => {
+                const d = nearbyTeam[Number(p.id)];
+                if (d) setSetupFor({ deviceId: d.deviceId, deviceName: d.deviceName, inviteId: invite?.id });
               }}
-              className="mx-auto flex items-center gap-2 rounded-lg border px-4 py-2 font-mono text-lg font-black tracking-widest hover:bg-muted/50 transition-colors"
-            >
-              {invite.code}{copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} className="text-muted-foreground" />}
-            </button>
-            <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest">
-              {t('employees.invite_expires', 'Valid for 24 hours')}
-            </p>
+              emptyHint={t('employees.radar_hint', 'Ask your teammate to open Shega → Join a Business. Devices on this Wi-Fi appear here automatically.')}
+            />
+
             {(() => {
               const pending = invites.filter(i => i.status === 'pending');
               if (pending.length === 0) return null;
@@ -1310,14 +1426,16 @@ const UsersEmployees: React.FC = () => {
                 <div className="space-y-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-left">
                   <div className="flex items-center gap-2 text-amber-600">
                     <Hourglass size={14} />
-                    <span className="text-xs font-black uppercase tracking-widest">{t('employees.pending_requests', 'Pending user requests')}</span>
+                    <span className="text-xs font-black uppercase tracking-widest">{t('employees.pending_requests', 'Waiting for you to confirm')}</span>
                   </div>
                   {pending.map(inv => (
                     <div key={inv.id} className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-xs font-bold">{inv.joinerName || t('employees.unknown_user', 'Unknown user')}</p>
                       <div className="flex gap-1.5">
-                        <Button size="sm" className="h-7 px-2.5 text-[10px] font-black uppercase tracking-widest" onClick={() => decideInvite(inv.id, 'approved')}>
-                          <Check size={11} /> {t('employees.approve', 'Approve')}
+                        <Button size="sm" className="h-7 px-2.5 text-[10px] font-black uppercase tracking-widest"
+                          onClick={() => setSetupFor({ deviceId: inv.joinerDeviceId || '', deviceName: inv.joinerName || 'New member', inviteId: inv.id })}
+                        >
+                          <UserPlus size={11} /> {t('employees.set_up', 'Set up')}
                         </Button>
                         <Button size="sm" variant="destructive" className="h-7 px-2.5" onClick={() => decideInvite(inv.id, 'rejected')}>
                           <X size={11} />
@@ -1328,7 +1446,8 @@ const UsersEmployees: React.FC = () => {
                 </div>
               );
             })()}
-            <Button variant="outline" className="w-full h-10 text-xs font-black uppercase tracking-widest" onClick={() => setShowInviteModal(false)}>
+
+            <Button variant="outline" className="w-full h-10 text-xs font-black uppercase tracking-widest" onClick={() => { setShowInviteModal(false); setSetupFor(null); }}>
               {t('employees.close_btn', 'Close')}
             </Button>
           </div>

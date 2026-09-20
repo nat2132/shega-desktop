@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, KeyRound, ArrowLeft, UserRound, Users, Store, ScanLine, Radar, Smartphone, MonitorSmartphone } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, ArrowLeft, UserRound, Users, Store } from 'lucide-react';
 import { useSettings, Language } from '../../context/SettingsContext';
 import { BrandedLogo } from '../branded-logo';
 import { Avatar, AvatarImage, AvatarFallback } from '../ui/avatar';
+import { RadarPulse, type RadarPeer, type RadarTone } from '../RadarPulse';
 
 const LANGUAGES: { id: Language; name: string; native: string }[] = [
   { id: 'en', name: 'English', native: 'English' },
@@ -35,11 +36,15 @@ interface AuthScreenProps {
   onRegister: (name: string, username: string, pin: string, role: string, permissions: string[]) => Promise<{ success: boolean; error?: string }>;
   onJoin: (username: string, pin: string) => Promise<{ success: boolean; error?: string }>;
   hasAdmins: boolean;
+  isFirstTime: boolean;
 }
 
-const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegister, onJoin, hasAdmins }) => {
+const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegister, onJoin, hasAdmins, isFirstTime }) => {
   const { t, language, setLanguage } = useSettings();
-  const [mode] = useState<'login' | 'register'>(hasAdmins ? 'login' : 'register');
+  // First-run wins over admin-count: an interrupted prior setup (owner account
+  // created, but onboarding never completed) must still offer account creation,
+  // not a login gate. Only a fully-set-up install goes straight to login.
+  const [mode, setMode] = useState<'login' | 'register'>(hasAdmins && !isFirstTime ? 'login' : 'register');
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [name, setName] = useState('');
@@ -65,30 +70,104 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
   const [userError, setUserError] = useState('');
   const [userLoading, setUserLoading] = useState(false);
   const [joinCode, setJoinCode] = useState('');
-  const [joinScanBusy, setJoinScanBusy] = useState(false);
+  // Join Mode is a waiting/radar screen: 'searching' until a nearby owner with
+  // an open invite appears, then 'connecting', and 'notfound' after the search
+  // window elapses with nothing on the network.
+  const [joinPhase, setJoinPhase] = useState<'searching' | 'connecting' | 'notfound'>('searching');
+  const [selfDeviceName, setSelfDeviceName] = useState('This device');
+  const autoJoinedRef = React.useRef<Set<string>>(new Set());
   // Bluetooth-style discovery list: nearby owners broadcasting pairing beacons.
-  const [nearbyOwners, setNearbyOwners] = useState<Array<{ beacon: { businessId: string; businessName: string; code: string; owner: { deviceName: string; platform: string }; expiresAt: string } }>>([]);
-  const [scanningNearby, setScanningNearby] = useState(false);
+  const [nearbyOwners, setNearbyOwners] = useState<Array<{ beacon: { businessId: string; businessName: string; code: string; role?: string; owner: { deviceName: string; platform: string }; expiresAt: string } }>>([]);
 
-  const scanNearbyOwners = async () => {
-    setScanningNearby(true);
-    try {
-      const list = await window.api.pairBeaconNearby?.();
-      setNearbyOwners(Array.isArray(list) ? list : []);
-    } catch { setNearbyOwners([]); }
-    finally { setScanningNearby(false); }
-  };
+  // Real device name so Join Mode can show who this terminal is, exactly like
+  // peers see it from a discovery beacon.
+  useEffect(() => {
+    window.api?.deviceName?.().then((n) => { if (n) setSelfDeviceName(n); }).catch(() => {});
+  }, []);
 
-  const pickNearbyOwner = (b: { businessName: string; code: string }) => {
-    setJoinCode(b.code.toUpperCase());
+  // Auto-discovery on entering Joining Mode: this device starts searching for
+  // nearby owners AND becomes visible to them (mutual discoverability), and
+  // the nearby list refreshes live — no button press needed.
+  useEffect(() => {
+    if (joinMode !== 'form') return;
+    let stopped = false;
+    (async () => {
+      try { await window.api.pairBeaconDiscoverable?.(true, undefined, 'team'); } catch { /* ignore */ }
+      try { await window.api.pairBeaconNearby?.(); } catch { /* ignore */ }
+      while (!stopped) {
+        try {
+          const list = await window.api.pairBeaconNearby?.();
+          if (!stopped) setNearbyOwners(Array.isArray(list) ? list : []);
+        } catch { /* ignore */ }
+        await new Promise((r) => setTimeout(r, 2500));
+      }
+    })();
+    return () => {
+      stopped = true;
+      window.api.pairBeaconDiscoverable?.(false).catch(() => {});
+    };
+  }, [joinMode]);
+
+  // ---- Join Mode: resolve a discovered invite and submit, in one motion ----
+  const submitJoinWithCode = async (code: string) => {
+    const name = selfDeviceName || 'Team Member';
+    await window.api.joinAccept({
+      code: code.trim(),
+      // Deterministic pairing identity — the owner's approval is the real
+      // authorization, and they assign name/role/avatar on their side.
+      email: `join+${code.trim().toLowerCase().replace(/[^a-z0-9]/g, '')}@shega.local`,
+      password: `${code.trim()}-shega-pairing`,
+      name,
+      deviceName: selfDeviceName || undefined,
+    });
+    setJoinStarted(true);
+    setJoinNote('submitted');
+    setJoinMode('waiting');
     setError('');
-    // Reuse the code path: resolve the code into a preview.
-    void handleCheckJoinCode(undefined, b.code.toUpperCase());
   };
+
+  /** Find the business behind a code, then request to join it — no typing. */
+  const resolveAndJoin = async (rawCode: string) => {
+    const code = rawCode.trim().toUpperCase();
+    if (!code) return;
+    setJoinCode(code);
+    setJoinPhase('connecting');
+    setError('');
+    setLoading(true);
+    try {
+      const data = await window.api.joinLookup(code);
+      setJoinPreview(data);
+      await submitJoinWithCode(code);
+    } catch (err: any) {
+      setError(err?.message || 'That invitation is no longer available. Searching again…');
+      setJoinPhase('searching');
+      setJoinPreview(null);
+    }
+    setLoading(false);
+  };
+
+  // Auto-connect: the first nearby owner with an open invite is joined with no
+  // further input — each code is attempted once so failures don't loop.
+  useEffect(() => {
+    if (joinMode !== 'form' || joinStarted || loading) return;
+    const withInvite = nearbyOwners.find((o) => !!o.beacon.code && !autoJoinedRef.current.has(o.beacon.code));
+    if (!withInvite) return;
+    autoJoinedRef.current.add(withInvite.beacon.code);
+    void resolveAndJoin(withInvite.beacon.code);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nearbyOwners, joinMode, joinStarted]);
+
+  // Search window: if nothing shows up, say so (and keep retrying) instead of
+  // leaving the user staring at a silent radar.
+  useEffect(() => {
+    if (joinMode !== 'form' || joinStarted) return;
+    const timer = setTimeout(() => {
+      if (!joinStarted) setJoinPhase((p) => (p === 'connecting' ? p : 'notfound'));
+    }, 30_000);
+    return () => clearTimeout(timer);
+  }, [joinMode, joinStarted]);
   const [joinEmail, setJoinEmail] = useState('');
   const [joinPass, setJoinPass] = useState('');
-  const [joinName, setJoinName] = useState('');
-  const [joinDeviceName, setJoinDeviceName] = useState('');
   const [joinPin, setJoinPin] = useState('');
   const [joinConfirmPin, setJoinConfirmPin] = useState('');
   const [joinPreview, setJoinPreview] = useState<any>(null);
@@ -101,6 +180,15 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     // login surface; username entry is gone.
     window.api?.getLoginUsers?.().then((list) => setLoginUsers(list || [])).catch(() => setLoginUsers([]));
   }, []);
+
+  // The login-vs-register decision comes from hasAdmins, which App resolves
+  // asynchronously before showing this screen. Recompute when it settles so a
+  // brand-new install (zero admins, or a leftover admin from an interrupted
+  // first run that never completed onboarding) always lands on account
+  // creation, even if that value arrived after this component's first render.
+  useEffect(() => {
+    setMode(hasAdmins && !isFirstTime ? 'login' : 'register');
+  }, [hasAdmins, isFirstTime]);
 
   const handlePickUser = (u: typeof loginUsers[number]) => {
     setPickedUser(u);
@@ -188,7 +276,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
             const result = await onJoin(joinEmail.trim().toLowerCase(), joinPin);
             if (!cancelled) {
               if (result.success) setJoinMode('idle');
-              else { setError(result.error || 'Could not finish signing in'); setJoinMode('form'); }
+              else { setError(result.error || 'Could not finish signing in'); setJoinPhase('searching'); setJoinMode('form'); }
             }
           } else {
             setJoinMode('pin');
@@ -197,12 +285,14 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
         }
         if (res.phase === 'rejected' || res.phase === 'cancelled' || res.phase === 'expired') {
           setError(res.phase === 'rejected' ? 'The owner declined this device.' : res.phase === 'cancelled' ? 'The invitation was cancelled.' : 'This invitation has expired.');
+          setJoinPhase('searching');
           setJoinMode('form');
           try { await window.api.joinCancel(); } catch { /* best-effort */ }
           return;
         }
         if (res.phase === 'error' && ++attempts >= 5) {
           setError(res.error || 'Lost contact with the server.');
+          setJoinPhase('searching');
           setJoinMode('form');
           return;
         }
@@ -210,6 +300,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
         if (cancelled) return;
         if (++attempts >= 5) {
           setError(err?.message || 'Lost contact with the server.');
+          setJoinPhase('searching');
           setJoinMode('form');
         }
       }
@@ -246,12 +337,11 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     setJoinCode('');
     setJoinEmail('');
     setJoinPass('');
-    setJoinName('');
-    setJoinDeviceName('');
     setJoinPin('');
     setJoinConfirmPin('');
     setJoinStarted(false);
     setJoinNote('');
+    setJoinPhase('searching');
     setError('');
     setIntent(i => (i === 'join' ? 'welcome' : i));
     setPickedUser(null);
@@ -259,72 +349,6 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     setUserError('');
   };
 
-  const handleCheckJoinCode = async (e?: React.FormEvent, overrideCode?: string) => {
-    e?.preventDefault?.();
-    const code = overrideCode ?? joinCode;
-    if (!code.trim()) { setError(t('auth.fields_required')); return; }
-    setLoading(true); setError('');
-    try {
-      const data = await window.api.joinLookup(code.trim());
-      setJoinPreview(data);
-      setError('');
-    } catch (err: any) {
-      setError(err?.message || 'That code was not recognised. It may have expired.');
-    }
-    setLoading(false);
-  };
-
-  // Scan the owner's invitation QR with a connected phone acting as a camera
-  // peripheral (best-effort — manual code entry always remains available).
-  const handleScanJoinQr = async () => {
-    setError('');
-    try {
-      const phones = await window.api.peripheralPhones?.();
-      const phone = Array.isArray(phones) ? phones[0] : null;
-      if (!phone?.deviceId) { setError('No phone is connected to scan with. Enter the pairing code instead.'); return; }
-      setJoinScanBusy(true);
-      const res = await window.api.peripheralCapture(phone.deviceId, 'qr', 90000);
-      const text: string = res?.text || res?.dataUrl || '';
-      // Owner QRs come in two shapes: shega://join?...c=CODE (invitation) or
-      // a bare code — extract whatever code is present.
-      const m = /[?&]c(?:ode)?=([A-Za-z0-9-]+)/.exec(text);
-      const code = m?.[1] ?? (/^[A-Za-z0-9-]{4,}$/.test(text.trim()) ? text.trim() : null);
-      if (!code) { setError('That QR is not a Shega invitation.'); return; }
-      setJoinCode(code.toUpperCase());
-      const data = await window.api.joinLookup(code);
-      setJoinPreview(data);
-    } catch (err: any) {
-      setError(err?.message || 'Scan failed. Enter the pairing code instead.');
-    } finally {
-      setJoinScanBusy(false);
-    }
-  };
-
-  const handleSubmitJoin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!joinCode.trim()) { setError(t('auth.fields_required')); return; }
-    const name = joinName.trim() || 'Team Member';
-    setLoading(true); setError('');
-    try {
-      // Minimal join: no email/password at pairing time. A deterministic
-      // pairing identity (invite code + device) is used only to authenticate
-      // the join request; the owner's approval is the real authorization.
-      const result = await window.api.joinAccept({
-        code: joinCode.trim(),
-        email: `join+${joinCode.trim().toLowerCase().replace(/[^a-z0-9]/g, '')}@shega.local`,
-        password: `${joinCode.trim()}-shega-pairing`,
-        name,
-        deviceName: joinDeviceName.trim() || undefined,
-      });
-      setJoinStarted(true);
-      setJoinNote('submitted');
-      setJoinMode('waiting');
-      setError('');
-    } catch (err: any) {
-      setError(err?.message || 'Could not submit the join request.');
-    }
-    setLoading(false);
-  };
 
   // Owner already approved (e.g. while this app was closed): the backend does
   // not remember the terminal PIN, so ask for a fresh one to activate locally.
@@ -403,6 +427,22 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     setPin('');
   };
 
+  // Nearby owners → radar rows (business name + owning device).
+  const radarPeers = nearbyOwners.map((o, i) => ({
+    peer: {
+      id: String(i),
+      name: o.beacon.businessName || 'Nearby business',
+      platform: o.beacon.owner?.platform,
+      detail: `${o.beacon.role === 'team' ? 'Team' : 'Owner'} · ${o.beacon.owner?.deviceName || 'device'}${o.beacon.code ? ' · ready to connect' : ' · waiting for owner'}`,
+      disabled: !o.beacon.code,
+    } as RadarPeer,
+    code: o.beacon.code,
+  }));
+  const joinTone: RadarTone = joinPhase === 'notfound' ? 'failed' : (joinPhase === 'connecting' || loading) ? 'connecting' : 'searching';
+  const joinStatusText = joinPhase === 'connecting'
+    ? `Connecting to ${joinPreview?.business_name || 'business'}…`
+    : joinPhase === 'notfound' ? 'No device found nearby' : 'Waiting for connection…';
+
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-background">
       {/* Ambient effects */}
@@ -443,103 +483,57 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
               <div className="text-left">
                 <h2 className="text-sm font-black text-foreground tracking-tight uppercase">Join an existing business</h2>
                 <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50">
-                  {joinMode === 'waiting' ? 'Wait for the owner to approve' : joinMode === 'pin' ? 'Approved — create your terminal PIN' : 'Enter the 6-digit code from your owner'}
+                  {joinMode === 'waiting' ? 'Wait for the owner to approve' : joinMode === 'pin' ? 'Approved — create your terminal PIN' : 'Ready to join'}
                 </p>
               </div>
             </div>
 
             {joinMode === 'form' ? (
-              <form onSubmit={joinPreview ? handleSubmitJoin : handleCheckJoinCode} className="space-y-4">
-                {!joinStarted && (
-                  <>
-                    {/* Bluetooth-style discovery: nearby owners with open beacons */}
-                    <div className="space-y-1.5 text-left">
-                      <button type="button" onClick={scanNearbyOwners} disabled={scanningNearby}
-                        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-muted-foreground/20 text-[11px] font-black uppercase tracking-widest text-muted-foreground hover:bg-muted/40 transition-all disabled:opacity-40"
-                      >
-                        <Radar size={13} className={scanningNearby ? 'animate-pulse' : ''} />
-                        {scanningNearby ? 'Scanning nearby…' : `Nearby businesses${nearbyOwners.length ? ` (${nearbyOwners.length})` : ''}`}
-                      </button>
-                      {nearbyOwners.length > 0 && (
-                        <div className="space-y-1.5">
-                          {nearbyOwners.map((o) => (
-                            <button key={o.beacon.businessId + o.beacon.code} type="button" onClick={() => pickNearbyOwner(o.beacon)}
-                              className="w-full flex items-center gap-3 p-3 rounded-xl border bg-muted/30 hover:bg-muted/60 transition-all text-left"
-                            >
-                              <span className="h-8 w-8 rounded-lg bg-emerald-500/15 grid place-items-center text-emerald-400">
-                                {o.beacon.owner?.platform === 'mobile' ? <Smartphone size={15} /> : <MonitorSmartphone size={15} />}
-                              </span>
-                              <span className="flex-1 min-w-0">
-                                <span className="block text-sm font-black text-foreground truncate">{o.beacon.businessName}</span>
-                                <span className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
-                                  {o.beacon.owner?.platform || 'device'} · nearby
-                                </span>
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <button type="button" onClick={handleScanJoinQr} disabled={joinScanBusy || loading}
-                      className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl border-2 border-dashed border-muted-foreground/30 text-sm font-black uppercase tracking-widest text-foreground/70 hover:bg-muted/40 transition-all disabled:opacity-40"
-                    >
-                      <ScanLine size={15} />
-                      {joinScanBusy ? 'Waiting for phone… approve the scan there' : 'Scan QR with connected phone'}
-                    </button>
-                    <p className="text-center text-[11px] font-black uppercase tracking-widest text-muted-foreground/40">or enter the pairing code</p>
-                    <div className="space-y-1.5 text-left">
-                      <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Pairing code</label>
-                      <input
-                        type="text" maxLength={12} value={joinCode}
-                        onChange={e => { setJoinCode(e.target.value.toUpperCase()); setError(''); setJoinPreview(null); }}
-                        className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.25em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30"
-                        placeholder="K2M-4NP-QW8" autoFocus
-                      />
-                    </div>
-                  </>
-                )}
+              <div className="space-y-5">
+                <RadarPulse
+                  deviceName={selfDeviceName}
+                  status={joinStatusText}
+                  tone={joinTone}
+                  peers={radarPeers.map((p) => p.peer)}
+                  onPickPeer={(p) => {
+                    const hit = radarPeers[Number(p.id)];
+                    if (hit?.code) void resolveAndJoin(hit.code);
+                  }}
+                  emptyHint="Keep both devices on the same Wi-Fi, then open Add Team on the other device — it will appear here automatically."
+                />
 
-                {joinPreview && (
-                  <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-left space-y-1">
-                    <p className="text-xs font-black uppercase tracking-widest text-emerald-400">{joinPreview.business_name || 'Business'}</p>
-                    {joinPreview.role && (
-                      <p className="text-[11px] font-black uppercase tracking-widest text-muted-foreground/60">
-                        Requested role: {String(joinPreview.role).toUpperCase()}
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {joinPreview && !joinStarted && (
-                  <div className="space-y-1.5 text-left">
-                    <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">What's your name?</label>
-                    <input
-                      type="text" value={joinName}
-                      onChange={e => { setJoinName(e.target.value); setError(''); }}
-                      className="w-full bg-muted/50 rounded-2xl text-sm px-6 py-4 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40"
-                      placeholder="e.g. Abebe"
-                    />
-                  </div>
-                )}
-
-                {joinStarted && joinPreview && (
-                  <p className="text-xs text-muted-foreground/50 text-left px-1">
-                    {joinPreview.business_name || 'This business'} — your request is pending approval.
+                {joinPreview?.business_name && (
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground/60">
+                    {joinPreview.business_name} — your request is pending approval.
                   </p>
                 )}
+
                 {error && (
                   <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20">
                     <p className="text-red-400 text-xs font-black uppercase tracking-widest">{error}</p>
                   </div>
                 )}
-                {!joinStarted && (
-                  <button type="submit" disabled={loading}
-                    className="w-full py-5 bg-foreground text-background rounded-2xl font-black uppercase tracking-[0.3em] text-sm hover:bg-foreground/90 active:scale-[0.98] transition-all disabled:opacity-30"
-                  >
-                    {loading ? 'Working…' : joinPreview ? 'Join business' : 'Continue'}
-                  </button>
+
+                {/* Fallback only after the automatic search has given up. */}
+                {joinPhase === 'notfound' && !joinStarted && (
+                  <div className="space-y-3 pt-1">
+                    <p className="text-center text-[11px] font-black uppercase tracking-widest text-muted-foreground/40">
+                      Still searching. You can enter an invitation code instead.
+                    </p>
+                    <input
+                      type="text" maxLength={12} value={joinCode}
+                      onChange={e => { setJoinCode(e.target.value.toUpperCase()); setError(''); }}
+                      className="w-full bg-muted/50 rounded-2xl text-center text-lg tracking-[0.25em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30"
+                      placeholder="INVITATION CODE"
+                    />
+                    <button type="button" disabled={loading || !joinCode.trim()} onClick={() => void resolveAndJoin(joinCode)}
+                      className="w-full py-4 bg-foreground text-background rounded-2xl font-black uppercase tracking-[0.3em] text-xs hover:bg-foreground/90 active:scale-[0.98] transition-all disabled:opacity-30"
+                    >
+                      Connect
+                    </button>
+                  </div>
                 )}
-              </form>
+              </div>
             ) : joinMode === 'pin' ? (
               <form onSubmit={handleActivateJoinPin} className="space-y-4 py-2">
                 <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-left space-y-1">
@@ -581,19 +575,18 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                 </button>
               </form>
             ) : (
-              <div className="space-y-5 py-6">
-                <div className="flex justify-center">
-                  <div className="h-10 w-10 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
-                </div>
+              <div className="space-y-5 py-2">
+                <RadarPulse
+                  deviceName={selfDeviceName}
+                  status={joinNote === 'owner-approved' ? 'Approved — setting up…' : 'Waiting for owner approval…'}
+                  tone={joinNote === 'owner-approved' ? 'connected' : 'connecting'}
+                />
                 <div>
-                  <p className="text-sm font-black text-foreground tracking-tight uppercase">{joinPreview?.business_name || 'Submission received'}</p>
+                  <p className="text-sm font-black text-foreground tracking-tight uppercase">{joinPreview?.business_name || 'Request sent'}</p>
                   <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50 mt-1">
-                    Waiting for the owner to approve this device. The approval shows up on their phone and in Cloud Devices.
+                    The owner reviews this device and assigns your name, role and permissions. This screen updates the moment they approve.
                   </p>
                 </div>
-                {joinNote === 'owner-approved' && (
-                  <p className="text-emerald-400 text-xs font-black uppercase tracking-widest">Approved — setting up this terminal…</p>
-                )}
                 {error && (
                   <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20">
                     <p className="text-red-400 text-xs font-black uppercase tracking-widest">{error}</p>
@@ -632,11 +625,18 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                     </button>
                   ))}
                 </div>
-                <button type="button" onClick={() => { setJoinMode('form'); setError(''); }}
-                  className="w-full text-center text-xs font-black uppercase tracking-widest text-foreground/60 hover:text-foreground/90 transition-colors py-2 border-t border-border/40"
-                >
-                  Join an existing business with a 6-digit code
-                </button>
+<button type="button" onClick={() => { setJoinMode('form'); setJoinPhase('searching'); setError(''); }}
+              className="w-full text-center text-xs font-black uppercase tracking-widest text-foreground/60 hover:text-foreground/90 transition-colors py-2"
+            >
+              Join an existing business
+            </button>
+            {hasAdmins && isFirstTime && (
+              <button type="button" onClick={() => { setMode('login'); setError(''); }}
+                className="w-full text-center text-xs font-black uppercase tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors py-2"
+              >
+                I've set up this terminal before — Sign in
+              </button>
+            )}
               </div>
             ) : (
               <div className="space-y-5">
@@ -727,10 +727,10 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
               <KeyRound size={10} className="inline mr-1.5 -mt-0.5" />
               {t('auth.forgot_pin')}
             </button>
-            <button type="button" onClick={() => { setJoinMode('form'); setError(''); }}
+            <button type="button" onClick={() => { setJoinMode('form'); setJoinPhase('searching'); setError(''); }}
               className="w-full text-center text-xs font-black uppercase tracking-widest text-foreground/60 hover:text-foreground/90 transition-colors py-2"
             >
-              Join an existing business with a 6-digit code
+              Join an existing business
             </button>
           </form>
           )
@@ -861,7 +861,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                 <p className="text-xs font-bold text-muted-foreground/70">Set up this terminal as a brand-new Shega business</p>
               </div>
             </button>
-            <button type="button" onClick={() => { setIntent('join'); setJoinMode('form'); setError(''); }}
+            <button type="button" onClick={() => { setIntent('join'); setJoinMode('form'); setJoinPhase('searching'); setError(''); }}
               className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 bg-muted/40 hover:bg-muted/70 border-transparent hover:border-foreground/10 text-left transition-all active:scale-[0.99]"
             >
               <div className="h-11 w-11 rounded-xl bg-muted text-foreground flex items-center justify-center shrink-0">
@@ -949,10 +949,10 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
               <ArrowLeft size={10} className="inline mr-1.5 -mt-0.5" />
               Back to choice
             </button>
-            <button type="button" onClick={() => { setJoinMode('form'); setError(''); }}
+            <button type="button" onClick={() => { setJoinMode('form'); setJoinPhase('searching'); setError(''); }}
               className="w-full text-center text-xs font-black uppercase tracking-widest text-foreground/60 hover:text-foreground/90 transition-colors py-2"
             >
-              Join an existing business with a 6-digit code
+              Join an existing business
             </button>
           </form>
         )}
