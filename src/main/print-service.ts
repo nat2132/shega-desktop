@@ -148,7 +148,27 @@ export async function printRaw(data: Uint8Array): Promise<void> {
     const { app } = await import('electron');
     const dir = path.join(app.getPath('userData'), 'simulated-printer');
     fs.mkdirSync(dir, { recursive: true });
+    const timestamp = Date.now();
     fs.appendFileSync(path.join(dir, `output-${cfg.paperWidth}mm.bin`), Buffer.from(data));
+    // Decode the simulated job and persist ASCII/HTML previews next to the raw
+    // bytes so the mock printer reads back exactly what a real one would print.
+    try {
+      const { decodeEscposBytes, renderPreview } = await import('@shega/shared');
+      const decoded = decodeEscposBytes(new Uint8Array(data));
+      const preview = renderPreview(decoded.tokens, { paperWidth: cfg.paperWidth });
+      fs.writeFileSync(path.join(dir, `preview-${timestamp}.txt`), preview.ascii, 'utf-8');
+      fs.writeFileSync(path.join(dir, `preview-${timestamp}.html`), preview.html, 'utf-8');
+      if (decoded.commands.length > 0) {
+        fs.writeFileSync(
+          path.join(dir, `commands-${timestamp}.txt`),
+          decoded.commands.map((c) => `${c.id.padEnd(14)} ${c.label}`).join('\n') + '\n',
+          'utf-8',
+        );
+      }
+    } catch (decodeError) {
+      // Previewing is best-effort; the raw bytes are still recorded.
+      lastError = (decodeError as Error).message;
+    }
     lastPrintAt = new Date().toISOString();
     lastError = null;
     return;

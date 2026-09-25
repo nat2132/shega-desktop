@@ -261,6 +261,48 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     return () => { delete (window as any).__shegaPushModal; };
   }, []);
 
+  // Device + sync lifecycle notifications: one channel, all events.
+  // The main process pushes device:event payloads for connect / disconnect /
+  // reconnecting / sync started / sync completed / sync failed; each maps to a
+  // clear toast so the user always knows which device is doing what.
+  useEffect(() => {
+    if (!window.api?.onDeviceEvent) return;
+    const off = window.api.onDeviceEvent(({ event, deviceName, deviceId, platform, mode }: any) => {
+      const name = deviceName || (deviceId ? String(deviceId).slice(0, 12) : 'device');
+      switch (event) {
+        case 'device-visible': {
+          const role = mode === 'team' ? 'team member' : 'owner';
+          toast.info(`${name} is discoverable${platform ? ' (' + platform + ')' : ''}`, { description: `Ready to join as ${role}.` });
+          break;
+        }
+        case 'device-hidden':
+          toast.info(`${name} is no longer visible for pairing`);
+          break;
+        case 'device-connected': {
+          const who = platform === 'mobile' ? `${name} (mobile)` : platform === 'desktop' ? `${name} (desktop)` : name;
+          toast.success(`${who} connected`, { description: 'Syncing business data automatically.' });
+          break;
+        }
+        case 'device-reconnecting':
+          toast.info(`${name} reconnecting…`, { description: 'Sync will resume automatically once reconnected.' });
+          break;
+        case 'device-disconnected':
+          toast.warning(`${name} disconnected`, { description: 'Sync is paused until the device reconnects.' });
+          break;
+        case 'sync-started':
+          toast.info(`Sync started${deviceName ? ' with ' + deviceName : ''}`, { description: 'Applying changes from the connected device.' });
+          break;
+        case 'sync-completed':
+          toast.success('Sync completed', { description: 'All changes from the connected device are up to date.' });
+          break;
+        case 'sync-failed':
+          toast.error('Sync interrupted', { description: deviceName ? `Sync with ${deviceName} failed — changes may not be up to date.` : 'Sync failed — check the connected device.' });
+          break;
+      }
+    });
+    return () => { if (off) off(); };
+  }, []);
+
   return (
     <NotificationContext.Provider
       value={{

@@ -1,11 +1,12 @@
 /* E2E for Phase 3 sync — imports the REAL database.ts + sync-hub.ts.
    Run under electron.exe with cwd=<temp>; db lands in <temp>/db/shega_desktop.db. */
 import http from 'http';
+import WebSocketClient from 'ws';
 import { existsSync, readFileSync } from 'fs';
 import { initDB } from './src/main/database';
 import db from './src/main/database';
 import { SyncHub, SYNC_PORT, SHARED_TABLES, ensureHubDeviceId, getPairingToken, changeChecksum, lwwWins, verifyChecksums, requestDeviceResync } from './src/main/sync-hub';
-import { syncToCloud, getCloudConfig, getCloudStatus } from './src/main/sync-cloud';
+import { wsSyncServer, WS_SYNC_PORT } from './src/main/sync/websocket-server';
 import logger from './src/main/logger';
 import { computeTotal, computeTotalFloat, MoneyLine } from './src/main/money';
 
@@ -265,40 +266,47 @@ A('negative_stock_flag_logic_exists', typeof negFlag?.c === 'number', JSON.strin
   }
 }
 
-// --- 3.6 Cloud relay (client-side) — exercise against a local echo server using the REAL syncToCloud ---
-let echoReceived: { path?: string; body?: any; headers?: any } | null = null;
-const echo = http.createServer((req, res) => {
-  let d = '';
-  req.on('data', (c) => d += c);
-  req.on('end', () => {
-    let body: any = null; try { body = JSON.parse(d); } catch {}
-    if ((req.url || '').startsWith('/api/sync/push')) {
-      echoReceived = { path: req.url, body, headers: req.headers };
-    }
-    if (req.url && req.url.startsWith('/api/sync/pull')) {
-      res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: true, changes: [], lastSeq: 0 }));
-    } else {
-      res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: true, accepted: (body && Array.isArray(body.changes)) ? body.changes.length : 0 }));
-    }
-  });
-});
-await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
-const echoPort = (echo.address() as any).port;
-const echoUrl = `http://127.0.0.1:${echoPort}`;
-db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_url', ?)").run(echoUrl);
-db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_device_key', ?)").run('testkey');
-db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_sync_cursor', ?)").run('0');
-A('cloud_config_readable', getCloudConfig()?.url === echoUrl && getCloudConfig()?.key === 'testkey');
-A('cloud_status_configured', getCloudStatus().configured === true);
+// --- WS transport (websocket-server) regression ---------------------------------
+// The connection handler used to throw a ReferenceError (undefined `device_id`,
+// `name`, `platform` locals) BEFORE attaching the message handler, so no WS
+// client could ever pair, sync or signal. This block proves pairing + SYNC_PUSH
+// over the WS channel work end-to-end.
+// -------------------------------------------------------------------------------
+const WS_TEST_PORT = WS_SYNC_PORT + 1;
+wsSyncServer.start(WS_TEST_PORT);
+{
+  const sock = new WebSocketClient(`ws://127.0.0.1:${WS_TEST_PORT}`);
+  const waitFor = (t: string, ms = 5000) =>
+    new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => { sock.off('message', onMsg); reject(new Error('timeout waiting ' + t)); }, ms);
+      function onMsg(d: any) {
+        const m = JSON.parse(d.toString());
+        if (m.type === t) { clearTimeout(timer); sock.off('message', onMsg); resolve(m); }
+      }
+      sock.on('message', onMsg);
+    });
 
-const cloudRes = await syncToCloud();
-A('cloud_sync_returns_counts', cloudRes && typeof cloudRes.pushed === 'number', JSON.stringify(cloudRes));
-A('cloud_push_payload_has_changes', echoReceived && echoReceived.path && echoReceived.path.startsWith('/api/sync/push') && Array.isArray((echoReceived.body as any)?.changes) && (echoReceived.body as any).changes.length > 0, JSON.stringify({ path: echoReceived && echoReceived.path, n: echoReceived && (echoReceived.body as any)?.changes?.length }));
-A('cloud_push_has_hub_device_id', echoReceived && (echoReceived.body as any)?.device_id === hubDeviceId, JSON.stringify({ hubId: hubDeviceId, dev: echoReceived && (echoReceived.body as any)?.device_id }));
-A('cloud_push_has_device_key_header', echoReceived && echoReceived.headers && echoReceived.headers['x-device-key'] === 'testkey', JSON.stringify({ xdk: echoReceived && echoReceived.headers && echoReceived.headers['x-device-key'] }));
-A('cloud_push_has_idempotency_header', echoReceived && echoReceived.headers && typeof echoReceived.headers['x-idempotency-key'] === 'string' && String(echoReceived.headers['x-idempotency-key']).startsWith(hubDeviceId), JSON.stringify({ idk: echoReceived && echoReceived.headers && echoReceived.headers['x-idempotency-key'] }));
-A('cloud_last_error_cleared', (getCloudStatus().lastError === null || getCloudStatus().lastError === ''), JSON.stringify({ err: getCloudStatus().lastError }));
-echo.close();
+  await new Promise<void>((resolve, reject) => { sock.on('open', () => resolve()); sock.on('error', reject); });
+
+  const wsPhone = 'ws-' + Math.random().toString(36).slice(2, 10);
+  const pairP = waitFor('PAIR_RESPONSE');
+  sock.send(JSON.stringify({ type: 'PAIR_REQUEST', requestId: 'ws-r1', payload: { device_id: wsPhone, name: 'WS Phone', platform: 'mobile', token: pairingToken } }));
+  const pairRes = await pairP;
+  A('ws_pair_request_succeeds', pairRes?.payload?.success === true && pairRes.payload?.hubId === hubDeviceId, JSON.stringify(pairRes?.payload));
+  A('ws_client_registered', wsSyncServer.getClientCount() >= 1, `clients=${wsSyncServer.getClientCount()}`);
+
+  const wsCatUuid = 'ws-cat-' + Math.random().toString(36).slice(2, 12);
+  const wsCatChange: any = { entity: 'categories', entity_uuid: wsCatUuid, op: 'INSERT', payload: { businessId: bizId, name: 'Ws-Imported', uuid: wsCatUuid, device_id: wsPhone, row_version: 1, updated_at: now(), is_deleted: 0 }, device_id: wsPhone };
+  wsCatChange.checksum = changeChecksum(wsCatChange);
+  const ackP = waitFor('SYNC_ACK');
+  sock.send(JSON.stringify({ type: 'SYNC_PUSH', requestId: 'ws-r2', payload: { changes: [wsCatChange], client_seq: 1, device_id: wsPhone } }));
+  const ackRes = await ackP;
+  const wsCatRow = db.prepare('SELECT * FROM categories WHERE uuid = ?').get(wsCatUuid) as any;
+  A('ws_sync_push_applied', !!wsCatRow && wsCatRow.name === 'Ws-Imported' && ackRes?.payload?.applied >= 1, JSON.stringify({ applied: ackRes?.payload?.applied, row: wsCatRow && wsCatRow.name }));
+
+  sock.close();
+  wsSyncServer.stop();
+}
 
 hub.stop();
 console.log(`\n=== E2E SUMMARY === pass=${PASSED} fail=${FAILED}`);

@@ -60,7 +60,8 @@ export function createLedgerEntry(params: {
   businessId: number;
   shiftId?: number;
   type: LedgerEntryType;
-  referenceId?: number;
+  /** null/absent means the entry is not tied to a sale, return, etc. */
+  referenceId?: number | null;
   referenceType?: string;
   amount: number;
   description: string;

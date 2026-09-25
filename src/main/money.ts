@@ -8,6 +8,25 @@
 
 export const MINOR_UNITS_PER_MAJOR = 100;
 
+/** One cart line, in major units. Discount and tax rate default to 0. */
+export interface MoneyLine {
+  qty: number;
+  unitPrice: number;
+  discount?: number;
+  taxRate?: number;
+}
+
+/** A cart total, in major units. */
+export interface MoneyResult {
+  /** Sum of line gross (qty * unitPrice) before discount. */
+  subtotal: number;
+  /** Sum of line discounts. */
+  discount: number;
+  tax: number;
+  /** subtotal - discount + tax */
+  total: number;
+}
+
 /** Convert a major-unit amount (e.g. 19.99) to minor units (1999). */
 export function toMinor(amount: number): number {
   return Math.round(Number(amount) * MINOR_UNITS_PER_MAJOR);

@@ -99,7 +99,59 @@ export function createUserInvite(businessId: number, opts: { suggestedRole?: str
 export function listUserInvites(businessId: number): UserInvite[] {
   ensureTable();
   expireStale();
-  return (db.prepare('SELECT * FROM user_invites WHERE business_id = ? ORDER BY created_at DESC LIMIT 100').all(businessId) as any[]).map(rowToInvite);
+
+  // Get active device IDs so approved/active devices are never returned as new pending requests
+  const activeDeviceIds = new Set<string>();
+  try {
+    const activeDevs = db.prepare(
+      "SELECT device_id, uuid FROM devices WHERE status = 'active' AND is_deleted = 0"
+    ).all() as any[];
+    for (const d of activeDevs) {
+      if (d.device_id) activeDeviceIds.add(String(d.device_id));
+      if (d.uuid) activeDeviceIds.add(String(d.uuid));
+    }
+  } catch { /* ignore */ }
+
+  const invites = (db.prepare(
+    "SELECT * FROM user_invites WHERE business_id = ? AND status IN ('open', 'pending') ORDER BY created_at DESC LIMIT 100"
+  ).all(businessId) as any[])
+    .map(rowToInvite)
+    .filter(i => !i.joinerDeviceId || !activeDeviceIds.has(i.joinerDeviceId));
+
+  // Also include pending join requests staged in device_requests (from LAN / HTTP / WS / Mobile joiners)
+  try {
+    const { listDeviceJoinRequests } = require('./device-requests');
+    const bizRow = db.prepare('SELECT uuid FROM businesses WHERE id = ?').get(businessId) as any;
+    const bizUuid = bizRow?.uuid ? String(bizRow.uuid) : String(businessId);
+    const devRequests = listDeviceJoinRequests(bizUuid) || [];
+
+    const seenIds = new Set(invites.map(i => i.id));
+    for (const r of devRequests) {
+      if (!seenIds.has(r.requestId) && r.status === 'pending') {
+        if (r.joinerDeviceId && activeDeviceIds.has(r.joinerDeviceId)) continue;
+        invites.push({
+          id: r.requestId,
+          businessId,
+          code: r.code || '',
+          suggestedRole: r.role || 'cashier',
+          status: 'pending',
+          joinerName: r.joinerUser || r.joinerName || 'New Member',
+          joinerDeviceId: r.joinerDeviceId,
+          createdBy: null,
+          createdAt: r.createdAt,
+          expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+          decidedAt: r.decidedAt ?? null,
+          assignedName: r.assignedName ?? null,
+          assignedAvatar: r.assignedAvatar ?? null,
+          assignedPermissions: r.assignedPermissions ?? null,
+        });
+      }
+    }
+  } catch (e: any) {
+    logger.warn('[invites] failed to merge device_requests into listUserInvites', e);
+  }
+
+  return invites;
 }
 
 /** Joiner claims an open code and supplies their name → status becomes pending. */
@@ -127,8 +179,60 @@ export function decideUserInvite(
   } = {},
 ): UserInvite | null {
   ensureTable();
-  const row = db.prepare('SELECT * FROM user_invites WHERE id = ?').get(inviteId) as any;
-  if (!row) return null;
+  let row = db.prepare('SELECT * FROM user_invites WHERE id = ?').get(inviteId) as any;
+
+  // Fall back to device_requests if not found in user_invites (LAN / HTTP / WS / Mobile joiners)
+  if (!row) {
+    try {
+      const { decideDeviceJoinRequest } = require('./device-requests');
+      const devReq = db.prepare(
+        'SELECT * FROM device_requests WHERE id = ? OR joiner_device_id = ? ORDER BY created_at DESC LIMIT 1'
+      ).get(inviteId, inviteId) as any;
+      if (devReq) {
+        const updated = decideDeviceJoinRequest({
+          requestId: devReq.id,
+          businessId: devReq.business_id,
+          joinerDeviceId: devReq.joiner_device_id,
+          decision,
+          decidedBy: String(opts.decidedBy ?? ''),
+          assignedName: opts.name,
+          assignedAvatar: opts.avatar ?? null,
+          assignedRole: opts.role,
+          assignedPermissions: opts.permissions,
+        });
+
+        if (updated) {
+          try {
+            const { wsSyncServer } = require('./websocket-server');
+            wsSyncServer.notifyJoinDecision(devReq.joiner_device_id, {
+              record: updated,
+            });
+          } catch { /* best-effort */ }
+
+          return {
+            id: updated.requestId,
+            businessId: Number(devReq.business_id) || 1,
+            code: updated.code || '',
+            suggestedRole: updated.role || 'cashier',
+            status: updated.status as any,
+            joinerName: updated.assignedName || updated.joinerUser || updated.joinerName,
+            joinerDeviceId: updated.joinerDeviceId,
+            createdBy: null,
+            createdAt: updated.createdAt,
+            expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+            decidedAt: updated.decidedAt ?? null,
+            assignedName: updated.assignedName ?? null,
+            assignedAvatar: updated.assignedAvatar ?? null,
+            assignedPermissions: updated.assignedPermissions ?? null,
+          };
+        }
+      }
+    } catch (e: any) {
+      logger.warn('[invites] decideUserInvite fallback to device_requests failed', e);
+    }
+    return null;
+  }
+
   if (decision === 'approved') {
     // Materialize the user inside the target business, inactive until they
     // set up their PIN on first login — matching the desktop employee flow.
@@ -182,12 +286,45 @@ export function assignUserInviteIdentity(
 ): boolean {
   ensureTable();
   const row = db.prepare('SELECT * FROM user_invites WHERE id = ?').get(inviteId) as any;
-  if (!row) return false;
+  if (!row) {
+    try {
+      const { assignJoinIdentity } = require('./device-requests');
+      return assignJoinIdentity(inviteId, identity);
+    } catch {
+      return false;
+    }
+  }
   if (identity.name !== undefined) db.prepare('UPDATE user_invites SET assigned_name = ? WHERE id = ?').run(identity.name, inviteId);
   if (identity.role !== undefined) db.prepare('UPDATE user_invites SET suggested_role = ? WHERE id = ?').run(identity.role, inviteId);
   if (identity.avatar !== undefined) db.prepare('UPDATE user_invites SET assigned_avatar = ? WHERE id = ?').run(identity.avatar, inviteId);
   if (identity.permissions !== undefined) db.prepare('UPDATE user_invites SET assigned_permissions = ? WHERE id = ?').run(JSON.stringify(identity.permissions), inviteId);
   return true;
+}
+
+/**
+ * The single open invitation code this device could hand out right now, if any.
+ *
+ * Used by the LAN probe (`/sync/info`) so a joiner on a network where mDNS
+ * multicast is blocked can still discover the invite. This is the same trust
+ * level as the mDNS beacon — the code is short-lived, LAN-scoped, and the
+ * owner still approves the request before anything is granted.
+ */
+export function getOpenInviteCode(): string | null {
+  ensureTable();
+  expireStale();
+  try {
+    const row = db.prepare(
+      "SELECT code FROM user_invites WHERE status = 'open' ORDER BY created_at DESC LIMIT 1",
+    ).get() as any;
+    if (row?.code) return String(row.code);
+  } catch { /* table missing */ }
+  try {
+    const legacy = db.prepare(
+      "SELECT code FROM invitations WHERE status = 'open' ORDER BY created_at DESC LIMIT 1",
+    ).get() as any;
+    if (legacy?.code) return String(legacy.code);
+  } catch { /* no legacy invites */ }
+  return null;
 }
 
 /** Joiner-side poll: what happened to my request? */

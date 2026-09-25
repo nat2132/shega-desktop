@@ -4,7 +4,7 @@ import {
   Search, Edit, Trash2, Lock, Unlock, Key,
   AlertCircle, Copy, Plus,
   RefreshCw, Eye,
-  ShieldAlert, KeyRound, Crown, Power, Upload, X, EyeOff, Check, Hourglass, Smartphone, Monitor
+  ShieldAlert, KeyRound, Crown, Power, Upload, X, EyeOff, Check, Hourglass, Smartphone, Monitor, QrCode
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -42,6 +42,18 @@ const PERMISSION_GROUPS: { key: string; label: string; permissions: string[] }[]
   { key: 'settings', label: 'System', permissions: ['settings.manage', 'settings.users', 'settings.roles', 'settings.backup'] },
 ];
 
+function timeAgo(ts?: number | string | null): string {
+  if (!ts) return 'Offline';
+  const val = typeof ts === 'number' ? ts : Date.parse(String(ts));
+  if (!val || isNaN(val)) return 'Offline';
+  const diff = Date.now() - val;
+  if (diff < 30_000) return 'Just now';
+  if (diff < 60_000) return '1 min ago';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} min ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} h ago`;
+  return new Date(val).toLocaleDateString();
+}
+
 const UsersEmployees: React.FC = () => {
   const { t, formatDate, formatTime, isModuleEnabled } = useSettings();
   const { isSuperAdmin, currentAdmin, refreshAdmin } = useAuth();
@@ -54,6 +66,44 @@ const UsersEmployees: React.FC = () => {
   const [attendance, setAttendance] = useState<any[]>([]);
   const [warehouses, setWarehouses] = useState<any[]>([]);
   const [search, setSearch] = useState('');
+  const [liveDevices, setLiveDevices] = useState<any[]>([]);
+  const prevDeviceStateRef = React.useRef<Map<string, string>>(new Map());
+
+  const pollDevices = React.useCallback(async () => {
+    try {
+      const devList = (await window.api?.p2pDevices?.()) || [];
+      setLiveDevices(devList);
+
+      for (const d of devList) {
+        const id = String(d.userId || d.deviceId || d.userName || '');
+        if (!id) continue;
+        const name = d.userName || d.user || d.name || 'Team member';
+        const connState = d.online
+          ? (d.status || 'connected')
+          : (d.status === 'connecting' || d.status === 'reconnecting')
+            ? d.status
+            : 'offline';
+
+        const prev = prevDeviceStateRef.current.get(id);
+        if (prev !== undefined && prev !== connState) {
+          if (prev === 'offline' && (connState === 'connected' || connState === 'online')) {
+            toast.success(`“${name}” came online.`);
+          } else if ((prev === 'connecting' || prev === 'reconnecting') && (connState === 'connected' || connState === 'online')) {
+            toast.success(`“${name}” reconnected.`);
+          } else if (connState === 'offline') {
+            toast.info(`“${name}” went offline.`);
+          }
+        }
+        prevDeviceStateRef.current.set(id, connState);
+      }
+    } catch { /* best effort */ }
+  }, []);
+
+  useEffect(() => {
+    pollDevices();
+    const interval = setInterval(pollDevices, 3000);
+    return () => clearInterval(interval);
+  }, [pollDevices]);
 
   const [showEmployeeModal, setShowEmployeeModal] = useState(false);
   const [editEmployee, setEditEmployee] = useState<any>(null);
@@ -88,20 +138,24 @@ const UsersEmployees: React.FC = () => {
   const [attendanceFilter, setAttendanceFilter] = useState({ fromDate: '', toDate: '', employeeId: '' });
   const [todayAtt, setTodayAtt] = useState<any[]>([]);
 
+  const [syncedTeam, setSyncedTeam] = useState<any[]>([]);
+
   const loadData = async () => {
     try {
-      const [emps, rls, accts, whs, adms] = await Promise.all([
+      const [emps, rls, accts, whs, adms, synced] = await Promise.all([
         window.api?.getEmployees({ search, roleId: filterRole || undefined, employmentStatus: filterStatus || undefined }) || [],
         window.api?.getEmployeeRoles() || [],
         window.api?.getEmployeeAccounts() || [],
         window.api?.getWarehouses() || [],
         window.api?.getAdmins() || [],
+        window.api?.getSyncedTeam() || [],
       ]);
       setEmployees(emps);
       setRoles(rls);
       setAccounts(accts);
       setWarehouses(whs);
       setAdmins(adms);
+      setSyncedTeam(synced || []);
     } catch (err) {
       console.error(err);
     }
@@ -126,6 +180,10 @@ const UsersEmployees: React.FC = () => {
   // Nearby devices in Joining Mode, shown so the owner can identify who's
   // waiting to join ("Team · device name").
   const [nearbyTeam, setNearbyTeam] = useState<Array<{ deviceId: string; deviceName: string; platform: string; role?: string }>>([]);
+  // This hub's pairing credential — shown prominently in the Add Team modal so
+  // the manual code-entry fallback (when discovery/connect fails) is always
+  // available without an extra button press.
+  const [hubPairingToken, setHubPairingToken] = useState('');
   const [selfName, setSelfName] = useState('This computer');
   // Member setup for a discovered (or pending) device: the owner assigns the
   // name, profile picture, role and permissions before the member joins.
@@ -166,41 +224,103 @@ const UsersEmployees: React.FC = () => {
     }
   };
 
-  const openInviteModal = async () => {
+  // Nearby-device radar refresh — hoisted to component scope so the invite
+  // modal's JSX (`onClick={refreshNearby}`) and its dependency array resolve
+  // to a stable callback (a previous inline-in-effect version crashed the
+  // renderer with "refreshNearby is not defined").
+  const refreshNearby = React.useCallback(async () => {
     try {
-      const inv = await window.api.inviteCreate({});
-      setInvite(inv);
-      setSetupFor(null);
-      setShowInviteModal(true);
-      window.api?.deviceName?.().then((n) => { if (n) setSelfName(n); }).catch(() => {});
-    } catch (_) {
-      toast.error(t('employees.invite_failed', 'Could not create invitation'));
-    }
-  };
+      const list = await window.api?.pairBeaconNearby?.(true);
+      if (Array.isArray(list)) {
+        setNearbyTeam(list.map((e: any) => ({
+          deviceId: e.beacon?.owner?.deviceId || '',
+          deviceName: e.beacon?.owner?.deviceName || 'Nearby device',
+          platform: e.beacon?.owner?.platform || 'desktop',
+          role: e.beacon?.role,
+        })));
+      }
+    } catch { /* discovery unavailable */ }
+  }, []);
 
+  // Fetch the pairing credential once (it rotates rarely; a stale code is
+  // refreshed by reopening the modal).
+  React.useEffect(() => {
+    if (!showInviteModal || hubPairingToken) return;
+    void (async () => {
+      try {
+        const s = await window.api?.syncStatus?.();
+        if (s?.pairingToken) setHubPairingToken(String(s.pairingToken));
+      } catch { /* hub status unavailable */ }
+    })();
+  }, [showInviteModal, hubPairingToken]);
+
+  // Real-time listener & 1.5s pulse for incoming join requests while modal is open
+  React.useEffect(() => {
+    const unsub = window.api?.onDeviceEvent?.((e: any) => {
+      if (e?.type === 'join-request' || e?.type === 'device-visible' || e?.type === 'device-connected') {
+        if (e?.type === 'join-request') {
+          toast.info(`New join request from "${e.joinerName || 'a new member'}"`);
+        }
+        loadInvites();
+        loadData();
+      }
+    });
+    return () => { unsub?.(); };
+  }, []);
+
+  React.useEffect(() => {
+    if (!showInviteModal) return;
+    loadInvites();
+    const interval = setInterval(() => {
+      loadInvites();
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [showInviteModal]);
+
+  // Modal content built as memoized variables to avoid complex inline JSX parsing issues
+  const inviteSection = React.useMemo(() => {
+    if (!invite) return null;
+    return (
+      <div className="space-y-2 rounded-xl border border-border bg-muted/40 p-3 text-left">
+        <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Invitation Code (share this)</p>
+        <div className="flex items-center justify-between gap-2">
+          <code className="font-mono text-sm font-black tracking-[0.2em] text-foreground bg-background px-3 py-2 rounded-lg border border-border flex-1 text-center">
+            {invite.code}
+          </code>
+          <button onClick={async () => {
+            try { await navigator.clipboard.writeText(invite.code); toast.success(t('employees.copied', 'Copied')); } catch {}
+          }} className="px-3 py-2 rounded-lg border border-border text-xs font-black uppercase tracking-widest text-muted-foreground hover:bg-muted">
+            Copy
+          </button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">Share this code or scan the QR from the other device.</p>
+      </div>
+    );
+  }, [invite, t]);
+
+  // Owner-side invite actions — declared BEFORE the modal memo below, whose
+  // dependency array evaluates them during render (a later declaration made
+  // the renderer crash with "Cannot access 'confirmSetup' before initialization").
   /** Owner confirmed the member setup for a discovered / pending device. */
-  const confirmSetup = async (cfg: { name: string; avatar: string | null; role: string; permissions?: Record<string, unknown> }) => {
+  const confirmSetup = async (cfg: { role: string; permissions?: Record<string, unknown> }) => {
     const target = setupFor;
     if (!target) return;
-    const payload = { name: cfg.name, avatar: cfg.avatar, role: cfg.role, permissions: cfg.permissions };
+    const display = target.deviceName || 'Team Member';
+    const payload = { name: display, role: cfg.role, permissions: cfg.permissions };
     try {
-      let already: any = null;
-      for (const i of invites) {
-        if (i.status !== 'pending') continue;
-        const matchesInvite = target.inviteId ? i.id === target.inviteId : false;
-        const matchesDevice = target.deviceId ? i.joinerDeviceId === target.deviceId : false;
-        if (matchesInvite || matchesDevice) { already = i; break; }
+      let inviteIdToDecide = target.inviteId;
+      if (!inviteIdToDecide && target.deviceId) {
+        for (const i of invites) {
+          if (i.status === 'pending' && (i.joinerDeviceId === target.deviceId || i.id === target.deviceId)) {
+            inviteIdToDecide = i.id;
+            break;
+          }
+        }
       }
-      if (already) {
-        await window.api.inviteDecide(already.id, 'approved', payload);
-        toast.success(`${cfg.name} joined with the assigned role.`);
-      } else {
-        // No request yet: remember the configuration and pre-assign it on the
-        // open invite so the joiner lands with the right identity.
-        if (target.deviceId) assignedByDevice.current.set(target.deviceId, payload);
-        assignedLoose.current = { at: Date.now(), cfg: payload };
-        if (target.inviteId) await window.api.inviteAssignIdentity?.(target.inviteId, payload);
-        toast.success(`Saved — ${cfg.name} joins as soon as their device connects.`, { duration: 4000 });
+      const targetId = inviteIdToDecide || target.deviceId;
+      if (targetId) {
+        await window.api.inviteDecide(targetId, 'approved', payload);
+        toast.success(`${display} joined with the assigned role.`);
       }
       setSetupFor(null);
       loadInvites();
@@ -221,6 +341,136 @@ const UsersEmployees: React.FC = () => {
     }
   };
 
+  const modalContent = React.useMemo(() => {
+    if (setupFor) {
+      return (
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground text-left">
+            Assign this member's role. They set their own name, profile picture and PIN after their device connects.
+          </p>
+          <ApprovalConfig
+            applicantName={setupFor.deviceName}
+            busy={false}
+            onConfirm={(cfg) => void confirmSetup(cfg)}
+            onDecline={() => setSetupFor(null)}
+          />
+        </div>
+      );
+    }
+    return (
+      <div key="else-branch" className="space-y-4 text-center">
+        <RadarPulse
+          deviceName={selfName}
+          status={`${nearbyTeam.length} device${nearbyTeam.length === 1 ? '' : 's'} found`}
+          tone={nearbyTeam.length > 0 ? 'found' : 'searching'}
+          compact
+          peers={nearbyTeam.map((d, i) => ({
+            id: String(i),
+            name: d.deviceName,
+            platform: d.platform,
+            detail: 'Waiting to join · tap to set up',
+          }))}
+          onPickPeer={(p) => {
+            const d = nearbyTeam[Number(p.id)];
+            if (d) setSetupFor({ deviceId: d.deviceId, deviceName: d.deviceName, inviteId: invite?.id });
+          }}
+          emptyHint={t('employees.radar_hint', 'Ask your teammate to open Shega → Join a Business. Devices on this Wi-Fi appear here automatically.')}
+        />
+        {(() => {
+          const pending = invites.filter(i => i.status === 'pending');
+          if (pending.length === 0) return null;
+          return (
+            <div className="space-y-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-left">
+              <div className="flex items-center gap-2 text-amber-600">
+                <Hourglass size={14} />
+                <span className="text-xs font-black uppercase tracking-widest">{t('employees.pending_requests', 'Waiting for you to confirm')}</span>
+              </div>
+              {pending.map(inv => (
+                <div key={inv.id} className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-bold">{inv.joinerName || t('employees.unknown_user', 'Unknown user')}</p>
+                  <div className="flex gap-1.5">
+                    <Button size="sm" className="h-7 px-2.5 text-[10px] font-black uppercase tracking-widest"
+                      onClick={() => setSetupFor({ deviceId: inv.joinerDeviceId || '', deviceName: inv.joinerName || 'New member', inviteId: inv.id })}
+                    >
+                      <UserPlus size={11} /> {t('employees.set_up', 'Set up')}
+                    </Button>
+                    <Button size="sm" variant="destructive" className="h-7 px-2.5" onClick={() => decideInvite(inv.id, 'rejected')}>
+                      <X size={11} />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+        {/* Generate Invitation Code — Required for mobile to connect */}
+        <div className="pt-4 border-t border-border space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Step 1: Create an invitation</p>
+              <p className="text-[11px] text-muted-foreground">Mobile needs this code to connect.</p>
+            </div>
+            <Button variant="outline" className="h-10 text-xs font-black uppercase tracking-widest"
+              onClick={async () => {
+                try {
+                  const inv = await window.api?.inviteCreate?.({ suggestedRole: 'cashier' });
+                  if (inv?.code) {
+                    toast.success(t('employees.invite_created', 'Invitation created — share the code or QR'));
+                  }
+                } catch { toast.error(t('employees.invite_failed', 'Could not create invitation')); }
+              }}>
+            <QrCode size={14} className="mr-2" />
+            {t('employees.generate_invite', 'Generate Invitation Code')}
+          </Button>
+        </div>
+        </div>
+        {inviteSection}
+        {/* Pairing code fallback — always visible next to the radar so manual
+            code entry works even when discovery/connect fails. */}
+        <div className="rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Pairing code (fallback)</p>
+            <button
+              className="font-mono text-sm font-black tracking-[0.2em] text-foreground"
+              title="Click to copy"
+              onClick={() => { try { void navigator.clipboard.writeText(hubPairingToken); } catch { /* ignore */ } }}
+            >
+              {hubPairingToken || '—'}
+            </button>
+          </div>
+          <p className="pt-0.5 text-center text-[10px] text-muted-foreground">
+            Can't connect? Enter this code on the other device under Devices → Add Team / Device.
+          </p>
+        </div>
+        {/* Manual radar refresh */}
+        <div className="pt-2 border-t border-border">
+          <Button variant="ghost" className="w-full h-8 text-xs font-black uppercase tracking-widest"
+            onClick={refreshNearby}>
+          <RefreshCw size={12} className="mr-1" /> Refresh Device List
+          </Button>
+          <p className="text-center text-[10px] text-muted-foreground mt-1">
+            If mobile doesn't appear, ensure both devices are on the same Wi-Fi and Shega is open on both.
+          </p>
+        </div>
+        <Button variant="outline" className="w-full h-10 text-xs font-black uppercase tracking-widest" onClick={() => { setShowInviteModal(false); setSetupFor(null); }}>
+          {t('employees.close_btn', 'Close')}
+        </Button>
+      </div>
+    );
+  }, [setupFor, invite, inviteSection, nearbyTeam, invites, selfName, hubPairingToken, t, refreshNearby, confirmSetup, decideInvite, setSetupFor, setShowInviteModal, setInvite]);
+
+  const openInviteModal = async () => {
+    try {
+      const inv = await window.api?.inviteCreate?.({});
+      setInvite(inv);
+      setSetupFor(null);
+      setShowInviteModal(true);
+      window.api?.deviceName?.().then((n) => { if (n) setSelfName(n); }).catch(() => {});
+    } catch (_) {
+      toast.error(t('employees.invite_failed', 'Could not create invitation'));
+    }
+  };
+
   useEffect(() => {
     if (!showInviteModal) return;
     loadInvites();
@@ -229,27 +479,14 @@ const UsersEmployees: React.FC = () => {
     // Add Team Member), and the nearby list refreshes live so team devices
     // in Joining Mode appear here by name.
     void window.api?.pairBeaconDiscoverable?.(true, undefined, 'owner').catch(() => {});
-    const refreshNearby = async () => {
-      try {
-        const list = await window.api?.pairBeaconNearby?.();
-        if (Array.isArray(list)) {
-          setNearbyTeam(list.map((e: any) => ({
-            deviceId: e.beacon?.owner?.deviceId || '',
-            deviceName: e.beacon?.owner?.deviceName || 'Nearby device',
-            platform: e.beacon?.owner?.platform || 'desktop',
-            role: e.beacon?.role,
-          })));
-        }
-      } catch { /* discovery unavailable */ }
-    };
-    refreshNearby();
-    const nearbyTimer = setInterval(refreshNearby, 5000);
+    void refreshNearby();
+    const nearbyTimer = setInterval(() => { void refreshNearby(); }, 5000);
     return () => {
       clearInterval(id);
       clearInterval(nearbyTimer);
       void window.api?.pairBeaconDiscoverable?.(false).catch(() => {});
     };
-  }, [showInviteModal]);
+  }, [showInviteModal, refreshNearby]);
 
   useEffect(() => { loadData(); loadInvites(); }, [search, filterRole, filterStatus]);
   useEffect(() => { if (activeTab === 'attendance') loadAttendance(); }, [activeTab, attendanceFilter]);
@@ -346,7 +583,8 @@ const UsersEmployees: React.FC = () => {
 
   const saveAdmin = async () => {
     if (!adminForm.name.trim() || !adminForm.username.trim()) { setAdminError(t('admin.required_fields', 'Name and username are required')); return; }
-    if (!editAdmin && (!adminForm.pin || adminForm.pin.length !== 4)) { setAdminError(t('admin.pin_error', 'PIN must be exactly 4 digits')); return; }
+    if (!editAdmin && (!adminForm.pin || adminForm.pin.length !== 6)) { setAdminError('PIN must be exactly 6 digits'); return; }
+    if (adminForm.pin && adminForm.pin.length !== 6) { setAdminError('PIN must be exactly 6 digits'); return; }
     if (adminForm.pin && adminForm.pin !== adminForm.confirmPin) { setAdminError(t('admin.pin_mismatch', 'PINs do not match')); return; }
     try {
       if (editAdmin) {
@@ -403,7 +641,7 @@ const UsersEmployees: React.FC = () => {
     if (!acctForm.username) { toast.error(t('employees.username_required', 'Username is required')); return; }
     if (!editAccount && !acctForm.pin) { toast.error(t('employees.pin_required', 'PIN is required')); return; }
     if (acctForm.pin && acctForm.pin !== acctForm.confirmPin) { toast.error(t('employees.pin_mismatch', 'PINs do not match')); return; }
-    if (acctForm.pin && acctForm.pin.length < 4) { toast.error(t('employees.pin_min_length', 'PIN must be at least 4 characters')); return; }
+    if (acctForm.pin && acctForm.pin.length !== 6) { toast.error('PIN must be exactly 6 digits'); return; }
     try {
       if (editAccount) {
         await window.api?.updateEmployeeAccount(editAccount.id, { ...acctForm, employeeId: parseInt(acctForm.employeeId), pin: acctForm.pin || undefined });
@@ -562,6 +800,11 @@ const UsersEmployees: React.FC = () => {
     { id: 'attendance', label: t('employees.attendance', 'Attendance'), icon: Clock },
   ];
 
+  const seenUserIds = new Set([
+    ...employees.map(e => String(e.id)),
+    ...admins.map(a => String(a.id)),
+  ]);
+
   const directoryRows = [
     ...employees.map(emp => ({ type: 'employee' as const, ...emp })),
     ...admins
@@ -585,11 +828,35 @@ const UsersEmployees: React.FC = () => {
         department: '',
         employmentStatus: ad.isActive ? 'active' : 'inactive',
         isActive: ad.isActive,
+        isOwner: true,
         avatar: ad.avatar,
         username: ad.username,
         adminRole: ad.role,
       })),
   ];
+
+  for (const u of syncedTeam) {
+    const idKey = String(u.id);
+    if (!seenUserIds.has(idKey)) {
+      seenUserIds.add(idKey);
+      directoryRows.push({
+        type: 'employee' as const,
+        id: u.id,
+        firstName: u.name || 'Team Member',
+        lastName: '',
+        email: u.email || (u.username ? `@${u.username}` : ''),
+        phone: u.phone || '',
+        employeeCode: u.username || `user-${String(u.id).slice(0, 8)}`,
+        roleName: u.roleName || (u.isOwner ? 'Owner' : (u.role ? u.role.charAt(0).toUpperCase() + u.role.slice(1) : 'Member')),
+        department: '',
+        employmentStatus: u.isActive ? 'active' : 'inactive',
+        isActive: !!u.isActive,
+        isOwner: !!u.isOwner,
+        avatar: u.avatar,
+        username: u.username,
+      });
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 fade-in">
@@ -698,6 +965,7 @@ const UsersEmployees: React.FC = () => {
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee', 'Team')}</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.code', 'Code')}</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.role', 'Role')}</th>
+                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">Device Presence</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.department', 'Department')}</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.phone', 'Contact')}</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.status', 'Status')}</th>
@@ -706,60 +974,108 @@ const UsersEmployees: React.FC = () => {
                   </thead>
                   <tbody>
                     {directoryRows.length === 0 && (
-                      <tr><td colSpan={7} className="p-8 text-center text-xs text-muted-foreground">{t('employees.no_users', 'No users found')}</td></tr>
+                      <tr><td colSpan={8} className="p-8 text-center text-xs text-muted-foreground">{t('employees.no_users', 'No users found')}</td></tr>
                     )}
-                    {directoryRows.map(emp => (
-                      <tr key={`${emp.type}-${emp.id}`} className="border-b hover:bg-muted/10 transition-colors">
-                        <td className="p-3">
-                          <div className="flex items-center gap-2.5">
-                            {emp.avatar ? (
-                              <img src={resolveAvatar(emp.avatar)} alt={emp.firstName} className="h-8 w-8 rounded-full object-cover" />
-                            ) : (
-                            <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-black text-primary">
-                              {emp.firstName?.[0]}{emp.lastName?.[0]}
-                            </div>
-                            )}
-                            <div>
-                              <div className="flex items-center gap-1.5">
-                                <p className="font-bold text-xs">{emp.firstName} {emp.lastName}</p>
-                                {emp.type === 'admin' && emp.adminRole === 'super_admin' && <Crown size={11} className="text-amber-500" />}
+                    {directoryRows.map(emp => {
+                      const dev = liveDevices.find((d) =>
+                        d.userId === emp.id ||
+                        (d.userName && emp.firstName && d.userName.toLowerCase() === emp.firstName.toLowerCase()) ||
+                        (d.userName && emp.firstName && d.userName.toLowerCase() === `${emp.firstName} ${emp.lastName}`.trim().toLowerCase())
+                      );
+
+                      const isLocalDeviceOwner = emp.isOwner || emp.adminRole === 'super_admin' || emp.roleName === 'Owner';
+
+                      const isConnected = dev
+                        ? (dev.online || dev.status === 'connected' || dev.status === 'online')
+                        : isLocalDeviceOwner;
+
+                      const connState = isConnected
+                        ? 'connected'
+                        : (dev?.status === 'connecting' || dev?.status === 'reconnecting')
+                          ? dev.status
+                          : 'offline';
+
+                      const badgeColor = isConnected
+                        ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/30'
+                        : connState === 'connecting' || connState === 'reconnecting'
+                          ? 'bg-amber-500/10 text-amber-600 border-amber-500/30'
+                          : 'bg-muted/50 text-muted-foreground border-border';
+
+                      const dotColor = isConnected
+                        ? 'bg-emerald-500 animate-pulse'
+                        : connState === 'connecting' || connState === 'reconnecting'
+                          ? 'bg-amber-500 animate-pulse'
+                          : 'bg-muted-foreground';
+
+                      const presenceLabel = isConnected
+                        ? (dev ? 'Online' : 'Online (This device)')
+                        : connState === 'connecting'
+                          ? 'Connecting…'
+                          : connState === 'reconnecting'
+                            ? 'Reconnecting…'
+                            : dev?.lastSeenAt
+                              ? `Offline · ${timeAgo(dev.lastSeenAt)}`
+                              : 'Offline';
+
+                      return (
+                        <tr key={`${emp.type}-${emp.id}`} className="border-b hover:bg-muted/10 transition-colors">
+                          <td className="p-3">
+                            <div className="flex items-center gap-2.5">
+                              {emp.avatar ? (
+                                <img src={resolveAvatar(emp.avatar)} alt={emp.firstName} className="h-8 w-8 rounded-full object-cover" />
+                              ) : (
+                              <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-black text-primary">
+                                {emp.firstName?.[0]}{emp.lastName?.[0]}
                               </div>
-                              <p className="text-xs text-muted-foreground">{emp.email || t('employees.no_email', 'No email')}</p>
+                              )}
+                              <div>
+                                <div className="flex items-center gap-1.5">
+                                  <p className="font-bold text-xs">{emp.firstName} {emp.lastName}</p>
+                                  {emp.type === 'admin' && emp.adminRole === 'super_admin' && <Crown size={11} className="text-amber-500" />}
+                                </div>
+                                <p className="text-xs text-muted-foreground">{emp.email || t('employees.no_email', 'No email')}</p>
+                              </div>
                             </div>
-                          </div>
-                        </td>
-                        <td className="p-3"><code className="text-xs bg-muted px-1.5 py-0.5 rounded">{emp.employeeCode || '—'}</code></td>
-                        <td className="p-3"><Badge variant={emp.type === 'admin' && emp.adminRole === 'super_admin' ? 'default' : 'outline'} className="text-xs font-bold">{emp.roleName || '—'}</Badge></td>
-                        <td className="p-3 text-muted-foreground">{emp.department || '—'}</td>
-                        <td className="p-3">
-                          <p className="text-xs">{emp.phone || emp.username || '—'}</p>
-                        </td>
-                        <td className="p-3">{getStatusBadge(emp.employmentStatus || (emp.isActive ? 'active' : 'inactive'))}</td>
-                        <td className="p-3 text-right">
-                          <div className="flex items-center justify-end gap-1">
-                            {emp.type === 'employee' && (
-                              <>
-                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => setShowDetail(emp)}><Eye size={12} /></Button>
-                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => openEmployeeModal(emp)}><Edit size={12} /></Button>
-                              </>
-                            )}
-                            {emp.type === 'admin' && (
-                              <>
-                                {isSuperAdmin && (
-                                  <>
-                                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title={emp.isActive ? t('admin.deactivate', 'Deactivate') : t('admin.activate', 'Activate')} onClick={() => toggleAdminActive(emp)}><Power size={12} className={emp.isActive ? 'text-green-600' : 'text-muted-foreground'} /></Button>
-                                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => openAdminModal(emp)}><Edit size={12} /></Button>
-                                  </>
-                                )}
-                              </>
-                            )}
-                            {(!isSuperAdmin && emp.type === 'admin') ? null : (
-                            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive" onClick={() => setShowDeleteConfirm(emp.type === 'admin' ? { type: 'admin', id: emp.id, name: emp.firstName } : { type: 'employee', id: emp.id, name: `${emp.firstName} ${emp.lastName}` })}><Trash2 size={12} /></Button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+                          <td className="p-3"><code className="text-xs bg-muted px-1.5 py-0.5 rounded">{emp.employeeCode || '—'}</code></td>
+                          <td className="p-3"><Badge variant={emp.type === 'admin' && emp.adminRole === 'super_admin' ? 'default' : 'outline'} className="text-xs font-bold">{emp.roleName || '—'}</Badge></td>
+                          <td className="p-3">
+                            <Badge variant="outline" className={`text-[10px] font-bold ${badgeColor}`}>
+                              <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${dotColor}`} />
+                              {presenceLabel}
+                            </Badge>
+                          </td>
+                          <td className="p-3 text-muted-foreground">{emp.department || '—'}</td>
+                          <td className="p-3">
+                            <p className="text-xs">{emp.phone || emp.username || '—'}</p>
+                          </td>
+                          <td className="p-3">{getStatusBadge(emp.employmentStatus || (emp.isActive ? 'active' : 'inactive'))}</td>
+                          <td className="p-3 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              {emp.type === 'employee' && (
+                                <>
+                                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => setShowDetail(emp)}><Eye size={12} /></Button>
+                                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => openEmployeeModal(emp)}><Edit size={12} /></Button>
+                                </>
+                              )}
+                              {emp.type === 'admin' && (
+                                <>
+                                  {isSuperAdmin && (
+                                    <>
+                                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title={emp.isActive ? t('admin.deactivate', 'Deactivate') : t('admin.activate', 'Activate')} onClick={() => toggleAdminActive(emp)}><Power size={12} className={emp.isActive ? 'text-green-600' : 'text-muted-foreground'} /></Button>
+                                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => openAdminModal(emp)}><Edit size={12} /></Button>
+                                    </>
+                                  )}
+                                </>
+                              )}
+                              {(!isSuperAdmin && emp.type === 'admin') ? null : (
+                              <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive" onClick={() => setShowDeleteConfirm(emp.type === 'admin' ? { type: 'admin', id: emp.id, name: emp.firstName } : { type: 'employee', id: emp.id, name: `${emp.firstName} ${emp.lastName}` })}><Trash2 size={12} /></Button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1384,74 +1700,10 @@ const UsersEmployees: React.FC = () => {
       <Modal
         isOpen={showInviteModal}
         onClose={() => { setShowInviteModal(false); setSetupFor(null); }}
-        title={setupFor ? t('employees.setup_member', 'Set up team member') : t('employees.invite_title', 'Add Team Member')}
+        title={setupFor ? t("employees.setup_member", "Set up team member") : t("employees.invite_title", "Add Team Member")}
         size="sm"
       >
-        {setupFor ? (
-          <div className="space-y-3">
-            <p className="text-xs text-muted-foreground text-left">
-              Assign this member's name, profile picture, role and permissions. They join as soon as their device connects.
-            </p>
-            <ApprovalConfig
-              applicantName={setupFor.deviceName}
-              busy={false}
-              onConfirm={(cfg) => void confirmSetup(cfg)}
-              onDecline={() => setSetupFor(null)}
-            />
-          </div>
-        ) : (
-          <div className="space-y-4 text-center">
-            <RadarPulse
-              deviceName={selfName}
-              status={`${nearbyTeam.length} device${nearbyTeam.length === 1 ? '' : 's'} found`}
-              tone={nearbyTeam.length > 0 ? 'found' : 'searching'}
-              compact
-              peers={nearbyTeam.map((d, i) => ({
-                id: String(i),
-                name: d.deviceName,
-                platform: d.platform,
-                detail: 'Waiting to join · tap to set up',
-              }))}
-              onPickPeer={(p) => {
-                const d = nearbyTeam[Number(p.id)];
-                if (d) setSetupFor({ deviceId: d.deviceId, deviceName: d.deviceName, inviteId: invite?.id });
-              }}
-              emptyHint={t('employees.radar_hint', 'Ask your teammate to open Shega → Join a Business. Devices on this Wi-Fi appear here automatically.')}
-            />
-
-            {(() => {
-              const pending = invites.filter(i => i.status === 'pending');
-              if (pending.length === 0) return null;
-              return (
-                <div className="space-y-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-left">
-                  <div className="flex items-center gap-2 text-amber-600">
-                    <Hourglass size={14} />
-                    <span className="text-xs font-black uppercase tracking-widest">{t('employees.pending_requests', 'Waiting for you to confirm')}</span>
-                  </div>
-                  {pending.map(inv => (
-                    <div key={inv.id} className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-xs font-bold">{inv.joinerName || t('employees.unknown_user', 'Unknown user')}</p>
-                      <div className="flex gap-1.5">
-                        <Button size="sm" className="h-7 px-2.5 text-[10px] font-black uppercase tracking-widest"
-                          onClick={() => setSetupFor({ deviceId: inv.joinerDeviceId || '', deviceName: inv.joinerName || 'New member', inviteId: inv.id })}
-                        >
-                          <UserPlus size={11} /> {t('employees.set_up', 'Set up')}
-                        </Button>
-                        <Button size="sm" variant="destructive" className="h-7 px-2.5" onClick={() => decideInvite(inv.id, 'rejected')}>
-                          <X size={11} />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
-
-            <Button variant="outline" className="w-full h-10 text-xs font-black uppercase tracking-widest" onClick={() => { setShowInviteModal(false); setSetupFor(null); }}>
-              {t('employees.close_btn', 'Close')}
-            </Button>
-          </div>
-        )}
+        {modalContent}
       </Modal>
     </div>
   );

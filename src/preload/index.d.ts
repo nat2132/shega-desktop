@@ -1,5 +1,14 @@
 import type { MorVerification } from '@shega/shared';
 
+/** Owner hub a discovered pairing invite belongs to — pins join to the LAN. */
+export interface JoinSession {
+  host: string;
+  platform: 'mobile' | 'desktop';
+  port: number;
+  businessId?: string;
+  businessName?: string;
+}
+
 export interface ElectronAPI {
   // Businesses
   getActiveBusiness: () => Promise<any>;
@@ -105,6 +114,7 @@ export interface ElectronAPI {
   p2pRevokeDevice: (deviceId: string) => Promise<boolean>;
   p2pRenameDevice: (deviceId: string, name: string) => Promise<boolean>;
   p2pRecordCounts: () => Promise<Record<string, number>>;
+  p2pPersistPeer: (device: { deviceId: string; name?: string; platform?: 'mobile' | 'desktop'; businessId?: number | string; model?: string }) => Promise<{ ok: boolean; error?: string }>;
   getAnalytics: (period: string, dateRange?: { start: string; end: string }) => Promise<any>;
   getVatReport: (dateRange?: { start: string; end: string }) => Promise<any>;
   getVoidedSales: (options?: any) => Promise<any>;
@@ -133,6 +143,7 @@ export interface ElectronAPI {
   login: (username: string, pin: string) => Promise<any>;
   getAdmins: () => Promise<any[]>;
   getLoginUsers: () => Promise<Array<{ key: string; source: 'admin' | 'employee' | 'roster'; id: number; name: string; username: string | null; role: string; roleName: string; avatar: string | null; isOwner: boolean }>>;
+  getLastLoginUser: () => Promise<string | null>;
   loginByUser: (source: 'admin' | 'employee' | 'roster', id: number, pin: string) => Promise<any>;
   getCurrentAdmin: (id: number, isEmployee?: boolean) => Promise<any>;
   insertAdmin: (admin: any) => Promise<any>;
@@ -262,7 +273,15 @@ export interface ElectronAPI {
   printReceipt: (sale: any) => Promise<{ success: boolean; error?: string }>;
   barcodePng: (value: string) => Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }>;
   barcodePngDataUrl: (value: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
-  simulateScan: (code?: string) => Promise<{ success: boolean; value?: string; error?: string }>;
+  simulateScan: (code?: string) => Promise<{ success: boolean; value?: string; simulated?: boolean; transport?: 'hid' | 'serial'; error?: string }>;
+
+  // Mock Peripherals (USE_MOCK_PERIPHERALS dev harness)
+  mockPeripheralStatus: () => Promise<any>;
+  mockScan: (code?: string) => Promise<{ success: boolean; value?: string; simulated?: boolean; transport?: 'hid' | 'serial'; error?: string }>;
+  mockScanSerial: (code?: string) => Promise<{ success: boolean; value?: string; simulated?: boolean; transport?: 'hid' | 'serial'; error?: string }>;
+  mockPrintReceipt: (payload?: any) => Promise<{ success: boolean; jobId?: string; byteLength?: number; commands?: number; ascii?: string; html?: string; error?: string }>;
+  mockPrintBytes: (bytes: number[]) => Promise<{ success: boolean; jobId?: string; byteLength?: number; commands?: number; ascii?: string; html?: string; error?: string }>;
+  mockDecode: (bytes: number[]) => Promise<{ success: boolean; commands?: any[]; tokens?: any[]; error?: string }>;
 
   // Draft Sales
   getDraftSales: () => Promise<any[]>;
@@ -378,16 +397,36 @@ export interface ElectronAPI {
   pairingAssignIdentity: (id: number, identity: { name?: string; avatar?: string | null }) => Promise<boolean>;
   pairingQrCode: (text: string) => Promise<string>;
 
+  // Cloud relay (SYNC_CONTRACT §5)
+  cloudStatus: () => Promise<{ configured: boolean; enabled: boolean; url: string; urlFromDefault: boolean; cursor: number; lastAt: string | null; lastError: string | null }>;
+  cloudSync: () => Promise<{ ok: boolean; reason?: string; error?: string; accepted?: number; pulled?: number; applied?: number; conflicts?: number; cursor?: number; lastSeq?: number }>;
+  cloudVerify: () => Promise<{ ok: boolean; error?: string; tables?: Record<string, { count: number; checksum: string }>; matched: boolean }>;
+  saveCloudConfig: (input: { url?: string; deviceKey?: string; enabled?: boolean }) => Promise<{ ok: boolean }>;
+  cloudEnabled: (enabled: boolean) => Promise<{ ok: boolean }>;
+
+  // Shega cloud subscription (backend served via ngrok)
+  backendLogin: (creds: { username: string; password: string }) => Promise<any>;
+  backendLogout: () => Promise<any>;
+  backendSession: () => Promise<any>;
+  backendSync: () => Promise<any>;
+  backendPlans: () => Promise<any>;
+  backendStartTrial: (args: { planId?: number }) => Promise<any>;
+  /** Backend base URL configuration (setting → SHEGA_BACKEND_URL → default). */
+  getBackendUrl: () => Promise<{ baseUrl: string }>;
+  setBackendUrl: (url: string) => Promise<{ success: boolean; baseUrl?: string; error?: string }>;
+  backendSubmitPayment: (args: { planId: number; transactionId: string; paymentMethod?: string; description?: string; paymentType?: string; quantity?: number }) => Promise<any>;
+
   // Join an existing business (desktop employee onboarding via 6-digit code)
-  joinLookup: (code: string) => Promise<{ business_id: number; business_name: string; employee_name: string | null; role: string; register: string | null; location: string | null; expires_at: string }>;
-  joinAccept: (input: { code: string; email: string; password: string; name?: string; deviceName?: string }) => Promise<{ status: 'pending' | 'active'; invitation_id: number | null; device_key: string | null; device_id: string; business_name: string | null; role: string | null; email: string }>;
+  joinLookup: (code: string, session?: JoinSession) => Promise<{ business_id: number; business_name: string; employee_name: string | null; role: string; register: string | null; location: string | null; expires_at: string }>;
+  joinAccept: (input: { code: string; email: string; password: string; name?: string; deviceName?: string }, session?: JoinSession) => Promise<{ status: 'pending' | 'active'; invitation_id: number | null; device_key: string | null; device_id: string; business_name: string | null; role: string | null; email: string }>;
   joinStatus: (invitationId?: number) => Promise<{ phase: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'expired' | 'error' | 'none'; status?: string; business_name?: string | null; role?: string | null; device_status?: string | null; email?: string | null; error?: string }>;
-  joinActivate: (pin: string) => Promise<{ success: boolean; username: string }>;
+  joinActivate: (pin: string | { pin: string; name?: string; username?: string; avatar?: string | null }) => Promise<{ success: boolean; username: string }>;
   joinCancel: () => Promise<{ cancelled: boolean }>;
   pairBeaconStart: (invite: any) => Promise<{ publishing: boolean }>;
   pairBeaconDiscoverable: (on: boolean, businessName?: string, role?: 'owner' | 'team') => Promise<{ publishing: boolean }>;
   pairBeaconStop: () => Promise<{ publishing: boolean }>;
-  pairBeaconNearby: () => Promise<Array<{ beacon: any; host: string; platform: string }>>;
+  pairBeaconNearby: () => Promise<Array<{ beacon: any; host: string; port: number; platform: string }>>;
+  onDeviceEvent: (cb: (e: any) => void) => () => void;
   deviceName: () => Promise<string>;
 
   taxCalculateWht: (input: any) => Promise<any>;

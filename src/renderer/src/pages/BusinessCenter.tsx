@@ -252,15 +252,10 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
     }
   };
 
-  const decide = async (id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>, assignedName?: string, assignedAvatar?: string | null) => {
+  const decide = async (id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>) => {
     setDeciding(id);
     try {
       await window.api.pairingDecide(id, decision, role, permissions);
-      // Carry the assigned identity into the join-channel decision so the
-      // member's device is provisioned with the owner-chosen name/avatar.
-      if (assignedName || assignedAvatar) {
-        window.api.pairingAssignIdentity?.(id, { name: assignedName, avatar: assignedAvatar }).catch(() => {});
-      }
       toast.success(decision === 'approve' ? `Member approved${role ? ` as ${role}` : ''}` : 'Request rejected');
       void refreshInvites();
     } catch (e: any) {
@@ -368,8 +363,12 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
         try {
           const list = await window.api?.pairBeaconNearby?.();
           if (!stopped && Array.isArray(list)) {
+            // Show every visible nearby device — a joiner's own beacon may self-
+            // describe as 'owner' (it is the owner of its own app session) even
+            // though this desktop is the business owner inviting them in. Do not
+            // gate on beacon.role; real join authorization comes from the invite
+            // + the owner's approval, never from the beacon role field.
             setPairPeers(list
-              .filter((e: any) => e.beacon?.role === 'team')
               .map((e: any) => ({
                 id: e.beacon?.owner?.deviceId || e.beacon?.businessId || String(Math.random()),
                 name: e.beacon?.owner?.deviceName || 'Nearby device',
@@ -960,8 +959,8 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
                         <div key={inv.id} className="flex items-center justify-between gap-3 rounded-lg border p-2.5 text-sm">
                           <span className="font-medium truncate">{inv.employee_name || 'Employee'}</span>
                           <span className="text-xs text-muted-foreground">
-                            {inv.device_status === 'active' ? 'Approved' : 'Rejected'}
-                            {inv.accepted_by ? ` by ${inv.accepted_by}` : ''}
+                            {(inv as any).device_status === 'active' ? 'Approved' : 'Rejected'}
+                            {(inv as any).accepted_by ? ` by ${(inv as any).accepted_by}` : ''}
                           </span>
                         </div>
                       ))}
@@ -1260,7 +1259,7 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
         </div>
       </Modal>
 
-      {/* Owner-approval: assign name, avatar, role and custom permissions */}
+      {/* Owner-approval: assign the member's role (name/avatar are set by the member after approval) */}
       <Modal isOpen={!!roleRequest} onClose={() => setRoleRequest(null)} title={roleRequest ? `New team member — ${roleRequest.name}` : 'Approve'}>
         <ApprovalConfig
           applicantName={roleRequest?.name || ''}
@@ -1268,7 +1267,7 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
           onConfirm={(cfg) => {
             const id = roleRequest?.id;
             setRoleRequest(null);
-            if (id != null) void decide(id, 'approve', cfg.role, cfg.permissions, cfg.name, cfg.avatar);
+            if (id != null) void decide(id, 'approve', cfg.role, cfg.permissions);
           }}
           onDecline={() => {
             const id = roleRequest?.id;

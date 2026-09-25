@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   CreditCard, ArrowLeft, Check, Loader2, Phone,
   Building2, Hash, CalendarDays, MessageSquare, Smartphone,
-  Copy, CheckCheck, AlertTriangle, Sparkles
+  Copy, CheckCheck, AlertTriangle
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { useSubscription } from '../context/SubscriptionContext';
@@ -19,11 +19,23 @@ import { toast } from 'sonner';
 interface Plan {
   id: number;
   name: string;
+  /** Edition: mobile | desktop | both (legacy plan rows may say basic/premium). */
   tier: string;
+  edition?: string;
   durationMonths: number;
   price: number;
   description: string;
   features: string;
+}
+
+/** Resolve an edition from a plan's `edition`/`tier`/`name`, tolerating old rows. */
+function planEditionFromTier(value: string | null | undefined): 'mobile' | 'desktop' | 'both' {
+  const blob = String(value ?? '').toLowerCase();
+  if (blob.includes('desktop') && blob.includes('mobile')) return 'both';
+  if (blob.includes('premium')) return 'both';
+  if (blob.includes('desktop')) return 'desktop';
+  if (blob.includes('mobile') || blob.includes('basic')) return 'mobile';
+  return 'both';
 }
 
 const SubscriptionPayment: React.FC = () => {
@@ -31,7 +43,9 @@ const SubscriptionPayment: React.FC = () => {
   const navigate = useNavigate();
   const { subscription, refresh } = useSubscription();
   const [plans, setPlans] = useState<Plan[]>([]);
+  const [cloudPlans, setCloudPlans] = useState<Plan[]>([]);
   const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
+  const [selectedServerPlanId, setSelectedServerPlanId] = useState<number | null>(null);
   const [step, setStep] = useState<'select' | 'pay' | 'submit' | 'done'>('select');
   const [submitting, setSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -46,10 +60,31 @@ const SubscriptionPayment: React.FC = () => {
 
   useEffect(() => {
     window.api.getSubscriptionPlans().then(setPlans);
+    // When this desktop is linked to a Shega account the server plans are the
+    // source of truth for what can be purchased (Mobile / Desktop / Both).
+    (async () => {
+      try {
+        const session = await window.api.backendSession();
+        if (!session?.linked) return;
+        const res = await window.api.backendPlans();
+        const src = (res?.success && res?.plans) || [];
+        setCloudPlans(src.map((p: any) => ({
+          id: Number(p.id),
+          name: p.display_name || p.name,
+          edition: p.edition || p.name,
+          tier: planEditionFromTier(p.edition || p.name),
+          durationMonths: Number(p.duration_months) || 1,
+          price: Number(p.price) || 0,
+          description: '',
+          features: '',
+        })));
+      } catch (_) { /* offline or not linked — keep local plans */ }
+    })();
   }, []);
 
-  const handleSelectPlan = (plan: Plan) => {
+  const handleSelectPlan = (plan: Plan, serverPlanId?: number) => {
     setSelectedPlan(plan);
+    setSelectedServerPlanId(serverPlanId ?? null);
     setForm(prev => ({ ...prev, businessName: '', phoneNumber: '' }));
     setStep('pay');
   };
@@ -63,15 +98,22 @@ const SubscriptionPayment: React.FC = () => {
 
     setSubmitting(true);
     try {
-      const result = await window.api.submitPayment({
-        transactionId: form.transactionId.trim(),
-        businessName: form.businessName.trim(),
-        phoneNumber: form.phoneNumber.trim(),
-        selectedPlan: selectedPlan.name,
-        amount: selectedPlan.price,
-        paymentDate: form.paymentDate,
-        notes: form.notes.trim() || undefined,
-      });
+      const result = selectedServerPlanId
+        ? await window.api.backendSubmitPayment({
+            planId: selectedServerPlanId,
+            transactionId: form.transactionId.trim(),
+            paymentMethod: 'telebirr',
+            description: form.notes.trim() || 'Desktop payment submission',
+          })
+        : await window.api.submitPayment({
+            transactionId: form.transactionId.trim(),
+            businessName: form.businessName.trim(),
+            phoneNumber: form.phoneNumber.trim(),
+            selectedPlan: selectedPlan.name,
+            amount: selectedPlan.price,
+            paymentDate: form.paymentDate,
+            notes: form.notes.trim() || undefined,
+          });
 
       if (result.success) {
         setStep('done');
@@ -105,47 +147,76 @@ const SubscriptionPayment: React.FC = () => {
           <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t('subscription.compare_plans')}</p>
         </div>
 
-        <div className="grid grid-cols-2 gap-6">
-          {/* Basic Plans */}
-          <div className="space-y-3">
-            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('subscription.basic_plan')}</p>
-            <p className="text-[11px] text-muted-foreground mb-2">{t('subscription.basic_desc')}</p>
-            {plans.filter(p => p.tier === 'basic').map(plan => (
-              <Card key={plan.id} className="rounded-2xl border-border/50 cursor-pointer hover:border-primary/30 transition-all" onClick={() => handleSelectPlan(plan)}>
-                <CardContent className="p-5">
-                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1">{plan.name}</p>
-                  <p className="text-3xl font-black">{plan.price.toLocaleString()} <span className="text-sm text-muted-foreground font-bold">{t('subscription.etb')}</span></p>
-                  <p className="text-[11px] text-muted-foreground mt-2">{plan.description}</p>
-                  <Button size="sm" className="mt-4 rounded-xl text-xs font-black uppercase tracking-widest w-full">
-                    {t('subscription.choose_plan')}
-                  </Button>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-
-          {/* Premium Plans */}
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <p className="text-xs font-black uppercase tracking-widest text-amber-500">{t('subscription.premium_plan')}</p>
-              <Sparkles className="h-3 w-3 text-amber-500" />
+        <div className="space-y-6">
+          {/* Server plans (account linked) — the canonical editions. */}
+          {cloudPlans.length > 0 && (
+            <div>
+              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-2">
+                {t('subscription.pricing')}
+              </p>
+              <div className="grid grid-cols-2 gap-4">
+                {cloudPlans.map((plan) => {
+                  const edition = planEditionFromTier(plan.edition ?? plan.name);
+                  const featured = edition === 'both';
+                  return (
+                    <Card
+                      key={plan.id}
+                      className={`rounded-2xl cursor-pointer transition-all ${featured ? 'border-amber-500/20 bg-gradient-to-b from-amber-500/[0.02] to-transparent hover:border-amber-500/40' : 'border-border/50 hover:border-primary/30'}`}
+                      onClick={() => handleSelectPlan(plan, plan.id)}
+                    >
+                      <CardContent className="p-5">
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className={`text-xs font-black uppercase tracking-widest ${featured ? 'text-amber-500' : 'text-muted-foreground'}`}>
+                            {t(`subscription.plan_${edition}`)}
+                          </p>
+                          {featured && <PremiumBadge size="sm" />}
+                        </div>
+                        <p className="text-3xl font-black">
+                          {plan.price.toLocaleString()} <span className="text-sm text-muted-foreground font-bold">{t('subscription.etb')}</span>
+                        </p>
+                        <p className="text-[11px] text-muted-foreground mt-2">
+                          {t(`subscription.plan_${edition}_desc`)}
+                        </p>
+                        <Button size="sm" className={`mt-4 rounded-xl text-xs font-black uppercase tracking-widest w-full ${featured ? 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700' : ''}`}>
+                          {t('subscription.choose_plan')}
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
             </div>
-            <p className="text-[11px] text-muted-foreground mb-2">{t('subscription.premium_desc')}</p>
-            {plans.filter(p => p.tier === 'premium').map(plan => (
-              <Card key={plan.id} className="rounded-2xl border-amber-500/20 bg-gradient-to-b from-amber-500/[0.02] to-transparent cursor-pointer hover:border-amber-500/40 transition-all" onClick={() => handleSelectPlan(plan)}>
-                <CardContent className="p-5">
-                  <div className="flex items-center gap-2 mb-1">
-                    <p className="text-xs font-black uppercase tracking-widest text-amber-500">{plan.name}</p>
-                    <PremiumBadge size="sm" />
-                  </div>
-                  <p className="text-3xl font-black">{plan.price.toLocaleString()} <span className="text-sm text-muted-foreground font-bold">{t('subscription.etb')}</span></p>
-                  <p className="text-[11px] text-muted-foreground mt-2">{plan.description}</p>
-                  <Button size="sm" className="mt-4 rounded-xl text-xs font-black uppercase tracking-widest w-full bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700">
-                    {t('subscription.choose_plan')}
-                  </Button>
-                </CardContent>
-              </Card>
-            ))}
+          )}
+
+          {/* Local plans (offline / not linked) — same three editions. */}
+          <div className="grid grid-cols-2 gap-4">
+            {plans.map((plan) => {
+              const edition = planEditionFromTier(plan.tier || plan.name);
+              const featured = edition === 'both';
+              return (
+                <Card
+                  key={plan.id}
+                  className={`rounded-2xl cursor-pointer transition-all ${featured ? 'border-amber-500/20 bg-gradient-to-b from-amber-500/[0.02] to-transparent hover:border-amber-500/40' : 'border-border/50 hover:border-primary/30'}`}
+                  onClick={() => handleSelectPlan(plan)}
+                >
+                  <CardContent className="p-5">
+                    <div className="flex items-center gap-2 mb-1">
+                      <p className={`text-xs font-black uppercase tracking-widest ${featured ? 'text-amber-500' : 'text-muted-foreground'}`}>
+                        {t(`subscription.plan_${edition}`)}
+                      </p>
+                      {featured && <PremiumBadge size="sm" />}
+                    </div>
+                    <p className="text-3xl font-black">
+                      {plan.price.toLocaleString()} <span className="text-sm text-muted-foreground font-bold">{t('subscription.etb')}</span>
+                    </p>
+                    <p className="text-[11px] text-muted-foreground mt-2">{plan.description}</p>
+                    <Button size="sm" className={`mt-4 rounded-xl text-xs font-black uppercase tracking-widest w-full ${featured ? 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700' : ''}`}>
+                      {t('subscription.choose_plan')}
+                    </Button>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
         </div>
       </div>

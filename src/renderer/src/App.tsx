@@ -28,6 +28,7 @@ import { useSettings } from './context/SettingsContext'
 import { SubscriptionProvider, useSubscription } from './context/SubscriptionContext'
 import ErrorBoundary from './components/ErrorBoundary'
 import DeviceLockOverlay from './components/DeviceLockOverlay'
+import { useViewOnlyNotice } from './lib/viewOnly'
 import PinApprovalProvider from './components/PinApprovalProvider'
 import { initSound, playSound } from './utils/sound'
 
@@ -48,6 +49,7 @@ import { SidebarProvider, SidebarInset } from './components/ui/sidebar'
 import { AppSidebar } from './components/app-sidebar'
 import { SiteHeader } from './components/site-header'
 import { Toaster } from './components/ui/sonner'
+import { toast } from 'sonner'
 import NotificationBanners from './components/NotificationBanners'
 import NotificationModal from './components/NotificationModal'
 type AppPhase = 'splash' | 'auth' | 'recovery-key' | 'business-setup' | 'onboarding' | 'subscription-welcome' | 'loading' | 'ready' | 'error'
@@ -103,6 +105,10 @@ function App() {
   const [recoveryKeyData, setRecoveryKeyData] = useState<{ key: string; username: string } | null>(null);
   const [showTour, setShowTour] = React.useState(false);
 
+  // A write rejected by the main process (view-only account) becomes a toast and
+  // a redirect to the renew screen, wherever the write was attempted from.
+  useViewOnlyNotice();
+
   // Check system state on mount
   useEffect(() => {
     checkSystemState();
@@ -115,8 +121,33 @@ function App() {
     };
     window.api?.onBusinessChanged?.(onBizChanged);
     window.addEventListener('business-changed', onBizChanged);
+
+    let wasOnline = navigator.onLine;
+    const handleOnline = () => {
+      if (!wasOnline) {
+        toast.success('Internet Connection Restored', {
+          description: 'You are back online.',
+        });
+      }
+      wasOnline = true;
+    };
+
+    const handleOffline = () => {
+      if (wasOnline) {
+        toast.error('No Internet Connection', {
+          description: 'This feature requires an internet connection. Please connect to the internet and try again.',
+        });
+      }
+      wasOnline = false;
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
     return () => {
       window.removeEventListener('business-changed', onBizChanged);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
   }, []);
 

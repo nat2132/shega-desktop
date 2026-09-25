@@ -1,18 +1,18 @@
 /**
  * Owner-side join approval configuration.
  *
- * When a device requests to join the business, the owner assigns the member:
- *   • a display name and optional profile picture (image file → data URI)
- *   • a role: Owner, Cashier, or Custom
- *   • for Custom: a custom role name plus individual permissions from the
- *     shared PERMISSION_CATALOG (same catalog as Mobile)
+ * The owner assigns the joining member ONLY a role at this stage — not a name
+ * or profile picture. Identity belongs to the person/account: the joiner sets
+ * their own name, profile image and PIN on their device after approval. For a
+ * Custom role the owner still names the role and picks individual permissions
+ * from the shared PERMISSION_CATALOG (same catalog as Mobile).
  *
- * Confirming sends the full configuration with the approval so the joiner is
- * provisioned with the assigned identity, role and permissions.
+ * Confirming sends the assigned role (+ permissions for custom) with the
+ * approval so the joiner is provisioned with exactly that role.
  */
 
-import React, { useMemo, useRef, useState } from 'react';
-import { ImagePlus, Search, Trash2 } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Search } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import {
@@ -21,8 +21,6 @@ import {
 } from '@shega/shared';
 
 export interface JoinApprovalConfig {
-  name: string;
-  avatar: string | null;
   role: string;
   permissions?: Record<string, unknown>;
 }
@@ -37,13 +35,10 @@ interface Props {
 type RoleKind = 'cashier' | 'owner' | 'custom';
 
 const ApprovalConfig: React.FC<Props> = ({ applicantName, busy, onConfirm, onDecline }) => {
-  const [name, setName] = useState(applicantName || '');
-  const [avatar, setAvatar] = useState<string | null>(null);
   const [roleKind, setRoleKind] = useState<RoleKind>('cashier');
   const [customRoleName, setCustomRoleName] = useState('');
   const [permSearch, setPermSearch] = useState('');
   const [permPicks, setPermPicks] = useState<Record<string, boolean>>({});
-  const fileRef = useRef<HTMLInputElement | null>(null);
 
   const filtered = useMemo(() => {
     const q = permSearch.trim().toLowerCase();
@@ -65,15 +60,7 @@ const ApprovalConfig: React.FC<Props> = ({ applicantName, busy, onConfirm, onDec
 
   const pickedCount = Object.values(permPicks).filter(Boolean).length;
 
-  const pickAvatarFile = (file: File | undefined) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setAvatar(String(reader.result || ''));
-    reader.readAsDataURL(file);
-  };
-
   const confirm = () => {
-    const finalName = name.trim() || applicantName || 'Team Member';
     let role = roleKind;
     let permissions: Record<string, unknown> | undefined;
     if (roleKind === 'custom') {
@@ -82,42 +69,14 @@ const ApprovalConfig: React.FC<Props> = ({ applicantName, busy, onConfirm, onDec
         Object.entries(permPicks).filter(([, v]) => v),
       );
     }
-    onConfirm({ name: finalName, avatar, role, permissions });
+    onConfirm({ role, permissions });
   };
 
   return (
     <div className="space-y-4">
-      {/* Identity: name + avatar */}
-      <div className="flex items-start gap-3">
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          className="h-16 w-16 rounded-2xl overflow-hidden border-2 border-dashed border-muted-foreground/30 grid place-items-center bg-muted/40 hover:bg-muted/70 transition-all shrink-0"
-          title="Choose profile picture"
-        >
-          {avatar ? (
-            <img src={avatar} alt="" className="h-full w-full object-cover" />
-          ) : (
-            <ImagePlus size={20} className="text-muted-foreground/60" />
-          )}
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={(e) => pickAvatarFile(e.target.files?.[0])}
-        />
-        <div className="flex-1 space-y-1.5">
-          <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70">Member name</label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={applicantName || 'e.g. Abebe Adugna'} />
-          {avatar && (
-            <button type="button" onClick={() => setAvatar(null)} className="text-[11px] font-bold text-red-500 hover:text-red-600 inline-flex items-center gap-1">
-              <Trash2 size={11} /> Remove picture
-            </button>
-          )}
-        </div>
-      </div>
+      <p className="text-xs font-bold text-muted-foreground/70">
+        {applicantName || 'This member'} sets up their own name, profile picture and PIN after approval — you assign their role here.
+      </p>
 
       {/* Role selection */}
       <div className="grid gap-2">

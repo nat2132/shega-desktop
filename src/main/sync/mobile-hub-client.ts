@@ -15,7 +15,7 @@ import * as net from 'net';
 import * as crypto from 'crypto';
 import db from '../database';
 import { logger } from '../logger';
-import { ensureHubDeviceId, applyRemoteChanges } from '../sync-hub';
+import { ensureHubDeviceId, applyRemoteChanges, persistPeerDevice } from '../sync-hub';
 import type { DiscoveredService } from './discovery';
 
 const MOBILE_HUB_PORT = 5759;
@@ -176,6 +176,16 @@ export async function syncWithMobileHub(peer: DiscoveredService): Promise<boolea
       const ph = pushedSeqs.map(() => '?').join(', ');
       db.prepare(`DELETE FROM sync_outbox WHERE seq IN (${ph})`).run(...pushedSeqs);
     }
+    // Persist the mobile hub as a peer device so it appears in Connected Devices
+    // and we have its info for auto-reconnect.
+    try {
+      persistPeerDevice({
+        deviceId: peer.deviceId,
+        name: peer.name || `Mobile Hub (${peer.deviceId.slice(0, 8)})`,
+        platform: 'mobile',
+        // businessId: undefined, // will use default business
+      });
+    } catch { /* best effort */ }
     return true;
   } catch (e: any) {
     logger.warn('Mobile hub sync failed', { host, port, error: e?.message });

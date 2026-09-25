@@ -18,7 +18,6 @@
  * (default 10 minutes) and disappear when revoked.
  */
 
-import * as os from 'os';
 import { Bonjour } from 'bonjour-service';
 import { EventEmitter } from 'events';
 import { ipcMain } from 'electron';
@@ -30,9 +29,15 @@ import {
   isBeaconLive,
 } from '@shega/shared';
 import { ensureHubDeviceId } from '../sync-hub';
+import { mainBus } from '../bus';
+import { getDesktopDeviceName } from './device-name';
+import { sweepLan } from './lan-discovery';
+import { udpDiscovery } from './udp-discovery';
+import { logger } from '../logger';
 import db from '../database';
 
 const PAIR_SERVICE_TYPE = 'shega-pair';
+const LEGACY_PAIR_SERVICE_TYPE = 'shega-pos';
 
 interface DiscoveredBeacon {
   beacon: PairingBeacon;
@@ -162,13 +167,40 @@ class PairingBeaconService extends EventEmitter<BeaconEventMap> {
         return;
       }
     }
-    const browser = this.bonjour.find({ type: PAIR_SERVICE_TYPE, protocol: 'tcp' });
-    (this as any).browser = browser;
-    browser.on('up', (service: any) => {
-      const beacon = decodePairingBeacon(service.txt?.beacon);
-      if (!beacon || !isBeaconLive(beacon)) return;
+    const browsers = [
+      this.bonjour.find({ type: PAIR_SERVICE_TYPE, protocol: 'tcp' }),
+      this.bonjour.find({ type: LEGACY_PAIR_SERVICE_TYPE, protocol: 'tcp' }),
+    ];
+    (this as any).browser = browsers;
+    for (const browser of browsers) browser.on('up', (service: any) => {
+      let beacon = decodePairingBeacon(service.txt?.beacon);
+      if (!beacon) {
+        const svcName = String(service.name || service.host || 'Shega Mobile Device');
+        const devId = String(service.txt?.deviceId || service.txt?.id || service.name || service.host || `mdns-${Date.now()}`);
+        beacon = {
+          v: 1,
+          businessId: service.txt?.businessId || '',
+          businessName: service.txt?.businessName || service.txt?.bname || 'Shega',
+          owner: {
+            deviceId: devId,
+            deviceName: svcName,
+            platform: 'mobile',
+          },
+          code: service.txt?.code || '',
+          role: 'team' as any,
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+          suggestedRole: 'cashier' as any,
+        };
+      }
+      if (!isBeaconLive(beacon)) {
+        console.warn('[Discovery] Desktop rejected mDNS device: expired pairing beacon', beacon.owner.deviceId);
+        return;
+      }
       const selfId = ensureHubDeviceId();
-      if (beacon.owner.deviceId === selfId) return; // never list ourselves
+      if (beacon.owner.deviceId === selfId) {
+        console.log('[Discovery] Desktop filtered self device', selfId);
+        return;
+      }
       const entry: DiscoveredBeacon = {
         beacon,
         host: service.addresses?.[0] || service.host || '',
@@ -177,9 +209,10 @@ class PairingBeaconService extends EventEmitter<BeaconEventMap> {
         discoveredAt: Date.now(),
       };
       this.seen.set(beacon.owner.deviceId, entry);
+      console.log(`[Discovery] Desktop device discovered: ${beacon.owner.deviceName} (${beacon.owner.platform}) via ${service.type}`);
       this.emit('up', entry);
     });
-    browser.on('down', (service: any) => {
+    for (const browser of browsers) browser.on('down', (service: any) => {
       const beacon = decodePairingBeacon(service.txt?.beacon);
       if (!beacon) return;
       const existing = this.seen.get(beacon.owner.deviceId);
@@ -189,22 +222,31 @@ class PairingBeaconService extends EventEmitter<BeaconEventMap> {
       }
     });
     this.browsing = true;
-    console.log('[pair-beacon] browsing for nearby pairing beacons…');
+    console.log('[Discovery] Desktop searching for _shega-pair._tcp and legacy _shega-pos._tcp');
   }
 
   stopBrowsing(): void {
-    try { (this as any).browser?.stop?.(); } catch { /* best-effort */ }
+    try {
+      const browsers = (this as any).browser;
+      if (Array.isArray(browsers)) browsers.forEach((browser) => browser?.stop?.());
+      else browsers?.stop?.();
+    } catch { /* best-effort */ }
     (this as any).browser = null;
     this.browsing = false;
     this.seen.clear();
   }
 
   /** Snapshot for the discovery list — expired beacons are filtered out. */
-  getNearbyOwners(): Array<{ beacon: PairingBeacon; host: string; platform: string }> {
-    const out: Array<{ beacon: PairingBeacon; host: string; platform: string }> = [];
+  getNearbyOwners(): Array<{ beacon: PairingBeacon; host: string; port: number; platform: string }> {
+    const out: Array<{ beacon: PairingBeacon; host: string; port: number; platform: string }> = [];
     for (const [deviceId, entry] of this.seen) {
       if (!isBeaconLive(entry.beacon)) { this.seen.delete(deviceId); continue; }
-      out.push({ beacon: entry.beacon, host: entry.host, platform: entry.beacon.owner.platform });
+      out.push({
+        beacon: entry.beacon,
+        host: entry.host,
+        port: entry.port || (entry.beacon.owner.platform === 'mobile' ? 5759 : 5757),
+        platform: entry.beacon.owner.platform,
+      });
     }
     return out;
   }
@@ -216,15 +258,6 @@ export const pairingBeacon = new PairingBeaconService();
  * Build a beacon from an open local invitation and start advertising it.
  * Works identically for desktop-owner and mobile-owner invites stored here.
  */
-/** Real, human-readable device name for discovery lists. */
-function getDesktopDeviceName(): string {
-  try {
-    const host = os.hostname();
-    return host ? `Desktop — ${host}`.slice(0, 48) : 'Shega Desktop';
-  } catch {
-    return 'Shega Desktop';
-  }
-}
 
 export function startPairingBeaconForInvite(invite: {
   id: string;
@@ -255,6 +288,18 @@ export function startPairingBeaconForInvite(invite: {
 
 /** Wire the IPC surface used by the renderer join/pairing screens. */
 export function registerPairingBeaconHandlers(): void {
+  udpDiscovery.on('peerDiscovered', (peer) => {
+    // The event name must be a DeviceEventName: listeners switch on `event`, and
+    // the payload keeps `type` for the screens that read that field instead.
+    mainBus.emitEvent('device-visible', {
+      type: 'device-visible',
+      deviceId: peer.deviceId,
+      deviceName: peer.deviceName,
+      platform: peer.platform,
+      host: peer.host,
+      port: peer.port,
+    });
+  });
   ipcMain.handle('pair-beacon:start', (_e, invite: any) => {
     startPairingBeaconForInvite(invite);
     return { publishing: pairingBeacon.isPublishing() };
@@ -269,13 +314,63 @@ export function registerPairingBeaconHandlers(): void {
   // visible on the network (device-name beacon without an invite code) so
   // other devices can find it — never overrides a live invite beacon.
   ipcMain.handle('pair-beacon:discoverable', (_e, on: boolean, businessName?: string, role?: BeaconRole) => {
-    pairingBeacon.setDiscoverable(!!on, businessName, role ?? 'owner');
+    const wasPublishing = pairingBeacon.isPublishing();
+    if (on) {
+      pairingBeacon.setDiscoverable(true, businessName, role);
+      try { udpDiscovery.start(); udpDiscovery.broadcastPing(); } catch { /* best-effort */ }
+      // Join-mode / pairing-mode devices announce themselves so owners see them.
+      if (!wasPublishing) {
+        const name = businessName || getDesktopDeviceName();
+        mainBus.emitEvent('device-visible', { deviceId: ensureHubDeviceId(), deviceName: name, platform: 'desktop', mode: role ?? 'owner' });
+        logger.info('device visible for pairing', { deviceName: name, role });
+      }
+    } else {
+      pairingBeacon.setDiscoverable(false);
+      if (wasPublishing) {
+        mainBus.emitEvent('device-hidden', { deviceId: ensureHubDeviceId(), deviceName: businessName || getDesktopDeviceName() });
+        logger.info('device no longer visible for pairing');
+      }
+    }
     return { publishing: pairingBeacon.isPublishing() };
   });
 
-  ipcMain.handle('pair-beacon:nearby', () => {
+  // Nearby devices = mDNS beacons PLUS a LAN sweep. The sweep is what keeps
+  // discovery working on networks where multicast is blocked (Windows
+  // Firewall, AP isolation, Android multicast locks); it is cached internally
+  // so the screens can poll this every few seconds.
+  ipcMain.handle('pair-beacon:nearby', async (_e, force?: boolean) => {
     pairingBeacon.startBrowsing();
-    return pairingBeacon.getNearbyOwners();
+    try { udpDiscovery.broadcastPing(); } catch { /* best effort */ }
+    const mdns = pairingBeacon.getNearbyOwners();
+    const udpPeers = udpDiscovery.getDiscoveredPeers();
+    let lan: Awaited<ReturnType<typeof sweepLan>> = [];
+    try { lan = await sweepLan(force); } catch { /* sweep is best-effort */ }
+
+    const seen = new Set(mdns.map((m) => m.beacon.owner.deviceId));
+    const merged = [...mdns];
+
+    for (const u of udpPeers) {
+      if (seen.has(u.deviceId)) continue;
+      seen.add(u.deviceId);
+      merged.push({
+        beacon: u.beacon,
+        host: u.host,
+        port: u.port,
+        platform: u.platform,
+      });
+    }
+
+    for (const entry of lan) {
+      if (seen.has(entry.beacon.owner.deviceId)) continue;
+      seen.add(entry.beacon.owner.deviceId);
+      merged.push({
+        beacon: entry.beacon,
+        host: entry.host,
+        port: entry.platform === 'mobile' ? 5759 : 5757,
+        platform: entry.platform,
+      });
+    }
+    return merged;
   });
 
   // This device's human-readable name, shown in Join Mode / Add Team screens

@@ -82,8 +82,18 @@ class AppUpdater {
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowPrerelease = false;
 
+    try {
+      autoUpdater.setFeedURL({
+        provider: 'github',
+        owner: 'nat2132',
+        repo: 'shega-desktop',
+      });
+    } catch (e: any) {
+      this.log(`Failed to set feed URL: ${e?.message}`);
+    }
+
     if (this.isDev) {
-      this.log('Development mode - update checking disabled by default');
+      this.log('Development mode - autoUpdater feed URL set to nat2132/shega-desktop');
     }
   }
 
@@ -233,12 +243,6 @@ class AppUpdater {
     info?: UpdateInfoData;
     error?: string;
   }> {
-    if (this.isDev) {
-      this.log('Dev mode - returning up-to-date');
-      this.status = 'not-available';
-      return { status: 'not-available' };
-    }
-
     if (this.cache && Date.now() - this.cache.cachedAt < UPDATE_CACHE_TTL) {
       this.log(`Using cached update info (v${this.cache.version})`);
       if (this.isVersionSkipped(this.cache.version)) {
@@ -250,10 +254,11 @@ class AppUpdater {
     }
 
     try {
-      this.log('Checking GitHub for updates...');
+      this.log('Checking GitHub (nat2132/shega-desktop) for updates...');
       const result = await autoUpdater.checkForUpdates();
 
       if (!result || !result.updateInfo) {
+        this.status = 'not-available';
         return { status: 'not-available' };
       }
 
@@ -262,9 +267,11 @@ class AppUpdater {
 
       if (isSkipped) {
         this.log(`Version v${info.version} was skipped by user`);
+        this.status = 'idle';
         return { status: 'idle' };
       }
 
+      this.status = 'available';
       return { status: 'available', info: this.formatUpdateInfo(info) };
     } catch (error: any) {
       this.log(`Check failed: ${error.message}`);

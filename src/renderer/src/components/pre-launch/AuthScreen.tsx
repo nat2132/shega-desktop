@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, KeyRound, ArrowLeft, UserRound, Users, Store } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, ArrowLeft, UserRound, Users, Store, ImagePlus } from 'lucide-react';
 import { useSettings, Language } from '../../context/SettingsContext';
 import { BrandedLogo } from '../branded-logo';
 import { Avatar, AvatarImage, AvatarFallback } from '../ui/avatar';
@@ -28,6 +28,14 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'customers', 'analytics', 'adjustments', 'settings',
     'warehouses', 'employees', 'shipments'
   ],
+};
+
+const ROLE_LABELS: Record<string, string> = {
+  super_admin: 'Owner (Super Admin)',
+  admin: 'Administrator',
+  manager: 'Manager',
+  cashier: 'Cashier',
+  custom: 'Custom',
 };
 
 interface AuthScreenProps {
@@ -77,7 +85,24 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
   const [selfDeviceName, setSelfDeviceName] = useState('This device');
   const autoJoinedRef = React.useRef<Set<string>>(new Set());
   // Bluetooth-style discovery list: nearby owners broadcasting pairing beacons.
-  const [nearbyOwners, setNearbyOwners] = useState<Array<{ beacon: { businessId: string; businessName: string; code: string; role?: string; owner: { deviceName: string; platform: string }; expiresAt: string } }>>([]);
+  // Each row also carries the owner's LAN session (host/port/platform) so the
+  // join resolves and submits against THAT owner's hub — never a stale local
+  // row or the cloud ("invitation not found").
+  const [nearbyOwners, setNearbyOwners] = useState<Array<{
+    beacon: { businessId: string; businessName: string; code: string; role?: string; owner: { deviceName: string; platform: string }; expiresAt: string };
+    host?: string;
+    port?: number;
+    platform?: string;
+  }>>([]);
+
+  // Owner hub session from a discovered row (mobile owners join on TCP 5759,
+  // desktop owners on HTTP 5757).
+  const toSession = (o: { host?: string; port?: number; platform?: string }) =>
+    o?.host ? {
+      host: o.host,
+      platform: (o.platform === 'mobile' ? 'mobile' : 'desktop') as 'mobile' | 'desktop',
+      port: o.port || (o.platform === 'mobile' ? 5759 : 5757),
+    } : undefined;
 
   // Real device name so Join Mode can show who this terminal is, exactly like
   // peers see it from a discovery beacon.
@@ -97,7 +122,12 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
       while (!stopped) {
         try {
           const list = await window.api.pairBeaconNearby?.();
-          if (!stopped) setNearbyOwners(Array.isArray(list) ? list : []);
+          if (!stopped) setNearbyOwners(Array.isArray(list) ? list.map((e: any) => ({
+            beacon: e.beacon,
+            host: e.host,
+            port: e.port,
+            platform: e.platform,
+          })) : []);
         } catch { /* ignore */ }
         await new Promise((r) => setTimeout(r, 2500));
       }
@@ -109,17 +139,25 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
   }, [joinMode]);
 
   // ---- Join Mode: resolve a discovered invite and submit, in one motion ----
-  const submitJoinWithCode = async (code: string) => {
+  // `session` is the owner hub this code came from — the submit goes straight
+  // to that hub, so the owner's approval is seen and the joiner never hits the
+  // cloud "invitation not found" dead end.
+  const submitJoinWithCode = async (code: string, session?: { host: string; platform: 'mobile' | 'desktop'; port: number }) => {
     const name = selfDeviceName || 'Team Member';
+    const joinEmail = `join+${code.trim().toLowerCase().replace(/[^a-z0-9]/g, '')}@shega.local`;
     await window.api.joinAccept({
       code: code.trim(),
       // Deterministic pairing identity — the owner's approval is the real
       // authorization, and they assign name/role/avatar on their side.
-      email: `join+${code.trim().toLowerCase().replace(/[^a-z0-9]/g, '')}@shega.local`,
+      email: joinEmail,
       password: `${code.trim()}-shega-pairing`,
       name,
       deviceName: selfDeviceName || undefined,
-    });
+    }, session);
+    // The LAN/local activation creates the terminal identity under this email,
+    // so the post-approval login resolves it — a live (non-restart) flow never
+    // goes through the resume path that would otherwise populate it.
+    setJoinEmail(joinEmail);
     setJoinStarted(true);
     setJoinNote('submitted');
     setJoinMode('waiting');
@@ -127,7 +165,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
   };
 
   /** Find the business behind a code, then request to join it — no typing. */
-  const resolveAndJoin = async (rawCode: string) => {
+  const resolveAndJoin = async (rawCode: string, session?: { host: string; platform: 'mobile' | 'desktop'; port: number }) => {
     const code = rawCode.trim().toUpperCase();
     if (!code) return;
     setJoinCode(code);
@@ -135,9 +173,9 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     setError('');
     setLoading(true);
     try {
-      const data = await window.api.joinLookup(code);
+      const data = await window.api.joinLookup(code, session);
       setJoinPreview(data);
-      await submitJoinWithCode(code);
+      await submitJoinWithCode(code, session);
     } catch (err: any) {
       setError(err?.message || 'That invitation is no longer available. Searching again…');
       setJoinPhase('searching');
@@ -146,39 +184,81 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     setLoading(false);
   };
 
+  const [joinEmail, setJoinEmail] = useState('');
+  const [joinPass, setJoinPass] = useState('');
+  const [joinPin, setJoinPin] = useState('');
+  const [joinConfirmPin, setJoinConfirmPin] = useState('');
+  const [joinName, setJoinName] = useState('');
+  const [joinAvatar, setJoinAvatar] = useState<string | null>(null);
+  const joinAvatarInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [joinPreview, setJoinPreview] = useState<any>(null);
+  const [joinStarted, setJoinStarted] = useState(false);
+  const [joinNote, setJoinNote] = useState('');
+
+  // The owner assigns only the ROLE — the joiner provides their own name,
+  // profile picture and PIN here, then the account is created with the
+  // owner-assigned role/permissions and identity belongs to the person.
+  const pickJoinAvatarFile = (file: File | undefined) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { setJoinAvatar(String(reader.result || null)); setError(''); };
+    reader.readAsDataURL(file);
+  };
+
   // Auto-connect: the first nearby owner with an open invite is joined with no
   // further input — each code is attempted once so failures don't loop.
+  // (Declared after the join state it reads: dependency arrays evaluate at
+  // render time, so touching `joinStarted` higher up is a TDZ crash.)
   useEffect(() => {
     if (joinMode !== 'form' || joinStarted || loading) return;
     const withInvite = nearbyOwners.find((o) => !!o.beacon.code && !autoJoinedRef.current.has(o.beacon.code));
     if (!withInvite) return;
     autoJoinedRef.current.add(withInvite.beacon.code);
-    void resolveAndJoin(withInvite.beacon.code);
+    void resolveAndJoin(withInvite.beacon.code, toSession(withInvite));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nearbyOwners, joinMode, joinStarted]);
 
-  // Search window: if nothing shows up, say so (and keep retrying) instead of
-  // leaving the user staring at a silent radar.
+  // Search window: after the first 30s pass with nothing found, show the
+  // 'notfound' hint ONCE, but keep the discovery loop running until the user
+  // leaves the screen or a device is found. Do not stop the search at the first
+  // empty scan — that is the "it stopped saying No device found nearby" fix.
   useEffect(() => {
     if (joinMode !== 'form' || joinStarted) return;
-    const timer = setTimeout(() => {
-      if (!joinStarted) setJoinPhase((p) => (p === 'connecting' ? p : 'notfound'));
-    }, 30_000);
-    return () => clearTimeout(timer);
-  }, [joinMode, joinStarted]);
-  const [joinEmail, setJoinEmail] = useState('');
-  const [joinPass, setJoinPass] = useState('');
-  const [joinPin, setJoinPin] = useState('');
-  const [joinConfirmPin, setJoinConfirmPin] = useState('');
-  const [joinPreview, setJoinPreview] = useState<any>(null);
-  const [joinStarted, setJoinStarted] = useState(false);
-  const [joinNote, setJoinNote] = useState('');
+    let cancelled = false;
+    let windowTimer: ReturnType<typeof setTimeout> | null = null;
+    const rearm = () => {
+      if (cancelled || joinPhase === 'connecting') return;
+      windowTimer = setTimeout(() => {
+        if (cancelled) return;
+        setJoinPhase((p) => (p === 'connecting' ? p : 'notfound'));
+      }, 30_000);
+    };
+    rearm();
+    const rearmTimer = setInterval(rearm, 30_000);
+    return () => {
+      cancelled = true;
+      if (windowTimer) clearTimeout(windowTimer);
+      clearInterval(rearmTimer);
+    };
+  }, [joinMode, joinStarted, joinPhase]);
 
   useEffect(() => {
     setTimeout(() => setMounted(true), 100);
-    // Load the device's authorized profiles once — the picker is the primary
-    // login surface; username entry is gone.
-    window.api?.getLoginUsers?.().then((list) => setLoginUsers(list || [])).catch(() => setLoginUsers([]));
+    (async () => {
+      try {
+        const list = await window.api?.getLoginUsers?.();
+        setLoginUsers(list || []);
+        const lastKey = await window.api?.getLastLoginUser?.();
+        if (lastKey && Array.isArray(list)) {
+          const match = list.find((u) => u.key === lastKey);
+          if (match) {
+            setPickedUser(match);
+          }
+        }
+      } catch {
+        setLoginUsers([]);
+      }
+    })();
   }, []);
 
   // The login-vs-register decision comes from hasAdmins, which App resolves
@@ -199,7 +279,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
   const handleUserPinLogin = async (pinValue?: string) => {
     if (!pickedUser) return;
     const pinToUse = pinValue ?? userPin;
-    if (!/^\d{4}$/.test(pinToUse)) { setUserError('Enter your 4-digit PIN'); return; }
+    if (!/^\d{4,6}$/.test(pinToUse)) { setUserError('Enter your 6-digit PIN'); return; }
     setUserLoading(true);
     setUserError('');
     try {
@@ -238,7 +318,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
         }
         if (res.phase === 'approved') {
           setJoinEmail(res?.email ?? '');
-          setJoinPreview({ business_name: res?.business_name ?? null });
+          setJoinPreview({ business_name: res?.business_name ?? null, role: res?.role ?? null });
           setJoinStarted(true);
           setJoinNote('owner-approved');
           setJoinMode('pin');
@@ -256,7 +336,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     return () => { cancelled = true; };
   }, []);
 
-  // Poll the backend for owner approval while waiting.
+  // Poll the backend for owner approval while waiting, AND listen for pushed decisions.
   useEffect(() => {
     if (joinMode !== 'waiting') return;
     let cancelled = false;
@@ -268,10 +348,11 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
         if (cancelled) return;
         if (res.phase === 'approved') {
           setJoinNote('owner-approved');
+          setJoinPreview(prev => ({ ...prev, role: res.role ?? prev?.role, business_name: res.business_name ?? prev?.business_name }));
           // A live session still holds the PIN chosen on the join form. After a
           // restart it does not — ask for a terminal PIN before activating.
-          if (joinPin && joinPin.length === 4) {
-            await window.api.joinActivate(joinPin);
+          if (joinPin && joinPin.length === 6) {
+            await window.api.joinActivate({ pin: joinPin, name: joinName || undefined, avatar: joinAvatar });
             if (cancelled) return;
             const result = await onJoin(joinEmail.trim().toLowerCase(), joinPin);
             if (!cancelled) {
@@ -305,9 +386,19 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
         }
       }
     };
+
+    // Sub-millisecond pushed decision event listener
+    const unsub = window.api?.onDeviceEvent?.(() => {
+      void check();
+    });
+
     check();
-    const timer = setInterval(check, 4000);
-    return () => { cancelled = true; clearInterval(timer); };
+    const timer = setInterval(check, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      unsub?.();
+    };
   }, [joinMode, joinPin, joinEmail, onJoin]);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -323,7 +414,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     e.preventDefault();
     if (!name.trim() || !username.trim() || !pin.trim()) { setError(t('auth.fields_required')); return; }
     if (pin !== confirmPin) { setError(t('auth.pin_mismatch')); return; }
-    if (pin.length < 4) { setError(t('auth.pin_length')); return; }
+    if (pin.length !== 6) { setError('PIN must be exactly 6 digits'); return; }
     setLoading(true); setError('');
     const permissions = ROLE_PERMISSIONS[selectedRole] || ROLE_PERMISSIONS.admin;
     const result = await onRegister(name.trim(), username.trim(), pin, selectedRole, permissions);
@@ -339,6 +430,8 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     setJoinPass('');
     setJoinPin('');
     setJoinConfirmPin('');
+    setJoinName('');
+    setJoinAvatar(null);
     setJoinStarted(false);
     setJoinNote('');
     setJoinPhase('searching');
@@ -354,11 +447,12 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
   // not remember the terminal PIN, so ask for a fresh one to activate locally.
   const handleActivateJoinPin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!joinPin || joinPin.length < 4) { setError(t('auth.pin_length')); return; }
+    if (!joinName.trim()) { setError('Enter your name'); return; }
+    if (!joinPin || joinPin.length !== 6) { setError('PIN must be exactly 6 digits'); return; }
     if (joinPin !== joinConfirmPin) { setError(t('auth.pin_mismatch')); return; }
     setLoading(true); setError('');
     try {
-      await window.api.joinActivate(joinPin);
+      await window.api.joinActivate({ pin: joinPin, name: joinName.trim(), avatar: joinAvatar });
       const result = await onJoin(joinEmail.trim().toLowerCase(), joinPin);
       if (result.success) setJoinMode('idle');
       else setError(result.error || 'Could not finish signing in');
@@ -396,7 +490,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
 
   const handleRecoveryReset = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPin || newPin.length < 4) { setError(t('auth.pin_min_length')); return; }
+    if (!newPin || newPin.length !== 6) { setError('PIN must be exactly 6 digits'); return; }
     if (newPin !== confirmNewPin) { setError(t('auth.pins_no_match')); return; }
     setLoading(true); setError('');
     try {
@@ -428,15 +522,23 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
   };
 
   // Nearby owners → radar rows (business name + owning device).
+  // The radar row is ALWAYS tappable. When the discovered owner has published
+  // an open invite, picking it resolves and joins immediately. When the owner
+  // has not opened an invite yet, picking it nudge the joiner toward the owner
+  // opening one — never silently ignore the tap. This is the desktop mirror of
+  // the mobile pickNearby fix.
   const radarPeers = nearbyOwners.map((o, i) => ({
     peer: {
       id: String(i),
       name: o.beacon.businessName || 'Nearby business',
       platform: o.beacon.owner?.platform,
-      detail: `${o.beacon.role === 'team' ? 'Team' : 'Owner'} · ${o.beacon.owner?.deviceName || 'device'}${o.beacon.code ? ' · ready to connect' : ' · waiting for owner'}`,
-      disabled: !o.beacon.code,
+      detail: `${o.beacon.role === 'team' ? 'Team' : 'Owner'} · ${o.beacon.owner?.deviceName || 'device'}${o.beacon.code ? ' · ready to connect' : ' · waiting for owner to open invite'}`,
+      // selection is never blocked by a missing code — the joiner can still
+      // pick the device and the nudge tells them what to do next.
+      disabled: false,
     } as RadarPeer,
     code: o.beacon.code,
+    session: toSession(o),
   }));
   const joinTone: RadarTone = joinPhase === 'notfound' ? 'failed' : (joinPhase === 'connecting' || loading) ? 'connecting' : 'searching';
   const joinStatusText = joinPhase === 'connecting'
@@ -483,7 +585,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
               <div className="text-left">
                 <h2 className="text-sm font-black text-foreground tracking-tight uppercase">Join an existing business</h2>
                 <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50">
-                  {joinMode === 'waiting' ? 'Wait for the owner to approve' : joinMode === 'pin' ? 'Approved — create your terminal PIN' : 'Ready to join'}
+                  {joinMode === 'waiting' ? 'Wait for the owner to approve' : joinMode === 'pin' ? 'Approved — finish your profile' : 'Ready to join'}
                 </p>
               </div>
             </div>
@@ -495,9 +597,19 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                   status={joinStatusText}
                   tone={joinTone}
                   peers={radarPeers.map((p) => p.peer)}
-                  onPickPeer={(p) => {
+                  onPickPeer={async (p) => {
                     const hit = radarPeers[Number(p.id)];
-                    if (hit?.code) void resolveAndJoin(hit.code);
+                    if (!hit) return;
+                    if (hit.code) {
+                      // Owner already published an open invite — resolve + join
+                      // against THIS owner's hub (pinned session).
+                      await resolveAndJoin(hit.code, hit.session);
+                    } else {
+                      // Owner-side device is visible but no invite open yet.
+                      // Do not block the tap; nudge the joiner toward the owner.
+                      setError(`${hit.peer.name} is visible but the owner has not opened an invite yet. Ask them to tap Add team member — this device will connect automatically.`);
+                      setJoinPhase('searching');
+                    }
                   }}
                   emptyHint="Keep both devices on the same Wi-Fi, then open Add Team on the other device — it will appear here automatically."
                 />
@@ -536,13 +648,53 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
               </div>
             ) : joinMode === 'pin' ? (
               <form onSubmit={handleActivateJoinPin} className="space-y-4 py-2">
-                <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-left space-y-1">
+                <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-left space-y-1.5">
                   <p className="text-xs font-black uppercase tracking-widest text-emerald-400">Owner approved your device</p>
                   <p className="text-sm font-bold text-foreground">{joinPreview?.business_name || 'Your business'}</p>
-                  <p className="text-[11px] font-black uppercase tracking-widest text-muted-foreground/60">
-                    Set a 4-digit PIN to unlock this terminal.
+                  {joinPreview?.role ? (
+                    <span className="inline-block mt-1 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-[11px] font-black uppercase tracking-widest text-foreground/80">
+                      Assigned role: {ROLE_LABELS[joinPreview.role] || joinPreview.role}
+                    </span>
+                  ) : null}
+                  <p className="text-[11px] font-black uppercase tracking-widest text-muted-foreground/60 pt-1">
+                    Add your profile and set a 4-digit PIN to unlock this terminal.
                   </p>
                 </div>
+
+                {/* Profile avatar: the member picks their own picture. */}
+                <div className="flex items-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() => joinAvatarInputRef.current?.click()}
+                    className="h-16 w-16 rounded-full border-2 border-dashed border-foreground/20 hover:border-foreground/40 transition-colors overflow-hidden shrink-0 grid place-items-center bg-muted/30"
+                  >
+                    {joinAvatar ? (
+                      <img src={joinAvatar} alt="" className="h-full w-full object-cover rounded-full" />
+                    ) : (
+                      <ImagePlus className="h-6 w-6 text-muted-foreground/50" />
+                    )}
+                  </button>
+                  <input
+                    ref={joinAvatarInputRef}
+                    type="file" accept="image/*" className="hidden"
+                    onChange={(e) => { pickJoinAvatarFile(e.target.files?.[0]); e.target.value = ''; }}
+                  />
+                  <div className="text-left">
+                    <p className="text-xs font-black text-foreground uppercase tracking-widest">Profile picture</p>
+                    <p className="text-[11px] font-bold text-muted-foreground/50 mt-0.5">Optional — it syncs to your team.</p>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 text-left">
+                  <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Your name</label>
+                  <input
+                    type="text" value={joinName}
+                    onChange={e => { setJoinName(e.target.value); setError(''); }}
+                    className="w-full bg-muted/50 rounded-2xl text-sm px-6 py-4 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40"
+                    placeholder="Your name"
+                  />
+                </div>
+
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5 text-left">
                     <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Terminal PIN</label>
@@ -584,7 +736,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                 <div>
                   <p className="text-sm font-black text-foreground tracking-tight uppercase">{joinPreview?.business_name || 'Request sent'}</p>
                   <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50 mt-1">
-                    The owner reviews this device and assigns your name, role and permissions. This screen updates the moment they approve.
+                    The owner reviews this device and assigns your role. This screen updates the moment they approve.
                   </p>
                 </div>
                 {error && (
@@ -656,11 +808,11 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                   <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Enter your PIN</label>
                   <div className="relative">
                     <input
-                      type={showUserPin ? 'text' : 'password'} maxLength={4} value={userPin} autoFocus
+                      type={showUserPin ? 'text' : 'password'} maxLength={6} value={userPin} autoFocus
                       onChange={e => { setUserPin(e.target.value.replace(/\D/g, '')); setUserError(''); }}
                       onKeyDown={e => { if (e.key === 'Enter') void handleUserPinLogin(); }}
                       className="w-full bg-muted/50 rounded-2xl text-center text-3xl tracking-[0.5em] py-5 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30"
-                      placeholder="••••"
+                      placeholder="••••••"
                     />
                     <button type="button" onClick={() => setShowUserPin(!showUserPin)} className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors">
                       {showUserPin ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -677,8 +829,14 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                 >
                   {userLoading ? t('auth.authenticating') : t('auth.access_terminal')}
                 </button>
+                <button type="button" onClick={() => { if (pickedUser) setUsername(pickedUser.username || pickedUser.name); handleForgotPin(); }}
+                  className="w-full text-center text-xs font-bold uppercase tracking-widest text-primary hover:text-primary/80 transition-colors py-1.5"
+                >
+                  <KeyRound size={12} className="inline mr-1.5 -mt-0.5" />
+                  Forgot PIN?
+                </button>
                 <button type="button" onClick={() => { setPickedUser(null); setUserPin(''); setUserError(''); }}
-                  className="w-full text-center text-xs font-bold uppercase tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors py-2"
+                  className="w-full text-center text-xs font-bold uppercase tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors py-1.5"
                 >
                   <ArrowLeft size={10} className="inline mr-1.5 -mt-0.5" />
                   Not you? Choose another profile

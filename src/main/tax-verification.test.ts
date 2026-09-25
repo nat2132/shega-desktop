@@ -3,6 +3,7 @@ import {
   normalizeTin, normalizeSubTin, fromMorBackendResponse, buildClientCacheRecord,
   isVerificationFresh, isVerificationStale, verificationAgeLabel, morStatusLabel,
   isMorVerified, MOR_CACHE_TTL_MS,
+  type MorVerification,
 } from '@shega/shared';
 
 describe('MoR verification protocol', () => {
@@ -38,7 +39,7 @@ describe('MoR verification protocol', () => {
   it('only live-answered statuses count as verified', () => {
     const fresh = fromMorBackendResponse({ status: 'verified', tin: '0012814908' });
     const cached = buildClientCacheRecord(fresh);
-    const unavailable = { ...fresh, status: 'unavailable' };
+    const unavailable: MorVerification = { ...fresh, status: 'unavailable' };
     expect(isMorVerified(fresh)).toBe(true);
     expect(isMorVerified(cached)).toBe(true); // a dated MoR answer stays verified
     expect(isMorVerified(unavailable)).toBe(false);
@@ -59,7 +60,7 @@ describe('MoR verification protocol', () => {
   });
 
   it('availability/failure records are never presented as fresh', () => {
-    const unavailable = { tin: '0012814908', status: 'unavailable' as const, source: 'client-cache' };
+    const unavailable: MorVerification = { tin: '0012814908', status: 'unavailable', source: 'client-cache' };
     expect(isVerificationFresh(unavailable)).toBe(false);
     expect(isVerificationStale(unavailable)).toBe(false);
   });

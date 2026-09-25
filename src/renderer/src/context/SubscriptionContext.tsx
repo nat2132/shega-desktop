@@ -13,6 +13,11 @@ interface SubscriptionInfo {
   trialEndsAt: string | null;
   autoRenew: number;
   plan: any | null;
+  /** Present when the desktop is linked to a Shega backend account. */
+  cloudStatus?: string;
+  cloudAccess?: 'full' | 'view_only';
+  cloudPlanName?: string | null;
+  cloudLicenseKey?: string | null;
 }
 
 interface RenewalInfo {
@@ -29,8 +34,11 @@ interface SubscriptionContextType {
   subscription: SubscriptionInfo | null;
   loading: boolean;
   refresh: () => Promise<void>;
+  status: string | null;
   isPremium: boolean;
   isTrial: boolean;
+  isExpired: boolean;
+  isReadOnly: boolean;
   daysRemaining: number;
   renewalInfo: RenewalInfo | null;
 }
@@ -61,14 +69,34 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
     refresh();
   }, [refresh]);
 
-  const isPremium = true;
-  const isTrial = true;
+  // Access is no longer tiered: the plans differ by EDITION (Mobile / Desktop /
+  // Mobile + Desktop), not by capability, so any active or trial subscription
+  // unlocks the whole app. When linked to the backend its `access` flag wins.
+  let isPremium = false;
+  let isTrial = false;
+  let isExpired = false;
+  let isReadOnly = false;
+  if (subscription) {
+    const fullAccess = subscription.cloudAccess
+      ? subscription.cloudAccess === 'full'
+      : subscription.status === 'active';
+    if (fullAccess) {
+      isPremium = true;
+      isTrial = !!subscription.isTrial;
+      isExpired = !!renewalInfo?.isExpired;
+      isReadOnly = isExpired;
+    } else {
+      isExpired = true;
+      isReadOnly = true;
+    }
+  }
   const daysRemaining = renewalInfo?.daysRemaining ?? 0;
 
   return (
     <SubscriptionContext.Provider value={{
       subscription, loading, refresh,
-      isPremium, isTrial, daysRemaining, renewalInfo,
+      status: subscription?.status ?? null,
+      isPremium, isTrial, isExpired, isReadOnly, daysRemaining, renewalInfo,
     }}>
       {children}
     </SubscriptionContext.Provider>

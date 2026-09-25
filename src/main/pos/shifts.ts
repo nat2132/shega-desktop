@@ -219,7 +219,7 @@ export function calculateShiftTotals(shiftId: number): any {
     GROUP BY paymentMethod
   `).all(shiftId) as any[];
 
-  const totals = { cash: 0, card: 0, mobile: 0, total: 0 };
+  const totals = { cash: 0, card: 0, mobile: 0, total: 0, subtotal: 0, discount: 0 };
   const counts = { sales: 0, voids: 0, refunds: 0, returns: 0 };
 
   for (const s of sales) {
@@ -229,6 +229,22 @@ export function calculateShiftTotals(shiftId: number): any {
     else if (method === 'mobile') totals.mobile = s.total;
     totals.total += s.total;
   }
+
+  // Gross sales before discount, and the discount total. The fiscal X/Z report
+  // prints both, so they have to come from the sale rows rather than being read
+  // off the payment-method totals (which only carry what was tendered).
+  const gross = db.prepare(`
+    SELECT
+      COALESCE(SUM(s.totalPrice + s.discount), 0) AS subtotal,
+      COALESCE(SUM(s.discount), 0) AS discount
+    FROM shift_transactions st
+    JOIN sales s ON s.id = st.saleId
+    WHERE st.shiftId = ? AND st.saleId IS NOT NULL
+      AND COALESCE(s.is_deleted, 0) = 0
+      AND COALESCE(s.status, '') NOT IN ('Voided', 'voided', 'cancelled', 'refunded')
+  `).get(shiftId) as any;
+  totals.subtotal = Number(gross?.subtotal || 0);
+  totals.discount = Number(gross?.discount || 0);
 
   // Get void/refund counts
   const voids = db.prepare('SELECT COUNT(*) as c FROM sales WHERE shiftId = ? AND status = ?').get(shiftId, 'Voided') as any;
@@ -347,6 +363,10 @@ export interface ShiftReportData {
     card: number;
     mobile: number;
     total: number;
+    /** Gross sales before discount. */
+    subtotal: number;
+    /** Total discount applied to the shift's sales. */
+    discount: number;
   };
   counts: {
     sales: number;
@@ -405,6 +425,8 @@ export function generateShiftReport(shiftId: number): ShiftReportData {
       card: totals.totals.card,
       mobile: totals.totals.mobile,
       total: totals.totals.total,
+      subtotal: totals.totals.subtotal,
+      discount: totals.totals.discount,
     },
     counts: totals.counts,
     cashDrawer: {

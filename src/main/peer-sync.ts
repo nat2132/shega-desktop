@@ -17,8 +17,10 @@ import db from './database';
 import { logger } from './logger';
 import {
   ensureHubDeviceId,
+  persistPeerDevice,
 } from './sync-hub';
 import { mdnsDiscovery, type DiscoveredService } from './sync/discovery';
+import { networkMonitor, currentOnline } from './sync/connectivity';
 import { wsSyncServer, startWsSyncServer } from './sync/websocket-server';
 import { p2pSync } from './sync/p2p-sync-manager';
 import { getActiveBusinessId } from './ipc-handlers';
@@ -110,13 +112,29 @@ export function detectNetworkCapabilities(): NetworkCapabilities {
     platform: (svc.capabilities?.includes('mobile') ? 'mobile' : 'desktop') as DevicePlatform,
   }));
 
-  const hasInternet = true; // Will be updated by connectivity service
+  let isHubRunning = false;
+  try {
+    const { wsSyncServer } = require('./sync/websocket-server');
+    isHubRunning = wsSyncServer.getConnectedClients() !== undefined;
+  } catch { /* best effort */ }
+
+  const hasInternet = currentOnline();
+
+  const cloudUrl = db.prepare(
+    "SELECT value FROM settings WHERE key = 'cloud_sync_url'"
+  ).get() as any;
+  const cloudEnabled = db.prepare(
+    "SELECT value FROM settings WHERE key = 'cloud_sync_enabled'"
+  ).get() as any;
+  const cloudConfigured =
+    !!cloudUrl?.value &&
+    cloudEnabled?.value === 'true';
 
   return {
-    hasLan: lanPeers.length > 0,
+    hasLan: isHubRunning || lanPeers.length > 0,
     hasInternet,
     lanPeers,
-    cloudConfigured: false,
+    cloudConfigured,
   };
 }
 
@@ -135,8 +153,18 @@ export function detectNetworkCapabilities(): NetworkCapabilities {
  * are treated identically.
  */
 let syncInterval: NodeJS.Timeout | null = null;
+let startupKick: NodeJS.Timeout | null = null;
+let kickDebounce: NodeJS.Timeout | null = null;
+let syncInFlight = false;
+let lastCloudSyncAt = 0;
 
 const LAN_SYNC_INTERVAL_MS = 30_000;  // 30 seconds
+
+// Cloud relay fallback runs at most once a minute when the LAN is empty and
+// internet is back — enough to converge, gentle on the relay (SYNC_CONTRACT
+// §5 doesn't promise burst tolerance).
+const CLOUD_MIN_INTERVAL_MS = 60_000;
+const KICK_DEBOUNCE_MS = 2_000;
 
 export function startPeerSync(): void {
   const hubId = ensureHubDeviceId();
@@ -165,6 +193,38 @@ export function startPeerSync(): void {
   } catch (e: any) {
     logger.warn('P2P sync start failed (continuing without it)', { error: e?.message });
   }
+
+  // Automatic reconnect (2.4/3.4): the one place that decides "what to do now".
+  // Every reconnect signal funnels into a single debounced kick, so a device
+  // coming back, a network switch, or a new hub appearing all trigger exactly
+  // one sync pass — never a stampede racing the 30s interval.
+  const kick = () => {
+    if (kickDebounce) clearTimeout(kickDebounce);
+    kickDebounce = setTimeout(() => {
+      kickDebounce = null;
+      performLanSync().catch((e: any) => logger.error('Kicked sync failed', { error: e?.message }));
+      try { p2pSync.announce(); } catch {}
+    }, KICK_DEBOUNCE_MS);
+  };
+
+  // Internet restored → the LAN may be reachable again too (same physical
+  // network); re-resolve everything and kick.
+  networkMonitor.on('online', kick);
+  networkMonitor.on('network-changed', kick);
+
+  // A hub appearing on the LAN is the strongest reconnect signal. Sync with it
+  // immediately instead of waiting up to 30s for the interval.
+  mdnsDiscovery.on('up', kick);
+  mdnsDiscovery.on('down', kick);
+
+  networkMonitor.start();
+
+  // Startup immediate sync: a freshly opened app should connect to a visible
+  // hub right away — not after 30s. Give discovery ~2s to settle first.
+  startupKick = setTimeout(() => {
+    startupKick = null;
+    kick();
+  }, 2000);
 
   // Periodic LAN sync: pull from any discovered peers, push local changes
   if (syncInterval) clearInterval(syncInterval);
@@ -204,6 +264,19 @@ export function stopPeerSync(): void {
     clearInterval(syncInterval);
     syncInterval = null;
   }
+  if (startupKick) {
+    clearTimeout(startupKick);
+    startupKick = null;
+  }
+  if (kickDebounce) {
+    clearTimeout(kickDebounce);
+    kickDebounce = null;
+  }
+  networkMonitor.removeAllListeners('online');
+  networkMonitor.removeAllListeners('network-changed');
+  networkMonitor.stop();
+  mdnsDiscovery.removeAllListeners('up');
+  mdnsDiscovery.removeAllListeners('down');
   mdnsDiscovery.stop();
   wsSyncServer.stop();
   logger.info('Peer sync stopped');
@@ -223,23 +296,54 @@ export function stopPeerSync(): void {
  * is assumed to always be the server.
  */
 export async function performLanSync(): Promise<void> {
+  if (syncInFlight) return;
   const discovered = mdnsDiscovery.getDiscoveredServices();
-  if (discovered.length === 0) return;
 
-  // For each discovered peer hub, perform a bidirectional sync.
-  // Mobile phones acting as POS Hubs speak the TCP JSON protocol, not HTTP —
-  // route those to the dedicated mobile-hub client.
-  const { isMobileHub, syncWithMobileHub } = await import('./sync/mobile-hub-client');
-  for (const peer of discovered) {
+  // Cloud fallback: no hubs on the LAN but internet is back → use the cloud
+  // relay as a second transport so a LAN-less device still converges (§5).
+  if (discovered.length === 0) {
+    syncInFlight = true;
     try {
-      if (isMobileHub(peer)) {
-        await syncWithMobileHub(peer);
-      } else {
-        await syncWithPeerHub(peer);
-      }
-    } catch (e: any) {
-      logger.warn('Sync with peer hub failed', { peerId: peer.deviceId, error: e?.message });
+      const online = currentOnline();
+      if (!online) return;
+      const { isCloudConfigured, syncCloudOnce } = await import('./sync-cloud');
+      if (!isCloudConfigured()) return;
+      const now = Date.now();
+      if (now - lastCloudSyncAt < CLOUD_MIN_INTERVAL_MS) return;
+      lastCloudSyncAt = now;
+      const res = await syncCloudOnce();
+      logger.info('Cloud sync (LAN empty fallback)', {
+        ok: res.ok,
+        accepted: res.accepted ?? 0,
+        pulled: res.pulled ?? 0,
+        applied: res.applied ?? 0,
+        error: res.error ?? null,
+      });
+    } finally {
+      syncInFlight = false;
     }
+    return;
+  }
+
+  syncInFlight = true;
+  try {
+    // For each discovered peer hub, perform a bidirectional sync.
+    // Mobile phones acting as POS Hubs speak the TCP JSON protocol, not HTTP —
+    // route those to the dedicated mobile-hub client.
+    const { isMobileHub, syncWithMobileHub } = await import('./sync/mobile-hub-client');
+    for (const peer of discovered) {
+      try {
+        if (isMobileHub(peer)) {
+          await syncWithMobileHub(peer);
+        } else {
+          await syncWithPeerHub(peer);
+        }
+      } catch (e: any) {
+        logger.warn('Sync with peer hub failed', { peerId: peer.deviceId, error: e?.message });
+      }
+    }
+  } finally {
+    syncInFlight = false;
   }
 }
 
@@ -269,10 +373,12 @@ async function syncWithPeerHub(peer: DiscoveredService): Promise<void> {
   const peerUrl = `http://${peer.host}:${peer.port}`;
 
   // First, verify we're authorized to sync with this peer
+  let businessId: string | null = null;
   try {
     const infoRes = await fetch(`${peerUrl}/sync/info`);
     const info = await infoRes.json() as { ok?: boolean; businessId?: string };
     if (!info.ok) return;
+    businessId = info.businessId ?? null;
 
     // Check business membership match
     const verification = verifyPeerMembership(info.businessId, peer.deviceId);
@@ -312,6 +418,15 @@ async function syncWithPeerHub(peer: DiscoveredService): Promise<void> {
   } catch (e: any) {
     logger.warn('Peer pull failed', { peerId: peer.deviceId, error: e?.message });
   }
+  // Persist the peer hub as a device so it appears in Connected Devices.
+  try {
+    persistPeerDevice({
+      deviceId: peer.deviceId,
+      name: peer.name || `Desktop Hub (${peer.deviceId.slice(0, 8)})`,
+      platform: 'desktop',
+      businessId: businessId ?? undefined,
+    });
+  } catch { /* best effort */ }
 }
 
 // ─── Status query ───────────────────────────────────────────────────────────
@@ -337,24 +452,37 @@ export async function getUnifiedSyncStatus(): Promise<{
     'SELECT COUNT(*) AS c FROM sync_conflicts'
   ).get() as any)?.c ?? 0;
 
-  const hasLan = mdnsDiscovery.getDiscoveredServices().length > 0;
-
   let health: SyncHealth = 'synced';
   if (outboxCount > 0) health = 'pending';
-  if (!hasLan) health = 'offline';
 
-  const transport: SyncTransport = hasLan ? 'lan' : 'offline';
+  const capabilities = detectNetworkCapabilities();
+  const transport: SyncTransport = getSyncStrategy(capabilities);
+
+  let isHubRunning = false;
+  let wsPeers = 0;
+  try {
+    const { wsSyncServer } = require('./sync/websocket-server');
+    const clients = wsSyncServer.getConnectedClients();
+    if (clients !== undefined) {
+      isHubRunning = true;
+      wsPeers = clients.length;
+    }
+  } catch { /* best effort */ }
+
+  if (transport === 'offline' && !isHubRunning) {
+    health = 'offline';
+  }
 
   return {
     health,
-    transport,
+    transport: (transport === 'offline' && isHubRunning) ? 'lan' : transport,
     lastSyncAt: null,
     pendingOutbound: outboxCount,
     failedChanges: 0,
     conflicts: conflictCount,
     lan: {
       configured: true,
-      peers: mdnsDiscovery.getDiscoveredServices().length,
+      peers: Math.max(mdnsDiscovery.getDiscoveredServices().length, wsPeers),
       lastSyncAt: null,
     },
   };

@@ -40,8 +40,20 @@ import {
   bridgeDeleteBySource,
   bridgeEmployeeUser,
   findRosterLogin,
+  getSyncedTeam,
   reconcileUserBridge,
 } from './user-bridge';
+import * as backendClient from './backend-client';
+import {
+  applyBackendStatus,
+  clearCloud,
+  getCloudSubscription,
+  isCloudLinked,
+  mergeIntoRenewal,
+  mergeIntoSubscription,
+  seedBusinessesFromMemberships,
+} from './subscription-backend';
+import { resetWriteGateCache } from './view-only-gate';
 
 // §15 — Desktop manager-PIN approval gate. Returns true when the sensitive
 // action may proceed: either the acting user is an approver (Owner/Administrator/
@@ -339,6 +351,8 @@ export function registerIPCHandlers() {
     return db.prepare('SELECT * FROM businesses WHERE id = ?').get(id);
   });
 
+  ipcMain.handle('get-synced-team', () => getSyncedTeam(getActiveBusinessId()));
+
   ipcMain.handle('update-business', (_, id: number, biz: any) => {
     requirePermission('settings');
     if (!biz.businessName?.trim()) throw new Error('Business name is required');
@@ -351,9 +365,35 @@ export function registerIPCHandlers() {
   ipcMain.handle('p2p:devices', () => p2pSync.getDevices());
   ipcMain.handle('p2p:announce', () => { p2pSync.announce(); return true; });
   ipcMain.handle('p2p:approve', (_: any, name?: string, code?: string) => p2pSync.approveIncoming(name, code));
+  // Tap-to-connect: grant EXACTLY the radar peer the user selected (grid row →
+  // deviceId/host/platform), then kick it so the pair begins immediately.
+  ipcMain.handle('p2p:approve-one', (_: any, peer: { deviceId?: string; name?: string; host?: string; platform?: string; role?: string; permissions?: Record<string, unknown> }) => {
+    const granted = p2pSync.approveIncoming(peer?.name, (peer as any)?.code, peer, { role: peer?.role, permissions: peer?.permissions });
+    const peerId = peer?.deviceId ? String(peer.deviceId).trim() : '';
+    const ok = !!peerId && granted.includes(peerId);
+    return {
+      granted,
+      connected: ok,
+      error: ok ? null : `"${peer?.name || peerId || 'this device'}" is not reachable on this network right now. Keep Shega open on it and refresh, then try again.`,
+    };
+  });
   ipcMain.handle('p2p:revoke-device', (_, deviceId: string) => { p2pSync.revokeDevice(deviceId); return true; });
   ipcMain.handle('p2p:rename-device', (_, deviceId: string, name: string) => p2pSync.renameDevice(deviceId, name));
   ipcMain.handle('p2p:record-counts', () => p2pSync.getRecordCounts());
+  // Persist a peer/hub device after successful pairing so it appears in
+  // Connected Devices and can be used for auto-reconnect.
+  ipcMain.handle('p2p:persist-peer', (_: any, device: { deviceId: string; name?: string; platform?: 'mobile' | 'desktop'; businessId?: number | string; model?: string }) => {
+    try {
+      const { persistPeerDevice } = require('./sync-hub');
+      persistPeerDevice(device);
+      return { ok: true };
+    } catch (e: any) {
+      return { ok: false, error: e?.message };
+    }
+  });
+  // Device/sync lifecycle events are pushed to renderers directly on the
+  // 'device:event' webContents channel by mainBus (see bus.ts) — no
+  // callback-style handler needed here.
 
   ipcMain.handle('business:list', () => {
     const totalBiz = (db.prepare('SELECT COUNT(*) c FROM businesses WHERE is_deleted = 0').get() as any).c;
@@ -1899,13 +1939,21 @@ export function registerIPCHandlers() {
   });
 
   // ========== SETTINGS ==========
-  ipcMain.handle('get-setting', (_, key: string) => {
+  function getSetting<T = any>(key: string): T | null {
     const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as any;
-    return row ? JSON.parse(row.value) : null;
+    return row ? (JSON.parse(row.value) as T) : null;
+  }
+
+  function setSetting(key: string, value: unknown): unknown {
+    return db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, JSON.stringify(value));
+  }
+
+  ipcMain.handle('get-setting', (_, key: string) => {
+    return getSetting(key);
   });
 
   ipcMain.handle('set-setting', (_, key: string, value: any) => {
-    return db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, JSON.stringify(value));
+    return setSetting(key, value);
   });
 
   // ========== DEMO MODE (6.6) ==========
@@ -2792,11 +2840,20 @@ export function registerIPCHandlers() {
     return out;
   });
 
+  ipcMain.handle('get-last-login-user', () => {
+    try {
+      return getSetting('last_login_user_key') ?? null;
+    } catch {
+      return null;
+    }
+  });
+
   // PIN-only login for a picked profile. Verifies against the source row's
   // scrypt hash and sets the same session state as `login` so permissions,
   // business context, and activity attribution switch with the user.
   ipcMain.handle('login-by-user', (_e, source: 'admin' | 'employee' | 'roster', id: number, pin: string) => {
-    if (!pin || !/^\d{4}$/.test(String(pin))) return { success: false, error: 'Enter your 4-digit PIN' };
+    if (!pin || !/^\d{4,6}$/.test(String(pin))) return { success: false, error: 'Enter your 6-digit PIN' };
+    setSetting('last_login_user_key', `${source}:${id}`);
     if (source === 'admin') {
       const admin = db.prepare('SELECT id, name, username, role, permissions, isActive, businessId, avatar, pin FROM admins WHERE id = ?').get(id) as any;
       if (!admin) return { success: false, error: 'User not found' };
@@ -3752,70 +3809,102 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('verify-recovery-key', (_, username: string, recoveryKey: string) => {
+    if (!username || !recoveryKey) return { valid: false, error: 'Username and recovery code required' };
+    const normKey = recoveryKey.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    if (normKey.length < 6) return { valid: false, error: 'Invalid recovery code format' };
+
+    // 1. Check users roster table (synced team & owners)
+    const roster = db.prepare(
+      `SELECT id, username, pinHash, pinSalt, recoveryHash, recoverySalt FROM users
+       WHERE (is_deleted IS NULL OR is_deleted = 0)
+         AND (LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?) OR LOWER(name) = LOWER(?)) LIMIT 1`
+    ).get(username.trim(), username.trim(), username.trim()) as any;
+
+    if (roster && roster.recoveryHash) {
+      const match = verifyPin(normKey, `${roster.recoverySalt ?? ''}:${roster.recoveryHash}`) || verifyPin(recoveryKey, `${roster.recoverySalt ?? ''}:${roster.recoveryHash}`);
+      if (match) {
+        return { valid: true, accountId: roster.id, isRoster: true };
+      }
+    }
+
+    // 2. Check legacy pin_recovery_keys table
     let empId: number | null = null;
     let admId: number | null = null;
-    const empAccount = db.prepare('SELECT ea.id as accountId, ea.employeeId FROM employee_accounts ea WHERE ea.username = ?').get(username) as any;
+    const empAccount = db.prepare('SELECT ea.id as accountId, ea.employeeId FROM employee_accounts ea WHERE LOWER(ea.username) = LOWER(?)').get(username.trim()) as any;
     if (empAccount) {
       empId = empAccount.employeeId;
     } else {
-      const admin = db.prepare('SELECT id FROM admins WHERE username = ?').get(username) as any;
-      if (admin) {
-        admId = admin.id;
+      const admin = db.prepare('SELECT id FROM admins WHERE LOWER(username) = LOWER(?)').get(username.trim()) as any;
+      if (admin) admId = admin.id;
+    }
+    let record: any = null;
+    if (empId) record = db.prepare('SELECT * FROM pin_recovery_keys WHERE employeeId = ?').get(empId) as any;
+    if (!record && admId) record = db.prepare('SELECT * FROM pin_recovery_keys WHERE adminId = ?').get(admId) as any;
+
+    if (record && !record.usedAt) {
+      if (verifyPin(normKey, record.recoveryKey) || verifyPin(recoveryKey, record.recoveryKey)) {
+        return { valid: true, accountId: empId || admId, isEmployee: !!empId };
       }
     }
-    if (!empId && !admId) return { valid: false, error: 'Account not found' };
-    let record: any = null;
-    if (empId) {
-      record = db.prepare('SELECT * FROM pin_recovery_keys WHERE employeeId = ?').get(empId) as any;
-    }
-    if (!record && admId) {
-      record = db.prepare('SELECT * FROM pin_recovery_keys WHERE adminId = ?').get(admId) as any;
-    }
-    if (!record) return { valid: false, error: 'No recovery key found for this account' };
-    if (record.usedAt) return { valid: false, error: 'Recovery key has already been used' };
-    if (!verifyPin(recoveryKey, record.recoveryKey)) return { valid: false, error: 'Invalid recovery key' };
-    return { valid: true, accountId: empId || admId, isEmployee: !!empId };
+
+    return { valid: false, error: 'Invalid recovery code' };
   });
 
   ipcMain.handle('reset-pin-with-recovery', (_, username: string, recoveryKey: string, newPin: string) => {
+    if (!username || !recoveryKey || !newPin) return { success: false, error: 'Missing required parameters' };
+    if (newPin.length !== 6) return { success: false, error: 'PIN must be exactly 6 digits' };
+    const normKey = recoveryKey.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    const hash = hashPin(newPin);
+
+    // 1. Check users roster table
+    const roster = db.prepare(
+      `SELECT id, username, pinHash, pinSalt, recoveryHash, recoverySalt FROM users
+       WHERE (is_deleted IS NULL OR is_deleted = 0)
+         AND (LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?) OR LOWER(name) = LOWER(?)) LIMIT 1`
+    ).get(username.trim(), username.trim(), username.trim()) as any;
+
+    if (roster && roster.recoveryHash) {
+      const match = verifyPin(normKey, `${roster.recoverySalt ?? ''}:${roster.recoveryHash}`) || verifyPin(recoveryKey, `${roster.recoverySalt ?? ''}:${roster.recoveryHash}`);
+      if (match) {
+        const parts = hash.split(':');
+        const pinSalt = parts.length === 2 ? parts[0] : null;
+        const pinHash = parts.length === 2 ? parts[1] : hash;
+        db.prepare('UPDATE users SET pinHash = ?, pinSalt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(pinHash, pinSalt, roster.id);
+        insertAuditLog('pin_recovery_reset', 'user', roster.id, 'pin', 'REDACTED', 'REDACTED', `PIN reset via recovery code for ${username}`);
+        return { success: true };
+      }
+    }
+
+    // 2. Check legacy pin_recovery_keys table
     let empId: number | null = null;
     let admId: number | null = null;
-    const empAccount = db.prepare('SELECT ea.id as accountId, ea.employeeId FROM employee_accounts ea WHERE ea.username = ?').get(username) as any;
-    if (empAccount) {
-      empId = empAccount.employeeId;
-    } else {
-      const admin = db.prepare('SELECT id FROM admins WHERE username = ?').get(username) as any;
-      if (admin) {
-        admId = admin.id;
-      }
+    const empAccount = db.prepare('SELECT ea.id as accountId, ea.employeeId FROM employee_accounts ea WHERE LOWER(ea.username) = LOWER(?)').get(username.trim()) as any;
+    if (empAccount) empId = empAccount.employeeId;
+    else {
+      const admin = db.prepare('SELECT id FROM admins WHERE LOWER(username) = LOWER(?)').get(username.trim()) as any;
+      if (admin) admId = admin.id;
     }
-    if (!empId && !admId) return { success: false, error: 'Account not found' };
+
     let record: any = null;
-    if (empId) {
-      record = db.prepare('SELECT * FROM pin_recovery_keys WHERE employeeId = ?').get(empId) as any;
+    if (empId) record = db.prepare('SELECT * FROM pin_recovery_keys WHERE employeeId = ?').get(empId) as any;
+    if (!record && admId) record = db.prepare('SELECT * FROM pin_recovery_keys WHERE adminId = ?').get(admId) as any;
+
+    if (!record) return { success: false, error: 'No recovery code found for this account' };
+    if (record.usedAt) return { success: false, error: 'Recovery code has already been used' };
+    if (!verifyPin(normKey, record.recoveryKey) && !verifyPin(recoveryKey, record.recoveryKey)) {
+      return { success: false, error: 'Invalid recovery code' };
     }
-    if (!record && admId) {
-      record = db.prepare('SELECT * FROM pin_recovery_keys WHERE adminId = ?').get(admId) as any;
-    }
-    if (!record) return { success: false, error: 'No recovery key found' };
-    if (record.usedAt) return { success: false, error: 'Recovery key has already been used' };
-    if (!verifyPin(recoveryKey, record.recoveryKey)) return { success: false, error: 'Invalid recovery key' };
+
     db.prepare('UPDATE pin_recovery_keys SET usedAt = CURRENT_TIMESTAMP WHERE id = ?').run(record.id);
-    const hash = hashPin(newPin);
     if (empId) {
-      const existingAcct = db.prepare('SELECT id FROM employee_accounts WHERE employeeId = ?').get(empId) as any;
-      if (existingAcct) {
-        db.prepare('UPDATE employee_accounts SET pin = ?, forcePasswordChange = 0, failedLoginAttempts = 0, lockedUntil = NULL, isActive = 1, updatedAt = CURRENT_TIMESTAMP WHERE employeeId = ?')
-          .run(hash, empId);
-      }
+      db.prepare('UPDATE employee_accounts SET pin = ?, forcePasswordChange = 0, failedLoginAttempts = 0, lockedUntil = NULL, isActive = 1, updatedAt = CURRENT_TIMESTAMP WHERE employeeId = ?')
+        .run(hash, empId);
     }
     if (admId) {
       db.prepare('UPDATE admins SET pin = ? WHERE id = ?').run(hash, admId);
     }
-    const targetId = (empId || admId) ?? undefined;
-    db.prepare('INSERT INTO pin_history (entityType, entityId, action, performedBy, performedById, details) VALUES (?, ?, ?, ?, ?, ?)')
-      .run('employee_account', targetId, 'pin_recovery_reset', username, null, 'PIN reset via recovery key');
-    insertAuditLog('pin_recovery_reset', 'account', targetId ?? null, 'pin', 'REDACTED', 'REDACTED', `PIN reset via recovery key for ${username}`);
+    insertAuditLog('pin_recovery_reset', 'account', (empId || admId) ?? null, 'pin', 'REDACTED', 'REDACTED', `PIN reset via recovery code for ${username}`);
     return { success: true };
   });
 
@@ -5012,10 +5101,10 @@ export function registerIPCHandlers() {
 </body>
 </html>`;
       const printWindow = new BrowserWindow({ show: false, width: 400, height: 600, webPreferences: { nodeIntegration: false, contextIsolation: true } });
-      await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(receiptHtml)}`);
-      printWindow.webContents.on('did-finish-load', () => {
+      printWindow.webContents.once('did-finish-load', () => {
         printWindow.webContents.print({}, () => printWindow.close());
       });
+      await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(receiptHtml)}`);
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -5067,12 +5156,10 @@ export function registerIPCHandlers() {
 
   ipcMain.handle('simulate-scan', async (_e, code?: string) => {
     try {
-      const value = code && code.trim() ? code.trim() : String(Math.floor(100000000000 + Math.random() * 899999999999));
-      const win = (await import('electron')).BrowserWindow.getAllWindows()[0];
-      win?.webContents.executeJavaScript(
-        `window.dispatchEvent(new CustomEvent('shega:barcode-scan', { detail: ${JSON.stringify(value)} }))`,
-      );
-      return { success: true, value };
+      // With mock mode ON this replays a genuine HID keystroke stream through
+      // the mock scanner; the scan event is then bridged to the renderer.
+      const { runDesktopSimulateScan } = await import('./hardware/mock');
+      return await runDesktopSimulateScan(code);
     } catch (e: any) {
       return { success: false, error: e.message };
     }
@@ -6528,44 +6615,88 @@ export function registerIPCHandlers() {
     return db.prepare('SELECT * FROM subscription_plans WHERE isActive = 1 ORDER BY price ASC').all();
   });
 
-  ipcMain.handle('get-current-subscription', () => {
+ipcMain.handle('get-current-subscription', () => {
     const bizId = getActiveBusinessId();
-    const sub = db.prepare('SELECT * FROM subscriptions WHERE businessId = ?').get(bizId) as any;
+    let sub = db.prepare('SELECT * FROM subscriptions WHERE businessId = ?').get(bizId) as any;
+
+    // When the desktop is linked to a Shega backend account the backend is the
+    // source of truth for access: merge the cloud snapshot over the local row.
+    if (getCloudSubscription()) {
+      return mergeIntoSubscription(sub);
+    }
+
     if (!sub) return null;
 
-    // Check if trial has expired
+    // Check if trial has expired.
     const now = new Date();
     if (sub.isTrial && sub.trialEndsAt && new Date(sub.trialEndsAt) < now && sub.status === 'active') {
-      sub.tier = 'basic';
-      sub.status = 'active';
-      sub.isTrial = 0;
-      db.prepare('UPDATE subscriptions SET tier = ?, isTrial = 0, updatedAt = ? WHERE id = ?')
-        .run('basic', now.toISOString(), sub.id);
-      db.prepare('INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(sub.id, bizId, 'trial_expired', 'trial', 'basic', 'Trial period ended, auto-downgraded to Basic', 'system');
-      sub.tier = 'basic';
+      db.prepare('UPDATE subscriptions SET tier = ?, status = ?, isTrial = 0, updatedAt = ? WHERE id = ?')
+        .run('none', 'expired', now.toISOString(), sub.id);
+      db.prepare('INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, oldStatus, newStatus, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(sub.id, bizId, 'trial_expired', 'trial', 'none', 'active', 'expired', 'Trial period ended', 'system');
+      sub.tier = 'none';
+      sub.status = 'expired';
       sub.isTrial = 0;
     }
 
-    // Check if paid subscription has expired
+    // Check if paid subscription has expired. The tier stays as the purchased
+    // edition — only the status changes, which is what drives read-only access.
     if (sub.expiresAt && new Date(sub.expiresAt) < now && sub.status === 'active' && !sub.isTrial) {
       const oldTier = sub.tier;
-      sub.tier = 'basic';
       sub.status = 'expired';
       db.prepare('UPDATE subscriptions SET status = ?, updatedAt = ? WHERE id = ?')
         .run('expired', now.toISOString(), sub.id);
       db.prepare('INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, oldStatus, newStatus, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(sub.id, bizId, 'subscription_expired', oldTier, 'basic', 'active', 'expired', 'Subscription period ended', 'system');
-      sub.status = 'expired';
-      sub.tier = 'basic';
+        .run(sub.id, bizId, 'subscription_expired', oldTier, oldTier, 'active', 'expired', 'Subscription period ended', 'system');
     }
 
     const plan = sub.planId ? db.prepare('SELECT * FROM subscription_plans WHERE id = ?').get(sub.planId) : null;
     return { ...sub, plan };
   });
 
-  ipcMain.handle('start-trial', () => {
+  // `planTier` is the canonical edition chosen on the welcome screen
+  // ('mobile' | 'desktop' | 'both') and selects which plan the trial runs on.
+  ipcMain.handle('start-trial', async (_, planTier?: string) => {
     const bizId = getActiveBusinessId();
+    const requestedEdition = ['mobile', 'desktop', 'both'].includes(String(planTier))
+      ? String(planTier)
+      : null;
+
+    // Linked to the backend? The backend owns trials (one per account) and is
+    // the source of truth. Fall back to the legacy local trial when offline.
+    if (backendClient.hasSession()) {
+      try {
+        const plans = await backendClient.getPlans();
+        // Prefer the exact edition the user picked, then fall back to the
+        // fullest plan so a trial never lands on a narrower edition by accident.
+        const pickPlan = (): any => {
+          if (requestedEdition) {
+            const exact = plans.find((p: any) => p.edition === requestedEdition);
+            if (exact) return exact;
+          }
+          return (
+            plans.find((p: any) => p.edition === 'both') ||
+            plans.find((p: any) => /\+\s*mobile/i.test(p.name || '')) ||
+            plans.find((p: any) => /desktop/i.test(p.name || '')) ||
+            plans[0]
+          );
+        };
+        const trialPlan = pickPlan();
+        if (!trialPlan) throw new Error('No backend plans available for the trial.');
+        const status = await backendClient.startTrial(Number(trialPlan.id));
+        applyBackendStatus(status);
+        return { success: true, cloud: true, status };
+      } catch (err: any) {
+        if (err?.status === 409) {
+          return { success: false, error: 'A trial is only available once per account (or a subscription already exists).' };
+        }
+        if (err?.status && err?.status !== 0) {
+          return { success: false, error: err?.detail || err?.message || 'Could not start the trial on the server.' };
+        }
+        // Offline — keep legacy local trial for resilience.
+      }
+    }
+
     const now = new Date();
     const trialEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     const existing = db.prepare('SELECT id, isTrial, status FROM subscriptions WHERE businessId = ?').get(bizId) as any;
@@ -6575,29 +6706,70 @@ export function registerIPCHandlers() {
       if (!existing.isTrial && existing.status !== 'expired') {
         return { success: false, error: 'Subscription already active' };
       }
-      db.prepare('UPDATE subscriptions SET tier = ?, status = ?, isTrial = 1, trialStartedAt = ?, trialEndsAt = ?, startedAt = ?, expiresAt = ?, updatedAt = ? WHERE id = ?')
-        .run('trial', 'active', now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString(), now.toISOString(), existing.id);
+      // Point the trial at the local plan for the chosen edition when one
+      // exists, so the dashboard shows the right plan while offline.
+      const localPlan = requestedEdition
+        ? (db.prepare('SELECT id, tier FROM subscription_plans WHERE tier = ? AND isActive = 1 ORDER BY price ASC LIMIT 1').get(requestedEdition) as any)
+        : null;
+      db.prepare('UPDATE subscriptions SET planId = ?, tier = ?, status = ?, isTrial = 1, trialStartedAt = ?, trialEndsAt = ?, startedAt = ?, expiresAt = ?, updatedAt = ? WHERE id = ?')
+        .run(localPlan?.id ?? null, localPlan?.tier ?? 'trial', 'active', now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString(), now.toISOString(), existing.id);
     } else {
-      db.prepare('INSERT INTO subscriptions (businessId, tier, status, isTrial, trialStartedAt, trialEndsAt, startedAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(bizId, 'trial', 'active', 1, now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString());
+      const localPlan = requestedEdition
+        ? (db.prepare('SELECT id, tier FROM subscription_plans WHERE tier = ? AND isActive = 1 ORDER BY price ASC LIMIT 1').get(requestedEdition) as any)
+        : null;
+      db.prepare('INSERT INTO subscriptions (businessId, planId, tier, status, isTrial, trialStartedAt, trialEndsAt, startedAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(bizId, localPlan?.id ?? null, localPlan?.tier ?? 'trial', 'active', 1, now.toISOString(), trialEnd.toISOString(), now.toISOString(), trialEnd.toISOString());
     }
     db.prepare('INSERT INTO subscription_history (subscriptionId, businessId, action, oldTier, newTier, details, changedBy) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(existing?.id || (db.prepare('SELECT id FROM subscriptions WHERE businessId = ?').get(bizId) as any)?.id, bizId, 'trial_started', existing?.tier || 'none', 'trial', '7-day premium trial started', currentUserName || 'system');
+      .run(existing?.id || (db.prepare('SELECT id FROM subscriptions WHERE businessId = ?').get(bizId) as any)?.id, bizId, 'trial_started', existing?.tier || 'none', 'trial', '7-day free trial started', currentUserName || 'system');
     return { success: true };
   });
 
-  ipcMain.handle('submit-payment', (_, data: {
+  ipcMain.handle('submit-payment', async (_, data: {
     transactionId: string; businessName: string; phoneNumber: string;
     selectedPlan: string; amount: number; paymentDate: string; notes?: string
   }) => {
     const bizId = getActiveBusinessId();
+    const now = new Date().toISOString();
+
+    // Linked to the backend? Submit the transaction there — it reviews, the
+    // admin approves/rejects it in Shega Admin, and the backend drives the
+    // resulting status. Keep a local record so the history tab has it either way.
+    let cloudResult: { success: boolean; error?: string; status?: any } = { success: true };
+    if (backendClient.hasSession()) {
+      try {
+        const plans = await backendClient.getPlans();
+        const plan =
+          plans.find((p: any) => String(p.name).toLowerCase() === String(data.selectedPlan).toLowerCase()) ||
+          plans.find((p: any) => String(p.name).toLowerCase().includes(String(data.selectedPlan).toLowerCase())) ||
+          plans[0];
+        if (!plan) throw new Error('No backend plan matches the selected plan.');
+        const status = await backendClient.submitPayment({
+          plan_id: Number(plan.id),
+          transaction_id: data.transactionId,
+          payment_method: 'telebirr',
+          description: data.notes || `Desktop payment submission for ${data.selectedPlan}`,
+        });
+        applyBackendStatus(status);
+        cloudResult = { success: true, status };
+      } catch (err: any) {
+        cloudResult = { success: false, error: err?.detail || err?.message || 'Could not submit the payment to the server.' };
+      }
+    }
+
     const result = db.prepare(`
       INSERT INTO payment_transactions (businessId, transactionId, businessName, phoneNumber, selectedPlan, amount, paymentDate, notes)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(bizId, data.transactionId, data.businessName, data.phoneNumber, data.selectedPlan, data.amount, data.paymentDate, data.notes || null);
     db.prepare('INSERT INTO subscription_history (subscriptionId, businessId, action, details, changedBy) VALUES (?, ?, ?, ?, ?)')
       .run(null, bizId, 'payment_submitted', `Payment submitted for plan "${data.selectedPlan}" (Transaction: ${data.transactionId})`, currentUserName || 'system');
-    return { success: true, id: result.lastInsertRowid };
+    return {
+      success: cloudResult.success,
+      error: cloudResult.error,
+      cloud: backendClient.hasSession(),
+      id: result.lastInsertRowid,
+      ...(cloudResult.status ? { status: cloudResult.status } : {}),
+    };
   });
 
   ipcMain.handle('get-payment-transactions', (_, options?: { status?: string }) => {
@@ -6637,7 +6809,7 @@ export function registerIPCHandlers() {
     const expiresAt = new Date(now.getTime() + plan.durationMonths * 30 * 24 * 60 * 60 * 1000);
 
     const existingSub = db.prepare('SELECT id, tier FROM subscriptions WHERE businessId = ?').get(tx.businessId) as any;
-    const oldTier = existingSub?.tier || 'basic';
+    const oldTier = existingSub?.tier || 'none';
 
     if (existingSub) {
       db.prepare(`
@@ -6683,37 +6855,53 @@ export function registerIPCHandlers() {
   ipcMain.handle('get-renewal-info', () => {
     const bizId = getActiveBusinessId();
     const sub = db.prepare('SELECT * FROM subscriptions WHERE businessId = ?').get(bizId) as any;
-    if (!sub || !sub.expiresAt) return null;
+    const cloud = getCloudSubscription();
+    if ((!sub || !sub.expiresAt) && !cloud) return null;
+
+    const local = sub ?? {
+      expiresAt: cloud.expiresAt,
+      tier: cloud.tier,
+      status: cloud.status === 'trial' ? 'active' : cloud.status,
+      isTrial: cloud.isTrial ? 1 : 0,
+    };
+    if (!local.expiresAt) return null;
 
     const now = new Date();
-    const expiry = new Date(sub.expiresAt);
+    const expiry = new Date(local.expiresAt);
     const daysRemaining = Math.ceil((expiry.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
-    return {
+    return mergeIntoRenewal({
       daysRemaining: Math.max(0, daysRemaining),
-      expiresAt: sub.expiresAt,
+      expiresAt: local.expiresAt,
       isExpired: daysRemaining <= 0,
       needsRenewal: daysRemaining <= 7,
-      tier: sub.tier,
-      status: sub.status,
-      isTrial: !!sub.isTrial,
-    };
+      tier: local.tier,
+      status: local.status,
+      isTrial: !!local.isTrial,
+    });
   });
 
+  // Feature access is no longer tiered: the plans differ by EDITION (Mobile /
+  // Desktop / Mobile + Desktop), not by capability. Any active subscription —
+  // paid or trial — unlocks the full surface, so this only has to answer
+  // whether the account currently has access at all. The backend wins when the
+  // desktop is linked to a Shega account.
   ipcMain.handle('check-premium-feature', (_, feature: string) => {
+    void feature;
+    const cloud = getCloudSubscription();
+    if (cloud) {
+      if (cloud.access === 'full') return { allowed: true };
+      if (cloud.status === 'none') return { allowed: false, reason: 'no_subscription' };
+      return { allowed: false, reason: cloud.status === 'expired' ? 'subscription_expired' : 'subscription_not_active' };
+    }
+
     const bizId = getActiveBusinessId();
     const sub = db.prepare('SELECT tier, isTrial, status, expiresAt FROM subscriptions WHERE businessId = ?').get(bizId) as any;
     if (!sub) return { allowed: false, reason: 'no_subscription' };
-
     if (sub.status !== 'active') return { allowed: false, reason: 'subscription_not_active' };
-    const isPremium = sub.tier === 'premium' || sub.isTrial;
-    if (!isPremium) return { allowed: false, reason: 'requires_premium' };
-
-    // Check expiry for paid premium
     if (!sub.isTrial && sub.expiresAt && new Date(sub.expiresAt) < new Date()) {
       return { allowed: false, reason: 'subscription_expired' };
     }
-
     return { allowed: true };
   });
 
@@ -6722,12 +6910,14 @@ export function registerIPCHandlers() {
       SELECT s.tier, s.status, s.isTrial, s.expiresAt, s.businessId, b.businessName as bizName
       FROM subscriptions s LEFT JOIN businesses b ON s.businessId = b.id
     `).all();
+    const activeSubs = allSubs.filter((s: any) => !s.isTrial);
     return {
       total: allSubs.length,
       active: allSubs.filter((s: any) => s.status === 'active').length,
       trial: allSubs.filter((s: any) => s.isTrial).length,
-      premium: allSubs.filter((s: any) => s.tier === 'premium').length,
-      basic: allSubs.filter((s: any) => s.tier === 'basic' && !s.isTrial).length,
+      mobile: activeSubs.filter((s: any) => s.tier === 'mobile').length,
+      desktop: activeSubs.filter((s: any) => s.tier === 'desktop').length,
+      both: activeSubs.filter((s: any) => s.tier === 'both').length,
       expired: allSubs.filter((s: any) => s.status === 'expired').length,
       pendingPayments: (db.prepare("SELECT COUNT(*) as c FROM payment_transactions WHERE status = 'pending'").get() as any).c,
     };
@@ -6739,8 +6929,174 @@ export function registerIPCHandlers() {
     if (!sub) return { available: true };
     if (sub.isTrial) return { available: false, reason: 'already_on_trial', trialActive: true };
     if (sub.status === 'expired' && !sub.isTrial) return { available: false, reason: 'already_used_trial' };
-    if (sub.status === 'active' && sub.tier !== 'basic') return { available: false, reason: 'already_subscribed' };
+    if (sub.status === 'active') return { available: false, reason: 'already_subscribed' };
     return { available: true };
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Shega backend account link (source of truth for the subscription)
+  // ══════════════════════════════════════════════════════════════════════
+  // The desktop talks to the SAME backend as Shega Mobile and Shega Admin.
+  // The backend owns the subscription lifecycle (trial, payments, admin
+  // approval/rejection, renewal, device/business add-ons) and the desktop
+  // enforces the access level it reports.
+
+  ipcMain.handle('backend-login', async (_, creds: { username?: string; password?: string }) => {
+    if (!creds?.username?.trim() || !creds?.password?.trim()) {
+      return { success: false, error: 'Email and password are required.' };
+    }
+    try {
+      const data = await backendClient.login(creds.username.trim(), creds.password);
+      let memberships: any = { owned: [], memberships: [] };
+      try { memberships = await backendClient.getMemberships(); } catch { /* non-fatal */ }
+      // Mirror the account's businesses locally BEFORE the status is applied so
+      // the switcher lists every owned business / membership of the account.
+      try { seedBusinessesFromMemberships(memberships); } catch { /* non-fatal */ }
+      const status = await backendClient.getSubscriptionStatus();
+      applyBackendStatus(status);
+      return {
+        success: true,
+        user: data.user,
+        email: data.user?.email ?? creds.username.trim(),
+        status,
+        memberships,
+        businessId: getActiveBusinessId(),
+      };
+    } catch (err: any) {
+      return { success: false, error: err?.detail || err?.message || 'Login failed.' };
+    }
+  });
+
+  ipcMain.handle('backend-logout', async () => {
+    try {
+      await backendClient.logout();
+    } catch { /* best effort */ }
+    clearCloud();
+    return { success: true };
+  });
+
+  ipcMain.handle('backend-session', () => {
+    const cloud = getCloudSubscription();
+    return {
+      linked: isCloudLinked(),
+      email: backendClient.getSessionEmail(),
+      baseUrl: backendClient.getBackendBaseUrl(),
+      status: cloud?.status ?? null,
+      planName: cloud?.planName ?? null,
+      expiresAt: cloud?.expiresAt ?? null,
+      syncedAt: cloud?.syncedAt ?? null,
+    };
+  });
+
+  // The backend base URL is configuration, not a constant: it lives in the
+  // `backend_api_url` setting (falling back to SHEGA_BACKEND_URL and then the
+  // built-in default) so a testing tunnel or a self-hosted deployment can be
+  // pointed at without rebuilding the app.
+  ipcMain.handle('get-backend-url', () => ({ baseUrl: backendClient.getBackendBaseUrl() }));
+
+  ipcMain.handle('set-backend-url', (_, rawUrl: string) => {
+    const url = String(rawUrl ?? '').trim().replace(/\/+$/, '');
+    if (!url) {
+      db.prepare("DELETE FROM settings WHERE key = 'backend_api_url'").run();
+      return { success: true, baseUrl: backendClient.getBackendBaseUrl() };
+    }
+    if (!/^https?:\/\/[^\s]+$/i.test(url)) {
+      return { success: false, error: 'Enter a full http:// or https:// URL.' };
+    }
+    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('backend_api_url', url);
+    return { success: true, baseUrl: url };
+  });
+
+  ipcMain.handle('backend-sync', async () => {
+    if (!backendClient.hasSession()) {
+      return { success: false, error: 'Not linked to a Shega account.' };
+    }
+    try {
+      const status = await backendClient.getSubscriptionStatus();
+      applyBackendStatus(status);
+      // A fresh status changes what the view-only gate may allow; drop its cache
+      // so the new access level applies to the very next write.
+      resetWriteGateCache();
+      // Keep the local business list aligned with the account (add-on business
+      // purchases show up here as a new membership).
+      try {
+        const memberships = await backendClient.getMemberships();
+        seedBusinessesFromMemberships(memberships);
+      } catch { /* non-fatal */ }
+      return { success: true, status };
+    } catch (err: any) {
+      return { success: false, error: err?.detail || err?.message || 'Could not refresh the subscription status.' };
+    }
+  });
+
+  ipcMain.handle('backend-plans', async () => {
+    if (!backendClient.hasSession()) return { success: false, error: 'Not linked to a Shega account.' };
+    try {
+      const plans = await backendClient.getPlans();
+      return { success: true, plans };
+    } catch (err: any) {
+      return { success: false, error: err?.detail || err?.message || 'Could not load plans from the server.' };
+    }
+  });
+
+  ipcMain.handle('backend-start-trial', async (_, args: { planId?: number }) => {
+    if (!backendClient.hasSession()) return { success: false, error: 'Not linked to a Shega account.' };
+    try {
+      let planId = args?.planId;
+      if (!planId) {
+        const plans = await backendClient.getPlans();
+        const pick =
+          plans.find((p: any) => /desktop/i.test(p.name) && /mobile/i.test(p.name)) ||
+          plans.find((p: any) => /desktop/i.test(p.name)) ||
+          plans[0];
+        if (!pick) return { success: false, error: 'No plans available on the server.' };
+        planId = Number(pick.id);
+      }
+      const status = await backendClient.startTrial(planId);
+      applyBackendStatus(status);
+      return { success: true, status };
+    } catch (err: any) {
+      if (err?.status === 409) {
+        return { success: false, error: 'A trial is only available once per account.', code: 409 };
+      }
+      return { success: false, error: err?.detail || err?.message || 'Could not start the trial.' };
+    }
+  });
+
+  ipcMain.handle('backend-submit-payment', async (_, args: {
+    planId: number; transactionId: string; paymentMethod?: string; description?: string;
+    paymentType?: string; quantity?: number;
+  }) => {
+    if (!backendClient.hasSession()) return { success: false, error: 'Not linked to a Shega account.' };
+    try {
+      const payment = await backendClient.submitPayment({
+        plan_id: Number(args?.planId),
+        transaction_id: String(args?.transactionId ?? ''),
+        payment_method: args?.paymentMethod || 'telebirr',
+        payment_type: args?.paymentType,
+        quantity: args?.quantity ? Number(args.quantity) : undefined,
+        description: args?.description || 'Desktop payment submission',
+      });
+      // The endpoint answers with the PAYMENT record, not a subscription status,
+      // so always re-read the status to refresh access. A failed refresh must not
+      // be reported as a failed payment — that invites a duplicate submission.
+      try {
+        const fresh = await backendClient.getSubscriptionStatus();
+        applyBackendStatus(fresh);
+        resetWriteGateCache();
+        return { success: true, status: fresh, payment };
+      } catch (refreshErr: any) {
+        return {
+          success: true,
+          status: null,
+          payment,
+          statusRefreshed: false,
+          error: refreshErr?.detail || refreshErr?.message || 'Payment submitted; subscription status will refresh later.',
+        };
+      }
+    } catch (err: any) {
+      return { success: false, error: err?.detail || err?.message || 'Could not submit the payment.' };
+    }
   });
 
   // Debug handler
@@ -6943,13 +7299,14 @@ export function registerIPCHandlers() {
   });
 
   // ========== POS MODULE: LEDGER ==========
-  ipcMain.handle('ledger:entries', (_, options?: { limit?: number; offset?: number; type?: string }) => {
+  ipcMain.handle('ledger:entries', (_, options?: Parameters<typeof ledger.getLedgerEntries>[1]) => {
     const bizId = getActiveBusinessId();
     return ledger.getLedgerEntries(bizId, options);
   });
 
   ipcMain.handle('ledger:reverse', (_, request: { entryId: number; reason: string; reversedBy: number }) => {
-    return ledger.reverseEntry(request);
+    // The wire field is reversedBy; the ledger contract calls the actor performedBy.
+    return ledger.reverseEntry({ ...request, performedBy: request.reversedBy });
   });
 
   ipcMain.handle('ledger:verify', () => {
@@ -6971,8 +7328,21 @@ export function registerIPCHandlers() {
     return tax.calculateTax(lines);
   });
 
-  ipcMain.handle('tax:wht', (_, input: { amount: number; rate: number; payerName: string; payerTin: string }) => {
-    return tax.calculateWHT(input);
+  ipcMain.handle('tax:wht', (_, input: {
+    amount?: number; paymentAmount?: number;
+    supplierCategory?: 'resident' | 'non-resident';
+    paymentType?: 'service' | 'goods' | 'rent' | 'interest' | 'dividend' | 'royalty';
+    isExempt?: boolean; exemptionCertificate?: string;
+  }) => {
+    // calculateWHT derives the rate from the category/payment type, so the
+    // amount is mapped in and the classification defaults to the common case.
+    return tax.calculateWHT({
+      paymentAmount: input.paymentAmount ?? input.amount ?? 0,
+      supplierCategory: input.supplierCategory ?? 'resident',
+      paymentType: input.paymentType ?? 'service',
+      isExempt: input.isExempt,
+      exemptionCertificate: input.exemptionCertificate,
+    });
   });
 
   ipcMain.handle('tax:vat-return', (_, input: any) => {
@@ -7002,9 +7372,20 @@ export function registerIPCHandlers() {
   // ========== POS MODULE: MoR QR ==========
   ipcMain.handle('mor-qr:generate', (_, data: {
     tin: string; invoiceNumber: string; invoiceDate: string;
-    totalAmount: number; vatAmount: number; totAmount: number; whtAmount: number;
+    totalAmount: number; vatAmount: number; totAmount?: number; whtAmount?: number;
+    currency?: string;
   }) => {
-    return morQr.generateMorQrPayload(data);
+    // The QR contract uses invoiceNo/date; the wire format says invoiceNumber/Date.
+    return morQr.generateMorQrPayload({
+      tin: data.tin,
+      invoiceNo: data.invoiceNumber,
+      date: data.invoiceDate,
+      totalAmount: data.totalAmount,
+      vatAmount: data.vatAmount,
+      totAmount: data.totAmount,
+      whtAmount: data.whtAmount,
+      currency: data.currency,
+    });
   });
 
   ipcMain.handle('mor-qr:validate', (_, payload: string) => {
@@ -7014,7 +7395,8 @@ export function registerIPCHandlers() {
   ipcMain.handle('mor-qr:print-receipt', async (_, data: any) => {
     const driver = getPrinterConfig();
     if (!driver) throw new Error('No printer configured');
-    await morQr.printMorReceipt(data, driver);
+    // printMorReceipt(driver, input) — the driver comes first.
+    await morQr.printMorReceipt(driver, data);
     return { success: true };
   });
 
@@ -7032,25 +7414,34 @@ export function registerIPCHandlers() {
     return compliance.generateComplianceReport(bizId, fromDate, toDate);
   });
 
-  ipcMain.handle('compliance:log', (_, event: any) => {
-    return compliance.logComplianceEvent(event);
+  ipcMain.handle('compliance:log', (_, event: { eventType: string; details?: Record<string, any>; userId?: number }) => {
+    const bizId = getActiveBusinessId();
+    return compliance.logComplianceEvent(bizId, event.eventType, event.details ?? {}, event.userId);
   });
 
   // ========== POS MODULE: e-TAX EXPORT ==========
-  ipcMain.handle('etax:export-sales', (_, options: { fromDate: string; toDate: string; outputDir?: string }) => {
-    return etaxExport.generateEtaxSalesCsv(options);
+  // The e-TAX generators work on a business + single YYYY-MM period, while the wire
+  // format carries a date range. The period is the month the range starts in.
+  const etaxOptions = (options: { fromDate: string; toDate?: string; outputDir?: string }) => ({
+    businessId: getActiveBusinessId(),
+    period: options.fromDate.slice(0, 7),
+    outputPath: options.outputDir,
   });
 
-  ipcMain.handle('etax:export-purchases', (_, options: { fromDate: string; toDate: string; outputDir?: string }) => {
-    return etaxExport.generateEtaxPurchasesCsv(options);
+  ipcMain.handle('etax:export-sales', (_, options: { fromDate: string; toDate?: string; outputDir?: string }) => {
+    return etaxExport.generateEtaxSalesCsv(etaxOptions(options));
+  });
+
+  ipcMain.handle('etax:export-purchases', (_, options: { fromDate: string; toDate?: string; outputDir?: string }) => {
+    return etaxExport.generateEtaxPurchasesCsv(etaxOptions(options));
   });
 
   ipcMain.handle('etax:validate', (_, csv: string, type: 'sales' | 'purchases') => {
     return etaxExport.validateEtaxCsv(csv, type);
   });
 
-  ipcMain.handle('etax:export-all', (_, options: { fromDate: string; toDate: string; outputDir: string }) => {
-    return etaxExport.exportEtaxCsv(options);
+  ipcMain.handle('etax:export-all', (_, options: { fromDate: string; toDate?: string; outputDir?: string }) => {
+    return etaxExport.exportEtaxCsv(etaxOptions(options));
   });
 
   // ========== SHARED BUSINESS MODEL (registers, devices, roles, people) ==========

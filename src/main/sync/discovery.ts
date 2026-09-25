@@ -1,6 +1,8 @@
 import { Bonjour } from 'bonjour-service';
 import { EventEmitter } from 'events';
-import { ensureHubDeviceId, SYNC_PORT } from '../sync-hub';
+import { ensureHubDeviceId, getPairingToken, SYNC_PORT } from '../sync-hub';
+import { getDesktopDeviceName } from './device-name';
+import { PROTOCOL_VERSION } from '@shega/shared';
 
 export interface ServiceInfo {
   deviceId: string;
@@ -13,6 +15,7 @@ export interface ServiceInfo {
   discoveredAt: number;
   platform?: string;
   businessId?: string;
+  name?: string;
 }
 
 export interface DiscoveredService extends ServiceInfo {
@@ -64,7 +67,9 @@ export class MdnsDiscovery extends EventEmitter<DiscoveryEventMap> {
 
     const txtRecord = {
       device_id: deviceId,
-      schema_version: '21',
+      pairing_token: getPairingToken(),
+      name: getDesktopDeviceName(),
+      schema_version: String(PROTOCOL_VERSION),
       port: String(port),
       platform: 'desktop',
       business_id: businessId,
@@ -108,6 +113,7 @@ export class MdnsDiscovery extends EventEmitter<DiscoveryEventMap> {
         host: service.addresses?.[0] || service.host,
         platform: service.txt?.platform || 'desktop',
         businessId: service.txt?.business_id || undefined,
+        name: service.txt?.name || undefined,
       };
 
       this.discoveredServices.set(deviceId, discovered);

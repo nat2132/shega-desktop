@@ -14,6 +14,7 @@ import {
   syncHubBus,
 } from '../sync-hub';
 import { logger } from '../logger';
+import { mainBus } from '../bus';
 import { notifyDataApplied } from './notify';
 import {
   submitDeviceJoinRequest,
@@ -22,10 +23,17 @@ import {
   publishInvitation,
   resolveInvitation,
   getDeviceJoinRequestBy,
+  getDeviceJoinRequestByDevice,
   canonicalBusinessUuid,
   businessDisplayName,
 } from './device-requests';
-import { DEVICE_JOIN_MSG, PERIPHERAL_MSG } from '@shega/shared';
+import { DEVICE_JOIN_MSG, PERIPHERAL_MSG, PROTOCOL_VERSION } from '@shega/shared';
+import {
+  defaultPairingLogger,
+  shortId,
+  PAIRING_SESSION_MSG,
+  type PairingHandshakeAck,
+} from '@shega/shared';
 import { p2pSync } from './p2p-sync-manager';
 import {
   peripheralHub,
@@ -63,9 +71,27 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
   private wss: WebSocketServer | null = null;
   private clients = new Map<string, WsClient>();
   private heartbeatInterval: NodeJS.Timeout | null = null;
+  private outboxWatchInterval: NodeJS.Timeout | null = null;
+  private lastBroadcastSeq = 0;
+  /**
+   * Joiner device ids that are actively polling this hub over a live socket.
+   * The pairing session has a single source of truth — the `device_requests`
+   * row — but a pushed decision needs a socket to travel over, so we remember
+   * which joiner sits on which connection. Populated by join-status polls and
+   * join submits (both are sent by an unpaired joiner, so they are the only
+   * proof that a joiner is reachable right now).
+   */
+  private joinWaiters = new Map<string, string>();
+
+  private log = defaultPairingLogger;
 
   start(port: number = WS_SYNC_PORT): void {
     if (this.wss) return;
+
+    // Owner approved a radar/late peer: push the decision down the joiner's
+    // live socket immediately instead of waiting for its next poll, and log the
+    // handshake so both consoles show the same connection state.
+    p2pSync.setJoinDecisionNotifier((deviceId, payload) => this.notifyJoinDecision(deviceId, payload));
 
     // Any transport that applies new data (a phone pushing over HTTP, a peer
     // desktop pulling, or another WS client) makes every connected client pull
@@ -87,6 +113,18 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     // Heartbeat to detect dead connections
     this.heartbeatInterval = setInterval(() => this.sendHeartbeats(), 30000);
 
+    // Outbox watcher: broadcast DATA_CHANGED whenever the outbox max seq advances,
+    // so desktop-local writes (which don't fire 'applied') also push live updates
+    // to connected WS clients. Runs every 2s — low overhead, instant convergence.
+    this.lastBroadcastSeq = this.getMaxSeq();
+    this.outboxWatchInterval = setInterval(() => {
+      const current = this.getMaxSeq();
+      if (current > this.lastBroadcastSeq) {
+        this.lastBroadcastSeq = current;
+        this.broadcastDataChanged();
+      }
+    }, 2000);
+
     logger.info(`[WS] Sync server listening on port ${WS_SYNC_PORT}`);
   }
 
@@ -104,6 +142,13 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     this.clients.set(clientId, client);
     logger.info(`[WS] Client connected: ${clientId}`);
 
+    // NOTE: `device-connected` is intentionally NOT emitted here — at connect
+    // time the client has no identity yet (device_id/name/platform are only
+    // known after PAIR_REQUEST). Emitting with undefined locals used to throw
+    // a ReferenceError, killing the socket before its message handler attached
+    // (the whole WS channel was dead). The event fires from handlePairRequest
+    // with the real identity instead.
+
     ws.on('message', (data: Buffer) => {
       try {
         const msg: WsMessage = JSON.parse(data.toString());
@@ -116,6 +161,7 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
 
     ws.on('close', () => {
       this.handleDisconnect(clientId, client);
+      if (client.deviceId) mainBus.emitEvent('device-disconnected', { deviceId: client.deviceId, deviceName: client.deviceId, platform: 'unknown' });
     });
 
     ws.on('error', (err) => {
@@ -131,6 +177,10 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       case 'HEARTBEAT':
         client.lastHeartbeat = Date.now();
         this.send(ws, { type: 'HEARTBEAT_ACK', timestamp: Date.now() });
+        break;
+
+      case 'HEARTBEAT_ACK':
+        // Client acknowledges our heartbeat — no action needed.
         break;
 
       case 'PAIR_REQUEST':
@@ -175,6 +225,13 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
 
       case DEVICE_JOIN_MSG.STATUS:
         this.handleDeviceJoinStatus(clientId, client, msg);
+        break;
+
+      // Pairing connection handshake (shared contract): a joiner announces
+      // itself and the hub answers with an explicit acknowledgement, so neither
+      // side has to guess whether the connection exists.
+      case PAIRING_SESSION_MSG.HELLO:
+        this.handlePairSessionHello(clientId, client, msg);
         break;
 
       case PERIPHERAL_MSG.REGISTER:
@@ -228,20 +285,20 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     const { device_id, name, token, platform } = msg.payload || {};
 
     if (!device_id) {
-      this.sendError(ws, 'PAIR_FAILED', 'device_id required');
+      this.sendError(ws, 'PAIR_FAILED', 'device_id required', msg.requestId);
       return;
     }
 
     const hubToken = getPairingToken();
     if (String(token ?? '').trim().toUpperCase() !== hubToken) {
-      this.sendError(ws, 'PAIR_FAILED', token ? 'Invalid pairing token' : 'Pairing token required');
+      this.sendError(ws, 'PAIR_FAILED', token ? 'Invalid pairing token' : 'Pairing token required', msg.requestId);
       return;
     }
 
     // A revoked/unpaired device is refused even with a valid token — it must
     // be re-approved by an owner (new pairing/authorization) first.
     if (isDeviceRevoked(device_id)) {
-      this.sendError(ws, 'PAIR_FAILED', 'Device was unpaired by the owner. A new pairing is required.');
+      this.sendError(ws, 'PAIR_FAILED', 'Device was unpaired by the owner. A new pairing is required.', msg.requestId);
       logger.warn(`[WS] Refused re-pair from revoked device ${device_id}`);
       return;
     }
@@ -250,13 +307,20 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     client.deviceId = device_id;
     client.paired = true;
 
+    mainBus.emitEvent('device-connected', {
+      deviceId: device_id,
+      deviceName: name || device_id,
+      platform: platform || 'unknown',
+    });
+
     this.send(ws, {
       type: 'PAIR_RESPONSE',
       requestId: msg.requestId,
       payload: {
         success: true,
         hubId: ensureHubDeviceId(),
-        schemaVersion: 21,
+        serverSeq: this.getMaxSeq(),
+        schemaVersion: PROTOCOL_VERSION,
       },
     });
 
@@ -267,17 +331,32 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
   private handleDeviceJoinSubmit(clientId: string, client: WsClient, msg: WsMessage): void {
     const ws = client.ws;
     const payload = msg.payload || {};
-    if (!payload.code || !payload.joinerDeviceId) {
-      this.sendError(ws, 'DEVICE_JOIN_FAILED', 'code and joinerDeviceId required');
+    const joinerDeviceId = String(payload.joinerDeviceId ?? payload.joiner_device_id ?? '');
+    if (!joinerDeviceId) {
+      this.sendError(ws, 'DEVICE_JOIN_FAILED', 'joinerDeviceId required');
       return;
     }
-    // The invite code is the authorization for an unpaired joiner: a request may
-    // only be staged for the business the code resolves to — never by guessing
-    // business/device ids.
-    const inv = resolveInvitation(payload.code);
-    if (!inv) { this.sendError(ws, 'INVITE_INVALID', 'Invitation not found or expired'); return; }
-    const rec = submitDeviceJoinRequest({ ...payload, businessId: inv.businessId });
-    this.send(ws, { type: DEVICE_JOIN_MSG.ACK, requestId: msg.requestId, payload: { requestId: rec.requestId, status: rec.status } });
+    const code = String(payload.code ?? '');
+    const inv = code ? resolveInvitation(code) : null;
+    const { getActiveBusinessId } = require('../ipc-handlers');
+    const bizId = inv?.businessId || payload.businessId || String(getActiveBusinessId() || 1);
+
+    const rec = submitDeviceJoinRequest({ ...payload, code, businessId: bizId, joinerDeviceId });
+    this.registerJoinWaiter(clientId, rec.joinerDeviceId, 'submit');
+    this.send(ws, {
+      type: DEVICE_JOIN_MSG.ACK,
+      requestId: msg.requestId,
+      payload: {
+        requestId: rec.requestId,
+        status: rec.status,
+        handshake: this.buildHandshakeAck({ ...rec, status: rec.status }),
+      },
+    });
+    this.log('info', 'join request staged — connection acknowledged', {
+      joiner: shortId(rec.joinerDeviceId),
+      requestId: rec.requestId ?? null,
+      business: inv?.businessName ?? null,
+    });
     logger.info(`[WS] Device join request staged: ${rec.joinerDeviceId} -> ${rec.businessId}`);
   }
 
@@ -337,16 +416,160 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
   private handleDeviceJoinStatus(clientId: string, client: WsClient, msg: WsMessage): void {
     const ws = client.ws;
     const { code, joinerDeviceId } = msg.payload || {};
-    if (!code || !joinerDeviceId) { this.sendError(ws, 'DEVICE_JOIN_FAILED', 'code and joinerDeviceId required'); return; }
-    const rec = getDeviceJoinRequestBy(code, joinerDeviceId);
+    if (!joinerDeviceId) { this.sendError(ws, 'DEVICE_JOIN_FAILED', 'joinerDeviceId required'); return; }
+    // Code-less admission: radar-tap approvals are keyed by joiner_device_id
+    // alone (the owner tapped the joiner, no invite code was ever typed). When
+    // no code rides along, fall back to the device-keyed lookup so the joiner
+    // can learn its decision without an invite code.
+    const rec = code
+      ? getDeviceJoinRequestBy(String(code), joinerDeviceId)
+      : getDeviceJoinRequestByDevice(joinerDeviceId);
+    // Every poll proves the joiner is live on this socket: remember it so the
+    // owner's approval can be PUSHED instead of waiting for the next poll.
+    this.registerJoinWaiter(clientId, String(joinerDeviceId), 'status-poll');
     const payload: any = { record: rec };
-    // Approval hands the admitted device its pairing credential in-band: the
-    // joiner knows the invite code AND its own device id, and was explicitly
-    // admitted — without it the approved join could never pair/sync on the LAN.
+    // Approval hands the admitted device its pairing credential in-band (same
+    // as the HTTP hub) — without it the code-less joiner could never pair.
     if (rec && rec.status === 'approved') {
       payload.pairingToken = getPairingToken();
     }
+    // Explicit connection acknowledgement. `handshake.ok` means "this hub holds
+    // your session" — the signal the joiner needs to leave "Waiting for
+    // connection…" even before the owner decides.
+    payload.handshake = this.buildHandshakeAck(rec);
+    if (!rec || rec.status === 'pending') {
+      this.log('info', 'join status poll — connection acknowledged, awaiting owner', {
+        joiner: shortId(String(joinerDeviceId)),
+        code: code ? 'yes' : 'none',
+      });
+    } else {
+      this.log('info', `join status poll — decision returned: ${rec.status}`, {
+        joiner: shortId(String(joinerDeviceId)),
+        requestId: rec.requestId ?? null,
+        role: rec.role ?? null,
+      });
+    }
     this.send(ws, { type: DEVICE_JOIN_MSG.RESPONSE, requestId: msg.requestId, payload });
+  }
+
+  /**
+   * The shared handshake acknowledgement for a joiner.
+   *
+   * `ok: true` = this hub holds the joiner's session and the connection is real;
+   * `status` = the decision currently recorded (the owner's role assignment
+   * rides the same record). Both platforms read this shape, so the owner's
+   * "Connected" and the joiner's connected state come from ONE record.
+   */
+  private buildHandshakeAck(
+    rec: { requestId?: string | null; status?: string | null; businessId?: string | null } | null,
+  ): PairingHandshakeAck {
+    let businessName: string | null = null;
+    let businessId: string | null = rec?.businessId ? String(rec.businessId) : null;
+    try {
+      if (businessId) businessName = businessDisplayName(businessId);
+      if (!businessId) businessId = canonicalBusinessUuid(this.currentBusinessUuid()) || null;
+    } catch { /* business naming is cosmetic — never fail the ack */ }
+    return {
+      ok: true,
+      hubDeviceId: ensureHubDeviceId(),
+      hubName: 'Shega Desktop',
+      hubPlatform: 'desktop',
+      hubPort: WS_SYNC_PORT,
+      businessId,
+      businessName,
+      status: (rec?.status ?? 'pending') as PairingHandshakeAck['status'],
+      requestId: rec?.requestId ?? null,
+      at: Date.now(),
+    };
+  }
+
+  private currentBusinessUuid(): string {
+    try {
+      const row = db.prepare('SELECT uuid FROM businesses WHERE isDefault = 1 OR id = 1 LIMIT 1').get() as any;
+      return row?.uuid ? String(row.uuid) : '';
+    } catch { return ''; }
+  }
+
+  /** Remember which socket a joiner device is polling from. */
+  private registerJoinWaiter(clientId: string, joinerDeviceId: string, via: string): void {
+    if (!joinerDeviceId) return;
+    const known = this.joinWaiters.get(joinerDeviceId);
+    if (known !== clientId) {
+      this.joinWaiters.set(joinerDeviceId, clientId);
+      this.log('info', 'joiner connection tracked', { joiner: shortId(joinerDeviceId), via });
+    }
+  }
+
+  /**
+   * Push a join decision to a joiner that is connected right now.
+   *
+   * Called by the owner's approval path (`p2p:approve-one` → approveIncoming)
+   * the moment a device is granted, so a radar-tap admission reaches the joiner
+   * instantly instead of on its next 4s poll. Returns false when the joiner has
+   * no live socket — the caller keeps the poll as the durable fallback.
+   */
+  notifyJoinDecision(joinerDeviceId: string, payload: { record?: any; pairingToken?: string; handshake?: PairingHandshakeAck }): boolean {
+    const clientId = this.joinWaiters.get(joinerDeviceId);
+    if (!clientId) {
+      this.log('info', 'decision not pushed — joiner has no live socket (poll will deliver it)', {
+        joiner: shortId(joinerDeviceId),
+      });
+      return false;
+    }
+    const client = this.clients.get(clientId);
+    if (!client || client.ws.readyState !== WebSocket.OPEN) {
+      this.joinWaiters.delete(joinerDeviceId);
+      this.log('warn', 'decision push skipped — joiner socket closed', { joiner: shortId(joinerDeviceId) });
+      return false;
+    }
+    const body = {
+      ...(payload ?? {}),
+      handshake: payload?.handshake ?? this.buildHandshakeAck(payload?.record ?? null),
+    };
+    // A pushed decision has no caller-issued requestId, so the joiner treats a
+    // requestId-less RESPONSE as an out-of-band session update.
+    this.send(client.ws, { type: DEVICE_JOIN_MSG.RESPONSE, payload: body });
+    this.log('info', `decision pushed to joiner: ${payload?.record?.status ?? 'updated'}`, {
+      joiner: shortId(joinerDeviceId),
+      role: payload?.record?.role ?? null,
+      tokenIncluded: !!payload?.pairingToken,
+    });
+    return true;
+  }
+
+  /** Push a bare connection acknowledgement to a joiner (handshake only). */
+  notifyJoinAck(joinerDeviceId: string): boolean {
+    const clientId = this.joinWaiters.get(joinerDeviceId);
+    if (!clientId) return false;
+    const client = this.clients.get(clientId);
+    if (!client || client.ws.readyState !== WebSocket.OPEN) return false;
+    this.send(client.ws, {
+      type: DEVICE_JOIN_MSG.ACK,
+      payload: { status: 'pending', handshake: this.buildHandshakeAck(null) },
+    });
+    this.log('info', 'handshake ack pushed to joiner', { joiner: shortId(joinerDeviceId) });
+    return true;
+  }
+
+  /** Pairing-session hello from a joiner: answer with the handshake ack. */
+  private handlePairSessionHello(clientId: string, client: WsClient, msg: WsMessage): void {
+    const joinerDeviceId = String(msg.payload?.deviceId ?? msg.payload?.joinerDeviceId ?? '');
+    this.registerJoinWaiter(clientId, joinerDeviceId, 'pair-session-hello');
+    const rec = joinerDeviceId ? getDeviceJoinRequestByDevice(joinerDeviceId) : null;
+    this.send(client.ws, {
+      type: DEVICE_JOIN_MSG.ACK,
+      requestId: msg.requestId,
+      payload: {
+        status: rec?.status ?? 'pending',
+        record: rec,
+        ...(rec?.status === 'approved' ? { pairingToken: getPairingToken() } : {}),
+        handshake: this.buildHandshakeAck(rec),
+      },
+    });
+    this.log('info', 'pair-session hello acknowledged', {
+      joiner: shortId(joinerDeviceId),
+      status: rec?.status ?? 'none',
+    });
   }
 
   // ---------- Phone-peripheral channel (scanner / camera) ----------
@@ -542,10 +765,27 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
   }
 
   private handleDisconnect(clientId: string, client: WsClient): void {
+    const deviceId = client.deviceId;
     this.clients.delete(clientId);
+    // Stop pushing decisions to a socket that is gone; the joiner falls back to
+    // its poll (which is the durable path).
+    for (const [joinerId, waiterClientId] of this.joinWaiters) {
+      if (waiterClientId === clientId) {
+        this.joinWaiters.delete(joinerId);
+        this.log('info', 'joiner waiter released', { joiner: shortId(joinerId), reason: 'disconnected' });
+      }
+    }
     peripheralHub.unregisterBySocket(clientId);
-    logger.info(`[WS] Client disconnected: ${clientId} (${client.deviceId || 'unpaired'})`);
+    logger.info(`[WS] Client disconnected: ${clientId} (${deviceId || 'unpaired'})`);
+    if (deviceId) this.markRosterOffline(deviceId);
     this.emit('clientDisconnected', client);
+  }
+
+  private markRosterOffline(deviceId: string): void {
+    try {
+      db.prepare("UPDATE roster_devices SET status = 'offline', updated_at = CURRENT_TIMESTAMP WHERE uuid = ? OR device_id = ?")
+        .run(deviceId, deviceId);
+    } catch { /* roster table naming may differ */ }
   }
 
   private sendHeartbeats(): void {
@@ -554,8 +794,10 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       if (now - client.lastHeartbeat > 90000) {
         // 90s timeout
         logger.warn(`[WS] Client timeout: ${clientId}`);
+        const deadDeviceId = client.deviceId;
         client.ws.close();
         this.clients.delete(clientId);
+        if (deadDeviceId) this.markRosterOffline(deadDeviceId);
         this.emit('clientDisconnected', client);
       } else if (client.ws.readyState === WebSocket.OPEN) {
         this.send(client.ws, { type: 'HEARTBEAT', timestamp: now });
@@ -601,14 +843,21 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     }
   }
 
-  private sendError(ws: WebSocket, code: string, message: string): void {
-    this.send(ws, { type: 'ERROR', payload: { code, message } });
+  private sendError(ws: WebSocket, code: string, message: string, requestId?: string): void {
+    // Echo requestId so the client can settle the exact pending request —
+    // omitting it left PAIR_REQUEST hanging until timeout while the socket
+    // stayed open (mobile never re-armed its reconnect: zombie pairing).
+    this.send(ws, { type: 'ERROR', requestId, payload: { code, message } });
   }
 
   stop(): void {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
+    }
+    if (this.outboxWatchInterval) {
+      clearInterval(this.outboxWatchInterval);
+      this.outboxWatchInterval = null;
     }
     if (this.wss) {
       this.wss.close();

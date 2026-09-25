@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { app } from 'electron';
 import path from 'path';
 import { existsSync, mkdirSync, unlinkSync, copyFileSync } from 'fs';
-import { BUILTIN_ROLES } from '@shega/shared';
+import { BUILTIN_ROLES, PROTOCOL_VERSION } from '@shega/shared';
 
 const isDev = !app.isPackaged;
 const dbDir = isDev 
@@ -987,7 +987,7 @@ export function initDB() {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       device_id TEXT NOT NULL,
       pairing_token TEXT,
-      schema_version INTEGER DEFAULT 17
+      schema_version INTEGER DEFAULT ${PROTOCOL_VERSION}
     );
 
     CREATE TABLE IF NOT EXISTS sync_outbox (
@@ -1026,6 +1026,16 @@ export function initDB() {
       detail TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS sync_conflicts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity TEXT NOT NULL,
+      entity_uuid TEXT NOT NULL,
+      op TEXT NOT NULL,
+      incoming_payload TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_sync_conflicts_uuid ON sync_conflicts(entity_uuid);
 
     CREATE TABLE IF NOT EXISTS sync_refs (
       device_id TEXT,
@@ -1100,10 +1110,12 @@ export function initDB() {
       FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE
     );
 
+    -- Canonical Shega plan structure: an edition of Mobile / Desktop /
+    -- Mobile + Desktop. See migration 44 for the legacy Basic/Premium fold-in.
     CREATE TABLE IF NOT EXISTS subscription_plans (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
-      tier TEXT NOT NULL CHECK(tier IN ('basic', 'premium')),
+      tier TEXT NOT NULL CHECK(tier IN ('mobile', 'desktop', 'both')),
       durationMonths INTEGER NOT NULL,
       price REAL NOT NULL,
       currency TEXT DEFAULT 'ETB',
@@ -1117,7 +1129,12 @@ export function initDB() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       businessId INTEGER NOT NULL UNIQUE,
       planId INTEGER,
-      tier TEXT NOT NULL DEFAULT 'basic' CHECK(tier IN ('basic', 'premium', 'trial')),
+      -- tier records which edition the business holds. The legacy words are
+      -- still accepted because subscriptions is a SYNCED table: a paired
+      -- device on an older build may push them and a CHECK must not reject the
+      -- row (that failure mode stalled the whole sync hub before). Display code
+      -- maps them to the canonical editions.
+      tier TEXT NOT NULL DEFAULT 'none' CHECK(tier IN ('none', 'trial', 'mobile', 'desktop', 'both', 'basic', 'premium')),
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'expired', 'cancelled', 'pending')),
       startedAt TEXT,
       expiresAt TEXT,
@@ -2137,6 +2154,202 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     db.pragma(`user_version = ${version}`);
   }
 
+  // 8.x: devices gains the pairing-grant columns. approveIncoming (radar tap →
+  // p2p:approve-one), persistPeerDevice and markRosterStatus all write
+  // platform/status on `devices`, but the original CREATE TABLE never had them
+  // — so every radar tap threw "no such column: platform" inside a blanket
+  // catch, surfaced to the user as "is not reachable on this network" even
+  // though discovery worked. Guarded ALTERs match the house migration style.
+  if (version < 42) {
+    const deviceCols = (db.prepare('PRAGMA table_info(devices)').all() as any[]).map((c: any) => c.name);
+    if (!deviceCols.includes('platform')) db.exec("ALTER TABLE devices ADD COLUMN platform TEXT DEFAULT 'desktop'");
+    if (!deviceCols.includes('status')) db.exec("ALTER TABLE devices ADD COLUMN status TEXT DEFAULT 'active'");
+    if (!deviceCols.includes('userId')) db.exec('ALTER TABLE devices ADD COLUMN userId INTEGER');
+    if (!deviceCols.includes('role')) db.exec('ALTER TABLE devices ADD COLUMN role TEXT');
+    if (!deviceCols.includes('updated_at')) db.exec('ALTER TABLE devices ADD COLUMN updated_at TEXT');
+    if (!deviceCols.includes('uuid')) {
+      db.exec('ALTER TABLE devices ADD COLUMN uuid TEXT');
+      db.exec('UPDATE devices SET uuid = device_id WHERE uuid IS NULL;');
+    }
+    version = 42;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // The linked Shega account owns a business_id per business. Keep it beside
+  // the local row so a re-link maps backend memberships onto the SAME local
+  // business instead of creating a duplicate in the switcher.
+  if (version < 43) {
+    const bizCols = (db.prepare('PRAGMA table_info(businesses)').all() as any[]).map((c: any) => c.name);
+    if (!bizCols.includes('cloud_business_id')) db.exec('ALTER TABLE businesses ADD COLUMN cloud_business_id INTEGER');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_businesses_cloud_id ON businesses(cloud_business_id);');
+    version = 43;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 9.0: retire the Basic/Premium plan vocabulary in favour of the canonical
+  // Shega plan structure — Mobile (4,500 ETB/mo), Desktop (7,500 ETB/mo) and
+  // Mobile + Desktop (10,000 ETB/mo), matching the backend, which is the
+  // subscription source of truth for every platform.
+  //
+  // Both local tables carry a CHECK constraint that cannot express an edition,
+  // so each is rebuilt in place with ids preserved (`subscription_history` and
+  // `payment_transactions` reference `subscriptions.id`, so the ids must
+  // survive). `subscriptions` keeps accepting the legacy words as well: it is a
+  // SYNCED table, and a paired device still on the old build must not have its
+  // pushes rejected by a CHECK.
+  if (version < 44) {
+    const SUBSCRIPTION_TIERS = ['basic', 'premium', 'trial', 'mobile', 'desktop', 'both', 'none'];
+    const PLAN_TIERS = ['mobile', 'desktop', 'both'];
+
+    const CANONICAL_PLANS = [
+      { name: 'Mobile', tier: 'mobile', months: 1, price: 4500, description: 'Run your whole shop from your phone.', features: ['inventory', 'sales', 'customers', 'debts', 'adjustments', 'reports'] },
+      { name: 'Desktop', tier: 'desktop', months: 1, price: 7500, description: 'Full ERP power for your back office.', features: ['inventory', 'sales', 'customers', 'adjustments', 'employees', 'users', 'audit', 'suppliers', 'shipments', 'analytics', 'reports'] },
+      { name: 'Mobile + Desktop', tier: 'both', months: 1, price: 10000, description: 'Run mobile and desktop together, perfectly in sync.', features: ['inventory', 'sales', 'customers', 'adjustments', 'employees', 'users', 'audit', 'suppliers', 'shipments', 'analytics', 'reports', 'pos', 'sync'] },
+    ];
+
+    const tableNames = new Set(
+      (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as any[]).map((r: any) => r.name),
+    );
+
+    /** Retired plan wording → canonical edition. */
+    const editionFor = (value: unknown): string => {
+      const blob = String(value ?? '').toLowerCase();
+      if (blob.includes('premium')) return 'both';
+      if (blob.includes('desktop')) return 'desktop';
+      if (blob.includes('mobile')) return 'mobile';
+      return 'both'; // bare 'basic' predates the split — keep the widest access.
+    };
+
+    if (tableNames.has('subscription_plans')) {
+      // Remember how each legacy plan maps so subscriptions can follow it.
+      const editionByPlanId = new Map<number, string>();
+      for (const row of db.prepare('SELECT id, name, tier FROM subscription_plans').all() as any[]) {
+        editionByPlanId.set(Number(row.id), editionFor(`${row.tier ?? ''} ${row.name ?? ''}`));
+      }
+
+      try {
+        db.pragma('foreign_keys = OFF');
+        db.exec('DROP TABLE IF EXISTS subscription_plans_v44');
+        db.exec(`
+          CREATE TABLE subscription_plans_v44 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            tier TEXT NOT NULL CHECK(tier IN ('mobile', 'desktop', 'both')),
+            durationMonths INTEGER NOT NULL,
+            price REAL NOT NULL,
+            currency TEXT DEFAULT 'ETB',
+            description TEXT,
+            features TEXT,
+            isActive INTEGER DEFAULT 1,
+            createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+        db.exec('DROP TABLE subscription_plans');
+        db.exec('ALTER TABLE subscription_plans_v44 RENAME TO subscription_plans');
+
+        const insertPlan = db.prepare(
+          'INSERT INTO subscription_plans (name, tier, durationMonths, price, currency, description, features, isActive) VALUES (?, ?, ?, ?, ?, ?, ?, 1)',
+        );
+        const editionByTier = new Map<string, number>();
+        for (const plan of CANONICAL_PLANS) {
+          const result = insertPlan.run(plan.name, plan.tier, plan.months, plan.price, 'ETB', plan.description, JSON.stringify(plan.features));
+          editionByTier.set(plan.tier, Number(result.lastInsertRowid));
+        }
+
+        // Rebuild subscriptions against the widened CHECK, remapping tiers and
+        // re-pointing planId at the canonical plan for that edition.
+        if (tableNames.has('subscriptions')) {
+          const rows = db.prepare('SELECT * FROM subscriptions').all() as any[];
+          db.exec('DROP TABLE IF EXISTS subscriptions_v44');
+          db.exec(`
+            CREATE TABLE subscriptions_v44 (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              businessId INTEGER NOT NULL UNIQUE,
+              planId INTEGER,
+              tier TEXT NOT NULL DEFAULT 'none' CHECK(tier IN ('basic', 'premium', 'trial', 'mobile', 'desktop', 'both', 'none')),
+              status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'expired', 'cancelled', 'pending')),
+              startedAt TEXT,
+              expiresAt TEXT,
+              trialStartedAt TEXT,
+              trialEndsAt TEXT,
+              isTrial INTEGER DEFAULT 0,
+              autoRenew INTEGER DEFAULT 0,
+              createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+              updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+              uuid TEXT,
+              device_id TEXT,
+              row_version INTEGER DEFAULT 1,
+              updated_at TEXT,
+              is_deleted INTEGER DEFAULT 0,
+              deleted_at TEXT,
+              is_synced INTEGER DEFAULT 1,
+              FOREIGN KEY (businessId) REFERENCES businesses(id),
+              FOREIGN KEY (planId) REFERENCES subscription_plans(id)
+            );
+          `);
+          const insertSub = db.prepare(`
+            INSERT INTO subscriptions_v44
+            (id, businessId, planId, tier, status, startedAt, expiresAt, trialStartedAt, trialEndsAt,
+             isTrial, autoRenew, createdAt, updatedAt, uuid, device_id, row_version, updated_at,
+             is_deleted, deleted_at, is_synced)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+          for (const row of rows) {
+            const edition = editionByPlanId.get(Number(row.planId)) ?? editionFor(row.tier);
+            const tier = row.isTrial
+              ? 'trial'
+              : PLAN_TIERS.includes(edition)
+                ? edition
+                : SUBSCRIPTION_TIERS.includes(String(row.tier))
+                  ? String(row.tier)
+                  : 'none';
+            insertSub.run(
+              row.id,
+              row.businessId,
+              row.isTrial ? null : editionByTier.get(edition) ?? null,
+              tier,
+              row.status ?? 'active',
+              row.startedAt ?? null,
+              row.expiresAt ?? null,
+              row.trialStartedAt ?? null,
+              row.trialEndsAt ?? null,
+              row.isTrial ?? 0,
+              row.autoRenew ?? 0,
+              row.createdAt ?? null,
+              row.updatedAt ?? null,
+              row.uuid ?? null,
+              row.device_id ?? null,
+              row.row_version ?? 1,
+              row.updated_at ?? null,
+              row.is_deleted ?? 0,
+              row.deleted_at ?? null,
+              row.is_synced ?? 1,
+            );
+          }
+          db.exec('DROP TABLE subscriptions');
+          db.exec('ALTER TABLE subscriptions_v44 RENAME TO subscriptions');
+          db.exec('CREATE INDEX IF NOT EXISTS idx_subscriptions_businessId ON subscriptions(businessId);');
+          db.exec('CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);');
+        }
+
+        // History rows should read in the new vocabulary too.
+        if (tableNames.has('subscription_history')) {
+          db.prepare("UPDATE subscription_history SET oldTier = 'mobile' WHERE oldTier = 'basic'").run();
+          db.prepare("UPDATE subscription_history SET oldTier = 'both' WHERE oldTier = 'premium'").run();
+          db.prepare("UPDATE subscription_history SET newTier = 'mobile' WHERE newTier = 'basic'").run();
+          db.prepare("UPDATE subscription_history SET newTier = 'both' WHERE newTier = 'premium'").run();
+        }
+      } catch (e: any) {
+        console.error('[Migration 44] plan/tier migration failed:', e?.message);
+      } finally {
+        db.pragma('foreign_keys = ON');
+      }
+    }
+
+    version = 44;
+    db.pragma(`user_version = ${version}`);
+  }
+
   // ========== SYNC COLUMN BACKSTOP ==========
   // Every table in the relay must carry the standard sync columns. Tables that
   // were added to SHARED_TABLES without a dedicated migration (e.g.
@@ -2178,7 +2391,7 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     { table: 'locations', id: 'id', columns: ['id', 'businessId', 'name', 'address', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'registers', id: 'id', columns: ['id', 'businessId', 'locationId', 'name', 'deviceId', 'printerName', 'hasDrawer', 'isActive', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'business_roles', id: 'id', columns: ['id', 'businessId', 'name', 'description', 'permissions', 'isSystem', 'builtinKey', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
-    { table: 'users', relay: 'users', id: 'id', columns: ['id', 'businessId', 'name', 'phone', 'email', 'username', 'role', 'roleName', 'permissions', 'isActive', 'isOwner', 'pinHash', 'pinSalt', 'avatar', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
+    { table: 'users', relay: 'users', id: 'id', columns: ['id', 'businessId', 'name', 'phone', 'email', 'username', 'role', 'roleName', 'permissions', 'isActive', 'isOwner', 'pinHash', 'pinSalt', 'recoveryHash', 'recoverySalt', 'avatar', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'roster_devices', relay: 'devices', id: 'id', columns: ['id', 'businessId', 'userId', 'name', 'model', 'platform', 'registerId', 'role', 'status', 'pairingCode', 'pairingExpiresAt', 'lastSeenAt', 'lastSyncAt', 'appVersion', 'isPrimary', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'] },
     { table: 'budgets', id: 'id', columns: ['id','businessId','category','amount','period','month','year','budgetType','referenceName','isRecurring','notes','updatedAt','createdAt','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
     { table: 'suppliers', id: 'id', columns: ['id','businessId','supplierCode','supplierName','companyName','contactPerson','phone','secondaryPhone','email','address','city','country','taxNumber','paymentTerms','creditLimit','notes','status','isActive','createdAt','updatedAt','contact_id','uuid','device_id','row_version','updated_at','is_deleted','deleted_at','is_synced'] },
@@ -2255,9 +2468,7 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
   // triggers were created before those columns existed.
   {
     const uCols = (db.prepare('PRAGMA table_info(users)').all() as any[]).map((c: any) => c.name);
-    const uTrigCols = uCols.includes('username') && uCols.includes('avatar')
-      ? ['id', 'businessId', 'name', 'phone', 'email', 'username', 'role', 'roleName', 'permissions', 'isActive', 'isOwner', 'pinHash', 'pinSalt', 'avatar', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced']
-      : ['id', 'businessId', 'name', 'phone', 'email', 'role', 'roleName', 'permissions', 'isActive', 'isOwner', 'pinHash', 'pinSalt', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'];
+    const uTrigCols = ['id', 'businessId', 'name', 'phone', 'email', 'username', 'role', 'roleName', 'permissions', 'isActive', 'isOwner', 'pinHash', 'pinSalt', 'recoveryHash', 'recoverySalt', 'avatar', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'].filter((c) => uCols.includes(c) || c === 'id');
     const userArgs = uTrigCols.map((c) => `'${c}', ${c}`).join(', ');
     try {
       db.exec(`
@@ -2313,14 +2524,13 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     END;
   `);
 
-  // Seed subscription plans
+  // Seed the canonical subscription plans (Mobile · Desktop · Mobile + Desktop).
   const planCount = db.prepare('SELECT COUNT(*) as count FROM subscription_plans').get() as any;
   if (planCount.count === 0) {
     const insertPlan = db.prepare('INSERT INTO subscription_plans (name, tier, durationMonths, price, description, features) VALUES (?, ?, ?, ?, ?, ?)');
-    insertPlan.run('Basic 1 Month', 'basic', 1, 2499, 'Run your daily business.', JSON.stringify(['inventory', 'sales', 'customers', 'adjustments']));
-    insertPlan.run('Basic 3 Months', 'basic', 3, 5499, 'Run your daily business.', JSON.stringify(['inventory', 'sales', 'customers', 'adjustments']));
-    insertPlan.run('Premium 1 Month', 'premium', 1, 4499, 'Manage and grow your business with advanced tools.', JSON.stringify(['inventory', 'sales', 'customers', 'adjustments', 'employees', 'users', 'audit', 'suppliers', 'shipments', 'analytics', 'reports']));
-    insertPlan.run('Premium 3 Months', 'premium', 3, 11499, 'Manage and grow your business with advanced tools.', JSON.stringify(['inventory', 'sales', 'customers', 'adjustments', 'employees', 'users', 'audit', 'suppliers', 'shipments', 'analytics', 'reports']));
+    insertPlan.run('Mobile', 'mobile', 1, 4500, 'Run your whole shop from your phone.', JSON.stringify(['inventory', 'sales', 'customers', 'debts', 'adjustments', 'reports']));
+    insertPlan.run('Desktop', 'desktop', 1, 7500, 'Full ERP power for your back office.', JSON.stringify(['inventory', 'sales', 'customers', 'adjustments', 'employees', 'users', 'audit', 'suppliers', 'shipments', 'analytics', 'reports']));
+    insertPlan.run('Mobile + Desktop', 'both', 1, 10000, 'Run mobile and desktop together, perfectly in sync.', JSON.stringify(['inventory', 'sales', 'customers', 'adjustments', 'employees', 'users', 'audit', 'suppliers', 'shipments', 'analytics', 'reports', 'pos', 'sync']));
   }
 
   // Initialize trial for businesses without subscription
@@ -2694,6 +2904,122 @@ export function reopenDB(): void {
   db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
   (module as any).exports.default = db;
+}
+
+/**
+ * PEER BUSINESS FOLD — a joined/standalone device can bring its own pre-existing
+ * business row into the hub, creating a SECOND (non-default) owner business whose
+ * rows are invisible to every default-scoped desktop view (inventory, sales,
+ * debts, ...). Fold every non-default business's scoped rows into the hub's
+ * default business:
+ *   • every table with a `businessId` column is remapped onto the default business
+ *   • name-keyed UNIQUEs (categories/items/warehouses/suppliers/customers) get a
+ *     rename suffix when a same-named row already exists in the default
+ *   • keyed UNIQUEs (quick_products, tax_payments) skip colliding rows
+ *   • subscriptions stay on their own business (businessId is UNIQUE and the
+ *     default already has one)
+ * Idempotent and safe to run at every startup — once merged, nothing is left to
+ * fold, so it is a no-op. Keys and FKs (itemId/categoryId/supplierId/orderId/...)
+ * are hub-local INTEGER ids and never collide when only businessId changes.
+ */
+export function foldPeerBusinessDataIntoDefault(): { moved: number; renamed: number; skipped: number } {
+  const out = { moved: 0, renamed: 0, skipped: 0 };
+  const colsOf = (t: string) => new Set((db.prepare(`PRAGMA table_info(${t})`).all() as any[]).map((c: any) => c.name));
+  try {
+    const defaultRow = (db.prepare('SELECT id FROM businesses WHERE isDefault = 1 ORDER BY id LIMIT 1').get() as any)
+      ?? (db.prepare('SELECT id FROM businesses ORDER BY id LIMIT 1').get() as any);
+    const defaultId = defaultRow?.id;
+    if (defaultId == null) return out;
+
+    const peers = db.prepare('SELECT id, businessName FROM businesses WHERE id != ? AND is_deleted = 0').all(defaultId) as { id: number; businessName: string }[];
+    if (!peers.length) return out;
+
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[])
+      .map((r) => r.name);
+    const hasBusinessId = (t: string) => colsOf(t).has('businessId');
+
+    const now = new Date().toISOString();
+    const fold = db.transaction(() => {
+      for (const p of peers) {
+        const pid = Number(p.id);
+        const tag = (p.businessName || '').trim() || 'Synced';
+        for (const t of tables) {
+          if (t === 'businesses' || t === 'subscriptions' || !hasBusinessId(t)) continue;
+          const cols = colsOf(t);
+
+          // Name-keyed UNIQUE(businessId, col): rename an incoming duplicate so the
+          // fold cannot abort on a UNIQUE violation — nothing is dropped.
+          const nameCol: string | undefined = {
+            categories: 'name', items: 'name', warehouses: 'name',
+            suppliers: 'supplierName', customers: 'customerName'
+          }[t];
+          if (nameCol) {
+            const liveFilter = cols.has('is_deleted') ? ' AND is_deleted = 0' : '';
+            const collision = db.prepare(`SELECT 1 FROM ${t} WHERE businessId = ? AND ${nameCol} = ? LIMIT 1`);
+            for (const row of db.prepare(`SELECT id, ${nameCol} FROM ${t} WHERE businessId = ?${liveFilter}`).all(pid) as any[]) {
+              const val = String(row[nameCol] ?? '').trim();
+              if (val && collision.get(defaultId, val)) {
+                const next = `${val} (${tag})`;
+                const bits = [`${nameCol} = ?`];
+                const args: any[] = [next];
+                if (cols.has('updated_at')) { bits.push('updated_at = ?'); args.push(now); }
+                args.push(row.id);
+                db.prepare(`UPDATE ${t} SET ${bits.join(', ')} WHERE id = ?`).run(...args);
+                out.renamed += 1;
+              }
+            }
+          }
+
+          // Keyed UNIQUEs that cannot be renamed: keep the first row in the default
+          // business and drop identical peer mappings (quick_products, tax_payments).
+          const keyCol: string | undefined = { quick_products: 'itemId', tax_payments: 'obligationId' }[t];
+          if (keyCol) {
+            const exists = db.prepare(`SELECT 1 FROM ${t} WHERE businessId = ? AND ${keyCol} = ? LIMIT 1`);
+            for (const row of db.prepare(`SELECT id, ${keyCol} FROM ${t} WHERE businessId = ?`).all(pid) as any[]) {
+              const key = row[keyCol];
+              if (key == null) continue;
+              if (exists.get(defaultId, key)) {
+                if (cols.has('is_deleted') && cols.has('deleted_at')) {
+                  db.prepare(`UPDATE ${t} SET is_deleted = 1, deleted_at = ? WHERE id = ?`).run(now, row.id);
+                } else {
+                  db.prepare(`DELETE FROM ${t} WHERE id = ?`).run(row.id);
+                }
+                out.skipped += 1;
+              } else {
+                const bits = ['businessId = ?'];
+                const args: any[] = [defaultId];
+                if (cols.has('updated_at')) { bits.push('updated_at = ?'); args.push(now); }
+                args.push(row.id);
+                const r = db.prepare(`UPDATE ${t} SET ${bits.join(', ')} WHERE id = ?`).run(...args);
+                out.moved += Number(r.changes);
+              }
+            }
+            continue;
+          }
+
+          const bits = ['businessId = ?'];
+          const args: any[] = [defaultId];
+          if (cols.has('updated_at')) { bits.push('updated_at = ?'); args.push(now); }
+          if (cols.has('is_synced')) bits.push('is_synced = 0');
+          if (cols.has('row_version')) bits.push('row_version = row_version + 1');
+          args.push(pid);
+          const r = db.prepare(`UPDATE ${t} SET ${bits.join(', ')} WHERE businessId = ?`).run(...args);
+          out.moved += Number(r.changes);
+        }
+        // The peer business record stays (its subscription plan keeps a valid
+        // businessId FK), but it must not shadow the hub's real default.
+        const bits = ['isDefault = 0'];
+        const args: any[] = [];
+        if (colsOf('businesses').has('updated_at')) { bits.push('updated_at = ?'); args.push(now); }
+        args.push(pid);
+        db.prepare(`UPDATE businesses SET ${bits.join(', ')} WHERE id = ?`).run(...args);
+      }
+    });
+    fold();
+  } catch (e: any) {
+    console.error('foldPeerBusinessDataIntoDefault:', e?.message);
+  }
+  return out;
 }
 
 /**

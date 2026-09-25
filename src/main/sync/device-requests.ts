@@ -35,6 +35,38 @@ function tableColumns(table: string): Set<string> {
   return cols;
 }
 
+export function ensureDeviceRequestsColumns(): void {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS device_requests (
+        id TEXT PRIMARY KEY,
+        business_id TEXT NOT NULL,
+        code TEXT,
+        joiner_device_id TEXT NOT NULL,
+        joiner_name TEXT,
+        joiner_model TEXT,
+        joiner_user TEXT,
+        role TEXT DEFAULT 'cashier',
+        platform TEXT DEFAULT 'mobile',
+        status TEXT DEFAULT 'pending',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        decided_at TEXT,
+        assigned_name TEXT,
+        assigned_avatar TEXT,
+        assigned_permissions TEXT,
+        joiner_avatar TEXT
+      );
+    `);
+  } catch { /* ignore */ }
+
+  const cols = ['assigned_name TEXT', 'assigned_avatar TEXT', 'assigned_permissions TEXT', 'joiner_avatar TEXT'];
+  for (const col of cols) {
+    try {
+      db.exec(`ALTER TABLE device_requests ADD COLUMN ${col}`);
+    } catch { /* column already exists */ }
+  }
+}
+
 /** Map the hub's businessId reference (int string or uuid) to the integer business row id. */
 function resolveBusinessId(bizText: string): number | null {
   if (!bizText) return null;
@@ -81,28 +113,65 @@ function upsertJoinDevice(
 
     if (existing) {
       db.prepare(`UPDATE devices SET ${updates.join(', ')} WHERE device_id = ?`).run(...vals, rec.joinerDeviceId);
-      return;
+    } else {
+      const insert: Record<string, string | number | null> = {
+        device_id: rec.joinerDeviceId,
+        name,
+        platform: rec.platform ?? 'mobile',
+        status,
+        uuid: rec.joinerDeviceId,
+        row_version: 1,
+        created_at: nowIso,
+        updated_at: nowIso,
+        is_deleted: 0,
+        is_synced: 1,
+      };
+      if (bizId != null) insert.businessId = bizId;
+      if (userId != null) insert.userId = userId;
+      if (role) insert.role = role;
+      const keys = Object.keys(insert).filter((k) => cols.has(k));
+      if (keys.length) {
+        db.prepare(`INSERT INTO devices (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`)
+          .run(...keys.map((k) => insert[k]));
+      }
     }
 
-    const insert: Record<string, string | number | null> = {
-      device_id: rec.joinerDeviceId,
-      name,
-      platform: rec.platform ?? 'mobile',
-      status,
-      uuid: rec.joinerDeviceId,
-      row_version: 1,
-      created_at: nowIso,
-      updated_at: nowIso,
-      is_deleted: 0,
-      is_synced: 1,
-    };
-    if (bizId != null) insert.businessId = bizId;
-    if (userId != null) insert.userId = userId;
-    if (role) insert.role = role;
-    const keys = Object.keys(insert).filter((k) => cols.has(k));
-    if (keys.length) {
-      db.prepare(`INSERT INTO devices (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`)
-        .run(...keys.map((k) => insert[k]));
+    // Also update roster_devices with userId so Connected Devices shows user profile.
+    if (bizId != null) {
+      try {
+        const rosterCols = tableColumns('roster_devices');
+        if (rosterCols.has('userId') && rosterCols.has('uuid') && rosterCols.has('businessId')) {
+          const nowIso = now();
+          const rosterExisting = db.prepare('SELECT id FROM roster_devices WHERE businessId = ? AND uuid = ?').get(bizId, rec.joinerDeviceId) as any;
+          if (rosterExisting) {
+            if (userId != null && rosterCols.has('userId')) {
+              db.prepare('UPDATE roster_devices SET userId = ?, updated_at = ? WHERE id = ?').run(userId, nowIso, rosterExisting.id);
+            }
+          } else {
+            const insertRoster: Record<string, string | number | null> = {
+              businessId: bizId,
+              uuid: rec.joinerDeviceId,
+              device_id: rec.joinerDeviceId,
+              name,
+              platform: rec.platform ?? 'mobile',
+              status,
+              isPrimary: 0,
+              row_version: 1,
+              created_at: nowIso,
+              updated_at: nowIso,
+              is_deleted: 0,
+              is_synced: 1,
+            };
+            if (userId != null) insertRoster.userId = userId;
+            if (role) insertRoster.role = role;
+            const rosterKeys = Object.keys(insertRoster).filter((k) => rosterCols.has(k));
+            if (rosterKeys.length) {
+              db.prepare(`INSERT INTO roster_devices (${rosterKeys.join(', ')}) VALUES (${rosterKeys.map(() => '?').join(', ')})`)
+                .run(...rosterKeys.map((k) => insertRoster[k]));
+            }
+          }
+        }
+      } catch { /* roster table naming may differ */ }
     }
   } catch (e: any) {
     // The devices registry may be missing/incompatible on this hub build —
@@ -149,6 +218,20 @@ function findOrCreateMember(bizId: number, name: string, role: string, decision?
     console.warn('[device-requests] findOrCreateMember skipped:', e?.message);
     return null;
   }
+}
+
+/**
+ * Code-less admission lookup (radar-tap / "Add Team" path). Radar-tap owner
+ * intent rows are keyed by joiner_device_id WITHOUT a code — the owner tapped
+ * the joiner on the radar rather than issuing an invite. The joiner learns its
+ * decision by polling the hub with only its own device id, no invitation code.
+ * Returns the most recent request for that joiner device across businesses.
+ */
+export function getDeviceJoinRequestByDeviceId(joinerDeviceId: string): DeviceJoinRequestRecord | null {
+  const row = db.prepare(
+    `SELECT * FROM device_requests WHERE joiner_device_id = ? ORDER BY created_at DESC LIMIT 1`
+  ).get(joinerDeviceId) as any;
+  return row ? rowToRecord(row) : null;
 }
 
 /** Consume the open invitation tied to an approved join (one device per invite). */
@@ -208,12 +291,28 @@ function rowToRecord(row: any): DeviceJoinRequestRecord {
   return rec;
 }
 
-/** Stage a new join request, idempotent per (business, joiner device). */
+/** Stage a new join request, idempotent per (business, joiner device).
+ *  Reuses an existing `pending` OR `approved` record for the same device —
+ *  an owner who tapped the radar (and assigned a role) before the joiner's
+ *  request landed has an owner-intent record parked here; the joiner's later
+ *  submit must NOT fork a duplicate that would split the STATUS poll. */
 export function submitDeviceJoinRequest(req: DeviceJoinRequest): DeviceJoinRequestRecord {
+  const resolvedId = resolveBusinessId(String(req.businessId ?? ''));
+  const canonicalBizId = resolvedId != null ? String(resolvedId) : String(req.businessId || 1);
+
   const existing = db
-    .prepare('SELECT * FROM device_requests WHERE business_id = ? AND joiner_device_id = ? AND status = ?')
-    .get(req.businessId, req.joinerDeviceId, 'pending') as any;
-  if (existing) return rowToRecord(existing);
+    .prepare('SELECT * FROM device_requests WHERE (business_id = ? OR business_id = ?) AND joiner_device_id = ? AND status IN (?, ?) ORDER BY created_at ASC LIMIT 1')
+    .get(canonicalBizId, req.businessId, req.joinerDeviceId, 'pending', 'approved') as any;
+  if (existing) {
+    // Owner-intent rows are created without a code (the owner tapped the radar
+    // before the joiner resolved an invite). Fill in what the submit now knows.
+    if (!existing.code && req.code) {
+      db.prepare(
+        'UPDATE device_requests SET code = ?, joiner_name = COALESCE(?, joiner_name), joiner_model = COALESCE(?, joiner_model), joiner_user = COALESCE(?, joiner_user) WHERE id = ?'
+      ).run(req.code, req.joinerName ?? null, req.joinerModel ?? null, req.joinerUser, existing.id);
+    }
+    return rowToRecord(db.prepare('SELECT * FROM device_requests WHERE id = ?').get(existing.id));
+  }
 
   const id = randomBytes(12).toString('hex');
   db.prepare(
@@ -221,22 +320,45 @@ export function submitDeviceJoinRequest(req: DeviceJoinRequest): DeviceJoinReque
        (id, business_id, code, joiner_device_id, joiner_name, joiner_model, joiner_user, role, platform, status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
   ).run(
-    id, req.businessId, req.code ?? null, req.joinerDeviceId, req.joinerName ?? null,
+    id, canonicalBizId, req.code ?? null, req.joinerDeviceId, req.joinerName ?? null,
     req.joinerModel ?? null, req.joinerUser, req.role ?? 'cashier', req.platform ?? 'mobile', now()
   );
   const rec = rowToRecord(db.prepare('SELECT * FROM device_requests WHERE id = ?').get(id));
   // Surface the joiner device on the hub roster so the desktop owner's
   // BusinessCenter "Pending device approvals" list shows it immediately.
   upsertJoinDevice(rec, 'pending', null, null, resolveBusinessId(rec.businessId));
+
+  // Emit event to notify Owner UI in real-time
+  try {
+    const { mainBus } = require('../bus');
+    mainBus.emitEvent('device-event', {
+      type: 'join-request',
+      joinerName: rec.joinerUser || rec.joinerName || 'New Member',
+      deviceId: rec.joinerDeviceId,
+    });
+  } catch { /* best-effort */ }
+
   return rec;
 }
 
 /** Return pending (and recently decided) requests for a business. */
 export function listDeviceJoinRequests(businessId: string, limit = 100): DeviceJoinRequestRecord[] {
+  let bizInt = String(businessId);
+  let bizUuid = String(businessId);
+  try {
+    const biz = db.prepare('SELECT id, uuid FROM businesses WHERE uuid = ? OR CAST(id AS TEXT) = ? LIMIT 1')
+      .get(businessId, businessId) as any;
+    if (biz) {
+      bizInt = String(biz.id);
+      bizUuid = String(biz.uuid || biz.id);
+    }
+  } catch { /* ignore */ }
+
   const rows = db.prepare(
-    `SELECT * FROM device_requests WHERE business_id = ?
+    `SELECT * FROM device_requests
+     WHERE (business_id = ? OR business_id = ? OR business_id = ?)
      ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC LIMIT ?`
-  ).all(businessId, limit) as any[];
+  ).all(businessId, bizInt, bizUuid, limit) as any[];
   return rows.map(rowToRecord);
 }
 
@@ -279,28 +401,104 @@ export function decideDeviceJoinRequest(decision: DeviceJoinDecision): DeviceJoi
 }
 
 /**
- * Desktop BusinessCenter approve path (`business:set-device-status -> active`):
- * mirror that approval into the pending join request — decision + provisioning —
- * so the joiner's STATUS poll flips and member/device rows are created even
- * though the desktop approve UI never touches the DEVICE_JOIN channel.
+ * Desktop BusinessCenter approve path (`business:set-device-status -> active`)
+ * AND the radar tap role-assignment path (`p2p:approve-one`): mirror that
+ * approval into the pending join request — decision + provisioning — so the
+ * joiner's STATUS poll flips and member/device rows are created even though
+ * the desktop approve UI never touches the DEVICE_JOIN channel.
+ *
+ * When `opts.role` is supplied (owner tapped the joiner in Add Team / Device
+ * and assigned a role), that role and permissions override the joiner-submitted
+ * ones — the owner controls role assignment. If no request exists yet, the
+ * owner's choice is parked as an approved owner-intent record so the joiner's
+ * later `submitDeviceJoinRequest` reuses it (and its STATUS poll reads the
+ * owner-assigned role + pairing token).
  */
-export function provisionJoinForDevice(deviceId: string): void {
+export function provisionJoinForDevice(
+  deviceId: string,
+  opts?: { role?: string; permissions?: Record<string, unknown>; businessId?: number | string; name?: string; platform?: string },
+): boolean {
+  ensureDeviceRequestsColumns();
   const row = db.prepare(
     `SELECT * FROM device_requests WHERE joiner_device_id = ? AND status = 'pending'
      ORDER BY created_at ASC LIMIT 1`
   ).get(String(deviceId ?? '')) as any;
-  if (!row) return;
+  if (!row) {
+    // Owner tapped the radar before the joiner's request landed: park an
+    // owner-intent record (approved, owner role baked in, code null) so a
+    // later submit reuses it and there is no owner-side re-approval.
+    if (opts?.role && opts?.businessId) {
+      try {
+        const id = randomBytes(12).toString('hex');
+        const nowIso = now();
+        const ident = String(opts.name || 'Team Member').trim() || 'Team Member';
+        const cols = tableColumns('device_requests');
+        const insertObj: Record<string, string | null> = {
+          id,
+          business_id: String(opts.businessId),
+          code: null,
+          joiner_device_id: String(deviceId ?? ''),
+          joiner_name: ident,
+          joiner_model: null,
+          joiner_user: ident,
+          role: opts.role ?? 'cashier',
+          platform: String(opts.platform ?? 'mobile'),
+          status: 'approved',
+          created_at: nowIso,
+          decided_at: nowIso,
+        };
+        if (cols.has('assigned_permissions')) {
+          insertObj.assigned_permissions = opts.permissions ? JSON.stringify(opts.permissions) : null;
+        }
+
+        const keys = Object.keys(insertObj).filter((k) => cols.has(k) || k === 'id' || k === 'business_id' || k === 'joiner_device_id' || k === 'status');
+        db.prepare(
+          `INSERT INTO device_requests (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`
+        ).run(...keys.map((k) => insertObj[k]));
+
+        applyApproval(rowToRecord(db.prepare('SELECT * FROM device_requests WHERE id = ?').get(id)), {
+          requestId: id,
+          businessId: String(opts.businessId),
+          joinerDeviceId: String(deviceId ?? ''),
+          decision: 'approved',
+          decidedBy: '',
+          assignedName: ident,
+          assignedRole: opts.role ?? 'cashier',
+          assignedPermissions: opts.permissions,
+        });
+        return true;
+      } catch (e: any) {
+        console.warn('[device-requests] provision owner-intent skipped:', e?.message);
+      }
+    }
+    return false;
+  }
   const rec = rowToRecord(row);
-  db.prepare('UPDATE device_requests SET status = ?, decided_at = ? WHERE id = ?').run('approved', now(), rec.requestId);
+  // Owner-assigned role/permissions win over the joiner-submitted ones. Persist
+  // them on the record so the joiner's STATUS poll returns the real assignment.
+  const assignedRole = opts?.role || rec.role || 'cashier';
+  db.prepare('UPDATE device_requests SET status = ?, decided_at = ?, role = ? WHERE id = ?')
+    .run('approved', now(), assignedRole, rec.requestId);
+  if (opts?.permissions) {
+    try {
+      db.prepare('UPDATE device_requests SET assigned_permissions = ? WHERE id = ?')
+        .run(JSON.stringify(opts.permissions), rec.requestId);
+    } catch {
+      try { db.exec('ALTER TABLE device_requests ADD COLUMN assigned_permissions TEXT'); } catch { /* older schema */ }
+    }
+  }
   applyApproval(rec, {
     requestId: rec.requestId,
     businessId: rec.businessId,
     joinerDeviceId: rec.joinerDeviceId,
     decision: 'approved',
     decidedBy: '',
-    assignedName: (row as any).joiner_avatar ? rec.joinerUser : rec.joinerUser,
-    assignedAvatar: (row as any).joiner_avatar ?? null,
+    assignedName: rec.joinerUser || rec.joinerName,
+    assignedAvatar: rec.assignedAvatar ?? null,
+    assignedRole,
+    assignedPermissions: opts?.permissions,
   });
+  return true;
 }
 
 /**
@@ -355,6 +553,20 @@ export function assignJoinIdentity(requestId: string, identity: { name?: string;
  * approved it. Returns the most recent request matching, or null.
  */
 /** Owner can re-invite with the same code; dedup on business + joinerDeviceId. */
+/**
+ * Code-less admission lookup: the owner's radar-tap approval is keyed by
+ * joiner_device_id alone — no invite code exists (the joiner never typed one,
+ * the owner tapped them directly). Joiners poll this to learn the decision.
+ * Returns the most recent request for that joiner device across businesses.
+ */
+export function getDeviceJoinRequestByDevice(joinerDeviceId: string): DeviceJoinRequestRecord | null {
+  const row = db.prepare(
+    `SELECT * FROM device_requests WHERE joiner_device_id = ?
+     ORDER BY created_at DESC LIMIT 1`
+  ).get(joinerDeviceId) as any;
+  return row ? rowToRecord(row) : null;
+}
+
 export function getDeviceJoinRequestBy(code: string, joinerDeviceId: string): DeviceJoinRequestRecord | null {
   const n = normalizeCode(code);
   const row = db.prepare(
@@ -431,19 +643,47 @@ export function resolveInvitation(code: string): HubInvitation | null {
   const row = db.prepare(
     `SELECT * FROM invitations WHERE ${CODE_EQ} AND status = 'open'`
   ).get(n) as any;
-  if (!row) return null;
-  if (row.expires_at && row.expires_at < now()) {
-    db.prepare(`UPDATE invitations SET status = 'expired' WHERE id = ?`).run(row.id);
-    return null;
+  if (row) {
+    if (row.expires_at && row.expires_at < now()) {
+      db.prepare(`UPDATE invitations SET status = 'expired' WHERE id = ?`).run(row.id);
+      return null;
+    }
+    return {
+      id: row.id,
+      businessId: canonicalBusinessUuid(String(row.business_id)),
+      code: row.code,
+      name: row.name,
+      role: row.role,
+      platform: row.platform,
+      expiresAt: row.expires_at,
+      businessName: businessDisplayName(String(row.business_id)),
+    };
   }
-  return {
-    id: row.id,
-    businessId: canonicalBusinessUuid(String(row.business_id)),
-    code: row.code,
-    name: row.name,
-    role: row.role,
-    platform: row.platform,
-    expiresAt: row.expires_at,
-    businessName: businessDisplayName(String(row.business_id)),
-  };
+
+  // Desktop-owner invites (Teams → Add User, "SHG-…" codes) live in the
+  // `user_invites` table, not `invitations`. A LAN joiner — desktop over HTTP
+  // or mobile via the WS channel — must be able to resolve those codes too,
+  // otherwise the join dies with "invitation not found" even though the owner
+  // is right there on the network. The approved invite admits the joiner
+  // through the same device-request flow as any other invitation.
+  const ui = db.prepare(
+    `SELECT * FROM user_invites WHERE ${CODE_EQ} AND status = 'open'`
+  ).get(n) as any;
+  if (ui) {
+    if (ui.expires_at && ui.expires_at < now()) {
+      db.prepare(`UPDATE user_invites SET status = 'expired' WHERE id = ?`).run(ui.id);
+      return null;
+    }
+    return {
+      id: ui.id,
+      businessId: canonicalBusinessUuid(String(ui.business_id)),
+      code: ui.code,
+      name: ui.joiner_name ?? null,
+      role: ui.suggested_role ?? 'cashier',
+      platform: 'desktop',
+      expiresAt: ui.expires_at,
+      businessName: businessDisplayName(String(ui.business_id)),
+    };
+  }
+  return null;
 }

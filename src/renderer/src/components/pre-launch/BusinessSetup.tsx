@@ -22,6 +22,7 @@ import {
   Receipt, Search, Store, Trash2, Users, Warehouse,
 } from 'lucide-react';
 import { useSettings } from '../../context/SettingsContext';
+import { useAuth } from '../../context/AuthContext';
 import ApprovalConfig from '../JoinApprovalConfig';
 import { RadarPulse } from '../RadarPulse';
 
@@ -45,6 +46,7 @@ type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
   const { t, refreshBusiness, calendarType, setCalendarType } = useSettings();
+  const { currentAdmin } = useAuth();
   const [mounted, setMounted] = useState(false);
   const [step, setStep] = useState<Step>(1);
   const [error, setError] = useState('');
@@ -62,6 +64,7 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
   const [address, setAddress] = useState('');
   // Step 4 — owner
   const [ownerName, setOwnerName] = useState('');
+  const [ownerAvatar, setOwnerAvatar] = useState<string | null>(null);
   const [ownerEmail, setOwnerEmail] = useState('');
   const [ownerPassword, setOwnerPassword] = useState('');
   // Step 6 — tax
@@ -95,6 +98,20 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
       if (!file) return;
       const reader = new FileReader();
       reader.onload = () => { setLogo(String(reader.result || '')); setError(''); };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  };
+
+  const pickOwnerAvatarFile = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => { setOwnerAvatar(String(reader.result || '')); setError(''); };
       reader.readAsDataURL(file);
     };
     input.click();
@@ -134,6 +151,12 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
       await window.api.setSetting('setup_business_country', 'Ethiopia');
       await window.api.setSetting('setup_owner_name', ownerName.trim());
       await window.api.setSetting('setup_owner_email', ownerEmail.trim());
+      if (ownerAvatar) {
+        await window.api.setSetting('setup_owner_avatar', ownerAvatar);
+        if (currentAdmin?.id) {
+          await window.api.updateAdmin(currentAdmin.id, { avatar: ownerAvatar }).catch(() => {});
+        }
+      }
       // Date system (step 5) is applied through SettingsContext on change.
       await refreshBusiness().catch(() => {});
       return id;
@@ -299,6 +322,16 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
         {step === 4 && (
           <div className="space-y-4">
             <p className="text-center text-lg font-black text-white">Owner information</p>
+            <div className="flex items-center gap-4">
+              <button type="button" onClick={pickOwnerAvatarFile}
+                className="h-20 w-20 rounded-full overflow-hidden border-2 border-dashed border-white/20 grid place-items-center bg-white/5 hover:bg-white/10 transition-all shrink-0">
+                {ownerAvatar ? <img src={ownerAvatar} alt="" className="h-full w-full object-cover" /> : <ImagePlus className="h-6 w-6 text-white/40" />}
+              </button>
+              <div className="flex-1 space-y-1.5">
+                <label className={labelCls}>Profile picture</label>
+                <p className="text-[11px] font-bold text-white/30 px-1">Optional — tap the circle to add your photo.</p>
+              </div>
+            </div>
             <input type="text" value={ownerName} onChange={(e) => setOwnerName(e.target.value)} className={inputCls} placeholder="Your full name (e.g. Abebe Kebede)" />
             <input type="email" value={ownerEmail} onChange={(e) => setOwnerEmail(e.target.value)} className={inputCls} placeholder="Email" />
             <input type="password" value={ownerPassword} onChange={(e) => setOwnerPassword(e.target.value)} className={inputCls} placeholder="Password (min 4 characters)" />
@@ -456,7 +489,7 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
           </div>
         )}
 
-        {/* Member configuration (name / photo / role / permissions) for the selected device */}
+        {/* Member configuration (role / permissions) for the selected device */}
         {configuringDevice && (
           <div className="fixed inset-0 z-[210] bg-black/60 grid place-items-center p-8" onClick={() => setConfiguringDevice(null)}>
             <div className="w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-2xl bg-[#14100c] border border-white/10 p-6" onClick={(e) => e.stopPropagation()}>
@@ -470,11 +503,14 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
                   try {
                     const inv = invite?.code ? invite : await generateInvite();
                     if (!inv?.code) { setError('Could not create the invite'); return; }
-                    // Stage the assigned identity so the joining device is
-                    // provisioned with the exact name/avatar/role/permissions.
+                    // Stage the assigned ROLE so the joining device is
+                    // provisioned with it. The member picks their own
+                    // name/avatar/PIN after joining.
                     await window.api.setSetting(`join_cfg_${inv.code}`, JSON.stringify({
-                      deviceId: target.deviceId, name: cfg.name, avatar: cfg.avatar,
-                      role: cfg.role, permissions: cfg.permissions,
+                      deviceId: target.deviceId,
+                      name: target.deviceName || 'Team Member',
+                      role: cfg.role,
+                      permissions: cfg.permissions,
                     }));
                     await window.api.pairBeaconStart?.(inv).catch(() => {});
                     setInvite(inv);

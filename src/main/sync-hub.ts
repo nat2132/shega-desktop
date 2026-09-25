@@ -3,61 +3,79 @@ import { createHash, randomUUID, randomBytes } from 'crypto';
 import { EventEmitter } from 'events';
 import { networkInterfaces } from 'os';
 import db from './database';
+import { getDesktopDeviceName } from './sync/device-name';
+import { getOpenInviteCode } from './sync/user-invites';
+import { businessDisplayName } from './sync/device-requests';
 import { logger } from './logger';
 import { insertAudit } from './audit-chain';
 import { notifyDataApplied } from './sync/notify';
+import { mainBus } from './bus';
 import {
   BUSINESS_ADAPTER_ENTITIES,
   FIELD_MAPS,
   mobileToDesktopPayload,
   desktopToMobilePayload,
   desktopTableName,
-  AdapterEntity
+  changeChecksum,
+  SHARED_SYNC_ENTITIES,
+  PROTOCOL_VERSION,
+  AdapterEntity,
+  type PairingHandshakeAck,
+  shortId,
+  defaultPairingLogger,
 } from '@shega/shared';
 
+export { changeChecksum };
 export const SYNC_PORT = 5757;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Handshake-aware HTTP join: both /sync/join/submit and /sync/join/status now
+// return a `handshake` field so the joiner's session tracker can mark the
+// connection established the moment the HTTP call returns — instead of staying on
+// "Waiting for connection…" until (or unless) the owner's approval arrives.
+//
+// Both fields are derived from the SAME record the caller reads, so there is no
+// separate source of truth. businessDisplayName() is fragile before the business
+// tables exist on a fresh install; we guard failures rather than let them kill
+// the join endpoint.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function buildHandshakeAck(rec: { businessId?: string | null; status?: string | null; requestId?: string | null } | null, hubPort: number): PairingHandshakeAck {
+  const hubDeviceId = getHubDeviceId();
+  let businessId: string | null = null;
+  let businessName: string | null = null;
+  try {
+    if (rec?.businessId) businessId = String(rec.businessId);
+  } catch { /* cosmetic — handshake stays useful without a known business */ }
+  try {
+    if (businessId) businessName = businessDisplayName(businessId);
+  } catch { /* cosmetic */ }
+  return {
+    ok: true,
+    hubDeviceId,
+    hubName: getDesktopDeviceName(),
+    hubPlatform: 'desktop',
+    hubPort,
+    businessId: businessId ?? (rec?.businessId ? String(rec.businessId) : null),
+    businessName,
+    status: (rec?.status ?? 'pending') as PairingHandshakeAck['status'],
+    requestId: rec?.requestId ?? null,
+    at: Date.now(),
+  };
+}
+
+function getHubDeviceId(): string {
+  try { return ensureHubDeviceId(); } catch { return 'desktop'; }
+}
 
 /** In-process bus fired whenever new data is persisted by any transport.
  * Subscribers (WS server, future cloud relay) use it to push live updates. */
 export const syncHubBus = new EventEmitter();
 
-export const SHARED_TABLES = [
-  'categories',
-  'items',
-  'item_packs',
-  'sales',
-  'debt_payments',
-  'returns',
-  'adjustments',
-  'customers',
-  'contacts',
-  'suppliers',
-  'orders',
-  'order_items',
-  'order_history',
-  'shipments',
-  'shipment_items',
-  'shipment_history',
-  'employees',
-  'employee_roles',
-  'employee_accounts',
-  'attendance',
-  'employee_performance',
-  'subscriptions',
-  'subscription_payments',
-  'subscription_renewals',
-  'scheduled_reminders',
-  'notification_reminders',
-  'notifications',
-  'businesses',
-  'locations',
-  'registers',
-  'business_roles',
-  'users',
-  'devices',
-  'stock_movements',
-  'audit_logs'
-] as const;
+/** Authoritative relay entity list — single source of truth in @shega/shared
+ * (protocol.ts). Kept re-exported as SHARED_TABLES so existing callers keep
+ * working while the definition lives in one place. */
+export const SHARED_TABLES = SHARED_SYNC_ENTITIES;
 
 export type SyncEntity = (typeof SHARED_TABLES)[number];
 
@@ -88,17 +106,6 @@ interface Change {
   checksum?: string;
 }
 
-/** Canonical checksum of a change payload (3.7). Clients send it; hub verifies. */
-export function changeChecksum(change: {
-  entity: string;
-  entity_uuid: string;
-  op: string;
-  payload: Record<string, any>;
-}): string {
-  const canonical = `${change.entity}|${change.entity_uuid}|${change.op}|${JSON.stringify(change.payload)}`;
-  return createHash('sha256').update(canonical).digest('hex');
-}
-
 let columnCache: Record<string, string[]> = {};
 function columnsOf(entity: string): string[] {
   const table = tbl(entity);
@@ -113,7 +120,7 @@ export function ensureHubDeviceId(): string {
   if (row?.device_id) return row.device_id;
   const id = randomUUID();
   const token = generatePairingToken();
-    db.prepare('INSERT OR REPLACE INTO sync_meta (id, device_id, pairing_token, schema_version) VALUES (1, ?, ?, 21)').run(id, token);
+    db.prepare('INSERT OR REPLACE INTO sync_meta (id, device_id, pairing_token, schema_version) VALUES (1, ?, ?, ' + PROTOCOL_VERSION + ')').run(id, token);
   return id;
 }
 
@@ -186,20 +193,64 @@ function isVirtualAdapterName(name: string): boolean {
 
 export function registerDevice(deviceId: string, name?: string, platform?: string): void {
   const existing = db.prepare('SELECT id, status FROM devices WHERE device_id = ?').get(deviceId) as any;
+  const now = new Date().toISOString();
   if (existing) {
     // A revoked/unpaired device must complete a new pairing/authorization
     // before it can sync again — it never re-registers silently.
     if ((existing.status || 'active') === 'revoked') return;
-    db.prepare('UPDATE devices SET last_seen_at = ? WHERE device_id = ?').run(new Date().toISOString(), deviceId);
-    return;
+    db.prepare('UPDATE devices SET last_seen_at = ? WHERE device_id = ?').run(now, deviceId);
+  } else {
+    db.prepare('INSERT INTO devices (device_id, name, last_seen_at, platform, uuid) VALUES (?, ?, ?, ?, ?)').run(
+      deviceId,
+      name || deviceId.slice(0, 8),
+      now,
+      platform === 'mobile' ? 'mobile' : 'desktop',
+      deviceId
+    );
   }
-  db.prepare('INSERT INTO devices (device_id, name, last_seen_at, platform, uuid) VALUES (?, ?, ?, ?, ?)').run(
-    deviceId,
-    name || deviceId.slice(0, 8),
-    new Date().toISOString(),
-    platform === 'mobile' ? 'mobile' : 'desktop',
-    deviceId
-  );
+  // Flip the business roster row online so Connected Devices reflects live
+  // presence the moment a device registers with the hub (WS pair or HTTP sync).
+  try {
+    db.prepare("UPDATE roster_devices SET status = 'online', lastSeenAt = ?, updated_at = CURRENT_TIMESTAMP WHERE uuid = ? OR device_id = ?")
+      .run(now, deviceId, deviceId);
+  } catch { /* roster table naming may differ */ }
+}
+
+/**
+ * Persist a peer/hub device in the local devices table.
+ * Called by a joiner device after successful pairing with a hub,
+ * so the hub appears in Connected Devices and can be used for auto-reconnect.
+ */
+export function persistPeerDevice(device: {
+  deviceId: string;
+  name?: string;
+  platform?: 'mobile' | 'desktop';
+  businessId?: number | string;
+  model?: string;
+}): void {
+  const now = new Date().toISOString();
+  const bizId = device.businessId ?? null;
+  const existing = db.prepare('SELECT device_id FROM devices WHERE device_id = ?').get(device.deviceId) as any;
+  if (existing) {
+    db.prepare("UPDATE devices SET name = COALESCE(?, name), platform = COALESCE(?, platform), businessId = COALESCE(?, businessId), status = 'active', last_seen_at = ?, updated_at = CURRENT_TIMESTAMP WHERE device_id = ?")
+      .run(device.name, device.platform, bizId, now, device.deviceId);
+  } else {
+    db.prepare("INSERT INTO devices (device_id, name, platform, businessId, status, last_seen_at) VALUES (?, ?, ?, ?, 'active', ?)")
+      .run(device.deviceId, device.name ?? device.deviceId.slice(0, 8), device.platform ?? 'desktop', bizId, now);
+  }
+  // Also update roster_devices for the business roster view
+  if (bizId != null) {
+    try {
+      const roster = db.prepare('SELECT id FROM roster_devices WHERE businessId = ? AND device_id = ?').get(bizId, device.deviceId) as any;
+      if (roster) {
+        db.prepare("UPDATE roster_devices SET status = 'active', name = ?, platform = ?, lastSeenAt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+          .run(device.name ?? device.deviceId.slice(0, 8), device.platform ?? 'desktop', now, roster.id);
+      } else {
+        db.prepare("INSERT INTO roster_devices (businessId, name, platform, status, isPrimary, uuid, device_id, lastSeenAt, updated_at) VALUES (?, ?, ?, 'active', 0, ?, ?, ?, CURRENT_TIMESTAMP)")
+          .run(bizId, device.name ?? device.deviceId.slice(0, 8), device.platform ?? 'desktop', device.deviceId, device.deviceId, now);
+      }
+    } catch { /* roster table naming may differ */ }
+  }
 }
 
 /** True when the device has been revoked/unpaired and may not reconnect. */
@@ -305,10 +356,29 @@ const HISTORY_COLUMN_BRIDGE: Record<string, [string, string]> = {
 };
 
 export function bridgeHistoryColumns(entity: string, payload: Record<string, any>): Record<string, any> {
+  let out = { ...payload };
+  if (entity === 'users') {
+    if (out.businessId == null && out.business_id != null) out.businessId = out.business_id;
+    if (out.business_id == null && out.businessId != null) out.business_id = out.businessId;
+
+    if (out.isActive == null && out.is_active != null) out.isActive = out.is_active ? 1 : 0;
+    if (out.is_active == null && out.isActive != null) out.is_active = out.is_active ? 1 : 0;
+
+    if (out.isOwner == null && out.is_owner != null) out.isOwner = out.is_owner ? 1 : 0;
+    if (out.is_owner == null && out.isOwner != null) out.is_owner = out.is_owner ? 1 : 0;
+
+    if (out.pinHash == null && out.pin_hash != null) out.pinHash = out.pin_hash;
+    if (out.pin_hash == null && out.pinHash != null) out.pin_hash = out.pinHash;
+
+    if (out.pinSalt == null && out.pin_salt != null) out.pinSalt = out.pin_salt;
+    if (out.pin_salt == null && out.pinSalt != null) out.pin_salt = out.pinSalt;
+
+    if (out.roleName == null && out.role_name != null) out.roleName = out.role_name;
+    if (out.role_name == null && out.roleName != null) out.role_name = out.roleName;
+  }
   const bridge = HISTORY_COLUMN_BRIDGE[entity];
-  if (!bridge) return payload;
+  if (!bridge) return out;
   const [mobileCol, desktopCol] = bridge;
-  const out = { ...payload };
   if (out[desktopCol] == null && out[mobileCol] != null) out[desktopCol] = out[mobileCol];
   if (out[mobileCol] == null && out[desktopCol] != null) out[mobileCol] = out[desktopCol];
   return out;
@@ -501,12 +571,26 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
   // legal value instead of failing the whole change.
   if (entity === 'subscriptions') {
     const VALID_SUB_STATUS = ['active', 'expired', 'cancelled', 'pending'];
-    if (data.status != null && !VALID_SUB_STATUS.includes(String(data.status))) {
+    if (data.status == null || !VALID_SUB_STATUS.includes(String(data.status))) {
       data.status = 'active';
     }
-    const VALID_SUB_TIER = ['basic', 'premium', 'trial'];
-    if (data.tier != null && !VALID_SUB_TIER.includes(String(data.tier))) {
-      data.tier = 'basic';
+    // Editions are the canonical vocabulary; the legacy words stay accepted so
+    // a peer on an older build never has its subscription row rejected.
+    const VALID_SUB_TIER = ['mobile', 'desktop', 'both', 'trial', 'none', 'basic', 'premium'];
+    if (data.tier == null || !VALID_SUB_TIER.includes(String(data.tier))) {
+      data.tier = 'none';
+    }
+  }
+  // Mobile business rows never bridge a storeName (and may send null) but the
+  // hub's businesses.storeName is NOT NULL; fall back to the business name, or
+  // a placeholder, instead of dropping the whole change. Same guard for
+  // businessName.
+  if (entity === 'businesses') {
+    if (data.storeName == null || data.storeName === '') {
+      data.storeName = data.businessName ?? 'Business';
+    }
+    if (data.businessName == null || data.businessName === '') {
+      data.businessName = data.storeName ?? 'Business';
     }
   }
 
@@ -531,6 +615,33 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
     data.businessId = getDefaultBusinessId();
   }
 
+  // Hub-centric business authority: a peer pushing its own standalone business
+  // row must not become a SECOND default on the hub — two defaults make the
+  // active business ambiguous and every default-scoped desktop view (inventory,
+  // sales, debts) silently shows the wrong rows. Only the hub's own current
+  // default keeps its flag.
+  if (entity === 'businesses' && data.isDefault) {
+    const hubDefault = db.prepare('SELECT id, uuid FROM businesses WHERE isDefault = 1 ORDER BY id LIMIT 1').get() as any;
+    if (hubDefault && String(hubDefault?.uuid ?? '') !== String(data.uuid ?? '')) {
+      data.isDefault = 0;
+    }
+  }
+  // Peer data under a peer-imported business (a hub business whose record came
+  // from another device, not the hub's local default) is folded onto the hub's
+  // default business so joined-device rows never split the shared dataset.
+  // Applies to every table carrying a businessId column, core or not.
+  if (entity !== 'businesses' && data.businessId != null) {
+    const raw = String(data.businessId);
+    const intId = /^[0-9]+$/.test(raw) ? Number(raw) : businessUuidToInt(raw);
+    const defId = getDefaultBusinessId();
+    if (intId != null && Number.isInteger(intId) && intId !== defId) {
+      const row = db.prepare('SELECT id, device_id FROM businesses WHERE id = ?').get(intId) as any;
+      if (row && String(row.device_id ?? '').length > 0) {
+        data.businessId = defId;
+      }
+    }
+  }
+
   // §32: audit events are append-only — never LWW-updated. Incoming changes are
   // deduped by stable `uuid` and re-chained into the hub's tamper-evident log
   // via insertAudit() so the merged ledger remains one verifiable chain.
@@ -552,6 +663,39 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
       logSync(deviceId, entity, entity_uuid, op, 'skipped unknown entity row (nothing to delete)');
     }
     return 'applied';
+  }
+
+  // subscriptions.businessId is UNIQUE on the hub and the hub ALWAYS seeds a
+  // default-business row, so a peer pushing its subscription for the default
+  // business must never take the blind-INSERT path (that trips UNIQUE). Route
+  // it onto the row that already owns that businessId instead — mirroring the
+  // desktop approver's SELECT-by-businessId → UPDATE-else-INSERT upsert — so
+  // trial/plan data from a phone folds onto the hub's authoritative row.
+  if (entity === 'subscriptions' && data.businessId != null) {
+    const byBiz = db.prepare('SELECT * FROM subscriptions WHERE businessId = ?').get(data.businessId) as any;
+    if (byBiz && byBiz.businessId != null) {
+      if (payloadEqualsExisting({ ...data, uuid: entity_uuid }, byBiz)) {
+        logSync(deviceId, entity, entity_uuid, op, 'noop_identical');
+        recordRef(deviceId, entity, { id: byBiz.id, uuid: byBiz.uuid });
+        return 'applied';
+      }
+      if (lwwWins({ ...data, uuid: entity_uuid }, byBiz)) {
+        const updateData: Record<string, any> = { ...data };
+        delete updateData.id;
+        delete updateData.uuid;
+        const cols2 = columnsOf(entity).filter((c) => c in updateData && c !== 'id' && c !== 'uuid');
+        if (cols2.length) {
+          const sets = cols2.map((c) => `${c} = ?`).join(', ');
+          const values = cols2.map((c) => updateData[c]);
+          db.prepare(`UPDATE ${tbl(entity)} SET ${sets} WHERE id = ?`).run(...values, byBiz.id);
+        }
+        recordRef(deviceId, entity, { id: byBiz.id, uuid: byBiz.uuid });
+        logSync(deviceId, entity, entity_uuid, op, 'applied (redirected to existing businessId row)');
+        return 'applied';
+      }
+      logSync(deviceId, entity, entity_uuid, op, 'conflict_rejected (incoming older than hub row)');
+      return 'conflict';
+    }
   }
 
   const existing = existingByUuid(entity, entity_uuid);
@@ -597,7 +741,15 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
     const cols = columnsOf(entity).filter((c) => c in insertData);
     const placeholders = cols.map(() => '?').join(', ');
     const values = cols.map((c) => insertData[c]);
-    db.prepare(`INSERT INTO ${tbl(entity)} (${cols.join(', ')}) VALUES (${placeholders})`).run(...values);
+    const insertSql =
+      entity === 'subscriptions'
+        // subscriptions.businessId is UNIQUE; the hub ALWAYS seeds a default
+        // business row, so a peer pushing its subscription for the default
+        // business must fold onto that existing row (LWW-style) instead of a
+        // blind INSERT that trips UNIQUE.
+        ? `INSERT INTO ${tbl(entity)} (${cols.join(', ')}) VALUES (${placeholders}) ON CONFLICT(businessId) DO UPDATE SET ${cols.filter((c) => c !== 'id' && c !== 'uuid' && c !== 'businessId').map((c) => `${c} = excluded.${c}`).join(', ')}`
+        : `INSERT INTO ${tbl(entity)} (${cols.join(', ')}) VALUES (${placeholders})`;
+    db.prepare(insertSql).run(...values);
     if (Number.isFinite(remoteId) && remoteId > 0) {
       recordRef(deviceId, entity, { id: remoteId, uuid: entity_uuid });
     }
@@ -797,6 +949,8 @@ export function applyPush(deviceId: string, changes: Change[]): ApplyResult {
   if (result.applied > 0) {
     notifyDataApplied({ applied: result.applied, conflicts: result.conflicts, changes: changes.length, source: 'hub' });
     syncHubBus.emit('applied', { applied: result.applied });
+    // Life-cycle notification: sync finished after a successful push from a remote device.
+    try { mainBus.emitEvent('sync-completed', { deviceId, deviceName: deviceId, platform: 'unknown', pushed: result.applied, conflicts: result.conflicts }); } catch {}
     // Keep the activity log bounded — pruning after each batch prevents the
     // sync_log table from growing without limit.
     db.prepare('DELETE FROM sync_log WHERE id NOT IN (SELECT id FROM sync_log ORDER BY id DESC LIMIT 5000)').run();
@@ -830,6 +984,12 @@ export function snapshotSince(since: number) {
     try {
       payload = JSON.parse(r.payload);
     } catch {}
+    if (r.op !== 'DELETE' && (!payload || Object.keys(payload).length === 0) && r.entity_uuid) {
+      try {
+        const row = db.prepare(`SELECT * FROM ${tbl(r.entity)} WHERE uuid = ?`).get(r.entity_uuid) as any;
+        if (row) payload = row;
+      } catch {}
+    }
     payload = emitEntityPayload(r.entity, bridgeHistoryColumns(r.entity, payload));
     return { entity: r.entity, entity_uuid: r.entity_uuid, op: r.op, payload, device_id: r.device_id, seq: r.seq };
   });
@@ -931,7 +1091,13 @@ export class SyncHub {
           sendJson(res, 200, {
             ok: true,
             hub: this.deviceId,
-            schemaVersion: 21,
+            // Advertised so LAN probes (lan-discovery.ts) can name this device
+            // even when mDNS multicast never reaches us, plus any open invite
+            // code so a joiner can still join when multicast is blocked.
+            deviceName: getDesktopDeviceName(),
+            platform: 'desktop',
+            inviteCode: getOpenInviteCode(),
+            schemaVersion: PROTOCOL_VERSION,
             port,
             tables: SHARED_TABLES,
             lastSeq: maxSeq(),
@@ -949,6 +1115,7 @@ export class SyncHub {
           if (!deviceId) return sendJson(res, 400, { ok: false, error: 'device_id required' });
           if (isDeviceRevoked(deviceId)) return sendJson(res, 403, { ok: false, error: 'device was unpaired — new pairing required' });
           registerDevice(deviceId, body.name, body.platform);
+          mainBus.emitEvent('device-connected', { deviceId, deviceName: body.name || deviceId, platform: body.platform || 'unknown' });
           sendJson(res, 200, { ok: true, hub: this.deviceId });
           return;
         }
@@ -968,6 +1135,9 @@ export class SyncHub {
             data.lastSeq,
             new Date().toISOString()
           );
+          if (data.changes.length > 0) {
+            try { mainBus.emitEvent('sync-started', { deviceId, deviceName: deviceId, platform: 'unknown' }); } catch {}
+          }
           sendJson(res, 200, { ok: true, ...data, forceResync: force, hub: this.deviceId });
           return;
         }
@@ -980,8 +1150,12 @@ export class SyncHub {
           if (!deviceId) return sendJson(res, 400, { ok: false, error: 'device_id required' });
           if (isDeviceRevoked(deviceId)) return sendJson(res, 403, { ok: false, error: 'device was unpaired — new pairing required' });
           registerDevice(deviceId, body.name, body.platform);
+          mainBus.emitEvent('device-connected', { deviceId, deviceName: body.name || deviceId, platform: body.platform || 'unknown' });
           const changes: Change[] = Array.isArray(body.changes) ? body.changes : [];
           const result = applyPush(deviceId, changes);
+          if (result.applied > 0) {
+            try { mainBus.emitEvent('sync-started', { deviceId, deviceName: body.name || deviceId, platform: body.platform || 'unknown' }); } catch {}
+          }
           sendJson(res, 200, { ok: true, ...result, serverSeq: maxSeq() });
           return;
         }
@@ -1013,21 +1187,58 @@ export class SyncHub {
 
         if (path === '/sync/join/submit' && req.method === 'POST') {
           const body = JSON.parse(await readBody(req));
-          const { resolveInvitation, submitDeviceJoinRequest } = await import('./sync/device-requests');
-          const inv = resolveInvitation(String(body.code ?? ''));
-          if (!inv) return sendJson(res, 404, { ok: false, error: 'Invitation not found or expired' });
-          const rec = submitDeviceJoinRequest({ ...body, businessId: inv.businessId });
-          sendJson(res, 200, { ok: true, requestId: rec.requestId, status: rec.status });
+          const { resolveInvitation, submitDeviceJoinRequest, getDeviceJoinRequestBy, provisionJoinForDevice } = await import('./sync/device-requests');
+          const { getActiveBusinessId } = await import('./ipc-handlers');
+          const code = String(body.code ?? '');
+          const inv = code ? resolveInvitation(code) : null;
+          const bizId = inv?.businessId || body.businessId || body.business_id || String(getActiveBusinessId() || 1);
+          const joinerDeviceId = String(body.joinerDeviceId ?? body.joiner_device_id ?? '');
+          // Tap-first handoff: capture the device's grant state BEFORE staging
+          let preGranted = false;
+          try {
+            const dev = db.prepare('SELECT status FROM devices WHERE device_id = ?').get(joinerDeviceId) as any;
+            const ros = db.prepare('SELECT status FROM roster_devices WHERE uuid = ? OR device_id = ?').get(joinerDeviceId, joinerDeviceId) as any;
+            const active = (s: any) => s != null && !['revoked', 'pending', 'offline'].includes(String(s.status || ''));
+            preGranted = active(dev) || active(ros);
+          } catch { /* schema variance — fall through to the manual flow */ }
+          let rec = submitDeviceJoinRequest({ ...body, businessId: bizId });
+          if (preGranted && rec.status === 'pending') {
+            try {
+              provisionJoinForDevice(joinerDeviceId);
+              rec = getDeviceJoinRequestBy(String(rec.code ?? ''), joinerDeviceId) ?? rec;
+              logger.info('Tap-first auto-approval: request from an already-granted device', { deviceId: joinerDeviceId });
+            } catch (e: any) {
+              logger.warn('Tap-first auto-approval failed', { deviceId: joinerDeviceId, error: e?.message });
+            }
+          }
+          const payload: any = { ok: true, requestId: rec.requestId, status: rec.status };
+          // Approval grants the pairing credential in-band (same as WS path).
+          if (rec.status === 'approved') payload.pairingToken = getPairingToken();
+          // Explicit connection acknowledgement: the joiner's session tracker
+          // uses this to mark the connection real the moment the HTTP call
+          // returns, so the joiner does not sit on "Waiting for connection…"
+          // while the owner already believes it is connected.
+          payload.handshake = buildHandshakeAck(rec, SYNC_PORT);
+          sendJson(res, 200, payload);
           return;
         }
 
         if (path === '/sync/join/status' && req.method === 'POST') {
           const body = JSON.parse(await readBody(req));
-          const { getDeviceJoinRequestBy } = await import('./sync/device-requests');
-          const rec = getDeviceJoinRequestBy(String(body.code ?? ''), String(body.joinerDeviceId ?? body.joiner_device_id ?? ''));
+          const { getDeviceJoinRequestBy, getDeviceJoinRequestByDevice } = await import('./sync/device-requests');
+          const code = String(body.code ?? '');
+          const joinerDeviceId = String(body.joinerDeviceId ?? body.joiner_device_id ?? '');
+
+          // Check device ID first to guarantee approval status is found
+          // regardless of formatting differences or code-less polls.
+          const rec = (joinerDeviceId ? getDeviceJoinRequestByDevice(joinerDeviceId) : null)
+            || (code && joinerDeviceId ? getDeviceJoinRequestBy(code, joinerDeviceId) : null);
+
           const payload: any = { ok: true, record: rec };
           // Approval grants the pairing credential in-band (same as WS path).
           if (rec && rec.status === 'approved') payload.pairingToken = getPairingToken();
+          // Explicit connection acknowledgement for the client's session tracker.
+          payload.handshake = buildHandshakeAck(rec, SYNC_PORT);
           sendJson(res, 200, payload);
           return;
         }

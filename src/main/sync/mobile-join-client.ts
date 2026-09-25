@@ -98,7 +98,8 @@ export async function submitJoinToMobileHub(peer: DiscoveredService, payload: an
   try {
     socket = await connect(host, port);
     const res = await rpc(socket, { type: 'DEVICE_JOIN_SUBMIT', payload });
-    return res?.payload ?? {};
+    const p = res?.payload ?? {};
+    return { ...p, handshake: p.handshake ?? extractMobileHandshake(p, port) };
   } finally {
     try { socket?.destroy(); } catch { /* ignore */ }
   }
@@ -113,8 +114,27 @@ export async function pollJoinStatusOnMobileHub(peer: DiscoveredService, code: s
   try {
     socket = await connect(host, port);
     const res = await rpc(socket, { type: 'DEVICE_JOIN_STATUS', payload: { code, joinerDeviceId } });
-    return res?.payload ?? {};
+    const p = res?.payload ?? {};
+    return { ...p, handshake: p.handshake ?? extractMobileHandshake(p, port) };
   } finally {
     try { socket?.destroy(); } catch { /* ignore */ }
   }
+}
+
+/** Extract a handshake ack from a raw mobile hub TCP payload (best-effort). */
+function extractMobileHandshake(p: any, port: number): { ok?: boolean; hubDeviceId?: string; hubName?: string; hubPlatform?: string; hubPort?: number; businessId?: string | null; businessName?: string | null; status?: string | null; requestId?: string | null; at?: number } | undefined {
+  if (!p || typeof p !== 'object') return undefined;
+  if (p.handshake) return p.handshake;
+  return {
+    ok: true,
+    hubDeviceId: p.hubId ?? 'mobile',
+    hubName: p.hubName ?? p.deviceName ?? 'Shega Mobile',
+    hubPlatform: 'mobile',
+    hubPort: port,
+    businessId: p.businessId ?? null,
+    businessName: p.businessName ?? null,
+    status: p.status ?? null,
+    requestId: p.requestId ?? null,
+    at: Date.now(),
+  };
 }

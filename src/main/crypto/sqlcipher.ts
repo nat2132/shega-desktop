@@ -34,8 +34,10 @@ export async function initializeCrypto(pin?: string): Promise<Buffer> {
     try {
       const encryptedKey = readFileSync(MASTER_KEY_FILE);
       if (safeStorage.isEncryptionAvailable()) {
-        masterKey = safeStorage.decryptString(encryptedKey.toString('base64'));
-        masterKey = Buffer.from(masterKey, 'hex');
+        // safeStorage takes the raw ciphertext Buffer and returns the hex key
+        // string that storeMasterKey() encrypted. Passing a base64 string here
+        // threw, which silently generated a new key on every launch.
+        masterKey = Buffer.from(safeStorage.decryptString(encryptedKey), 'hex');
       } else {
         // Fallback: derive from PIN if provided
         if (pin) {
@@ -111,15 +113,14 @@ export function clearMasterKey(): void {
 // Encrypted Database Wrapper
 // ============================================
 
-interface EncryptedDatabase extends Database {
-  // All Database methods are available via proxy
-}
+/** better-sqlite3's default export is a value; the instance type comes from it. */
+type DatabaseInstance = InstanceType<typeof Database>;
 
-function createEncryptedDb(dbPath: string, key: Buffer): Database {
+function createEncryptedDb(dbPath: string, key: Buffer): DatabaseInstance {
   // For now, use standard better-sqlite3 with application-level encryption
   // for sensitive fields. Full SQLCipher integration requires native compilation.
   const db = new Database(dbPath);
-  
+
   db.pragma('journal_mode = WAL');
   db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
@@ -127,7 +128,7 @@ function createEncryptedDb(dbPath: string, key: Buffer): Database {
   return db;
 }
 
-export function createEncryptedDatabase(config: { key: Buffer; path: string }): Database {
+export function createEncryptedDatabase(config: { key: Buffer; path: string }): DatabaseInstance {
   return createEncryptedDb(config.path, config.key);
 }
 

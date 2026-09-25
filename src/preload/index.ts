@@ -1,6 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-contextBridge.exposeInMainWorld('api', {
+interface JoinSession {
+  host: string;
+  platform: 'mobile' | 'desktop';
+  port: number;
+  businessId?: string;
+  businessName?: string;
+}
+
+const api = {
   // Businesses
   getActiveBusiness: () => ipcRenderer.invoke('get-active-business'),
   updateBusiness: (id: number, biz: any) => ipcRenderer.invoke('update-business', id, biz),
@@ -103,9 +111,11 @@ contextBridge.exposeInMainWorld('api', {
   p2pDevices: () => ipcRenderer.invoke('p2p:devices'),
   p2pAnnounce: () => ipcRenderer.invoke('p2p:announce'),
   p2pApprove: (name?: string, code?: string) => ipcRenderer.invoke('p2p:approve', name, code),
+  p2pApproveOne: (peer?: { deviceId?: string; name?: string; host?: string; platform?: string; role?: string; permissions?: Record<string, unknown> }) => ipcRenderer.invoke('p2p:approve-one', peer),
   p2pRevokeDevice: (deviceId: string) => ipcRenderer.invoke('p2p:revoke-device', deviceId),
   p2pRenameDevice: (deviceId: string, name: string) => ipcRenderer.invoke('p2p:rename-device', deviceId, name),
   p2pRecordCounts: () => ipcRenderer.invoke('p2p:record-counts'),
+  p2pPersistPeer: (device: { deviceId: string; name?: string; platform?: 'mobile' | 'desktop'; businessId?: number | string; model?: string }) => ipcRenderer.invoke('p2p:persist-peer', device),
   getAnalytics: (period: string, dateRange?: { start: string; end: string }) => ipcRenderer.invoke('get-analytics', period, dateRange),
   getVatReport: (dateRange?: { start: string; end: string }) => ipcRenderer.invoke('get-vat-report', dateRange),
   getVoidedSales: (options?: any) => ipcRenderer.invoke('get-voided-sales', options),
@@ -134,6 +144,7 @@ contextBridge.exposeInMainWorld('api', {
   login: (username: string, pin: string) => ipcRenderer.invoke('login', username, pin),
   getAdmins: () => ipcRenderer.invoke('get-admins'),
   getLoginUsers: () => ipcRenderer.invoke('get-login-users'),
+  getLastLoginUser: () => ipcRenderer.invoke('get-last-login-user'),
   loginByUser: (source: 'admin' | 'employee' | 'roster', id: number, pin: string) => ipcRenderer.invoke('login-by-user', source, id, pin),
   getCurrentAdmin: (id: number, isEmployee?: boolean) => ipcRenderer.invoke('get-current-admin', id, isEmployee),
   insertAdmin: (admin: any) => ipcRenderer.invoke('insert-admin', admin),
@@ -284,6 +295,14 @@ contextBridge.exposeInMainWorld('api', {
   setPrinterConfig: (cfg: any) => ipcRenderer.invoke('set-printer-config', cfg),
   parseScaleReading: (line: string) => ipcRenderer.invoke('parse-scale-reading', line),
 
+  // Mock Peripherals (USE_MOCK_PERIPHERALS dev harness)
+  mockPeripheralStatus: () => ipcRenderer.invoke('mock:status'),
+  mockScan: (code?: string) => ipcRenderer.invoke('mock:scan', code),
+  mockScanSerial: (code?: string) => ipcRenderer.invoke('mock:scan-serial', code),
+  mockPrintReceipt: (payload?: any) => ipcRenderer.invoke('mock:print-receipt', payload),
+  mockPrintBytes: (bytes: number[]) => ipcRenderer.invoke('mock:print-bytes', bytes),
+  mockDecode: (bytes: number[]) => ipcRenderer.invoke('mock:decode', bytes),
+
   // Sync hub (Phase 3)
    syncStatus: () => ipcRenderer.invoke('sync:status'),
   syncVerify: () => ipcRenderer.invoke('sync:verify'),
@@ -343,7 +362,13 @@ contextBridge.exposeInMainWorld('api', {
   // Subscription System
   getSubscriptionPlans: () => ipcRenderer.invoke('get-subscription-plans'),
   getCurrentSubscription: () => ipcRenderer.invoke('get-current-subscription'),
-  startTrial: () => ipcRenderer.invoke('start-trial'),
+  // `planTier` is the canonical edition the user picked on the welcome screen
+  // ('mobile' | 'desktop' | 'both'); it selects which plan the trial is created on.
+  startTrial: (planTier?: string) => ipcRenderer.invoke('start-trial', planTier),
+
+  // Backend (Shega account / subscription) configuration
+  getBackendUrl: () => ipcRenderer.invoke('get-backend-url'),
+  setBackendUrl: (url: string) => ipcRenderer.invoke('set-backend-url', url),
   submitPayment: (data: any) => ipcRenderer.invoke('submit-payment', data),
   getPaymentTransactions: (options?: any) => ipcRenderer.invoke('get-payment-transactions', options),
   getAllPaymentTransactions: (options?: any) => ipcRenderer.invoke('get-all-payment-transactions', options),
@@ -354,6 +379,15 @@ contextBridge.exposeInMainWorld('api', {
   checkPremiumFeature: (feature: string) => ipcRenderer.invoke('check-premium-feature', feature),
   getSubscriptionStats: () => ipcRenderer.invoke('get-subscription-stats'),
   checkTrialAvailability: () => ipcRenderer.invoke('check-trial-availability'),
+
+  // shega backend account link (source of truth for the subscription)
+  backendLogin: (creds: { username: string; password: string }): Promise<any> => ipcRenderer.invoke('backend-login', creds),
+  backendLogout: (): Promise<any> => ipcRenderer.invoke('backend-logout'),
+  backendSession: (): Promise<any> => ipcRenderer.invoke('backend-session'),
+  backendSync: (): Promise<any> => ipcRenderer.invoke('backend-sync'),
+  backendPlans: () => ipcRenderer.invoke('backend-plans'),
+  backendStartTrial: (args: { planId?: number }): Promise<any> => ipcRenderer.invoke('backend-start-trial', args),
+  backendSubmitPayment: (args: { planId: number; transactionId: string; paymentMethod?: string; description?: string; paymentType?: string; quantity?: number }): Promise<any> => ipcRenderer.invoke('backend-submit-payment', args),
 
   // Debug
   debugPing: () => ipcRenderer.invoke('debug:ping'),
@@ -416,6 +450,7 @@ contextBridge.exposeInMainWorld('api', {
   businessRoles: () => ipcRenderer.invoke('business:roles'),
   businessCan: (key: string) => ipcRenderer.invoke('business:can', key),
   businessListPeople: () => ipcRenderer.invoke('business:list-people'),
+  getSyncedTeam: () => ipcRenderer.invoke('get-synced-team'),
   businessSetPersonRole: (employeeId: number, roleKey: string) => ipcRenderer.invoke('business:set-person-role', employeeId, roleKey),
   businessSetPersonActive: (employeeId: number, isActive: boolean) => ipcRenderer.invoke('business:set-person-active', employeeId, isActive),
 
@@ -429,16 +464,27 @@ contextBridge.exposeInMainWorld('api', {
   pairingDecide: (id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>) => ipcRenderer.invoke('pairing:decide', id, decision, role, permissions),
   pairingAssignIdentity: (id: number, identity: { name?: string; avatar?: string | null }) => ipcRenderer.invoke('pairing:assign-identity', id, identity),
   pairingQrCode: (text: string) => ipcRenderer.invoke('pairing:qr-code', text),
-  joinLookup: (code: string) => ipcRenderer.invoke('join:lookup', code),
-  joinAccept: (input: { code: string; email: string; password: string; name?: string; deviceName?: string }) => ipcRenderer.invoke('join:accept', input),
+  // Cloud relay (SYNC_CONTRACT §5) — hub HTTPS sync to Django
+  cloudStatus: () => ipcRenderer.invoke('cloud:status'),
+  cloudSync: () => ipcRenderer.invoke('cloud:sync'),
+  cloudVerify: () => ipcRenderer.invoke('cloud:verify'),
+  saveCloudConfig: (input: { url?: string; deviceKey?: string; enabled?: boolean }) => ipcRenderer.invoke('cloud:save-config', input),
+  cloudEnabled: (enabled: boolean) => ipcRenderer.invoke('cloud:set-enabled', enabled),
+  joinLookup: (code: string, session?: JoinSession) => ipcRenderer.invoke('join:lookup', code, session),
+  joinAccept: (input: { code: string; email: string; password: string; name?: string; deviceName?: string }, session?: JoinSession) => ipcRenderer.invoke('join:accept', input, session),
   joinStatus: (invitationId?: number) => ipcRenderer.invoke('join:status', invitationId),
-  joinActivate: (pin: string) => ipcRenderer.invoke('join:activate', pin),
+  joinActivate: (pin: string | { pin: string; name?: string; username?: string; avatar?: string | null }) => ipcRenderer.invoke('join:activate', pin),
   joinCancel: () => ipcRenderer.invoke('join:cancel'),
   // Bluetooth-style pairing-beacon discovery
   pairBeaconStart: (invite: any) => ipcRenderer.invoke('pair-beacon:start', invite),
   pairBeaconDiscoverable: (on: boolean, businessName?: string, role?: 'owner' | 'team') => ipcRenderer.invoke('pair-beacon:discoverable', on, businessName, role),
   pairBeaconStop: () => ipcRenderer.invoke('pair-beacon:stop'),
   pairBeaconNearby: () => ipcRenderer.invoke('pair-beacon:nearby'),
+  onDeviceEvent: (cb: (e: any) => void) => {
+    const listener = (_e: any, payload: any) => { try { cb(payload); } catch { /* never break the channel */ } };
+    ipcRenderer.on('device:event', listener);
+    return () => { ipcRenderer.removeListener('device:event', listener); };
+  },
   deviceName: () => ipcRenderer.invoke('device:name'),
 
   // Tax computation (existing pos modules, now reachable)
@@ -494,4 +540,45 @@ contextBridge.exposeInMainWorld('api', {
   },
   approveWithPin: (requestId: string, pin: string) => ipcRenderer.invoke('approval:resolve', { requestId, pin }),
   cancelApproval: (requestId: string) => ipcRenderer.invoke('approval:cancel', requestId),
-})
+}
+
+/**
+ * Electron prefixes errors crossing the IPC boundary ("Error invoking remote
+ * method 'x': Error: ..."). Strip that so the UI shows the real reason, and flag
+ * a subscription lock so the renderer can point the user at the renew screen
+ * instead of a generic failure toast.
+ */
+const VIEW_ONLY_MARKER = '[SUBSCRIPTION_REQUIRED]'
+
+function normalizeIpcError(raw: unknown): Error {
+  const message = raw instanceof Error ? raw.message : String(raw)
+  const remote = /Error invoking remote method '[^']+':\s*(?:Error:\s*)?([\s\S]*)$/.exec(message)
+  const clean = (remote ? remote[1] : message).trim()
+  const error = new Error(clean)
+  if (clean.startsWith(VIEW_ONLY_MARKER)) {
+    Object.defineProperty(error, 'code', { value: 'SUBSCRIPTION_REQUIRED', enumerable: true })
+    try {
+      window.dispatchEvent(new CustomEvent('shega:view-only', { detail: { message: clean } }))
+    } catch { /* window may not be reachable in every preload mode */ }
+  }
+  return error
+}
+
+for (const key of Object.keys(api) as Array<keyof typeof api>) {
+  // Event subscriptions register a listener and hand back a cleanup function.
+  // Wrapping those in a promise would turn the cleanup into a Promise, so they
+  // are exposed untouched — they never invoke a handler and cannot fail.
+  if (key.startsWith('on')) continue
+  const original = api[key]
+  if (typeof original !== 'function') continue
+  const wrapped = async (...args: unknown[]) => {
+    try {
+      return await (original as (...a: unknown[]) => unknown)(...args)
+    } catch (err) {
+      throw normalizeIpcError(err)
+    }
+  }
+  ;(api as Record<string, unknown>)[key as string] = wrapped
+}
+
+contextBridge.exposeInMainWorld('api', api)

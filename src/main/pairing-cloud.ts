@@ -22,6 +22,17 @@ function setSetting(key: string, value: string): void {
   db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
 }
 
+function getDefaultBusinessId(): number | null {
+  try {
+    const row = db.prepare('SELECT id FROM businesses WHERE isDefault = 1 ORDER BY id LIMIT 1').get() as any;
+    if (row?.id != null) return Number(row.id);
+    const first = db.prepare('SELECT id FROM businesses ORDER BY id LIMIT 1').get() as any;
+    return first?.id != null ? Number(first.id) : null;
+  } catch {
+    return null;
+  }
+}
+
 function getBaseUrl(): string {
   return (getSetting('cloud_sync_url') || process.env.SHEGA_API_URL || DEFAULT_BASE).replace(/\/+$/, '');
 }
@@ -32,6 +43,125 @@ function normalizeCode(code: string): string {
 }
 /** SQL fragment that compares a stored `code` column format-insensitively. */
 const CODE_EQ = "replace(replace(upper(coalesce(code,'')), '-', ''), ' ', '') = ?";
+
+// ── LAN pairing session ─────────────────────────────────────────────────────
+// The code alone cannot accept an invite: the join request must go to the SAME
+// hub that published the code, over that hub's transport (mobile owner = TCP
+// 5759, desktop owner = HTTP 5757). A "session" records which hub a discovered
+// invite belongs to so lookup → accept → status → activate all target that hub
+// instead of a stale/missing local row or an unrelated cloud record ("invitation
+// not found"). The active session is persisted so status/activate survive
+// restarts.
+interface JoinSession {
+  host: string;
+  platform: 'mobile' | 'desktop';
+  port: number;
+  businessId?: string;
+  businessName?: string;
+}
+
+const JOIN_PORTS: Record<JoinSession['platform'], number> = { mobile: 5759, desktop: 5757 };
+
+function saveJoinSession(session: JoinSession): void {
+  setSetting('join_session_host', session.host);
+  setSetting('join_session_platform', session.platform);
+  setSetting('join_session_port', String(session.port));
+  if (session.businessId) setSetting('join_session_business_id', session.businessId);
+  if (session.businessName) setSetting('join_session_business_name', session.businessName);
+}
+
+function loadJoinSession(): JoinSession | null {
+  const host = getSetting('join_session_host');
+  if (!host) return null;
+  const platform = (getSetting('join_session_platform') || 'desktop') as JoinSession['platform'];
+  return {
+    host,
+    platform,
+    port: Number(getSetting('join_session_port') || JOIN_PORTS[platform]),
+    businessId: getSetting('join_session_business_id') ?? undefined,
+    businessName: getSetting('join_session_business_name') ?? undefined,
+  };
+}
+
+/** Resolve an invite code against a specific discovered owner hub. */
+async function resolveInviteOnSession(session: JoinSession, code: string): Promise<any | null> {
+  try {
+    if (session.platform === 'mobile') {
+      const { probeMobileHubJoin } = await import('./sync/mobile-join-client');
+      const res = await probeMobileHubJoin(
+        { host: session.host, addresses: [session.host], port: session.port, platform: 'mobile' } as any,
+        code,
+      );
+      if (res) return res;
+    } else {
+      const { probeDesktopHubJoin } = await import('./sync/desktop-hub-join');
+      const res = await probeDesktopHubJoin({ host: session.host, port: session.port }, code);
+      if (res) return res;
+    }
+  } catch { /* hub unreachable or invite already consumed */ }
+  return null;
+}
+
+/** Submit a join request to the owner hub identified by a session. */
+async function submitJoinOnSession(session: JoinSession, payload: any): Promise<any> {
+  if (session.platform === 'mobile') {
+    const { submitJoinToMobileHub } = await import('./sync/mobile-join-client');
+    return submitJoinToMobileHub(
+      { host: session.host, addresses: [session.host], port: session.port, platform: 'mobile' } as any,
+      payload,
+    );
+  }
+  const { submitJoinToDesktopHub } = await import('./sync/desktop-hub-join');
+  return submitJoinToDesktopHub({ host: session.host, port: session.port }, payload);
+}
+
+/** Poll the approval decision from the owner hub identified by a session. */
+async function pollJoinStatusOnSession(session: JoinSession, code: string, joinerDeviceId: string): Promise<any> {
+  if (session.platform === 'mobile') {
+    const { pollJoinStatusOnMobileHub } = await import('./sync/mobile-join-client');
+    return pollJoinStatusOnMobileHub(
+      { host: session.host, addresses: [session.host], port: session.port, platform: 'mobile' } as any,
+      code,
+      joinerDeviceId,
+    );
+  }
+  const { pollJoinStatusOnDesktopHub } = await import('./sync/desktop-hub-join');
+  return pollJoinStatusOnDesktopHub({ host: session.host, port: session.port }, code, joinerDeviceId);
+}
+
+/**
+ * Every owner hub currently visible on the LAN (mDNS `shega-pos` browse +
+ * HTTP/HELLO port sweep), deduped. Mobile hubs answer on TCP 5759; desktop
+ * hubs on HTTP 5757 — platform decides the transport.
+ */
+async function scanNearbySessions(): Promise<JoinSession[]> {
+  const out: JoinSession[] = [];
+  const seen = new Set<string>();
+  const add = (host: string, platform: JoinSession['platform']) => {
+    const h = String(host ?? '').trim();
+    if (!h) return;
+    const key = `${platform}:${h}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ host: h, platform, port: JOIN_PORTS[platform] });
+  };
+  try {
+    const { mdnsDiscovery } = await import('./sync/discovery');
+    const { isMobileHub } = await import('./sync/mobile-hub-client');
+    for (const peer of mdnsDiscovery.getDiscoveredServices()) {
+      const host = peer.host || peer.addresses?.[0];
+      if (!host) continue;
+      add(host, isMobileHub(peer) ? 'mobile' : 'desktop');
+    }
+  } catch { /* discovery unavailable */ }
+  try {
+    const { sweepLan } = await import('./sync/lan-discovery');
+    for (const entry of await sweepLan()) {
+      add(entry.host, entry.platform === 'mobile' ? 'mobile' : 'desktop');
+    }
+  } catch { /* sweep is best-effort */ }
+  return out;
+}
 
 let authPromise: ReturnType<typeof doAuthRequest> | null = null;
 
@@ -150,11 +280,46 @@ export function registerPairingCloudHandlers(): void {
     if (input?.employeeName) body.employee_name = input.employeeName;
     if (input?.register) body.register = input.register;
     if (input?.location) body.location = input.location;
-    return doAuthRequest('/api/sync/pairing/invite/', body, { method: 'POST', auth: true });
+    const invite = await doAuthRequest('/api/sync/pairing/invite/', body, { method: 'POST', auth: true });
+    // Settings uses the cloud invite endpoint, but nearby pairing still needs
+    // a local beacon and a local resolver row carrying this invite. Without
+    // the resolver row, peers can see the beacon but /sync/invitations/resolve
+    // rejects the code as "not found".
+    try {
+      const { startPairingBeaconForInvite } = await import('./sync/pairing-beacon');
+      const { publishInvitation } = await import('./sync/device-requests');
+      const businessId = invite.business_id ?? invite.businessId ?? getDefaultBusinessId();
+      if (businessId && invite.code) {
+        publishInvitation({
+          id: String(invite.id),
+          businessId: String(businessId),
+          code: String(invite.code),
+          name: invite.employee_name ?? invite.employeeName,
+          role: invite.role ?? input?.role,
+          platform: 'desktop',
+          expiresAt: invite.expires_at ?? invite.expiresAt,
+        });
+      }
+      startPairingBeaconForInvite({
+        id: invite.id,
+        code: invite.code,
+        businessId: businessId ?? 1,
+        role: invite.role ?? input?.role,
+        expiresAt: invite.expires_at ?? invite.expiresAt,
+      });
+    } catch (e: any) {
+      console.warn('[Discovery] Could not advertise cloud pairing invite:', e?.message);
+    }
+    return invite;
   });
 
   ipcMain.handle('pairing:revoke', async (_e, id: number) => {
-    return doAuthRequest(`/api/sync/pairing/${id}/revoke/`, {}, { method: 'POST', auth: true });
+    const result = await doAuthRequest(`/api/sync/pairing/${id}/revoke/`, {}, { method: 'POST', auth: true });
+    try {
+      const { pairingBeacon } = await import('./sync/pairing-beacon');
+      pairingBeacon.stopPublishing();
+    } catch { /* best-effort cleanup */ }
+    return result;
   });
 
   ipcMain.handle('pairing:decide', async (_e, id: number, decision: 'approve' | 'reject', role?: string, permissions?: Record<string, unknown>) => {
@@ -203,14 +368,43 @@ export function registerPairingCloudHandlers(): void {
   // when they have no Shega account yet), the invite is accepted with THIS
   // machine's hub device id, and the one-time device key issued at accept time
   // becomes the cloud transport credential once the owner approves.
-  ipcMain.handle('join:lookup', async (_e, code: string) => {
+  // LAN resolve → joiner-friendly preview. `session` pins the lookup to ONE
+  // discovered hub (the owner whose radar row was picked); without it every
+  // visible hub is probed so manual code entry still works.
+  const toLookupResult = (inv: any, source: string): any => ({
+    business_id: inv.businessId ?? inv.business_id ?? '',
+    business_name: inv.businessName ?? inv.business_name ?? 'Business',
+    employee_name: inv.name ?? inv.employee_name ?? null,
+    role: inv.role ?? 'cashier',
+    register: null,
+    location: null,
+    expires_at: inv.expiresAt ?? inv.expires_at ?? null,
+    source,
+    invite_id: inv.id ?? inv.invite_id ?? null,
+  });
+
+  ipcMain.handle('join:lookup', async (_e, code: string, session?: JoinSession) => {
     const c = String(code ?? '').trim().toUpperCase();
     if (!c) throw new Error('Enter the 6-digit code');
-
-    // 1) Local invitation store first — pairing works fully offline. The
-    //    desktop hub keeps both its own user_invites and any invitations
-    //    published to it by mobile peers (DEVICE_JOIN.PUBLISH).
     const n = normalizeCode(c);
+
+    // 1) The discovered owner hub is the source of truth for a pairing beacon
+    //    code. Resolving there — not in this device's (empty) store and not on
+    //    the cloud — is exactly what fixes "invitation not found": the invite
+    //    lives on the owner, and we now talk to the owner directly.
+    const pinned = session ?? loadJoinSession();
+    if (pinned && session) {
+      const inv = await resolveInviteOnSession(pinned, c);
+      if (inv) {
+        saveJoinSession({ ...pinned, businessId: inv.businessId ?? pinned.businessId, businessName: inv.businessName ?? pinned.businessName });
+        return toLookupResult(inv, pinned.platform === 'mobile' ? 'mobile-hub' : 'desktop-hub');
+      }
+      throw new Error('This invitation is no longer open on the owner\u2019s device. Ask them to open a fresh invite, or pick another nearby device.');
+    }
+
+    // 2) Local invitation store — pairing works fully offline. This desktop's
+    //    hub keeps both its own user_invites and any invitations published to
+    //    it by peers (DEVICE_JOIN.PUBLISH).
     try {
       const local = db.prepare(
         `SELECT * FROM user_invites WHERE ${CODE_EQ} AND status IN ('open','pending') ORDER BY created_at DESC LIMIT 1`
@@ -250,36 +444,22 @@ export function registerPairingCloudHandlers(): void {
       }
     } catch { /* tables may not exist on a brand-new install */ }
 
-    // 2) Direct probe of nearby mobile hubs: a phone that just created the
-    //    business advertises a pairing beacon over mDNS and serves the join
-    //    channel on its TCP hub (port 5759) — resolve the code there when we
-    //    can see it on the LAN, before falling back to the cloud.
+    // 3) Direct probe of every hub currently visible on the LAN (mDNS browse +
+    //    port sweep): a phone or desktop that just created the business serves
+    //    the DEVICE_JOIN channel on its own hub — no cloud, no prior pairing.
     try {
-      const { mdnsDiscovery } = await import('./sync/discovery');
-      const { isMobileHub } = await import('./sync/mobile-hub-client');
-      const { probeMobileHubJoin } = await import('./sync/mobile-join-client');
-      const peers = mdnsDiscovery.getDiscoveredServices().filter((p) => isMobileHub(p));
-      for (const peer of peers) {
+      for (const peer of await scanNearbySessions()) {
         try {
-          const inv = await probeMobileHubJoin(peer, c);
+          const inv = await resolveInviteOnSession(peer, c);
           if (inv) {
-            return {
-              business_id: inv.businessId,
-              business_name: inv.businessName ?? 'Business',
-              employee_name: inv.name ?? null,
-              role: inv.role ?? 'cashier',
-              register: null,
-              location: null,
-              expires_at: inv.expiresAt ?? null,
-              source: 'mobile-hub',
-              invite_id: inv.id ?? null,
-            };
+            saveJoinSession({ ...peer, businessId: inv.businessId ?? peer.businessId, businessName: inv.businessName ?? peer.businessName });
+            return toLookupResult(inv, peer.platform === 'mobile' ? 'mobile-hub' : 'desktop-hub');
           }
         } catch { /* try the next hub */ }
       }
     } catch { /* discovery unavailable */ }
 
-    // 3) Cloud lookup fallback (backend pairing endpoints).
+    // 4) Cloud lookup fallback (backend pairing endpoints).
     try {
       return await doAuthRequest('/api/sync/pairing/lookup/', { code: c }, { method: 'POST' });
     } catch (err: any) {
@@ -297,11 +477,72 @@ export function registerPairingCloudHandlers(): void {
     }
   });
 
-  ipcMain.handle('join:accept', async (_e, input: { code: string; email: string; password: string; name?: string; deviceName?: string }) => {
+  ipcMain.handle('join:accept', async (_e, input: { code: string; email: string; password: string; name?: string; deviceName?: string }, session?: JoinSession) => {
     const code = String(input?.code ?? '').trim();
     const email = String(input?.email ?? '').trim().toLowerCase();
     const password = String(input?.password ?? '');
     if (!code || !email || !password) throw new Error('Code, email and password are required');
+
+    // 0) LAN session path (owner discovered on the network — mobile or desktop).
+    //    The join request is submitted straight to the owner's hub, the owner
+    //    approves from their Business Center / Teams, and this joiner polls the
+    //    hub for the decision. No cloud account is created for a LAN join.
+    {
+      const pinned = session ?? loadJoinSession();
+      if (pinned) {
+        const inv = await resolveInviteOnSession(pinned, code.toUpperCase());
+        if (inv) {
+          // Include the business snapshot in the session so status → activate
+          // can read the owner's business identity without re-resolving.
+          const live = { ...pinned, businessId: inv.businessId ?? pinned.businessId, businessName: inv.businessName ?? pinned.businessName };
+          const deviceId0 = ensureHubDeviceId();
+          const displayName = String(input?.name || '').trim() || String(input?.deviceName || '').trim() || 'Team Member';
+          const role = String(inv.role ?? 'cashier');
+          const payload = {
+            businessId: inv.businessId ?? '',
+            code: code.toUpperCase(),
+            joinerDeviceId: deviceId0,
+            joinerName: displayName,
+            joinerModel: 'Desktop',
+            joinerUser: displayName,
+            role,
+            platform: 'desktop',
+          };
+          try {
+            await submitJoinOnSession(live, payload);
+          } catch (err: any) {
+            throw new Error(
+              'Could not reach the owner\'s device to send the join request. ' +
+              `Ask them to keep the app open on the same network, then try again. (${err?.message ?? 'network error'})`
+            );
+          }
+          saveJoinSession(live);
+          setSetting('join_source', 'lan');
+          setSetting('join_code', code.toUpperCase());
+          setSetting('join_device_id', deviceId0);
+          setSetting('join_business_id', live.businessId ?? '');
+          setSetting('join_business_name', live.businessName ?? '');
+          setSetting('join_role', role);
+          setSetting('join_display_name', displayName);
+          setSetting('join_account_email', email);
+          return {
+            status: 'pending',
+            invitation_id: null,
+            device_key: null,
+            device_id: deviceId0,
+            business_name: live.businessName ?? null,
+            role,
+            email,
+            source: 'lan',
+          };
+        }
+        // An explicitly pinned owner (radar pick / auto-connect) but the code no
+        // longer resolves there: fail loud — never silently fall into the cloud.
+        if (session) {
+          throw new Error('This invitation is no longer open on the owner\u2019s device. Ask them to open a fresh invite, or pick another nearby device.');
+        }
+      }
+    }
 
     // 1) Preview the invitation (validation only — never consumes it).
     //    Local invitations (offline-first) skip the cloud entirely: the join
@@ -429,6 +670,63 @@ export function registerPairingCloudHandlers(): void {
     const id = invitationId ?? Number(getSetting('join_invitation_id') || 0);
     const token = getSetting('join_access_token');
 
+    // LAN join: poll the owner's hub (the session recorded at submit time) for
+    // the approval decision — the mobile and desktop hubs both answer with
+    // `{ record, pairingToken? }`. `record.status` is the source of truth.
+    if (getSetting('join_source') === 'lan') {
+      const session = loadJoinSession();
+      const code = String(getSetting('join_code') || '');
+      const joinerDeviceId = String(getSetting('join_device_id') || '');
+      const businessName = getSetting('join_business_name') ?? '';
+      const roleSetting = getSetting('join_role') ?? 'cashier';
+      const email = getSetting('join_account_email') ?? '';
+      if (!session || !code || !joinerDeviceId) {
+        return { phase: 'error', error: 'Lost the pairing session. Rejoin and try again.' };
+      }
+      try {
+        const res = await pollJoinStatusOnSession(session, code, joinerDeviceId);
+        const record = res?.record ?? null;
+        if (!record || record.status === 'pending') {
+          return { phase: 'pending', status: 'pending', business_name: businessName, role: roleSetting, email };
+        }
+        if (record.status === 'approved') {
+          // Owner-assigned identity + the LAN pairing grant ride the decision:
+          // persist them so join:activate provisions the exact member identity.
+          if (record.assignedName) setSetting('join_assigned_name', String(record.assignedName));
+          if (record.assignedAvatar) setSetting('join_assigned_avatar', String(record.assignedAvatar));
+          if (record.assignedRole) setSetting('join_role', String(record.assignedRole));
+          if (record.assignedPermissions) setSetting('join_assigned_permissions', JSON.stringify(record.assignedPermissions));
+          if (res?.pairingToken) setSetting('join_lan_token', String(res.pairingToken));
+          // Keep the session's host/port so post-activation sync (and the P2P
+          // manager's fallback) can reach the owner's hub without mDNS.
+          if (session.host) setSetting('join_lan_host', String(session.host));
+          if (session.port) setSetting('join_lan_port', String(session.port));
+          return {
+            phase: 'approved',
+            status: 'approved',
+            business_name: businessName,
+            role: record.assignedRole || record.role || roleSetting,
+            assigned_name: record.assignedName ?? null,
+            assigned_avatar: record.assignedAvatar ?? null,
+            assigned_permissions: record.assignedPermissions ?? null,
+            device_status: null,
+            email,
+          };
+        }
+        return {
+          phase: record.status,
+          status: record.status,
+          business_name: businessName,
+          role: roleSetting,
+          email,
+        };
+      } catch (err: any) {
+        // The owner's device may have left the network — the joiner stays on the
+        // join screen and can keep searching; never auto-terminate the session.
+        return { phase: 'error', error: err?.message ?? 'Lost contact with the owner\u2019s device' };
+      }
+    }
+
     // Local join: poll the staged device_requests row for the owner's decision.
     if (getSetting('join_local') === '1') {
       const localDeviceId = String(getSetting('join_device_id') || '');
@@ -497,39 +795,104 @@ export function registerPairingCloudHandlers(): void {
     }
   });
 
-  ipcMain.handle('join:activate', async (_e, pin: string) => {
+  ipcMain.handle('join:activate', async (_e, pinOrProfile: string | { pin: string; name?: string; username?: string; avatar?: string | null }) => {
+    const profile = typeof pinOrProfile === 'string' ? { pin: pinOrProfile } : (pinOrProfile ?? {});
+    const pinStr = String(profile.pin ?? '');
+    const joinName = profile.name ? String(profile.name).trim() : '';
+    const joinUsername = profile.username ? String(profile.username).trim().toLowerCase() : '';
+    const joinAvatar = profile.avatar !== undefined && profile.avatar !== null ? String(profile.avatar) : null;
     const key = getSetting('join_device_key');
     const email = getSetting('join_account_email');
     const id = getSetting('join_invitation_id');
-    const pinStr = String(pin ?? '');
-    if (!/^\d{4}$/.test(pinStr)) throw new Error('PIN must be 4 digits');
+    if (!/^\d{6}$/.test(pinStr)) throw new Error('PIN must be exactly 6 digits');
+
+    // LAN join: the join request lived on the OWNER's hub (not this device's
+    // device_requests), so activation mirrors the local path from the settings
+    // snapshot recorded when the owner approved. Identity comes from the joiner's
+    // own setup (name/avatar) while the ROLE comes from the owner's assignment.
+    if (getSetting('join_source') === 'lan') {
+      const bizKey = String(getSetting('join_business_id') || id || 'lan').replace(/[^a-zA-Z0-9_-]/g, '');
+      const username = joinUsername || email || `lan-${bizKey}`;
+      const displayName = joinName || getSetting('join_assigned_name') || getSetting('join_display_name') || 'Team Member';
+      const role = getSetting('join_role') || 'cashier';
+      const assignedAvatar = (joinAvatar || getSetting('join_assigned_avatar')) ?? null;
+      const assignedPerms = getSetting('join_assigned_permissions') || null;
+      const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get(username) as any;
+      if (!existing) {
+        db.prepare('INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)').run(
+          displayName,
+          username,
+          joinHashPin(pinStr),
+          role,
+          assignedPerms || JSON.stringify(['dashboard', 'inventory', 'sales', 'customers', 'analytics']),
+          null,
+        );
+        if (assignedAvatar) {
+          try { db.prepare('UPDATE admins SET avatar = ? WHERE username = ?').run(assignedAvatar, username); } catch { /* column-guarded */ }
+        }
+      } else {
+        const sets: string[] = [];
+        const vals: any[] = [];
+        sets.push('name = ?'); vals.push(displayName);
+        sets.push('role = ?'); vals.push(role);
+        if (assignedPerms) { sets.push('permissions = ?'); vals.push(assignedPerms); }
+        if (assignedAvatar) { sets.push('avatar = ?'); vals.push(assignedAvatar); }
+        vals.push(username);
+        db.prepare(`UPDATE admins SET ${sets.join(', ')} WHERE username = ?`).run(...vals);
+      }
+      // LAN pairing grant (owner hub token) is handed off where sync reads it.
+      const lanToken = getSetting('join_lan_token');
+      if (lanToken) setSetting('lan_pairing_token', lanToken);
+      // Preserve the owner-hub endpoint for post-activation sync (the wipe
+      // below clears every other join_ setting).
+      const lanHost = getSetting('join_lan_host');
+      const lanPort = getSetting('join_lan_port');
+      db.prepare("DELETE FROM settings WHERE key LIKE 'join_%'").run();
+      if (lanToken) setSetting('lan_pairing_token', lanToken);
+      if (lanHost) setSetting('lan_owner_host', lanHost);
+      if (lanPort) setSetting('lan_owner_port', lanPort);
+      // Kick one immediate pull from the owner's hub so the joiner's data
+      // arrives without waiting for the next mDNS-driven P2P cycle.
+      if (lanHost && lanToken) {
+        (async () => {
+          try {
+            const { syncWithMobileHub } = await import('./sync/mobile-hub-client');
+            const host = String(lanHost);
+            const port = Number(lanPort || 0);
+            if (port === 5759) {
+              // Mobile owner hub: TCP protocol with the granted pairing token.
+              await syncWithMobileHub({ host, port, pairingToken: lanToken, deviceId: '', name: '', addresses: [host] } as any);
+            }
+          } catch (e: any) {
+            console.warn('Post-activation pull from owner hub failed:', e?.message);
+          }
+        })();
+      }
+      return { success: true, username };
+    }
 
     // Local join: create a local terminal identity bound to the joined
     // business. The business roster/sync arrives over LAN + P2P.
     if (getSetting('join_local') === '1') {
-      const displayName = getSetting('join_display_name') || 'Team Member';
-      const username = `local-${String(id)}`;
-      // Owner-assigned identity from the approval: the member joins with the
-      // exact name, avatar, role and permission set the owner configured.
-      let assignedName: string | null = null;
+      const displayName = joinName || getSetting('join_display_name') || 'Team Member';
+      const username = joinUsername || `local-${String(id)}`;
+      const assignedAvatar = (joinAvatar || getSetting('join_assigned_avatar')) ?? null;
+      // Owner-assigned identity from the approval: the role and permission set
+      // come from the owner; the member's name/avatar come from their own setup.
       let assignedRole: string | null = null;
-      let assignedAvatar: string | null = null;
       let assignedPerms: string | null = null;
       try {
         const { getDeviceJoinRequestBy } = await import('./sync/device-requests');
         const rec = getDeviceJoinRequestBy(String(getSetting('join_code') || ''), String(getSetting('join_device_id') || ''));
         if (rec) {
-          assignedName = rec.assignedName ?? null;
           assignedRole = rec.assignedRole ?? rec.role ?? null;
-          assignedAvatar = rec.assignedAvatar ?? null;
           assignedPerms = rec.assignedPermissions ? JSON.stringify(rec.assignedPermissions) : null;
         }
       } catch { /* identity lookup is best-effort */ }
-      const finalName = assignedName || displayName;
       const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get(username) as any;
       if (!existing) {
         db.prepare('INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)').run(
-          finalName,
+          displayName,
           username,
           joinHashPin(pinStr),
           assignedRole || 'cashier',
@@ -543,7 +906,7 @@ export function registerPairingCloudHandlers(): void {
         // Already created: upgrade identity in place.
         const sets: string[] = [];
         const vals: any[] = [];
-        if (assignedName) { sets.push('name = ?'); vals.push(assignedName); }
+        sets.push('name = ?'); vals.push(displayName);
         if (assignedRole) { sets.push('role = ?'); vals.push(assignedRole); }
         if (assignedPerms) { sets.push('permissions = ?'); vals.push(assignedPerms); }
         if (assignedAvatar) { sets.push('avatar = ?'); vals.push(assignedAvatar); }
@@ -566,8 +929,9 @@ export function registerPairingCloudHandlers(): void {
     // Terminal identity: the employee logs in with this app's normal PIN flow.
     // Once cloud sync delivers the roster `users` row, resolveRosterIdentity
     // upgrades role/permissions from the membership (matches on email).
-    const username = email;
-    const displayName = getSetting('join_display_name') || email.split('@')[0];
+    const username = joinUsername || email;
+    const displayName = joinName || getSetting('join_display_name') || username.split('@')[0];
+    const cloudAvatar = (joinAvatar || getSetting('join_assigned_avatar')) ?? null;
     const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get(username) as any;
     if (!existing) {
       db.prepare('INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)').run(
@@ -578,6 +942,9 @@ export function registerPairingCloudHandlers(): void {
         JSON.stringify(['dashboard', 'inventory', 'sales', 'expenses', 'customers', 'analytics', 'adjustments', 'warehouses', 'shipments']),
         null,
       );
+      if (cloudAvatar) {
+        try { db.prepare('UPDATE admins SET avatar = ? WHERE username = ?').run(cloudAvatar, username); } catch { /* column-guarded */ }
+      }
     }
 
     // Join state consumed — clear tokens so nothing account-scoped lingers.

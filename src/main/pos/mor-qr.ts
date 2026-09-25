@@ -88,6 +88,8 @@ export interface MorReceiptInput {
     discount?: number;
     taxType: 'VAT' | 'TOT_2' | 'TOT_10' | 'EXEMPT';
     taxRate: number;
+    /** Unit label printed on the receipt (e.g. pcs, kg). */
+    unit?: string;
   }[];
   subtotal: number;
   discount: number;
@@ -135,7 +137,7 @@ export function buildMorReceipt(input: MorReceiptInput): Uint8Array {
     const lineTotal = (item.qty * item.unitPrice) - (item.discount || 0);
     w.text(padRight(item.name.slice(0, 28), 28))
      .text(padRight(String(item.qty), 4))
-     .text(padRight(item.unit.slice(0, 3), 4))
+     .text(padRight((item.unit || 'pcs').slice(0, 3), 4))
      .text(money(lineTotal).padStart(6))
      .lineFeed();
     

@@ -187,12 +187,19 @@ export function reconcileUserBridge(): number {
 
 /** Desktop-visible view of the synced team (mobile-created users + projections). */
 export function getSyncedTeam(businessId?: number | null): any[] {
-  const q = businessId
-    ? `SELECT id, businessId, name, username, role, roleName, avatar, isActive, isOwner, sourceType, updated_at
-       FROM users WHERE is_deleted = 0 AND businessId = ? ORDER BY isOwner DESC, name ASC`
-    : `SELECT id, businessId, name, username, role, roleName, avatar, isActive, isOwner, sourceType, updated_at
-       FROM users WHERE is_deleted = 0 ORDER BY isOwner DESC, name ASC`;
-  return db.prepare(q).all(businessId ?? undefined) as any[];
+  try {
+    const q = (businessId != null && businessId !== 0)
+      ? `SELECT id, businessId, name, username, email, phone, role, roleName, permissions, avatar, isActive, isOwner, sourceType, updated_at
+         FROM users WHERE (is_deleted IS NULL OR is_deleted = 0) AND (businessId = ? OR CAST(businessId AS TEXT) = ? OR businessId IS NULL)
+         ORDER BY isOwner DESC, name ASC`
+      : `SELECT id, businessId, name, username, email, phone, role, roleName, permissions, avatar, isActive, isOwner, sourceType, updated_at
+         FROM users WHERE (is_deleted IS NULL OR is_deleted = 0)
+         ORDER BY isOwner DESC, name ASC`;
+    return db.prepare(q).all(businessId ? [businessId, String(businessId)] : []) as any[];
+  } catch (e) {
+    console.warn('[user-bridge] getSyncedTeam error:', e);
+    return [];
+  }
 }
 
 /** Roster row matched for sign-in (username first, then email/name). */

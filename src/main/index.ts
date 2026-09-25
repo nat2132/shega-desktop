@@ -1,14 +1,20 @@
+// Loads `.env` before any other module reads configuration — see env.ts.
+import './env';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { app, BrowserWindow, dialog, screen } from 'electron';
 import { join } from 'path';
-import { initDB } from './database';
+import { initDB, foldPeerBusinessDataIntoDefault } from './database';
 import { registerIPCHandlers } from './ipc-handlers';
+import { installViewOnlyGate } from './view-only-gate';
 import { reconcileUserBridge } from './user-bridge';
 import { appUpdater } from './updater';
-import { SyncHub, SYNC_PORT } from './sync-hub';
+import { SyncHub, SYNC_PORT, syncHubBus } from './sync-hub';
 import { startPeerSync, stopPeerSync, getUnifiedSyncStatus } from './peer-sync';
+import { mainBus } from './bus';
 import { registerPairingCloudHandlers } from './pairing-cloud';
+import { registerCloudSyncHandlers } from './sync-cloud';
 import { registerPeripheralHandlers } from './sync/peripheral-ipc';
+import { registerMockPeripheralHandlers } from './hardware/mock';
 import { registerMorHandlers } from './mor';
 import { logger } from './logger';
 
@@ -20,6 +26,18 @@ process.on('uncaughtException', (error) => {
 });
 process.on('unhandledRejection', (reason) => {
   logger.fatal('unhandledRejection', { reason: String(reason), stack: (reason as any)?.stack });
+});
+
+// Dev-mode noise: React DevTools / Vite HMR re-attach 'did-stop-loading' to the
+// renderer WebContents on each reload. Benign, so suppress just that warning.
+process.on('warning', (warning) => {
+  if (
+    warning.name === 'MaxListenersExceededWarning' &&
+    String(warning.message).includes('did-stop-loading')
+  ) {
+    return;
+  }
+  process.nextTick(() => console.warn(warning));
 });
 
 function createWindow() {
@@ -117,10 +135,19 @@ function createWindow() {
 app.whenReady().then(() => {
   try {
     initDB();
+  // Fold any peer-imported business data into the hub's default business so a
+  // joined device's standalone business can't split the shared dataset.
+  foldPeerBusinessDataIntoDefault();
   reconcileUserBridge();
+  // Wrap ipcMain.handle before ANY module registers a channel, so a linked but
+  // read-only account (expired / rejected / unapproved payment) cannot write
+  // business data through the main process.
+  installViewOnlyGate();
   registerIPCHandlers();
   registerPairingCloudHandlers();
+  registerCloudSyncHandlers();
   registerPeripheralHandlers();
+  registerMockPeripheralHandlers();
   import('./sync/pairing-beacon').then(({ registerPairingBeaconHandlers }) => registerPairingBeaconHandlers()).catch(() => {});
   registerMorHandlers();
   syncHub.start(SYNC_PORT);

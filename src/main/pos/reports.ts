@@ -6,7 +6,14 @@
 
 import { EscposWriter } from '../escpos';
 import db from '../database';
-import { getShiftById, calculateShiftTotals, generateShiftReport, printShiftReport } from '../pos/shifts';
+import {
+  getShiftById,
+  calculateShiftTotals,
+  generateShiftReport,
+  printShiftReport,
+  calculateExpectedCash,
+  getCashDrawerBreakdown,
+} from '../pos/shifts';
 import { logger } from '../logger';
 
 export type ReportType = 'X' | 'Z';
@@ -98,8 +105,6 @@ export function generateZReport(businessId: number, registerId: number, countedC
 }
 
 function closeShiftForReport(shiftId: number, countedCash: number, cashDrawerCounts: any[]) {
-  const shift = db.prepare('SELECT * FROM shifts WHERE id = ?').get(countedCash) as any; // reuse parameter
-  // Actually we need to close the shift properly
   return closeShift(shiftId, countedCash, []);
 }
 
@@ -129,20 +134,6 @@ function closeShift(shiftId: number, countedCash: number, cashDrawerCounts: any[
 
   return { variance, closedAt: new Date().toISOString() };
 }
-
-// Reuse shift functions
-function getShiftById(shiftId: number): any {
-  return db.prepare('SELECT * FROM shifts WHERE id = ?').get(shiftId);
-}
-
-// Actually, let me re-export from shifts module
-import { 
-  getShiftById as getShift, 
-  calculateShiftTotals, 
-  generateShiftReport,
-  calculateExpectedCash,
-  getCashDrawerBreakdown 
-} from './shifts';
 
 // ============================================
 // Main Report Generation

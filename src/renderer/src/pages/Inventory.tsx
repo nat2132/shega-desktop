@@ -21,6 +21,7 @@ import { Input } from '../components/ui/input';
 import { DatePicker } from '../components/DatePicker';
 import Modal from '../components/Modal';
 import { exportCSV, exportPDF, addPdfHeader } from '../lib/export-utils';
+import { parseProductImages, serializeProductImages } from '../lib/productImages';
 import { computeTrend } from '../lib/trend-utils';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Switch } from '../components/ui/switch';
@@ -102,6 +103,8 @@ const Inventory: React.FC = () => {
   const [restockQty, setRestockQty] = useState('');
   const [expiryEnabled, setExpiryEnabled] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [productImages, setProductImages] = useState<string[]>([]);
+  const [primaryImageIdx, setPrimaryImageIdx] = useState<number>(0);
   const [barcodes, setBarcodes] = useState<any[]>([]);
   const [newBarcode, setNewBarcode] = useState('');
   const [warehouses, setWarehouses] = useState<any[]>([]);
@@ -198,23 +201,26 @@ const Inventory: React.FC = () => {
     {
       accessorKey: "name",
       header: t('inventory.product_details'),
-      cell: ({ row }) => (
-        <div className="flex items-center gap-3">
-          {row.original.image ? (
-            <img src={row.original.image} className="h-8 w-8 rounded-md object-cover shrink-0" />
-          ) : (
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted shrink-0">
-              <Package className="h-5 w-5 text-muted-foreground" />
+      cell: ({ row }) => {
+        const coverImg = parseProductImages(row.original.image).primary;
+        return (
+          <div className="flex items-center gap-3">
+            {coverImg ? (
+              <img src={coverImg} className="h-8 w-8 rounded-md object-cover shrink-0" />
+            ) : (
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted shrink-0">
+                <Package className="h-5 w-5 text-muted-foreground" />
+              </div>
+            )}
+            <div className="flex flex-col">
+              <span className="font-bold">{row.original.name}</span>
+              <span className="text-xs text-muted-foreground uppercase font-bold tracking-widest">
+                {row.original.categoryName || t('inventory.general')} • {row.original.companyName || t('inventory.no_brand')}
+              </span>
             </div>
-          )}
-          <div className="flex flex-col">
-            <span className="font-bold">{row.original.name}</span>
-            <span className="text-xs text-muted-foreground uppercase font-bold tracking-widest">
-              {row.original.categoryName || t('inventory.general')} • {row.original.companyName || t('inventory.no_brand')}
-            </span>
           </div>
-        </div>
-      )
+        );
+      }
     },
     {
       accessorKey: "totalBaseQuantity",
@@ -308,10 +314,15 @@ const Inventory: React.FC = () => {
     setBarcodes([]);
     setNewBarcode('');
     setImageError(false);
+    setProductImages([]);
+    setPrimaryImageIdx(0);
   };
 
   const openEdit = (item: Item) => {
     setEditingItem(item);
+    const parsedImgs = parseProductImages(item.image);
+    setProductImages(parsedImgs.images);
+    setPrimaryImageIdx(0);
     setFormData({
       name: item.name,
       categoryId: item.categoryId ? String(item.categoryId) : 'none',
@@ -372,7 +383,7 @@ const Inventory: React.FC = () => {
       supplierCallEnabled: formData.supplierCallEnabled ? 1 : 0,
       isActive: formData.isActive ? 1 : 0,
       quickProduct: formData.quickProduct ? 1 : 0,
-      image: formData.image || null,
+      image: serializeProductImages(productImages, primaryImageIdx),
       qualityGrade: editingItem?.qualityGrade ?? null,
       reorderPoint: editingItem?.reorderPoint ?? null,
       reorderQty: editingItem?.reorderQty ?? null,
@@ -430,10 +441,19 @@ const Inventory: React.FC = () => {
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (productImages.length >= 5) {
+      toast.error('Maximum 5 images allowed per product');
+      if (e.currentTarget) e.currentTarget.value = '';
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
-      setImageError(false);
-      setFormData({ ...formData, image: String(reader.result || '') });
+      const dataUrl = String(reader.result || '');
+      if (dataUrl) {
+        setImageError(false);
+        setProductImages((prev) => [...prev.slice(0, 4), dataUrl]);
+        toast.success('Photo added');
+      }
     };
     reader.readAsDataURL(file);
     if (e.currentTarget) e.currentTarget.value = '';
@@ -797,68 +817,105 @@ const Inventory: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* Photo upload tile */}
-              <div className="space-y-2">
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t('inventory.photo', 'Photo')}</label>
-                <div className="flex items-center gap-4 p-3 rounded-xl border border-dashed border-border/60 bg-muted/20">
-                  <input type="file" accept="image/*" className="hidden" ref={fileInputRef} onChange={handlePhotoChange} />
-                  {formData.image && !imageError ? (
-                    <img src={formData.image} className="h-20 w-20 shrink-0 object-cover rounded-lg border border-border/50" onError={() => setImageError(true)} />
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="h-20 w-20 shrink-0 rounded-lg bg-muted/50 border border-border/50 flex flex-col items-center justify-center gap-1 hover:border-primary/50 hover:bg-primary/5 transition-colors"
-                    >
-                      <Camera className="h-6 w-6 text-muted-foreground/60" />
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">Add</span>
-                    </button>
+              {/* Photo upload gallery tile (Up to 5 images) */}
+              <div className="space-y-2 col-span-1 md:col-span-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Product Photos ({productImages.length}/5)
+                  </label>
+                  {productImages.length >= 5 && (
+                    <span className="text-[11px] font-bold text-amber-500 uppercase tracking-widest">
+                      Maximum 5 images reached
+                    </span>
                   )}
-                  <div className="flex flex-col gap-2 min-w-0">
-                    <p className="text-xs text-muted-foreground leading-snug">PNG or JPG, up to a few MB.</p>
-                    <div className="flex flex-wrap gap-2">
-                      <Button variant="outline" type="button" size="sm" className="h-8 px-3 text-xs font-bold rounded-lg" onClick={() => fileInputRef.current?.click()}>
-                        <Camera className="mr-1.5 h-3.5 w-3.5" /> Upload
-                      </Button>
-                      <Button
-                        variant="outline"
+                </div>
+
+                <div className="p-3 rounded-xl border border-dashed border-border/60 bg-muted/20 space-y-3">
+                  <input type="file" accept="image/*" className="hidden" ref={fileInputRef} onChange={handlePhotoChange} />
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    {productImages.map((img, idx) => {
+                      const isCover = idx === primaryImageIdx;
+                      return (
+                        <div key={idx} className={`relative h-20 w-20 rounded-xl overflow-hidden border-2 shrink-0 ${isCover ? 'border-primary' : 'border-border/60'}`}>
+                          <img src={img} className="h-full w-full object-cover" />
+                          <button
+                            type="button"
+                            onClick={() => setPrimaryImageIdx(idx)}
+                            className={`absolute top-1 left-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${isCover ? 'bg-primary text-primary-foreground' : 'bg-black/60 text-white hover:bg-black/80'}`}
+                          >
+                            {isCover ? 'Cover' : 'Set Cover'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setProductImages((prev) => prev.filter((_, i) => i !== idx));
+                              if (primaryImageIdx >= idx && primaryImageIdx > 0) {
+                                setPrimaryImageIdx((prev) => Math.max(0, prev - 1));
+                              }
+                            }}
+                            className="absolute top-1 right-1 h-5 w-5 rounded-full bg-red-600/80 text-white flex items-center justify-center hover:bg-red-600"
+                            title="Remove image"
+                          >
+                            <Trash2 size={10} />
+                          </button>
+                        </div>
+                      );
+                    })}
+
+                    {productImages.length < 5 && (
+                      <button
                         type="button"
-                        size="sm"
-                        className="h-8 px-3 text-xs font-bold rounded-lg text-primary border-primary/40 hover:bg-primary/10"
-                        disabled={phoneCaptureBusy}
-                        onClick={async () => {
-                          try {
-                            const phones = (await window.api?.peripheralPhones?.()) || [];
-                            if (!phones.length) {
-                              toast.error('No phone connected. Open Shega on your phone first.');
-                              return;
-                            }
-                            setPhoneCaptureBusy(true);
-                            toast.info('Waiting for the phone — approve the camera request there.');
-                            const res = await window.api!.peripheralCapture(phones[0].deviceId, 'photo');
-                            if (res.dataUrl) {
-                              setImageError(false);
-                              setFormData((f: any) => ({ ...f, image: res.dataUrl! }));
-                              toast.success('Photo attached from phone');
-                            } else {
-                              toast.info('Photo cancelled on the phone.');
-                            }
-                          } catch (err: any) {
-                            if (err?.message !== 'cancelled') toast.error(err?.message || 'Phone capture failed — check the phone connection.');
-                          } finally {
-                            setPhoneCaptureBusy(false);
-                          }
-                        }}
+                        onClick={() => fileInputRef.current?.click()}
+                        className="h-20 w-20 shrink-0 rounded-xl bg-muted/50 border-2 border-dashed border-border/60 flex flex-col items-center justify-center gap-1 hover:border-primary/50 hover:bg-primary/5 transition-colors"
                       >
-                        <Smartphone className="mr-1.5 h-3.5 w-3.5" />
-                        {phoneCaptureBusy ? 'Waiting for phone… approve there' : 'Use Mobile Camera'}
-                      </Button>
-                      {formData.image && (
-                        <Button variant="ghost" type="button" size="sm" className="h-8 px-3 text-xs font-bold rounded-lg text-destructive hover:bg-destructive/10" onClick={() => { setImageError(false); setFormData({...formData, image: ''}); }}>
-                          Remove
-                        </Button>
-                      )}
-                    </div>
+                        <Camera className="h-5 w-5 text-muted-foreground/60" />
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">+ Add ({productImages.length}/5)</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 pt-1 border-t border-border/30">
+                    <Button variant="outline" type="button" size="sm" disabled={productImages.length >= 5} className="h-8 px-3 text-xs font-bold rounded-lg" onClick={() => fileInputRef.current?.click()}>
+                      <Camera className="mr-1.5 h-3.5 w-3.5" /> Upload File
+                    </Button>
+                    <Button
+                      variant="outline"
+                      type="button"
+                      size="sm"
+                      className="h-8 px-3 text-xs font-bold rounded-lg text-primary border-primary/40 hover:bg-primary/10"
+                      disabled={phoneCaptureBusy || productImages.length >= 5}
+                      onClick={async () => {
+                        if (productImages.length >= 5) {
+                          toast.error('Maximum 5 images allowed per product');
+                          return;
+                        }
+                        try {
+                          const phones = (await window.api?.peripheralPhones?.()) || [];
+                          if (!phones.length) {
+                            toast.error('No phone connected. Open Shega on your phone first.');
+                            return;
+                          }
+                          setPhoneCaptureBusy(true);
+                          toast.info('Waiting for the phone — approve the camera request there.');
+                          const res = await window.api!.peripheralCapture(phones[0].deviceId, 'photo');
+                          if (res.dataUrl) {
+                            setImageError(false);
+                            setProductImages((prev) => [...prev.slice(0, 4), res.dataUrl!]);
+                            toast.success('Photo attached from phone');
+                          } else {
+                            toast.info('Photo cancelled on the phone.');
+                          }
+                        } catch (err: any) {
+                          if (err?.message !== 'cancelled') toast.error(err?.message || 'Phone capture failed — check the phone connection.');
+                        } finally {
+                          setPhoneCaptureBusy(false);
+                        }
+                      }}
+                    >
+                      <Smartphone className="mr-1.5 h-3.5 w-3.5" />
+                      {phoneCaptureBusy ? 'Waiting for phone… approve there' : 'Use Mobile Camera'}
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -1087,6 +1144,28 @@ const Inventory: React.FC = () => {
       <Modal isOpen={showDetailsModal} onClose={() => setShowDetailsModal(false)} title={t('inventory.specifications')} size="lg">
         {viewingItem && (
           <div className="space-y-6 pb-2">
+            {/* Image Gallery / Cover Carousel */}
+            {(() => {
+              const { primary, images } = parseProductImages(viewingItem.image);
+              if (images.length === 0) return null;
+              return (
+                <div className="space-y-3 p-4 rounded-2xl bg-muted/20 border border-border/50">
+                  <div className="h-52 w-full rounded-xl overflow-hidden border border-border/60 bg-black/5 flex items-center justify-center">
+                    <img src={primary || images[0]} className="h-full w-full object-contain" />
+                  </div>
+                  {images.length > 1 && (
+                    <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                      {images.map((img, i) => (
+                        <div key={i} className="h-16 w-16 rounded-xl border border-border/60 overflow-hidden shrink-0">
+                          <img src={img} className="h-full w-full object-cover" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             <div className="flex items-center gap-6 p-5 rounded-2xl bg-muted/30 border border-border/50">
               <div className="h-16 w-16 rounded-xl bg-card border border-border flex items-center justify-center shadow-sm shrink-0">
                 <Package className="h-8 w-8 text-primary/40" />
