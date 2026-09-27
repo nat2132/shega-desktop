@@ -167,6 +167,10 @@ const api = {
   transferStock: (transfer: any) => ipcRenderer.invoke('transfer-stock', transfer),
   getStockTransfers: (options?: any) => ipcRenderer.invoke('get-stock-transfers', options),
 
+  // Stock Adjustments
+  insertAdjustment: (adj: any) => ipcRenderer.invoke('insert-adjustment', adj),
+  getAdjustments: (limit?: number) => ipcRenderer.invoke('get-adjustments', limit),
+
   // Stock Movements
   getStockMovements: (options?: any) => ipcRenderer.invoke('get-stock-movements', options),
   cleanupStockMovements: () => ipcRenderer.invoke('cleanup-stock-movements'),
@@ -381,6 +385,7 @@ const api = {
   checkTrialAvailability: () => ipcRenderer.invoke('check-trial-availability'),
 
   // shega backend account link (source of truth for the subscription)
+  backendRegister: (payload: { email: string; password: string; name?: string; phone?: string; businessName?: string }): Promise<any> => ipcRenderer.invoke('backend-register', payload),
   backendLogin: (creds: { username: string; password: string }): Promise<any> => ipcRenderer.invoke('backend-login', creds),
   backendLogout: (): Promise<any> => ipcRenderer.invoke('backend-logout'),
   backendSession: (): Promise<any> => ipcRenderer.invoke('backend-session'),

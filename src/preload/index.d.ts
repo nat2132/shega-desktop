@@ -166,6 +166,10 @@ export interface ElectronAPI {
   transferStock: (transfer: any) => Promise<number>;
   getStockTransfers: (options?: any) => Promise<any[]>;
 
+  // Stock Adjustments
+  insertAdjustment: (adj: any) => Promise<any>;
+  getAdjustments: (limit?: number) => Promise<any[]>;
+
   // Stock Movements
   getStockMovements: (options?: any) => Promise<any[]>;
   cleanupStockMovements: () => Promise<{ success: boolean; deleted: number }>;
@@ -405,6 +409,7 @@ export interface ElectronAPI {
   cloudEnabled: (enabled: boolean) => Promise<{ ok: boolean }>;
 
   // Shega cloud subscription (backend served via ngrok)
+  backendRegister: (payload: { email: string; password: string; name?: string; phone?: string; businessName?: string }) => Promise<any>;
   backendLogin: (creds: { username: string; password: string }) => Promise<any>;
   backendLogout: () => Promise<any>;
   backendSession: () => Promise<any>;

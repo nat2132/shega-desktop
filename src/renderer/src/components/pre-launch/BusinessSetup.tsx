@@ -2,15 +2,21 @@
  * Desktop "Create Your Business" onboarding — 8-step wizard mirroring the
  * Shega Mobile flow exactly:
  *
- *   1. Business information (name + optional profile image)
+ *   1. Business profile image (the business NAME is already known from signup)
  *   2. Business type (predefined + Other → free text)
  *   3. Business location (city only — country is Ethiopia)
- *   4. Owner information (name, email, password)
+ *   4. Owner profile picture (the owner's name/email are already known from
+ *      signup, and their password lives in the account created there)
  *   5. Date system (Ethiopian / Gregorian calendar)
  *   6. Sales tax (VAT / TOT / No tax)
  *   7. Multiple locations (Yes → configure warehouses)
  *   8. Team setup (nearby-device discovery over LAN/P2P + assign member
  *      name, profile picture, role and permissions)
+ *
+ * The business name and the owner's name/email/password are collected exactly
+ * once, on the signup screen. This wizard reuses them (passed in as
+ * `ownerProfile`, or recovered from settings/the local admin row) and never
+ * asks for them a second time.
  *
  * Persisted through the same settings keys the rest of the desktop app
  * reads, so the chosen configuration applies app-wide.
@@ -25,8 +31,10 @@ import { useSettings } from '../../context/SettingsContext';
 import { useAuth } from '../../context/AuthContext';
 import ApprovalConfig from '../JoinApprovalConfig';
 import { RadarPulse } from '../RadarPulse';
+import type { OwnerProfile } from './AuthScreen';
 
 interface BusinessSetupProps {
+  ownerProfile?: OwnerProfile | null;
   onComplete: () => void;
 }
 
@@ -44,8 +52,8 @@ const BUSINESS_TYPES = [
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
-const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
-  const { t, refreshBusiness, calendarType, setCalendarType } = useSettings();
+const BusinessSetup: React.FC<BusinessSetupProps> = ({ ownerProfile, onComplete }) => {
+  const { t, refreshBusiness, calendarType, setCalendarType, currentBusiness } = useSettings();
   const { currentAdmin } = useAuth();
   const [mounted, setMounted] = useState(false);
   const [step, setStep] = useState<Step>(1);
@@ -54,7 +62,7 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
   const [bizId, setBizId] = useState<number | null>(null);
 
   // Step 1 — business info
-  const [businessName, setBusinessName] = useState('');
+  const [businessName, setBusinessName] = useState(ownerProfile?.businessName || '');
   const [logo, setLogo] = useState<string | null>(null);
   // Step 2 — type
   const [businessType, setBusinessType] = useState<string | null>(null);
@@ -62,11 +70,10 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
   // Step 3 — location
   const [city, setCity] = useState('');
   const [address, setAddress] = useState('');
-  // Step 4 — owner
-  const [ownerName, setOwnerName] = useState('');
+  // Step 4 — owner (identity already established at signup; only the photo is new)
+  const [ownerName, setOwnerName] = useState(ownerProfile?.name || '');
   const [ownerAvatar, setOwnerAvatar] = useState<string | null>(null);
-  const [ownerEmail, setOwnerEmail] = useState('');
-  const [ownerPassword, setOwnerPassword] = useState('');
+  const [ownerEmail, setOwnerEmail] = useState(ownerProfile?.email || '');
   // Step 6 — tax
   const [taxMode, setTaxMode] = useState<'VAT' | 'TOT' | 'None'>('VAT');
   const [taxRate, setTaxRate] = useState('15');
@@ -83,6 +90,26 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
   const [configuringDevice, setConfiguringDevice] = useState<{ deviceId: string; deviceName: string; platform: string; code: string } | null>(null);
 
   useEffect(() => { setTimeout(() => setMounted(true), 100); }, []);
+
+  // Reuse the identity captured at signup instead of asking for it again. The
+  // in-memory `ownerProfile` is the fast path; the persisted settings (and the
+  // local admin row) cover a setup that was interrupted and resumed by signing
+  // in, where nothing is held in memory.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let saved: Partial<OwnerProfile> | null = null;
+      try { saved = await window.api?.getSetting?.('setup_owner_profile'); } catch { /* best-effort */ }
+      if (cancelled) return;
+      const biz = saved?.businessName || currentBusiness?.name || '';
+      const name = saved?.name || currentAdmin?.name || '';
+      const email = saved?.email || currentAdmin?.username || '';
+      if (biz) setBusinessName((v) => v || biz);
+      if (name) setOwnerName((v) => v || name);
+      if (email) setOwnerEmail((v) => v || email);
+    })();
+    return () => { cancelled = true; };
+  }, [currentAdmin, currentBusiness]);
 
   const locationText = useMemo(
     () => [address.trim(), city.trim(), 'Ethiopia'].filter(Boolean).join(', '),
@@ -124,7 +151,7 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
   const createNow = async (): Promise<number | null> => {
     if (bizId) return bizId;
     if (!businessName.trim()) { setError('Enter the business name'); return null; }
-    if (!ownerName.trim() || !ownerPassword.trim()) { setError('Enter your name and a password'); return null; }
+    if (!ownerName.trim()) { setError('Enter your name'); return null; }
     setBusy(true);
     try {
       const created = await window.api.businessCreate({
@@ -140,6 +167,7 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
       // Shared business metadata (type / city / country) + owner identity.
       if (id) {
         await window.api.updateBusiness(id, {
+          businessName: businessName.trim(),
           address: locationText,
           businessType: businessType === 'other' ? (businessTypeCustom.trim() || 'other') : businessType,
           country: 'Ethiopia',
@@ -242,8 +270,9 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
   const labelCls = 'text-xs font-black uppercase tracking-widest text-white/30 px-1';
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center overflow-y-auto" style={{ background: '#0B0705' }}>
-      <div className={`w-full max-w-2xl px-10 py-12 relative z-10 transition-all duration-700 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'}`}>
+    <div className="fixed inset-0 z-[200] overflow-y-auto" style={{ background: '#0B0705' }}>
+      <div className="min-h-full flex flex-col items-center justify-center p-6 sm:p-10">
+        <div className={`w-full max-w-2xl px-6 sm:px-10 py-8 relative z-10 transition-all duration-700 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'}`}>
         <div className="text-center mb-8">
           <div className="h-14 w-14 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center mx-auto mb-4">
             <Building2 className="h-7 w-7 text-white/40" />
@@ -257,7 +286,7 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
           </div>
         </div>
 
-        {/* ── Step 1: Business information ── */}
+        {/* ── Step 1: Business image (name already captured at signup) ── */}
         {step === 1 && (
           <div className="space-y-5">
             <div className="flex items-start gap-4">
@@ -266,13 +295,26 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
                 {logo ? <img src={logo} alt="" className="h-full w-full object-cover" /> : <ImagePlus className="h-6 w-6 text-white/40" />}
               </button>
               <div className="flex-1 space-y-1.5">
-                <label className={labelCls}>{t('setup.legal_name')}</label>
-                <input type="text" value={businessName} onChange={(e) => setBusinessName(e.target.value)}
-                  className={inputCls} placeholder="e.g. Natoli Electronics" autoFocus />
-                <p className="text-[11px] font-bold text-white/30 px-1">Tap the square to add a business image (optional).</p>
+                {businessName.trim() ? (
+                  /* Already chosen during signup — shown, not asked again. */
+                  <div className="space-y-1">
+                    <label className={labelCls}>{t('setup.legal_name')}</label>
+                    <p className="text-lg font-black text-white px-1 break-words">{businessName}</p>
+                    <p className="text-[11px] font-bold text-white/30 px-1">
+                      Set when you created this account. You can rename it any time in Settings.
+                    </p>
+                  </div>
+                ) : (
+                  /* Only reachable when no signup identity is available. */
+                  <>
+                    <label className={labelCls}>{t('setup.legal_name')}</label>
+                    <input type="text" value={businessName} onChange={(e) => setBusinessName(e.target.value)}
+                      className={inputCls} placeholder="e.g. Natoli Electronics" autoFocus />
+                  </>
+                )}
               </div>
             </div>
-            <ContinueBtn disabled={!businessName.trim()} onClick={next} />
+            <ContinueBtn onClick={next} />
           </div>
         )}
 
@@ -318,10 +360,10 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
           </div>
         )}
 
-        {/* ── Step 4: Owner information ── */}
+        {/* ── Step 4: Owner profile picture (identity set at signup) ── */}
         {step === 4 && (
           <div className="space-y-4">
-            <p className="text-center text-lg font-black text-white">Owner information</p>
+            <p className="text-center text-lg font-black text-white">Owner profile</p>
             <div className="flex items-center gap-4">
               <button type="button" onClick={pickOwnerAvatarFile}
                 className="h-20 w-20 rounded-full overflow-hidden border-2 border-dashed border-white/20 grid place-items-center bg-white/5 hover:bg-white/10 transition-all shrink-0">
@@ -332,9 +374,28 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
                 <p className="text-[11px] font-bold text-white/30 px-1">Optional — tap the circle to add your photo.</p>
               </div>
             </div>
-            <input type="text" value={ownerName} onChange={(e) => setOwnerName(e.target.value)} className={inputCls} placeholder="Your full name (e.g. Abebe Kebede)" />
-            <input type="email" value={ownerEmail} onChange={(e) => setOwnerEmail(e.target.value)} className={inputCls} placeholder="Email" />
-            <input type="password" value={ownerPassword} onChange={(e) => setOwnerPassword(e.target.value)} className={inputCls} placeholder="Password (min 4 characters)" />
+
+            {/* Name and email were collected once when the account was created —
+                confirm them here rather than asking for them a second time. */}
+            <div className="space-y-2 rounded-xl border border-white/10 bg-white/5 p-4">
+              {ownerName.trim() ? (
+                <div className="space-y-1">
+                  <p className={labelCls}>Owner</p>
+                  <p className="text-sm font-black text-white break-words">{ownerName}</p>
+                </div>
+              ) : (
+                <input type="text" value={ownerName} onChange={(e) => setOwnerName(e.target.value)} className={inputCls} placeholder="Your full name (e.g. Abebe Kebede)" />
+              )}
+              {ownerEmail.trim() ? (
+                <div className="space-y-1">
+                  <p className={labelCls}>Email</p>
+                  <p className="text-sm font-black text-white break-all">{ownerEmail}</p>
+                </div>
+              ) : (
+                <input type="email" value={ownerEmail} onChange={(e) => setOwnerEmail(e.target.value)} className={inputCls} placeholder="Email" />
+              )}
+            </div>
+
             {!!error && <p className="text-xs font-bold text-red-400 text-center">{error}</p>}
             <button type="button" disabled={busy}
               onClick={() => createNow().then((id) => { if (id) next(); })}
@@ -523,6 +584,7 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ onComplete }) => {
         )}
       </div>
     </div>
+  </div>
   );
 };
 

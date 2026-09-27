@@ -6,6 +6,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "start": "electron .",
+    "reset:device": "node scripts/reset-device.js",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "build:win": "npm run build && electron-builder --win",

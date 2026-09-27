@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const cloudState = { row: null as any, throwOnRead: false };
+const localState = { row: null as any };
 
 const handlers = new Map<string, (event: unknown, ...args: any[]) => any>();
 
@@ -19,6 +20,7 @@ vi.mock('./subscription-backend', () => ({
     if (cloudState.throwOnRead) throw new Error('database unavailable');
     return cloudState.row;
   },
+  getLocalSubscription: () => localState.row,
 }));
 
 const ipcMainRef = { handle: vi.fn() };
@@ -33,6 +35,7 @@ async function loadGate(): Promise<GateModule> {
 beforeEach(() => {
   cloudState.row = null;
   cloudState.throwOnRead = false;
+  localState.row = null;
   handlers.clear();
   vi.clearAllMocks();
 });
@@ -176,6 +179,127 @@ describe('view-only gate — access verdicts', () => {
 
   it('fails open when the status lookup throws', async () => {
     cloudState.throwOnRead = true;
+    const { canWriteNow } = await loadGate();
+    expect(canWriteNow().allowed).toBe(true);
+  });
+});
+
+describe('view-only gate — the clock, not just the status', () => {
+  const NOW = Date.parse('2026-06-15T12:00:00.000Z');
+  const ago = (ms: number) => new Date(NOW - ms).toISOString();
+  const ahead = (ms: number) => new Date(NOW + ms).toISOString();
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it('locks a trial whose end has passed even though the status is still trial', async () => {
+    const { evaluateDesktopAccess } = await loadGate();
+    const verdict = evaluateDesktopAccess(
+      { status: 'trial', access: 'full', isTrial: 1, trialEndsAt: ago(DAY) },
+      NOW,
+    );
+    expect(verdict.allowed).toBe(false);
+  });
+
+  it('keeps a trial writable right up to its end', async () => {
+    const { evaluateDesktopAccess } = await loadGate();
+    expect(
+      evaluateDesktopAccess(
+        { status: 'trial', access: 'full', isTrial: 1, trialEndsAt: ahead(60_000) },
+        NOW,
+      ).allowed,
+    ).toBe(true);
+  });
+
+  it('locks at the exact expiry instant, not a second later', async () => {
+    const { evaluateDesktopAccess } = await loadGate();
+    const at = new Date(NOW).toISOString();
+    expect(evaluateDesktopAccess({ status: 'active', access: 'full', expiresAt: at }, NOW).allowed).toBe(false);
+  });
+
+  it('locks an active license whose paid term has run out', async () => {
+    const { evaluateDesktopAccess } = await loadGate();
+    const verdict = evaluateDesktopAccess(
+      { status: 'active', access: 'full', expiresAt: ago(DAY) },
+      NOW,
+    );
+    expect(verdict.allowed).toBe(false);
+    if (!verdict.allowed) expect(verdict.message).toMatch(/expired/i);
+  });
+
+  it('reads the trial deadline from expiresAt when trialEndsAt is absent', async () => {
+    const { evaluateDesktopAccess } = await loadGate();
+    expect(
+      evaluateDesktopAccess({ status: 'trial', isTrial: 1, expiresAt: ago(DAY) }, NOW).allowed,
+    ).toBe(false);
+  });
+
+  it('does not let a trial deadline lock an already-paid term', async () => {
+    const { evaluateDesktopAccess } = await loadGate();
+    expect(
+      evaluateDesktopAccess(
+        { status: 'active', isTrial: 0, tier: 'both', trialEndsAt: ago(DAY), expiresAt: ahead(30 * DAY) },
+        NOW,
+      ).allowed,
+    ).toBe(true);
+  });
+
+  it('fails open on missing or unparseable dates', async () => {
+    const { evaluateDesktopAccess } = await loadGate();
+    expect(evaluateDesktopAccess({ status: 'active', access: 'full' }, NOW).allowed).toBe(true);
+    expect(evaluateDesktopAccess({ status: 'active', expiresAt: 'not-a-date' }, NOW).allowed).toBe(true);
+  });
+
+  it('treats a missing snapshot as writable so onboarding still works', async () => {
+    const { evaluateDesktopAccess } = await loadGate();
+    expect(evaluateDesktopAccess(null, NOW).allowed).toBe(true);
+  });
+});
+
+describe('view-only gate — unsynced installs use the local subscription', () => {
+  // canWriteNow() reads the real clock, so these fixtures are relative to it.
+  const DAY = 24 * 60 * 60 * 1000;
+  const fromNow = (ms: number) => new Date(Date.now() + ms).toISOString();
+
+  it('locks a local trial that has ended with no cloud snapshot', async () => {
+    localState.row = {
+      status: 'active',
+      tier: 'trial',
+      isTrial: 1,
+      trialEndsAt: fromNow(-DAY),
+    };
+    const { canWriteNow } = await loadGate();
+    expect(canWriteNow().allowed).toBe(false);
+  });
+
+  it('keeps a live local trial writable', async () => {
+    localState.row = {
+      status: 'active',
+      tier: 'trial',
+      isTrial: 1,
+      trialEndsAt: fromNow(DAY),
+    };
+    const { canWriteNow } = await loadGate();
+    expect(canWriteNow().allowed).toBe(true);
+  });
+
+  it('locks a local paid term that has run out', async () => {
+    localState.row = {
+      status: 'active',
+      tier: 'both',
+      isTrial: 0,
+      expiresAt: fromNow(-DAY),
+    };
+    const { canWriteNow } = await loadGate();
+    expect(canWriteNow().allowed).toBe(false);
+  });
+
+  it('prefers the cloud snapshot when both exist', async () => {
+    localState.row = { status: 'active', tier: 'both', expiresAt: fromNow(DAY) };
+    cloudState.row = { status: 'active', access: 'full', expiresAt: fromNow(-DAY) };
+    const { canWriteNow } = await loadGate();
+    expect(canWriteNow().allowed).toBe(false);
+  });
+
+  it('stays writable when there is no subscription row at all', async () => {
     const { canWriteNow } = await loadGate();
     expect(canWriteNow().allowed).toBe(true);
   });

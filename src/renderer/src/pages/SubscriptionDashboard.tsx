@@ -17,6 +17,7 @@ import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '../components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { parsePlanEdition } from '@shega/shared';
 import { toast } from 'sonner';
 
 interface PaymentTx {
@@ -54,12 +55,12 @@ const PLAN_EDITIONS = [
   { key: 'both', labelKey: 'subscription.plan_both', highlight: true },
 ] as const;
 
-/** Legacy plan rows may still carry the old words; show them as an edition. */
+/**
+ * Legacy plan rows may still carry the old words; the shared parser maps them
+ * onto the canonical edition so this page groups identically to Mobile.
+ */
 function planEdition(tier: string | null | undefined): string {
-  const value = String(tier ?? '').toLowerCase();
-  if (value === 'mobile' || value === 'desktop' || value === 'both') return value;
-  if (value === 'desktop') return 'desktop';
-  return value === 'mobile' ? 'mobile' : 'both';
+  return parsePlanEdition(tier) ?? 'both';
 }
 
 const SubscriptionDashboard: React.FC = () => {

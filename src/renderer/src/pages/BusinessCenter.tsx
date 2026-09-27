@@ -585,12 +585,20 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
                 <CardContent className="p-0">
                   <div className="h-20 bg-gradient-to-r from-primary/20 via-primary/10 to-transparent" />
                   <div className="p-6 -mt-10 flex items-start gap-4">
-                    <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg">
-                      <Building2 className="h-8 w-8" />
-                    </div>
+                    {business?.logo || currentBusiness?.logo ? (
+                      <img
+                        src={business?.logo || currentBusiness?.logo}
+                        alt={business?.businessName || currentBusiness?.businessName || 'Business Logo'}
+                        className="h-16 w-16 rounded-2xl object-cover shadow-lg border-2 border-background shrink-0 bg-card"
+                      />
+                    ) : (
+                      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shrink-0">
+                        <Building2 className="h-8 w-8" />
+                      </div>
+                    )}
                     <div className="flex-1 pt-4">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <h2 className="text-2xl font-bold tracking-tight">{business?.businessName || business?.storeName || 'My Business'}</h2>
+                        <h2 className="text-2xl font-bold tracking-tight">{business?.businessName || business?.storeName || currentBusiness?.businessName || 'My Business'}</h2>
                         {business?.businessCode && <Badge variant="secondary">{business.businessCode}</Badge>}
                       </div>
                       <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-xs text-muted-foreground">
@@ -1022,8 +1030,14 @@ const BusinessCenter: React.FC<{ initialTab?: Tab }> = ({ initialTab }) => {
                   return (
                     <Card key={b.id} className={isCurrent ? 'ring-1 ring-primary/40' : ''}>
                       <CardHeader className="flex-row items-start justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <Building2 className="h-5 w-5 text-primary" />
+                        <div className="flex items-center gap-3">
+                          {b.logo ? (
+                            <img src={b.logo} alt={b.businessName} className="h-10 w-10 rounded-xl object-cover border border-border shrink-0" />
+                          ) : (
+                            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary shrink-0">
+                              <Building2 className="h-5 w-5" />
+                            </div>
+                          )}
                           <div>
                             <CardTitle className="text-base flex items-center gap-2">
                               {b.businessName}

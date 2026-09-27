@@ -27,6 +27,13 @@ export default defineConfig({
         ...sharedAlias
       }
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: undefined
+        }
+      }
+    },
     plugins: [react()]
   }
 })

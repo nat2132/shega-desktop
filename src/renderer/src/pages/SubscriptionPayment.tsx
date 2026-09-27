@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   CreditCard, ArrowLeft, Check, Loader2, Phone,
@@ -11,9 +11,8 @@ import PremiumBadge from '../components/PremiumBadge';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import {
-  Card, CardContent, CardDescription, CardHeader, CardTitle,
-} from '../components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
+import { parsePlanEdition } from '@shega/shared';
 import { toast } from 'sonner';
 
 interface Plan {
@@ -28,17 +27,30 @@ interface Plan {
   features: string;
 }
 
-/** Resolve an edition from a plan's `edition`/`tier`/`name`, tolerating old rows. */
+/**
+ * Resolve a canonical edition from a plan's `edition`/`tier`/`name`, tolerating
+ * legacy rows. Shared with Mobile and the backend so all three agree on which
+ * platforms a plan unlocks.
+ */
 function planEditionFromTier(value: string | null | undefined): 'mobile' | 'desktop' | 'both' {
-  const blob = String(value ?? '').toLowerCase();
-  if (blob.includes('desktop') && blob.includes('mobile')) return 'both';
-  if (blob.includes('premium')) return 'both';
-  if (blob.includes('desktop')) return 'desktop';
-  if (blob.includes('mobile') || blob.includes('basic')) return 'mobile';
-  return 'both';
+  return parsePlanEdition(value) ?? 'both';
 }
 
-const SubscriptionPayment: React.FC = () => {
+interface SubscriptionPaymentProps {
+  /**
+   * Called instead of routing to /subscription when the flow finishes. Used by
+   * first-time onboarding, which owns the phase after the payment is submitted.
+   */
+  onComplete?: () => void;
+  /**
+   * Pre-select this edition and jump straight to the payment step, so an
+   * onboarding "Pay Now" confirms the plan and price the customer was shown
+   * instead of making them pick again.
+   */
+  initialEdition?: string;
+}
+
+const SubscriptionPayment: React.FC<SubscriptionPaymentProps> = ({ onComplete, initialEdition }) => {
   const { t, formatDate } = useSettings();
   const navigate = useNavigate();
   const { subscription, refresh } = useSubscription();
@@ -89,6 +101,30 @@ const SubscriptionPayment: React.FC = () => {
     setStep('pay');
   };
 
+  /**
+   * Onboarding arrives here already knowing the plan ("Pay Now" on the Desktop
+   * step), so pre-select it and open the payment step directly. Runs once the
+   * catalogue is in, preferring the server plan because that is the one the
+   * payment is actually charged against.
+   */
+  const preselectRef = useRef(false);
+  useEffect(() => {
+    if (!initialEdition || preselectRef.current) return;
+    if (cloudPlans.length === 0 && plans.length === 0) return;
+    const wanted = parsePlanEdition(initialEdition);
+    const cloud = cloudPlans.find((p) => planEditionFromTier(p.edition ?? p.name) === wanted);
+    if (cloud) {
+      preselectRef.current = true;
+      handleSelectPlan(cloud, cloud.id);
+      return;
+    }
+    const local = plans.find((p) => planEditionFromTier(p.tier || p.name) === wanted);
+    if (local) {
+      preselectRef.current = true;
+      handleSelectPlan(local);
+    }
+  }, [initialEdition, cloudPlans, plans]);
+
   const handleSubmit = async () => {
     if (!form.transactionId.trim() || !form.businessName.trim() || !form.phoneNumber.trim()) {
       toast.error(t('subscription.please_fill_required'));
@@ -127,18 +163,47 @@ const SubscriptionPayment: React.FC = () => {
     }
   };
 
+  const telebirrNumber = '0925319901';
+  const telebirrName = 'Aselef';
+
   const copyNumber = () => {
-    navigator.clipboard.writeText('09XX XXX XXX');
+    navigator.clipboard.writeText(telebirrNumber);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleGoBack = () => {
+    if (step === 'pay') {
+      if (initialEdition) {
+        if (onComplete) {
+          onComplete();
+        } else {
+          navigate(-1);
+        }
+      } else {
+        setStep('select');
+      }
+    } else if (step === 'select') {
+      if (onComplete) {
+        onComplete();
+      } else {
+        navigate(-1);
+      }
+    } else {
+      if (onComplete) {
+        onComplete();
+      } else {
+        navigate('/subscription');
+      }
+    }
   };
 
   // Plan Selection Step
   if (step === 'select') {
     return (
-      <div className="space-y-6 p-6">
-        <button onClick={() => navigate('/subscription')} className="flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors">
-          <ArrowLeft className="h-3 w-3" />
+      <div className="w-full h-full min-h-full overflow-y-auto space-y-6 p-6 pb-24">
+        <button onClick={handleGoBack} className="flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors">
+          <ArrowLeft className="h-3.5 w-3.5" />
           {t('common.go_back')}
         </button>
 
@@ -226,9 +291,9 @@ const SubscriptionPayment: React.FC = () => {
   // Payment Instructions Step
   if (step === 'pay') {
     return (
-      <div className="space-y-6 p-6 max-w-2xl mx-auto">
-        <button onClick={() => setStep('select')} className="flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors">
-          <ArrowLeft className="h-3 w-3" />
+      <div className="w-full h-full min-h-full overflow-y-auto space-y-6 p-6 max-w-2xl mx-auto pb-24">
+        <button onClick={handleGoBack} className="flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors">
+          <ArrowLeft className="h-3.5 w-3.5" />
           {t('common.go_back')}
         </button>
 
@@ -269,7 +334,7 @@ const SubscriptionPayment: React.FC = () => {
               <div className="flex items-center justify-between p-3 rounded-xl bg-muted/20 border border-border/50">
                 <div className="flex items-center gap-2">
                   <Phone className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="text-[11px] font-medium">{t('subscription.telebirr_number')}</span>
+                  <span className="text-xs font-bold text-foreground">Phone Number: {telebirrNumber}</span>
                 </div>
                 <button onClick={copyNumber} className="flex items-center gap-1 text-xs font-black uppercase tracking-widest text-primary hover:text-primary/80 transition-colors">
                   {copied ? <CheckCheck className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
@@ -278,7 +343,7 @@ const SubscriptionPayment: React.FC = () => {
               </div>
               <div className="flex items-center gap-2 p-3 rounded-xl bg-muted/20 border border-border/50">
                 <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                <span className="text-[11px] font-medium">{t('subscription.telebirr_name')}</span>
+                <span className="text-xs font-bold text-foreground">Account Name: {telebirrName}</span>
               </div>
             </div>
           </CardContent>
@@ -359,8 +424,8 @@ const SubscriptionPayment: React.FC = () => {
 
   // Done Step
   return (
-    <div className="space-y-6 p-6 max-w-lg mx-auto text-center">
-      <div className="pt-16">
+    <div className="w-full h-full min-h-full overflow-y-auto space-y-6 p-6 max-w-lg mx-auto text-center pb-24">
+      <div className="pt-10">
         <div className="inline-flex items-center justify-center h-20 w-20 rounded-full bg-emerald-500/10 mb-6">
           <Check className="h-10 w-10 text-emerald-500" />
         </div>
@@ -369,13 +434,22 @@ const SubscriptionPayment: React.FC = () => {
         <p className="text-xs text-amber-500 font-bold">{t('subscription.pending_verification')}</p>
 
         <div className="flex gap-3 justify-center mt-8">
-          <Button
-            variant="outline"
-            onClick={() => navigate('/subscription')}
-            className="rounded-xl text-xs font-black uppercase tracking-widest"
-          >
-            {t('subscription.subscription_management')}
-          </Button>
+          {onComplete ? (
+            <Button
+              onClick={() => { refresh(); onComplete(); }}
+              className="rounded-xl text-xs font-black uppercase tracking-widest"
+            >
+              {t('onboarding.continue')}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              onClick={() => navigate('/subscription')}
+              className="rounded-xl text-xs font-black uppercase tracking-widest"
+            >
+              {t('subscription.subscription_management')}
+            </Button>
+          )}
           <Button
             onClick={() => { setStep('select'); setSelectedPlan(null); setForm({ transactionId: '', businessName: '', phoneNumber: '', paymentDate: new Date().toISOString().split('T')[0], notes: '' }); }}
             className="rounded-xl text-xs font-black uppercase tracking-widest"

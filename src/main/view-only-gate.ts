@@ -14,7 +14,7 @@
  * heuristic over every handler, so a new write channel is blocked by default.
  */
 import { ipcMain } from 'electron';
-import { getCloudSubscription } from './subscription-backend';
+import { getCloudSubscription, getLocalSubscription } from './subscription-backend';
 
 /** Marker so the renderer can recognise the failure and route to /subscription. */
 export const VIEW_ONLY_CODE = 'SUBSCRIPTION_REQUIRED';
@@ -114,9 +114,57 @@ function messageFor(status: string | null): string {
   return `[${VIEW_ONLY_CODE}] Your Shega subscription has expired. Renew to edit your business data.`;
 }
 
+/** Snapshot fields the verdict depends on, from either the cloud or local row. */
+export interface AccessSnapshot {
+  status?: string | null;
+  access?: string | null;
+  tier?: string | null;
+  isTrial?: number | boolean | null;
+  trialEndsAt?: string | null;
+  expiresAt?: string | null;
+}
+
+function timeOf(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 /**
- * Whether the linked account may mutate business data. Unlinked installs and
- * active/trial licenses always pass; everything else is view-only.
+ * Whether a subscription snapshot allows writes, judged on the status AND the
+ * clock.
+ *
+ * A trial or paid term that has run out must lock writes even while the stored
+ * status is still `active` — that is the normal state between the deadline
+ * passing and the next backend sync (and the permanent state for an install
+ * that never syncs). Fails open on missing or unparseable dates so a malformed
+ * row can never lock a paying customer out of their own data.
+ */
+export function evaluateDesktopAccess(snapshot: AccessSnapshot | null | undefined, now: number): Verdict {
+  if (!snapshot) return { allowed: true };
+
+  const status = snapshot.status ?? null;
+  if (status !== 'active' && status !== 'trial') {
+    return { allowed: false, message: messageFor(status) };
+  }
+  if (snapshot.access === 'view_only') {
+    return { allowed: false, message: messageFor(status) };
+  }
+
+  const isTrial = Boolean(snapshot.isTrial) || status === 'trial' || snapshot.tier === 'trial';
+  const end = timeOf(isTrial ? snapshot.trialEndsAt ?? snapshot.expiresAt : snapshot.expiresAt);
+  if (end !== null && end <= now) {
+    return { allowed: false, message: messageFor('expired') };
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Whether the linked account may mutate business data. The cloud snapshot wins
+ * when present; otherwise the local subscription is used so an unsynced install
+ * still expires. Installs with no subscription row at all stay writable, which
+ * keeps first-run onboarding usable.
  */
 export function canWriteNow(): Verdict {
   const now = Date.now();
@@ -126,12 +174,9 @@ export function canWriteNow(): Verdict {
   try {
     const cloud = getCloudSubscription();
     if (cloud) {
-      const status = cloud.status === 'trial' ? 'trial' : cloud.status;
-      if (status !== 'active' && status !== 'trial') {
-        verdict = { allowed: false, message: messageFor(status ?? null) };
-      } else if (cloud.access === 'view_only') {
-        verdict = { allowed: false, message: messageFor(status ?? null) };
-      }
+      verdict = evaluateDesktopAccess(cloud, now);
+    } else {
+      verdict = evaluateDesktopAccess(getLocalSubscription(), now);
     }
   } catch {
     // A failed lookup must not lock a working install out of its own data.

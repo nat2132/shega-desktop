@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Eye, EyeOff, KeyRound, ArrowLeft, UserRound, Users, Store, ImagePlus } from 'lucide-react';
+import { toast } from 'sonner';
 import { useSettings, Language } from '../../context/SettingsContext';
 import { BrandedLogo } from '../branded-logo';
 import { Avatar, AvatarImage, AvatarFallback } from '../ui/avatar';
@@ -38,21 +39,37 @@ const ROLE_LABELS: Record<string, string> = {
   custom: 'Custom',
 };
 
+/** The owner identity collected once during signup and reused by onboarding. */
+export interface OwnerProfile {
+  businessName: string;
+  name: string;
+  email: string;
+  phone?: string;
+}
+
 interface AuthScreenProps {
   onLogin: (username: string, pin: string) => Promise<{ success: boolean; error?: string }>;
   onLoginByUser: (source: 'admin' | 'employee' | 'roster', id: number, pin: string) => Promise<{ success: boolean; error?: string }>;
-  onRegister: (name: string, username: string, pin: string, role: string, permissions: string[]) => Promise<{ success: boolean; error?: string }>;
+  onRegister: (name: string, username: string, pin: string, role: string, permissions: string[], profile?: OwnerProfile) => Promise<{ success: boolean; error?: string }>;
   onJoin: (username: string, pin: string) => Promise<{ success: boolean; error?: string }>;
+  onProfileCaptured?: (profile: OwnerProfile) => void;
   hasAdmins: boolean;
   isFirstTime: boolean;
 }
 
-const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegister, onJoin, hasAdmins, isFirstTime }) => {
+const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegister, onJoin, onProfileCaptured, hasAdmins, isFirstTime }) => {
   const { t, language, setLanguage } = useSettings();
   // First-run wins over admin-count: an interrupted prior setup (owner account
   // created, but onboarding never completed) must still offer account creation,
   // not a login gate. Only a fully-set-up install goes straight to login.
   const [mode, setMode] = useState<'login' | 'register'>(hasAdmins && !isFirstTime ? 'login' : 'register');
+  const [registerStep, setRegisterStep] = useState<'account' | 'pin'>('account');
+  const [regEmail, setRegEmail] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regConfirmPassword, setRegConfirmPassword] = useState('');
+  const [regName, setRegName] = useState('');
+  const [regPhone, setRegPhone] = useState('');
+  const [regBusinessName, setRegBusinessName] = useState('');
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [name, setName] = useState('');
@@ -410,16 +427,100 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     if (!result.success) { setError(result.error || t('auth.login_failed')); setPin(''); }
   };
 
-  const handleRegister = async (e: React.FormEvent) => {
+  const handleAccountSignup = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !username.trim() || !pin.trim()) { setError(t('auth.fields_required')); return; }
-    if (pin !== confirmPin) { setError(t('auth.pin_mismatch')); return; }
-    if (pin.length !== 6) { setError('PIN must be exactly 6 digits'); return; }
-    setLoading(true); setError('');
-    const permissions = ROLE_PERMISSIONS[selectedRole] || ROLE_PERMISSIONS.admin;
-    const result = await onRegister(name.trim(), username.trim(), pin, selectedRole, permissions);
+    setError('');
+    const emailClean = regEmail.trim().toLowerCase();
+    const passClean = regPassword.trim();
+    const nameClean = regName.trim();
+    const phoneClean = regPhone.trim();
+    const bizClean = regBusinessName.trim();
+
+    if (!emailClean || !passClean || !nameClean || !bizClean) {
+      setError('Please fill in all required fields');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailClean)) {
+      setError('Please enter a valid email address');
+      return;
+    }
+    if (passClean.length < 8) {
+      setError('Password must be at least 8 characters');
+      return;
+    }
+    if (passClean !== regConfirmPassword.trim()) {
+      setError('Passwords do not match');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await window.api?.backendRegister?.({
+        email: emailClean,
+        password: passClean,
+        name: nameClean,
+        phone: phoneClean || undefined,
+        businessName: bizClean,
+      });
+
+      if (res && !res.success) {
+        setError(res.error || 'Registration failed');
+        setLoading(false);
+        return;
+      }
+
+      // Persist the identity collected here so the rest of onboarding reads
+      // these values instead of asking for them a second time.
+      const profile: OwnerProfile = {
+        businessName: bizClean,
+        name: nameClean,
+        email: emailClean,
+        phone: phoneClean,
+      };
+      try { await window.api?.setSetting?.('setup_owner_profile', profile); } catch { /* best-effort */ }
+      onProfileCaptured?.(profile);
+
+      toast.success('Account created successfully! Set up your 6-digit terminal PIN.');
+      setRegisterStep('pin');
+      setError('');
+    } catch (err: any) {
+      setError(err?.message || 'Failed to create account');
+    }
     setLoading(false);
-    if (!result.success) { setError(result.error || t('auth.reg_failed')); }
+  };
+
+  const handlePinSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pin || pin.length !== 6) {
+      setError('PIN must be exactly 6 digits');
+      return;
+    }
+    if (pin !== confirmPin) {
+      setError('PINs do not match');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    try {
+      const ownerName = regName.trim() || name.trim() || 'Owner';
+      const ownerUsername = regEmail.trim().toLowerCase() || username.trim();
+      const permissions = ROLE_PERMISSIONS['super_admin'];
+      const profile: OwnerProfile = {
+        businessName: regBusinessName.trim(),
+        name: ownerName,
+        email: ownerUsername,
+        phone: regPhone.trim(),
+      };
+
+      const result = await onRegister(ownerName, ownerUsername, pin, 'super_admin', permissions, profile);
+      if (!result?.success) {
+        setError(result?.error || 'PIN setup failed');
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Could not save PIN setup');
+    }
+    setLoading(false);
   };
 
   const handleBackToJoinLogin = () => {
@@ -546,7 +647,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     : joinPhase === 'notfound' ? 'No device found nearby' : 'Waiting for connection…';
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-background">
+    <div className="fixed inset-0 z-[200] overflow-y-auto bg-background">
       {/* Ambient effects */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-0 right-0 w-[500px] h-[500px] rounded-full opacity-[0.08]"
@@ -557,7 +658,8 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
         />
       </div>
 
-      <div className={`w-full max-w-md p-10 text-center space-y-6 relative z-10 transition-all duration-700 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'}`}>
+      <div className="min-h-full flex flex-col items-center justify-center p-6 sm:p-10">
+        <div className={`w-full max-w-md p-8 text-center space-y-6 relative z-10 transition-all duration-700 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'}`}>
         
 
         <div className="flex justify-center">
@@ -1031,86 +1133,149 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
               </div>
             </button>
           </div>
-        ) : (
-          <form onSubmit={handleRegister} className="space-y-4">
-            <div className="space-y-1.5 text-left">
-              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">{t('auth.full_name')}</label>
-              <input
-                type="text" value={name}
-                onChange={e => { setName(e.target.value); setError(''); }}
-                className="w-full bg-muted/50 rounded-2xl text-sm px-6 py-4 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40"
-                placeholder={t('auth.full_name')} autoFocus
-              />
-            </div>
-            <div className="space-y-1.5 text-left">
-              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">{t('auth.username')}</label>
-              <input
-                type="text" value={username}
-                onChange={e => { setUsername(e.target.value); setError(''); }}
-                className="w-full bg-muted/50 rounded-2xl text-sm px-6 py-4 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40"
-                placeholder={t('auth.username')}
-              />
-            </div>
-            <div className="space-y-1.5 text-left">
-              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">{t('employees.role', 'Role')}</label>
-              <div className="grid grid-cols-2 gap-2">
-                {ROLE_OPTIONS.map(opt => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => setSelectedRole(opt.value)}
-                    className={`text-left px-4 py-3 rounded-2xl border-2 transition-all ${
-                      selectedRole === opt.value
-                        ? 'bg-muted/80 border-foreground/30 text-foreground'
-                        : 'bg-muted/30 border-transparent text-muted-foreground/60 hover:text-foreground/70 hover:bg-muted/50'
-                    }`}
-                  >
-                    <div className="text-[11px] font-black leading-tight">{opt.label}</div>
-                    <div className="text-xs font-bold mt-1 leading-tight opacity-60">{opt.description}</div>
-                  </button>
-                ))}
+        ) : registerStep === 'account' ? (
+          <form onSubmit={handleAccountSignup} className="space-y-4">
+            <div className="flex items-center gap-3 mb-1">
+              <button type="button" onClick={() => { setIntent('welcome'); setError(''); }}
+                className="text-muted-foreground/60 hover:text-muted-foreground/90 transition-colors"
+              >
+                <ArrowLeft size={16} />
+              </button>
+              <div className="text-left">
+                <h2 className="text-sm font-black text-foreground tracking-tight uppercase">Create Owner Account</h2>
+                <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50">Step 1 of 2 · Account Credentials</p>
               </div>
             </div>
+
+            <div className="space-y-1.5 text-left">
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Business Name *</label>
+              <input
+                type="text" value={regBusinessName}
+                onChange={e => { setRegBusinessName(e.target.value); setError(''); }}
+                className="w-full bg-muted/50 rounded-2xl text-sm px-6 py-3.5 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40"
+                placeholder="e.g. Shega Supermarket" autoFocus required
+              />
+            </div>
+
+            <div className="space-y-1.5 text-left">
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Owner Name *</label>
+              <input
+                type="text" value={regName}
+                onChange={e => { setRegName(e.target.value); setError(''); }}
+                className="w-full bg-muted/50 rounded-2xl text-sm px-6 py-3.5 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40"
+                placeholder="Owner Full Name" required
+              />
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5 text-left">
-                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">{t('common.pin')}</label>
+                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Email *</label>
                 <input
-                  type={showPin ? 'text' : 'password'} maxLength={4} value={pin}
-                  onChange={e => { setPin(e.target.value.replace(/\D/g, '')); setError(''); }}
-                  className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.4em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30"
-                  placeholder="••••"
+                  type="email" value={regEmail}
+                  onChange={e => { setRegEmail(e.target.value); setError(''); }}
+                  className="w-full bg-muted/50 rounded-2xl text-sm px-5 py-3.5 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40"
+                  placeholder="owner@example.com" required
                 />
               </div>
+
               <div className="space-y-1.5 text-left">
-                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">{t('auth.confirm_pin')}</label>
+                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Phone</label>
                 <input
-                  type={showPin ? 'text' : 'password'} maxLength={4} value={confirmPin}
-                  onChange={e => { setConfirmPin(e.target.value.replace(/\D/g, '')); setError(''); }}
-                  className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.4em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30"
-                  placeholder="••••"
+                  type="text" value={regPhone}
+                  onChange={e => { setRegPhone(e.target.value); setError(''); }}
+                  className="w-full bg-muted/50 rounded-2xl text-sm px-5 py-3.5 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40"
+                  placeholder="+251 91 123 4567"
                 />
               </div>
             </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5 text-left">
+                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Password *</label>
+                <input
+                  type="password" value={regPassword}
+                  onChange={e => { setRegPassword(e.target.value); setError(''); }}
+                  className="w-full bg-muted/50 rounded-2xl text-sm px-5 py-3.5 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40"
+                  placeholder="Min 8 chars" required
+                />
+              </div>
+
+              <div className="space-y-1.5 text-left">
+                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Confirm Password *</label>
+                <input
+                  type="password" value={regConfirmPassword}
+                  onChange={e => { setRegConfirmPassword(e.target.value); setError(''); }}
+                  className="w-full bg-muted/50 rounded-2xl text-sm px-5 py-3.5 font-bold border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/40"
+                  placeholder="Confirm" required
+                />
+              </div>
+            </div>
+
             {error && (
               <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20">
                 <p className="text-red-400 text-xs font-black uppercase tracking-widest">{error}</p>
               </div>
             )}
+
             <button type="submit" disabled={loading}
-              className="w-full py-5 bg-foreground text-background rounded-2xl font-black uppercase tracking-[0.3em] text-sm hover:bg-foreground/90 active:scale-[0.98] transition-all disabled:opacity-30"
+              className="w-full py-4 bg-foreground text-background rounded-2xl font-black uppercase tracking-[0.3em] text-xs hover:bg-foreground/90 active:scale-[0.98] transition-all disabled:opacity-30"
             >
-              {loading ? t('auth.creating_account') : t('auth.initialize_admin')}
+              {loading ? 'Creating Account…' : 'Create Account & Continue →'}
             </button>
-            <button type="button" onClick={() => { setIntent('welcome'); setError(''); }}
-              className="w-full text-center text-xs font-bold uppercase tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors py-1"
+          </form>
+        ) : (
+          <form onSubmit={handlePinSetup} className="space-y-4">
+            <div className="flex items-center gap-3 mb-1">
+              <button type="button" onClick={() => { setRegisterStep('account'); setError(''); }}
+                className="text-muted-foreground/60 hover:text-muted-foreground/90 transition-colors"
+              >
+                <ArrowLeft size={16} />
+              </button>
+              <div className="text-left">
+                <h2 className="text-sm font-black text-foreground tracking-tight uppercase">Terminal PIN Setup</h2>
+                <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50">Step 2 of 2 · Set Local 6-Digit PIN</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-muted/40 border border-border/50 text-left space-y-1">
+              <p className="text-xs font-bold text-foreground">Role: Owner (Super Admin)</p>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                As the business creator, you are automatically assigned full Owner permissions. Create a 6-digit PIN to secure local login on this terminal.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5 text-left">
+                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">6-Digit PIN *</label>
+                <input
+                  type={showPin ? 'text' : 'password'} maxLength={6} value={pin}
+                  onChange={e => { setPin(e.target.value.replace(/\D/g, '')); setError(''); }}
+                  className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.4em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30"
+                  placeholder="••••••" autoFocus
+                />
+              </div>
+
+              <div className="space-y-1.5 text-left">
+                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Confirm PIN *</label>
+                <input
+                  type={showPin ? 'text' : 'password'} maxLength={6} value={confirmPin}
+                  onChange={e => { setConfirmPin(e.target.value.replace(/\D/g, '')); setError(''); }}
+                  className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.4em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30"
+                  placeholder="••••••"
+                />
+              </div>
+            </div>
+
+            {error && (
+              <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20">
+                <p className="text-red-400 text-xs font-black uppercase tracking-widest">{error}</p>
+              </div>
+            )}
+
+            <button type="submit" disabled={loading}
+              className="w-full py-4 bg-foreground text-background rounded-2xl font-black uppercase tracking-[0.3em] text-xs hover:bg-foreground/90 active:scale-[0.98] transition-all disabled:opacity-30"
             >
-              <ArrowLeft size={10} className="inline mr-1.5 -mt-0.5" />
-              Back to choice
-            </button>
-            <button type="button" onClick={() => { setJoinMode('form'); setJoinPhase('searching'); setError(''); }}
-              className="w-full text-center text-xs font-black uppercase tracking-widest text-foreground/60 hover:text-foreground/90 transition-colors py-2"
-            >
-              Join an existing business
+              {loading ? 'Initializing Terminal…' : 'Complete Setup & Access Terminal'}
             </button>
           </form>
         )}
@@ -1120,6 +1285,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
         )}
       </div>
     </div>
+  </div>
   );
 };
 

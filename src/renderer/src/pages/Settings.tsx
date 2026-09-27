@@ -83,7 +83,7 @@ const Settings: React.FC = () => {
     if (currentBusiness) {
       setBizForm({
         businessName: currentBusiness.businessName,
-        storeName: currentBusiness.storeName,
+        storeName: currentBusiness.storeName || '',
         email: currentBusiness.email || '',
         phone: currentBusiness.phone || '',
         address: currentBusiness.address || '',

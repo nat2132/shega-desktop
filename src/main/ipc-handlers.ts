@@ -24,6 +24,7 @@ import * as morQr from './pos/mor-qr';
 import * as compliance from './pos/compliance';
 import * as etaxExport from './pos/etax-export';
 import { BUILTIN_ROLES, exceedsDiscountCap, getDiscountCap, getBuiltinRole, mergePermissionSets } from '@shega/shared';
+import { onboardingEditionFor, parsePlanEdition } from '@shega/shared';
 import type { PermissionValue } from '@shega/shared';
 import { registerBusinessDomainHandlers } from './business-domain';
 import { p2pSync } from './sync/p2p-sync-manager';
@@ -52,6 +53,7 @@ import {
   mergeIntoRenewal,
   mergeIntoSubscription,
   seedBusinessesFromMemberships,
+  syncPlansFromBackend,
 } from './subscription-backend';
 import { resetWriteGateCache } from './view-only-gate';
 
@@ -318,6 +320,17 @@ function validateNonNegative(v: any, label: string): number {
   return n;
 }
 
+/**
+ * Validates a record id coming from the renderer. Ids are positive integers,
+ * so anything else (undefined, NaN, 0, negative, fractional) is a bad request
+ * and must be rejected before it reaches a prepared statement.
+ */
+function validateId(v: any, label: string): number {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0) throw new Error(`${label} must be a valid id`);
+  return n;
+}
+
 
 function insertAuditLog(action: string, entityType: string, entityId: number | null, fieldName: string | null, oldValue: string | null, newValue: string | null, description: string | null) {
   try {
@@ -355,9 +368,38 @@ export function registerIPCHandlers() {
 
   ipcMain.handle('update-business', (_, id: number, biz: any) => {
     requirePermission('settings');
-    if (!biz.businessName?.trim()) throw new Error('Business name is required');
-    const stmt = db.prepare('UPDATE businesses SET businessName = ?, storeName = ?, logo = ?, address = ?, phone = ?, email = ?, currency = ? WHERE id = ?');
-    return stmt.run(biz.businessName, biz.storeName, biz.logo, biz.address, biz.phone, biz.email, biz.currency, id);
+    const businessName = biz?.businessName?.trim();
+    if (!businessName) throw new Error('Business name is required');
+
+    // Callers send different shapes: Settings sends the whole form, while
+    // BusinessSetup sends only the shared metadata it just created the row
+    // with (no storeName/logo/phone/email/currency). Writing a column the
+    // caller omitted used to bind `undefined` into storeName, which is NOT
+    // NULL, and threw SQLITE_CONSTRAINT_NOTNULL. So only touch the fields
+    // actually supplied and keep everything else as it is.
+    const existing = db.prepare('SELECT storeName FROM businesses WHERE id = ?').get(id) as { storeName: string } | undefined;
+    if (!existing) throw new Error('Business not found');
+
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    const put = (column: string, value: unknown) => {
+      sets.push(`${column} = ?`);
+      values.push(value);
+    };
+
+    put('businessName', businessName);
+    // storeName is NOT NULL, so it always needs a value: prefer the new one,
+    // then the stored one, then the business name.
+    put('storeName', biz?.storeName?.trim() || existing.storeName || businessName);
+    if (biz && 'logo' in biz) put('logo', biz.logo || null);
+    if (biz && 'address' in biz) put('address', biz.address || null);
+    if (biz && 'phone' in biz) put('phone', biz.phone || null);
+    if (biz && 'email' in biz) put('email', biz.email || null);
+    // Only ever set a real currency; never blank out the stored one.
+    if (biz?.currency) put('currency', biz.currency);
+
+    values.push(id);
+    return db.prepare(`UPDATE businesses SET ${sets.join(', ')} WHERE id = ?`).run(...values);
   });
 
   // ========== P2P Yjs + WebRTC sync ==========
@@ -3216,18 +3258,32 @@ export function registerIPCHandlers() {
     if (existing) return { success: false, error: 'Username already exists' };
 
     const hash = hashPin(admin.pin);
+    const isFirstAdmin = adminTotal === 0;
+    const role = isFirstAdmin ? 'super_admin' : (admin.role || 'admin');
+    const permissions = isFirstAdmin ? ['*'] : (admin.permissions || []);
     const result = db.prepare(
       'INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(
       admin.name,
       admin.username,
       hash,
-      admin.role || 'admin',
-      JSON.stringify(admin.permissions || []),
+      role,
+      JSON.stringify(permissions),
       admin.businessId || null
     );
-    bridgeAdminUser(Number(result.lastInsertRowid));
-    return { success: true, id: result.lastInsertRowid };
+    const newAdminId = Number(result.lastInsertRowid);
+    bridgeAdminUser(newAdminId);
+    // Initialize session for first admin so subsequent calls (e.g. generate-recovery-key)
+    // work before the explicit login step in onboarding.
+    if (isFirstAdmin) {
+      currentAdminId = newAdminId;
+      currentUserName = admin.name;
+      currentUserRole = role;
+      currentUserPermissions = permissions;
+      currentUserBusinessId = null;
+      currentUserSharedPerms = null;
+    }
+    return { success: true, id: newAdminId };
   });
 
   ipcMain.handle('update-admin', (_, id: number, admin: any) => {
@@ -3401,6 +3457,66 @@ export function registerIPCHandlers() {
     db.prepare('INSERT INTO stock_movements (warehouseId, itemId, type, quantity, referenceType, notes) VALUES (?, ?, ?, ?, ?, ?)')
       .run(warehouseId, itemId, 'adjustment', quantity, 'manual', 'Manual inventory adjustment');
     return { success: true };
+  });
+
+  // ========== STOCK ADJUSTMENTS ==========
+  ipcMain.handle('insert-adjustment', (_, adj: any) => {
+    requirePermission('inventory.adjust');
+    const itemId = validateId(adj.itemId, 'Product ID');
+    const quantity = validatePositive(adj.quantity, 'Adjustment quantity');
+    const type = String(adj.type || 'damaged').toLowerCase();
+    const reason = String(adj.reason || 'Damaged').trim();
+    const unitType = String(adj.unitType || 'base').toLowerCase();
+    const bizId = getActiveBusinessId();
+
+    const tx = db.transaction(() => {
+      const item = db.prepare('SELECT * FROM items WHERE id = ? AND businessId = ? AND is_deleted = 0').get(itemId, bizId) as any;
+      if (!item) throw new Error('Product not found in current business');
+
+      const isDeduction = ['damaged', 'expired', 'lost', 'discrepancy', 'other'].includes(type);
+      const unitsPerPack = Number(item.unitsPerPack) || 1;
+      const baseQty = unitType === 'pack' ? quantity * unitsPerPack : quantity;
+      const packQty = unitType === 'pack' ? quantity : quantity / unitsPerPack;
+
+      const currentBaseStock = Number(item.totalBaseQuantity) || 0;
+      if (isDeduction && baseQty > currentBaseStock) {
+        throw new Error(`Cannot adjust ${baseQty} ${item.baseUnit || 'pcs'}. Current available stock is only ${currentBaseStock}.`);
+      }
+
+      const newBaseStock = isDeduction ? Math.max(0, currentBaseStock - baseQty) : currentBaseStock + baseQty;
+      const newPackStock = isDeduction ? Math.max(0, (Number(item.totalPackQuantity) || 0) - packQty) : (Number(item.totalPackQuantity) || 0) + packQty;
+
+      // Update item stock
+      db.prepare('UPDATE items SET totalBaseQuantity = ?, totalPackQuantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND businessId = ?')
+        .run(newBaseStock, newPackStock, itemId, bizId);
+
+      // Insert adjustment record
+      const res = db.prepare(`
+        INSERT INTO adjustments (businessId, itemId, type, oldValue, newValue, quantity, unitType, reason, date, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+      `).run(bizId, itemId, type, currentBaseStock, newBaseStock, quantity, unitType, reason, adj.date || new Date().toISOString().split('T')[0]);
+
+      // Audit log
+      db.prepare(`
+        INSERT INTO audit_logs (businessId, action, entityType, entityId, fieldName, oldValue, newValue, changedBy, description)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(bizId, 'stock_adjustment', 'items', itemId, 'totalBaseQuantity', String(currentBaseStock), String(newBaseStock), 'user', `Stock adjustment (${type}): ${reason}`);
+
+      return { success: true, id: res.lastInsertRowid, oldValue: currentBaseStock, newValue: newBaseStock };
+    });
+
+    return tx();
+  });
+
+  ipcMain.handle('get-adjustments', (_, limit = 50) => {
+    const bizId = getActiveBusinessId();
+    return db.prepare(`
+      SELECT a.*, i.name as itemName, i.baseUnit, i.image as itemImage
+      FROM adjustments a
+      LEFT JOIN items i ON a.itemId = i.id
+      WHERE a.businessId = ?
+      ORDER BY a.createdAt DESC LIMIT ?
+    `).all(bizId, limit);
   });
 
   // ========== STOCK TRANSFERS ==========
@@ -6655,35 +6771,27 @@ ipcMain.handle('get-current-subscription', () => {
   });
 
   // `planTier` is the canonical edition chosen on the welcome screen
-  // ('mobile' | 'desktop' | 'both') and selects which plan the trial runs on.
+  // ('mobile' | 'desktop' | 'both'). This build is Shega Desktop, so the
+  // default is the Desktop edition — a trial must never silently escalate to
+  // the combined plan, because that is a later upgrade, not a signup choice.
   ipcMain.handle('start-trial', async (_, planTier?: string) => {
     const bizId = getActiveBusinessId();
-    const requestedEdition = ['mobile', 'desktop', 'both'].includes(String(planTier))
-      ? String(planTier)
-      : null;
+    const desktopEdition = onboardingEditionFor('desktop');
+    const requestedEdition = parsePlanEdition(planTier) ?? desktopEdition;
 
     // Linked to the backend? The backend owns trials (one per account) and is
     // the source of truth. Fall back to the legacy local trial when offline.
     if (backendClient.hasSession()) {
       try {
         const plans = await backendClient.getPlans();
-        // Prefer the exact edition the user picked, then fall back to the
-        // fullest plan so a trial never lands on a narrower edition by accident.
-        const pickPlan = (): any => {
-          if (requestedEdition) {
-            const exact = plans.find((p: any) => p.edition === requestedEdition);
-            if (exact) return exact;
-          }
-          return (
-            plans.find((p: any) => p.edition === 'both') ||
-            plans.find((p: any) => /\+\s*mobile/i.test(p.name || '')) ||
-            plans.find((p: any) => /desktop/i.test(p.name || '')) ||
-            plans[0]
-          );
-        };
-        const trialPlan = pickPlan();
-        if (!trialPlan) throw new Error('No backend plans available for the trial.');
-        const status = await backendClient.startTrial(Number(trialPlan.id));
+        // Match the requested edition exactly. If the catalogue has no such
+        // plan, that is a real error — widening to a more expensive edition
+        // would bill the customer for a plan they never chose.
+        const exact = plans.find((p: any) => parsePlanEdition(p.edition ?? p.name) === requestedEdition);
+        if (!exact) {
+          return { success: false, error: `The ${requestedEdition} plan is not available for a trial right now.` };
+        }
+        const status = await backendClient.startTrial(Number(exact.id));
         applyBackendStatus(status);
         return { success: true, cloud: true, status };
       } catch (err: any) {
@@ -6941,6 +7049,30 @@ ipcMain.handle('get-current-subscription', () => {
   // approval/rejection, renewal, device/business add-ons) and the desktop
   // enforces the access level it reports.
 
+  ipcMain.handle('backend-register', async (_, payload: { email: string; password: string; name?: string; phone?: string; businessName?: string }) => {
+    if (!payload?.email?.trim() || !payload?.password?.trim()) {
+      return { success: false, error: 'Email and password are required.' };
+    }
+    try {
+      const data = await backendClient.register(payload);
+      let memberships: any = { owned: [], memberships: [] };
+      try { memberships = await backendClient.getMemberships(); } catch { /* non-fatal */ }
+      try { seedBusinessesFromMemberships(memberships); } catch { /* non-fatal */ }
+      const status = await backendClient.getSubscriptionStatus();
+      applyBackendStatus(status);
+      return {
+        success: true,
+        user: data.user,
+        email: data.user?.email ?? payload.email.trim(),
+        status,
+        memberships,
+        businessId: getActiveBusinessId(),
+      };
+    } catch (err: any) {
+      return { success: false, error: err?.detail || err?.message || (typeof err === 'string' ? err : 'Registration failed.') };
+    }
+  });
+
   ipcMain.handle('backend-login', async (_, creds: { username?: string; password?: string }) => {
     if (!creds?.username?.trim() || !creds?.password?.trim()) {
       return { success: false, error: 'Email and password are required.' };
@@ -7023,6 +7155,9 @@ ipcMain.handle('get-current-subscription', () => {
         const memberships = await backendClient.getMemberships();
         seedBusinessesFromMemberships(memberships);
       } catch { /* non-fatal */ }
+      // Refresh the plan catalogue so prices/editions follow the backend. The
+      // seeded rows remain as the offline fallback if this fails.
+      try { await syncPlansFromBackend(); } catch { /* non-fatal */ }
       return { success: true, status };
     } catch (err: any) {
       return { success: false, error: err?.detail || err?.message || 'Could not refresh the subscription status.' };

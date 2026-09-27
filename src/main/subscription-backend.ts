@@ -10,6 +10,7 @@
  */
 import { randomUUID } from 'crypto';
 import db from './database';
+import { getPlans } from './backend-client';
 
 // Tolerates the table not existing yet (first migration-less run).
 export function ensureCloudTable(): void {
@@ -72,6 +73,20 @@ export function getCloudSubscription(): any | null {
 }
 
 /**
+ * Local (per-business) subscription row.
+ *
+ * The view-only gate falls back to this when there is no cloud snapshot, so an
+ * install that has never synced — or is working offline — still honours its own
+ * trial end and expiry instead of staying editable forever.
+ */
+export function getLocalSubscription(): any | null {
+  const bizId = getActiveBusinessId();
+  if (!bizId) return null;
+  const row = db.prepare('SELECT * FROM subscriptions WHERE businessId = ?').get(bizId) as any;
+  return row ?? null;
+}
+
+/**
  * Canonical plan edition for a backend plan name — the local `tier` records
  * WHICH platforms the plan unlocks, not a capability level.
  *
@@ -82,15 +97,43 @@ export function getCloudSubscription(): any | null {
  * Anything unrecognised keeps the widest access so a backend rename can never
  * silently lock a paying subscriber out of the app.
  */
-export function mapTier(planName: string | null, isTrial: boolean): string {
+export function mapTier(edition: string | null, planName: string | null, isTrial: boolean): string {
   if (isTrial) return 'trial';
+  const canonical = (edition || '').toLowerCase();
+  if (canonical === 'mobile' || canonical === 'desktop' || canonical === 'both') return canonical;
   const name = (planName || '').toLowerCase();
   if (name.includes('mobile') && name.includes('desktop')) return 'both';
   if (name.includes('desktop')) return 'desktop';
   if (name.includes('mobile')) return 'mobile';
-  if (name.includes('premium')) return 'both';
-  if (name.includes('basic')) return 'mobile';
   return 'both';
+}
+
+/**
+ * Refresh the local `subscription_plans` catalogue from the backend, which is
+ * the source of truth for plan names, editions and prices. Returns the number
+ * of plans synced.
+ *
+ * The seeded rows are deliberately left in place as the offline fallback, and
+ * only name/duration/price are overwritten: `description` and `features` are
+ * desktop-only marketing copy that the backend plan payload does not carry.
+ */
+export async function syncPlansFromBackend(): Promise<number> {
+  const plans = await getPlans();
+  const update = db.prepare(
+    'UPDATE subscription_plans SET name = ?, durationMonths = ?, price = ? WHERE tier = ?',
+  );
+
+  let synced = 0;
+  for (const plan of (Array.isArray(plans) ? plans : []) as any[]) {
+    const tier = String(plan?.edition ?? '').toLowerCase();
+    if (tier !== 'mobile' && tier !== 'desktop' && tier !== 'both') continue;
+    const price = Number(plan?.price);
+    if (!Number.isFinite(price)) continue;
+    const months = Number(plan?.duration_months) || 1;
+    update.run(String(plan?.name ?? tier), months, price, tier);
+    synced += 1;
+  }
+  return synced;
 }
 
 /**
@@ -108,7 +151,7 @@ export function applyBackendStatus(status: any): any {
   const canonical =
     status?.status === 'none' ? null : (status?.status ?? null);
   const isTrial = canonical === 'trial' || Boolean(status?.is_trial);
-  const tier = isTrial ? 'trial' : mapTier(status?.plan_name, false);
+  const tier = isTrial ? 'trial' : mapTier(status?.edition ?? null, status?.plan_name ?? null, false);
 
   const mapped = {
     status: canonical, // active | trial | pending_payment | payment_rejected | expired

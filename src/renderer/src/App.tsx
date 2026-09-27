@@ -2,27 +2,44 @@ import React, { useEffect, useState, useCallback, Suspense, lazy } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 
-const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Inventory = lazy(() => import('./pages/Inventory'))
-const Sales = lazy(() => import('./pages/Sales'))
-const SaleDetail = lazy(() => import('./pages/SaleDetail'))
-const Customers = lazy(() => import('./pages/Customers'))
-const Analytics = lazy(() => import('./pages/Analytics'))
-const Settings = lazy(() => import('./pages/Settings'))
-const Warehouses = lazy(() => import('./pages/Warehouses'))
-const Employees = lazy(() => import('./pages/Employees'))
-const Shipments = lazy(() => import('./pages/Shipments'))
-const AuditLogs = lazy(() => import('./pages/AuditLogs'))
-const UsersEmployees = lazy(() => import('./pages/UsersEmployees'))
-const Suppliers = lazy(() => import('./pages/Suppliers'))
-const DebtManagement = lazy(() => import('./pages/DebtManagement'))
-const Reports = lazy(() => import('./pages/Reports'))
-const SubscriptionDashboard = lazy(() => import('./pages/SubscriptionDashboard'))
-const SubscriptionPayment = lazy(() => import('./pages/SubscriptionPayment'))
-const Register = lazy(() => import('./pages/Register'))
-const CashierLayout = lazy(() => import('./layouts/CashierLayout'))
-const CashierPOS = lazy(() => import('./pages/cashier/CashierPOS'))
-const CashierMySales = lazy(() => import('./pages/cashier/CashierMySales'))
+function lazyWithRetry<T extends React.ComponentType<any>>(factory: () => Promise<{ default: T }>) {
+  return lazy(async () => {
+    try {
+      return await factory();
+    } catch (error) {
+      const key = 'shega_chunk_reload_' + window.location.pathname;
+      const retried = sessionStorage.getItem(key);
+      if (!retried) {
+        sessionStorage.setItem(key, 'true');
+        window.location.reload();
+        return new Promise(() => {});
+      }
+      throw error;
+    }
+  });
+}
+
+const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'))
+const Inventory = lazyWithRetry(() => import('./pages/Inventory'))
+const Sales = lazyWithRetry(() => import('./pages/Sales'))
+const SaleDetail = lazyWithRetry(() => import('./pages/SaleDetail'))
+const Customers = lazyWithRetry(() => import('./pages/Customers'))
+const Analytics = lazyWithRetry(() => import('./pages/Analytics'))
+const Settings = lazyWithRetry(() => import('./pages/Settings'))
+const Warehouses = lazyWithRetry(() => import('./pages/Warehouses'))
+const Employees = lazyWithRetry(() => import('./pages/Employees'))
+const Shipments = lazyWithRetry(() => import('./pages/Shipments'))
+const AuditLogs = lazyWithRetry(() => import('./pages/AuditLogs'))
+const UsersEmployees = lazyWithRetry(() => import('./pages/UsersEmployees'))
+const Suppliers = lazyWithRetry(() => import('./pages/Suppliers'))
+const DebtManagement = lazyWithRetry(() => import('./pages/DebtManagement'))
+const Reports = lazyWithRetry(() => import('./pages/Reports'))
+const SubscriptionDashboard = lazyWithRetry(() => import('./pages/SubscriptionDashboard'))
+const SubscriptionPayment = lazyWithRetry(() => import('./pages/SubscriptionPayment'))
+const Register = lazyWithRetry(() => import('./pages/Register'))
+const CashierLayout = lazyWithRetry(() => import('./layouts/CashierLayout'))
+const CashierPOS = lazyWithRetry(() => import('./pages/cashier/CashierPOS'))
+const CashierMySales = lazyWithRetry(() => import('./pages/cashier/CashierMySales'))
 import { useAuth } from './context/AuthContext'
 import { useSettings } from './context/SettingsContext'
 import { SubscriptionProvider, useSubscription } from './context/SubscriptionContext'
@@ -34,11 +51,12 @@ import { initSound, playSound } from './utils/sound'
 
 // Pre-launch screens
 import SplashScreen from './components/pre-launch/SplashScreen'
-import AuthScreen from './components/pre-launch/AuthScreen'
+import AuthScreen, { type OwnerProfile } from './components/pre-launch/AuthScreen'
 import RecoveryKeyDisplay from './components/pre-launch/RecoveryKeyDisplay'
 import BusinessSetup from './components/pre-launch/BusinessSetup'
 import OnboardingWizard from './components/pre-launch/OnboardingWizard'
 import SubscriptionWelcome from './components/pre-launch/SubscriptionWelcome'
+import { onboardingEditionFor } from '@shega/shared'
 import LoadingScreen from './components/pre-launch/LoadingScreen'
 import GuidedTour, { TOUR_DONE_KEY as GuidedTourTourKey } from './components/GuidedTour'
 import ErrorScreen from './components/pre-launch/ErrorScreen'
@@ -52,7 +70,7 @@ import { Toaster } from './components/ui/sonner'
 import { toast } from 'sonner'
 import NotificationBanners from './components/NotificationBanners'
 import NotificationModal from './components/NotificationModal'
-type AppPhase = 'splash' | 'auth' | 'recovery-key' | 'business-setup' | 'onboarding' | 'subscription-welcome' | 'loading' | 'ready' | 'error'
+type AppPhase = 'splash' | 'auth' | 'recovery-key' | 'business-setup' | 'onboarding' | 'subscription-welcome' | 'subscription-payment' | 'loading' | 'ready' | 'error'
 
 function ProtectedRoute({ children, permission, moduleId }: { children: React.ReactNode; permission?: string; moduleId?: string }) {
   const { hasPermission } = useAuth();
@@ -103,6 +121,9 @@ function App() {
   const [errorMsg, setErrorMsg] = useState('');
   const [isFirstTime, setIsFirstTime] = useState(false);
   const [recoveryKeyData, setRecoveryKeyData] = useState<{ key: string; username: string } | null>(null);
+  // Owner identity collected once at signup. Handed to BusinessSetup so the
+  // onboarding wizard never re-asks for a name, email or password.
+  const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
   const [showTour, setShowTour] = React.useState(false);
 
   // A write rejected by the main process (view-only account) becomes a toast and
@@ -208,7 +229,7 @@ function App() {
     window.dispatchEvent(new CustomEvent('shega:login-by-user', { detail: result.admin }));
   };
 
-  const handleRegister = async (name: string, username: string, pin: string, role: string = 'super_admin', permissions: string[] = []) => {
+  const handleRegister = async (name: string, username: string, pin: string, role: string = 'super_admin', permissions: string[] = [], profile?: OwnerProfile) => {
     try {
       const result = await window.api?.insertAdmin({
         name, username, pin, role, permissions
@@ -223,6 +244,7 @@ function App() {
       const loginResult = await login(username, pin);
       if (loginResult.success) {
         setHasAdmins(true);
+        if (profile) setOwnerProfile(profile);
         if (recoveryKey) {
           setRecoveryKeyData({ key: recoveryKey, username });
           setPhase('recovery-key');
@@ -260,6 +282,17 @@ function App() {
   };
 
   const handleSubscriptionWelcomeComplete = () => {
+    setPhase('loading');
+  };
+
+  // "Pay Now" from the onboarding plan step: the Desktop plan is already
+  // selected, so this opens straight on the payment confirmation. The backend
+  // keeps the payment pending until an admin approves it.
+  const handleSubscriptionWelcomePayNow = () => {
+    setPhase('subscription-payment');
+  };
+
+  const handleSubscriptionPaymentComplete = () => {
     setPhase('loading');
   };
 
@@ -316,6 +349,7 @@ function App() {
         onLoginByUser={handleLoginByUser}
         onRegister={handleRegister}
         onJoin={handleJoin}
+        onProfileCaptured={setOwnerProfile}
         hasAdmins={hasAdmins}
         isFirstTime={isFirstTime}
       />
@@ -335,7 +369,7 @@ function App() {
 
   // Phase: Business Setup
   if (phase === 'business-setup') {
-    return <BusinessSetup onComplete={handleBusinessSetupComplete} />;
+    return <BusinessSetup ownerProfile={ownerProfile} onComplete={handleBusinessSetupComplete} />;
   }
 
   // Phase: Onboarding
@@ -345,7 +379,24 @@ function App() {
 
   // Phase: Subscription Welcome
   if (phase === 'subscription-welcome') {
-    return <SubscriptionWelcome onComplete={handleSubscriptionWelcomeComplete} />;
+    return <SubscriptionWelcome onComplete={handleSubscriptionWelcomeComplete} onPayNow={handleSubscriptionWelcomePayNow} />;
+  }
+
+  // Phase: Pay Now during onboarding
+  if (phase === 'subscription-payment') {
+    return (
+      <SubscriptionProvider>
+      <TooltipProvider>
+        <Toaster />
+        <Suspense fallback={<div className="flex h-screen items-center justify-center bg-background"><div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" /></div>}>
+          <SubscriptionPayment
+            initialEdition={onboardingEditionFor('desktop')}
+            onComplete={handleSubscriptionPaymentComplete}
+          />
+        </Suspense>
+      </TooltipProvider>
+      </SubscriptionProvider>
+    );
   }
 
   // Phase: Loading
@@ -404,8 +455,8 @@ function App() {
         <SidebarInset>
           <SiteHeader />
           <NotificationBanners />
-          <main className="flex flex-1 flex-col overflow-y-auto scrollbar-apple">
-            <div className="@container/main flex flex-1 flex-col gap-2">
+          <main className="flex-1 overflow-y-auto scrollbar-apple p-4 md:p-6 min-h-0">
+            <div className="@container/main flex flex-1 flex-col gap-2 min-h-full">
               <Suspense fallback={<div className="flex items-center justify-center h-full py-32"><div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" /></div>}>
               <AnimatePresence mode="wait">
                 <motion.div
@@ -414,6 +465,7 @@ function App() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
                   transition={{ duration: 0.25, ease: [0.28, 0, 0.22, 1] }}
+                  className="min-h-full flex flex-col flex-1"
                 >
                   <Routes location={location}>
                     <Route path="/" element={<ProtectedRoute permission="dashboard"><Dashboard /></ProtectedRoute>} />

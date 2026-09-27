@@ -16,7 +16,7 @@
  */
 import db from './database';
 
-const DEFAULT_BASE = 'https://8b70-196-188-178-187.ngrok-free.app';
+const DEFAULT_BASE = 'https://f8bb-196-188-178-187.ngrok-free.app';
 
 const TOKEN_KEY = 'backend_access_token';
 const REFRESH_KEY = 'backend_refresh_token';
@@ -157,6 +157,37 @@ export async function login(username: string, password: string): Promise<any> {
   setSetting(TOKEN_KEY, data.access);
   setSetting(REFRESH_KEY, data.refresh);
   setSetting(EMAIL_KEY, data.user?.email || username);
+  return data;
+}
+
+export async function register(payload: {
+  email: string;
+  password: string;
+  name?: string;
+  phone?: string;
+  businessName?: string;
+}): Promise<any> {
+  const data = await api('/api/auth/register', {
+    method: 'POST',
+    body: {
+      email: payload.email,
+      password: payload.password,
+      password2: payload.password,
+      name: payload.name,
+      phone: payload.phone,
+      business_name: payload.businessName,
+      // This build is Shega Desktop, so the backend records a Desktop signup
+      // and offers/trials the Desktop plan rather than Mobile.
+      platform: 'desktop',
+    },
+  });
+  if (data?.access) {
+    inMemoryAccess = data.access;
+    inMemoryRefresh = data.refresh;
+    setSetting(TOKEN_KEY, data.access);
+    setSetting(REFRESH_KEY, data.refresh);
+    setSetting(EMAIL_KEY, data.user?.email || payload.email);
+  }
   return data;
 }
 

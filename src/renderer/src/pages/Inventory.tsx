@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { 
   Plus, Package, 
   ShieldAlert, Trash2, Eye,
-  FileText, Download, ShoppingCart, Filter, X, RotateCcw,
+  FileText, Download, ShoppingCart, Filter, X, RotateCcw, Wrench,
   Boxes, DollarSign, Truck, Camera, Warehouse, Smartphone, Printer as PrinterIcon
 } from 'lucide-react';
 import jsPDF from 'jspdf';
@@ -22,6 +22,7 @@ import { DatePicker } from '../components/DatePicker';
 import Modal from '../components/Modal';
 import { exportCSV, exportPDF, addPdfHeader } from '../lib/export-utils';
 import { parseProductImages, serializeProductImages } from '../lib/productImages';
+import StockAdjustmentModal from '../components/StockAdjustmentModal';
 import { computeTrend } from '../lib/trend-utils';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Switch } from '../components/ui/switch';
@@ -83,6 +84,7 @@ const Inventory: React.FC = () => {
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [showStockAdjModal, setShowStockAdjModal] = useState(false);
   const [editingItem, setEditingItem] = useState<Item | null>(null);
   const [viewingItem, setViewingItem] = useState<Item | null>(null);
   const [searchQuery] = useState('');
@@ -739,6 +741,9 @@ const Inventory: React.FC = () => {
               </SheetContent>
             </Sheet>
 
+            <Button variant="outline" size="sm" onClick={() => setShowStockAdjModal(true)} className="border-amber-500/30 text-amber-600 hover:bg-amber-500/10 h-8 px-3">
+              <Wrench className="mr-1.5 h-3.5 w-3.5" /> Stock Adjustment
+            </Button>
             <Button variant="outline" size="sm" onClick={openPOCreator} className="border-primary/20 text-primary hover:bg-primary/5 h-8 px-3">
               <FileText className="mr-1.5 h-3.5 w-3.5" /> {t('inventory.create_po')}
             </Button>
@@ -747,6 +752,13 @@ const Inventory: React.FC = () => {
             </Button>
           </div>
         </div>
+
+        {/* Stock Adjustment Modal */}
+        <StockAdjustmentModal
+          isOpen={showStockAdjModal}
+          onClose={() => setShowStockAdjModal(false)}
+          onSuccess={loadData}
+        />
 
         <DataTable 
           columns={columns} 
