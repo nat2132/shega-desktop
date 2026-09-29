@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { 
   Plus, User, Phone,
   Search, 
@@ -38,6 +38,7 @@ import {
 } from "../components/ui/alert-dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger, SheetFooter, SheetClose, SheetDescription } from '../components/ui/sheet';
 import SaleSuccessModal from '../components/SaleSuccessModal';
+import { registerScanPushHandler, type ScanPushVerdict } from '../services/scanPushBridge';
 import { startBarcodeWedge, stopBarcodeWedge } from '../services/barcode';
 
 interface Sale {
@@ -338,6 +339,25 @@ const Sales: React.FC = () => {
     };
     setCart([...cart, newItem]);
   };
+
+  // Phone-initiated scan push (mobile "Use as Barcode Scanner"): while this
+  // sales cart is open it is the active sale, so it accepts pushed codes.
+  const acceptScanPushRef = useRef<(barcode: string) => Promise<ScanPushVerdict>>(async () => ({ ok: false, status: 'no_active_sale' }));
+  acceptScanPushRef.current = async (barcode: string): Promise<ScanPushVerdict> => {
+    const item: any = await window.api?.getItemByBarcode?.(barcode).catch(() => null);
+    if (!item) {
+      toast.error(`Phone scan: no item found for ${barcode}`);
+      return { ok: false, status: 'not_found', message: `No item found for ${barcode}` };
+    }
+    if ((Number(item.totalBaseQuantity) || 0) <= 0) {
+      toast.error(`${item.name} is out of stock`);
+      return { ok: false, status: 'out_of_stock', productName: item.name, message: `${item.name} is out of stock` };
+    }
+    addToCart(String(item.id));
+    toast.success(`${item.name} added by phone scan`);
+    return { ok: true, status: 'added', productName: item.name };
+  };
+  useEffect(() => registerScanPushHandler('sales', (barcode) => acceptScanPushRef.current(barcode)), []);
 
   const updateCartItem = (itemId: number, updates: any) => {
     setCart(cart.map(c => {

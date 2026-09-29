@@ -7,6 +7,7 @@ import { HashRouter } from 'react-router-dom'
 import { SettingsProvider } from './context/SettingsContext'
 import { AuthProvider } from './context/AuthContext'
 import { NotificationProvider } from './context/NotificationContext'
+import { PeripheralScanPushListener } from './components/PeripheralScanPushListener'
 
 // Global error handlers for renderer
 window.addEventListener('error', (event) => {
@@ -21,6 +22,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <SettingsProvider>
       <AuthProvider>
         <NotificationProvider>
+          <PeripheralScanPushListener />
           <HashRouter>
             <App />
           </HashRouter>

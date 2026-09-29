@@ -6,6 +6,8 @@ import { AppButton } from '../components/ui/button';
 
 import { AppText } from '../components/ui/text';
 import { AppBadge } from '../components/ui/badge';
+import { toast } from 'sonner';
+import { registerScanPushHandler, type ScanPushVerdict } from '../services/scanPushBridge';
 
 interface CartItem {
   id: number;
@@ -202,6 +204,29 @@ export default function Register() {
       // Could add toast notification here
     }
   };
+
+  // Phone-initiated scan push (mobile "Use as Barcode Scanner"): the register
+  // cart is the active sale while open, so it accepts pushed codes.
+  const acceptScanPushRef = useRef<(barcode: string) => ScanPushVerdict>(() => ({ ok: false, status: 'no_active_sale' }));
+  acceptScanPushRef.current = (barcode: string): ScanPushVerdict => {
+    const code = barcode.trim().toLowerCase();
+    const item = items.find(i =>
+      (i.barcode && i.barcode.trim().toLowerCase() === code) ||
+      (i.sku && i.sku.trim().toLowerCase() === code)
+    );
+    if (!item) {
+      toast.error(`Phone scan: no item found for ${barcode}`);
+      return { ok: false, status: 'not_found', message: `No item found for ${barcode}` };
+    }
+    if (item.totalBaseQuantity <= 0) {
+      toast.error(`${item.name} is out of stock`);
+      return { ok: false, status: 'out_of_stock', productName: item.name, message: `${item.name} is out of stock` };
+    }
+    addToCart(item);
+    toast.success(`${item.name} added by phone scan`);
+    return { ok: true, status: 'added', productName: item.name };
+  };
+  useEffect(() => registerScanPushHandler('register', (barcode) => acceptScanPushRef.current(barcode)), []);
 
   const handlePayment = async () => {
     if (cart.length === 0) return;

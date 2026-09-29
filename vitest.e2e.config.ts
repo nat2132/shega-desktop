@@ -2,10 +2,19 @@ import { defineConfig } from 'vitest/config';
 
 /**
  * E2E suites that the default `vitest.config.ts` deliberately skips: they bind
- * real ports and open a real (throwaway) database, so they are opt-in rather
- * than part of `npm run test:unit`.
+ * real ports and need better-sqlite3 built against Electron's ABI, so they are
+ * opt-in rather than part of `npm run test:unit`.
  *
- *   npx vitest run --config vitest.e2e.config.ts
+ *   npm run test:e2e
+ *
+ * KNOWN PRE-EXISTING FAILURES in the two older files (NOT regressions, and not
+ * caused by the P3 work — they have been excluded from CI since before it):
+ *   - `websocket-server.test.ts` hardcodes `schemaVersion === 21` while
+ *     PROTOCOL_VERSION is 22, and two tests insert the same invite code
+ *     (`K2M-4NP-QW8`), tripping a UNIQUE constraint.
+ *   - `sync-hub.test.ts` asserts on business-uuid values that have since been
+ *     re-generated.
+ * `websocket-auth.test.ts` is the suite that is current and fully green.
  */
 export default defineConfig({
   test: {

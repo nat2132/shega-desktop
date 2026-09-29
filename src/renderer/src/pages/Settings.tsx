@@ -5,7 +5,7 @@ import {
   ShieldCheck, Database, Sun, Moon, Trash2, Upload, Bell, HardDrive, RotateCcw, FileText,
   Clock, Headphones,
   Phone, HeartPulse, Info, RefreshCw, Download,
-  Printer, Server, Percent
+  Printer, Server, Percent, MonitorSmartphone
 } from 'lucide-react';
 
 import { useSettings, Language } from '../context/SettingsContext';
@@ -24,6 +24,9 @@ import { UpdateDialog } from '../components/UpdateDialog';
 import DeviceSettings from '../components/DeviceSettings';
 import P2pSyncStatus from '../components/P2pSyncStatus';
 import SyncSettings from '../components/SyncSettings';
+
+// Settings → Connected Devices (lazy: only pulled in when that tab is opened).
+const ConnectedDevices = React.lazy(() => import('./ConnectedDevices'));
 
 import companyLogo from '../assets/company.png';
 import { resolveAvatar, AVATAR_OPTIONS, avatarFileNameFrom } from '../lib/avatar';
@@ -48,7 +51,7 @@ const Settings: React.FC = () => {
   } = useSettings();
   const { currentAdmin, refreshAdmin } = useAuth();
   
-  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'tax' | 'notifications' | 'data' | 'devices' | 'sync' | 'support' | 'health' | 'about'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'tax' | 'notifications' | 'data' | 'connected' | 'devices' | 'sync' | 'support' | 'health' | 'about'>('profile');
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [updateDialogAction, setUpdateDialogAction] = useState<'check' | 'auto'>('auto');
   const [appVersion, setAppVersion] = useState('');
@@ -222,6 +225,7 @@ const Settings: React.FC = () => {
     { id: 'tax' as const, label: t('settings.tax', 'Tax'), icon: Percent },
     { id: 'notifications' as const, label: t('settings.notifications'), icon: Bell },
     { id: 'data' as const, label: t('settings.core_database'), icon: Database },
+    { id: 'connected' as const, label: t('subscription.connected_devices', 'Connected Devices'), icon: MonitorSmartphone },
     { id: 'devices' as const, label: 'Devices', icon: Printer },
     { id: 'sync' as const, label: 'Sync Hub', icon: Server },
     { id: 'support' as const, label: t('settings.support'), icon: Headphones },
@@ -548,7 +552,12 @@ const Settings: React.FC = () => {
                 </div>
               )}
 
-{activeTab === 'devices' && (
+{activeTab === 'connected' && (
+              <React.Suspense fallback={<div className="flex items-center justify-center py-12"><RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" /></div>}>
+                <ConnectedDevices />
+              </React.Suspense>
+            )}
+            {activeTab === 'devices' && (
               <>
                 <P2pSyncStatus />
                 <div className="mt-4">

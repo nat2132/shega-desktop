@@ -1,6 +1,6 @@
 import { Bonjour } from 'bonjour-service';
 import { EventEmitter } from 'events';
-import { ensureHubDeviceId, getPairingToken, SYNC_PORT } from '../sync-hub';
+import { ensureHubDeviceId, SYNC_PORT } from '../sync-hub';
 import { getDesktopDeviceName } from './device-name';
 import { PROTOCOL_VERSION } from '@shega/shared';
 
@@ -65,9 +65,16 @@ export class MdnsDiscovery extends EventEmitter<DiscoveryEventMap> {
       businessId = row?.uuid ?? '';
     } catch {}
 
+    // P3: the pairing token is NO LONGER broadcast. mDNS TXT records are
+    // readable by every device on the subnet, so advertising the hub's shared
+    // bearer there handed the same secret to anyone listening — which is a
+    // strictly larger exposure than the token check it was supposed to sit in
+    // front of. Peers now authenticate with a signed membership credential
+    // (see websocket-server.ts / peer-sync.ts). Hosts still ACCEPT a token from
+    // a build too old to do the handshake, so a mixed fleet still pairs; it
+    // just has to obtain that token out of band (owner-issued, or the QR).
     const txtRecord = {
       device_id: deviceId,
-      pairing_token: getPairingToken(),
       name: getDesktopDeviceName(),
       schema_version: String(PROTOCOL_VERSION),
       port: String(port),

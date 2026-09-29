@@ -9,6 +9,7 @@ import {
   type PeripheralScanResult,
   type PeripheralCaptureRequest,
   type PeripheralCaptureResult,
+  type PeripheralScanPush,
 } from '@shega/shared';
 
 /**
@@ -38,7 +39,21 @@ type PeripheralEventMap = {
   captureResult: [PeripheralCaptureResult];
   /** phone status update: { deviceId, mode, busy } */
   status: [{ deviceId: string; mode: string; busy?: boolean }];
+  /**
+   * A phone scanned a code on its own initiative and wants it added to the
+   * active cart. `reply` streams the verdict back down the phone's socket.
+   */
+  scanPush: [PeripheralScanPush & { reply: (result: PeripheralScanPushResultPayload) => void }];
 };
+
+/** Reply shape handed to listeners of the `scanPush` event. */
+export interface PeripheralScanPushResultPayload {
+  ok: boolean;
+  status: string;
+  barcode: string;
+  productName?: string;
+  message?: string;
+}
 
 class PeripheralHub extends EventEmitter<PeripheralEventMap> {
   /** deviceId -> client */
@@ -127,6 +142,29 @@ class PeripheralHub extends EventEmitter<PeripheralEventMap> {
     const p = this.pending.get(requestId);
     if (!p || p.kind !== kind) return false;
     this.pending.delete(requestId);
+    return true;
+  }
+
+  /**
+   * Ingest a phone-initiated scan push ("Use as Barcode Scanner").
+   *
+   * Not a request/response pair of our own making, so nothing is tracked here:
+   * the reply travels back over the same socket via the `reply` callback, and
+   * the phone correlates it with the requestId it sent. Returns true when the
+   * payload was well-formed enough to hand to a listener.
+   */
+  ingestScanPush(payload: any, reply: (result: PeripheralScanPushResultPayload) => void): boolean {
+    const barcode = String(payload?.barcode ?? '').trim();
+    const deviceId = String(payload?.deviceId ?? '');
+    if (!barcode) return false;
+    if (!deviceId) return false;
+    this.emit('scanPush', {
+      barcode,
+      symbology: payload?.symbology ? String(payload.symbology) : undefined,
+      deviceId,
+      businessId: payload?.businessId ? String(payload.businessId) : undefined,
+      reply,
+    });
     return true;
   }
 

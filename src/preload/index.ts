@@ -578,6 +578,15 @@ const api = {
   peripheralScan: (deviceId: string, timeoutMs?: number) => ipcRenderer.invoke('peripheral:scan', deviceId, timeoutMs),
   peripheralCapture: (deviceId: string, mode: 'photo' | 'barcode' | 'qr', timeoutMs?: number) => ipcRenderer.invoke('peripheral:capture', deviceId, mode, timeoutMs),
   peripheralCancel: (deviceId: string, requestId: string) => ipcRenderer.invoke('peripheral:cancel', deviceId, requestId),
+  // Phone-initiated scan push ("Use as Barcode Scanner"): the phone scanned on
+  // its own and the cart screen decides add/not-found/no-active-sale, then acks.
+  onPeripheralScanPush: (cb: (push: { pushToken: string; barcode: string; symbology?: string; deviceId?: string }) => void) => {
+    const listener = (_: any, push: any) => cb(push);
+    ipcRenderer.on('peripheral:scan-push', listener);
+    return () => { ipcRenderer.removeListener('peripheral:scan-push', listener); };
+  },
+  ackPeripheralScanPush: (pushToken: string, result: { ok: boolean; status: string; barcode?: string; productName?: string; message?: string }) =>
+    ipcRenderer.invoke('peripheral:scan-push-ack', pushToken, result),
   // QR user invites (Teams → Add User)
   inviteCreate: (opts: { suggestedRole?: string } = {}) => ipcRenderer.invoke('invites:create', opts),
   inviteList: () => ipcRenderer.invoke('invites:list'),

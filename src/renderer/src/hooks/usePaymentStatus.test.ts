@@ -8,10 +8,15 @@ const pay = (payment_type: string): CustomerPayment => ({
 });
 
 describe('payment type classification', () => {
-  it('treats every capacity purchase as an add-on', () => {
-    expect(isAddonPayment(pay('additional_mobile_device'))).toBe(true);
-    expect(isAddonPayment(pay('additional_desktop_device'))).toBe(true);
+  it('treats a business purchase as an add-on', () => {
     expect(isAddonPayment(pay('additional_business'))).toBe(true);
+  });
+
+  it('does not treat the retired device add-ons as add-ons', () => {
+    // Devices are never billed, so these types no longer exist on the server and
+    // must not open the add-on path here either.
+    expect(isAddonPayment(pay('additional_mobile_device'))).toBe(false);
+    expect(isAddonPayment(pay('additional_desktop_device'))).toBe(false);
   });
 
   it('treats the subscription itself as not an add-on', () => {
@@ -26,11 +31,7 @@ describe('payment type classification', () => {
    * pending add-on, so the customer would be invited to buy the same thing twice.
    */
   it('uses the exact payment_type names the server accepts', () => {
-    expect([...ADDON_PAYMENT_TYPES].sort()).toEqual([
-      'additional_business',
-      'additional_desktop_device',
-      'additional_mobile_device',
-    ]);
+    expect([...ADDON_PAYMENT_TYPES].sort()).toEqual(['additional_business']);
   });
 
   it('does not classify an unknown type as an add-on', () => {

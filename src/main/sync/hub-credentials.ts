@@ -9,6 +9,7 @@
  */
 
 import { HubAuthenticator, type MembershipCredential, type Revocation, type AuthChallengeMessage, type ChallengeProof, type AuthHandshakeResult, type DevicePublicKey, type DeviceSecretKey } from '@shega/shared';
+import { randomBytes } from 'crypto';
 import db from '../database';
 import { getDeviceIdentity } from './device-keys';
 
@@ -171,4 +172,122 @@ export function clearHubCredentials(): void {
   db.prepare(`DELETE FROM hub_auth WHERE k IN (?, ?)`).run(CREDENTIALS_KEY, REVOCATIONS_KEY);
   initialized = false;
   authenticator = null;
+}
+
+/**
+ * What an approved joiner is handed back on the join channel.
+ *
+ * ## The rule
+ *
+ * A joiner that sent a public key gets the signed credential and NOTHING else.
+ * A joiner that sent no key — a build too old to do the handshake — gets the
+ * legacy pairing token, because that is the only thing it can use.
+ *
+ * ## Why not just "issue the token as well"
+ *
+ * Handing a modern device both means it has a shared, replayable, network-wide
+ * secret that it will keep using (and keep in mDNS/AsyncStorage) even after the
+ * credential path works. The token is the weaker of the two mechanisms, so
+ * withholding it from capable clients is what actually shrinks the blast radius
+ * of a captured secret. Old clients keep working, so a mixed fleet is fine.
+ *
+ * ## The awkward case, stated plainly
+ *
+ * A joiner that sent a public key but has no credential stored — approved
+ * before it sent one, or issuance failed — receives NEITHER. Falling back to the
+ * token there would hand a P3-capable device the weaker secret, and it would
+ * then present that token to a hub that may already be refusing tokens. Such a
+ * device re-approves and gets a credential; that is the intended repair.
+ */
+export function approvalGrant(
+  deviceId: string,
+  rec: { status?: string | null; joinerPublicKey?: string | null } | null,
+): Record<string, unknown> {
+  if (!rec || rec.status !== 'approved') return {};
+  const credential = getJoinerCredential(deviceId);
+  if (credential) return { credential };
+  if (rec.joinerPublicKey) return {};
+  return { pairingToken: getPairingTokenRef() };
+}
+
+/** Late-bound to avoid a cycle: sync-hub owns the token, hub-credentials the keys. */
+let getPairingTokenRef: () => string = () => '';
+export function bindPairingTokenSource(fn: () => string): void {
+  getPairingTokenRef = fn;
+}
+
+// ─── Access grants (HTTP transports) ─────────────────────────────────────────
+
+/**
+ * Short-lived, device-scoped bearer for a transport that has no place to carry
+ * a proof.
+ *
+ * ## Why this exists
+ *
+ * The WebSocket and TCP paths both complete a challenge *on the same
+ * connection* the data then flows over, so the proof is all that is needed. The
+ * desktop↔desktop HTTP pull does not: it is a plain `GET` with a token in the
+ * query string, which is exactly the thing being replaced. Rather than invent a
+ * signed-URL format for a LAN pull, the challenge happens once out-of-band and
+ * buys a grant that authorises the following request.
+ *
+ * ## Properties, and why each one
+ *
+ * - **Unguessable** (192 bits from the CSPRNG) — it is a credential, so it must
+ *   not be brute-forceable the way the old 6-character pairing token was.
+ * - **Bound to one device id** — a stolen grant is useless to any other peer, so
+ *   it cannot be used to widen access.
+ * - **Short-lived (60s)** — long enough for the request it was minted for.
+ * - **Consumed on use** — a grant is good for exactly one request. A retried or
+ *   replayed pull therefore fails, and the client re-runs the challenge (it
+ *   still holds the credential). This is a deliberate trade: a strict
+ *   single-use grant breaks proxy retries, so it is only safe because the
+ *   client can re-authenticate cheaply.
+ *
+ * Grants are intentionally NOT persisted: they are seconds long, and a
+ * surviving one across a restart would outlive the credential it came from.
+ */
+export interface AccessGrant {
+  deviceId: string;
+  businessId: string;
+  expiresAt: number;
+}
+
+const ACCESS_GRANT_TTL_MS = 60_000;
+const MAX_LIVE_GRANTS = 64;
+const grants = new Map<string, AccessGrant>();
+
+function pruneGrants(now = Date.now()): void {
+  for (const [t, g] of grants) {
+    if (g.expiresAt <= now) grants.delete(t);
+  }
+}
+
+/** Mint a grant for a device that has just proven possession of its credential. */
+export function issueAccessGrant(deviceId: string, businessId: string, ttlMs = ACCESS_GRANT_TTL_MS): string {
+  const now = Date.now();
+  pruneGrants(now);
+  // Bounded so an authenticated-but-hostile peer cannot accumulate grants
+  // faster than they expire.
+  while (grants.size >= MAX_LIVE_GRANTS) {
+    const oldest = grants.keys().next();
+    if (oldest.done) break;
+    grants.delete(oldest.value);
+  }
+  const token = randomBytes(24).toString('base64url');
+  grants.set(token, { deviceId, businessId, expiresAt: now + ttlMs });
+  return token;
+}
+
+/** Redeem a grant for a specific device. Consumes it; a second use fails. */
+export function consumeAccessGrant(token: string, deviceId: string): AccessGrant | null {
+  const now = Date.now();
+  pruneGrants(now);
+  const grant = grants.get(token);
+  if (!grant) return null;
+  grants.delete(token);
+  if (grant.expiresAt <= now) return null;
+  // Scope check: a grant minted for one peer must not authenticate another.
+  if (deviceId && grant.deviceId !== deviceId) return null;
+  return grant;
 }

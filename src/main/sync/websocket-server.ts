@@ -26,6 +26,7 @@ import {
   resolveInvitation,
   getDeviceJoinRequestBy,
   getDeviceJoinRequestByDevice,
+  isJoinPollAuthorised,
   canonicalBusinessUuid,
   businessDisplayName,
 } from './device-requests';
@@ -37,15 +38,17 @@ import {
   type PairingHandshakeAck,
 } from '@shega/shared';
 import {
-  getJoinerCredential,
+  approvalGrant,
   beginJoinChallenge,
   completeJoinChallenge,
+  getJoinerCredential,
 } from './hub-credentials';
 import { p2pSync } from './p2p-sync-manager';
 import {
   peripheralHub,
   buildScanRequest,
   buildCaptureRequest,
+  type PeripheralScanPushResultPayload,
 } from './peripheral-server';
 
 export const WS_SYNC_PORT = 5758;
@@ -159,12 +162,23 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     // with the real identity instead.
 
     ws.on('message', (data: Buffer) => {
+      // Parse and dispatch are separated on purpose. A single try/catch around
+      // both made every handler crash surface as "Malformed JSON", which is
+      // actively misleading while debugging: the frame parsed fine and the
+      // failure was somewhere else entirely.
+      let msg: WsMessage;
       try {
-        const msg: WsMessage = JSON.parse(data.toString());
+        msg = JSON.parse(data.toString());
+      } catch (e) {
+        logger.warn('[WS] Invalid message (unparseable frame):', e);
+        this.sendError(ws, 'INVALID_MESSAGE', 'Malformed JSON');
+        return;
+      }
+      try {
         this.handleMessage(clientId, client, msg);
       } catch (e) {
-        logger.warn('[WS] Invalid message:', e);
-        this.sendError(ws, 'INVALID_MESSAGE', 'Malformed JSON');
+        logger.error(`[WS] Handler for ${msg?.type} failed:`, e);
+        this.sendError(ws, 'HANDLER_ERROR', `Failed to handle ${msg?.type}`, msg?.requestId);
       }
     });
 
@@ -268,6 +282,14 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
         peripheralHub.ingestStatus(client.deviceId, msg.payload);
         break;
 
+      case PERIPHERAL_MSG.SCAN_PUSH:
+        // Phone-initiated push ("Use as Barcode Scanner"): the phone scanned
+        // without being asked and wants it in the active cart. Same trust bar
+        // as the register channel — only a paired device may feed the POS.
+        if (!client.paired) { this.sendError(ws, 'NOT_PAIRED', 'Device not paired', msg.requestId); break; }
+        this.handlePeripheralScanPush(client, msg);
+        break;
+
       case 'INVITE_CLAIM':
         this.handleInviteClaim(ws, msg);
         break;
@@ -337,25 +359,47 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
   private handleCredentialPairRequest(clientId: string, client: WsClient, msg: WsMessage, deviceId: string, name: string | undefined, platform: string | undefined, credential: any): void {
     const ws = client.ws;
     const storedCred = getJoinerCredential(deviceId);
-
     if (!storedCred) {
-      this.sendError(ws, 'PAIR_FAILED', 'No credential found for this device. Re-approval required.', msg.requestId);
+      this.send(ws, {
+        type: 'AUTH_DENY',
+        requestId: msg.requestId,
+        payload: { reason: 'no_credential', message: 'No credential found for this device. Re-approval required.' },
+      });
       return;
     }
 
-    // Verify the presented credential matches what we issued (same signature).
-    if (credential.signature !== storedCred.signature) {
-      this.sendError(ws, 'PAIR_FAILED', 'Credential mismatch. Re-approval required.', msg.requestId);
+    // It must be the EXACT credential this hub issued for this device. Comparing
+    // signatures catches a replay of a different (still valid) credential, but on
+    // its own it is not enough: editing a signed field such as `role` leaves the
+    // signature untouched. The signature is therefore checked over the
+    // PRESENTED body below — that is what actually detects tampering.
+    if (credential?.signature !== storedCred.signature) {
+      this.send(ws, {
+        type: 'AUTH_DENY',
+        requestId: msg.requestId,
+        payload: { reason: 'credential_mismatch', message: 'Credential mismatch. Re-approval required.' },
+      });
       return;
     }
 
-    // Get the business id from the credential or the current active business.
-    const { getActiveBusinessId } = require('../ipc-handlers');
-    const businessId = credential.businessId || String(getActiveBusinessId() || 1);
+    // Prefer the business the credential was issued for; only consult the
+    // active-business IPC helper as a fallback (and lazily — see
+    // handleDeviceJoinSubmit for why loading it eagerly is not free).
+    const businessId = credential.businessId
+      || (() => {
+        const { getActiveBusinessId } = require('../ipc-handlers');
+        return String(getActiveBusinessId() || 1);
+      })();
 
-    const begun = beginJoinChallenge(storedCred, businessId);
+    // Verify the PRESENTED credential, not the stored copy: beginChallenge runs
+    // the signature check over whatever body it is handed.
+    const begun = beginJoinChallenge(credential, businessId);
     if ('error' in begun) {
-      this.sendError(ws, 'PAIR_FAILED', begun.error, msg.requestId);
+      this.send(ws, {
+        type: 'AUTH_DENY',
+        requestId: msg.requestId,
+        payload: { reason: begun.error, message: `Credential rejected: ${begun.error}` },
+      });
       return;
     }
 
@@ -377,32 +421,37 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
   private handleAuthProof(clientId: string, client: WsClient, msg: WsMessage): void {
     const ws = client.ws;
     const proof = msg.payload;
+    // Every denial leaves through ONE channel. An earlier version used sendError
+    // (an ERROR frame carrying code AUTH_DENY) for the pre-checks and a real
+    // AUTH_DENY frame for the verdict, so a client could not tell a denial from
+    // a protocol error without inspecting two different message shapes.
+    const deny = (reason: string, message: string) => {
+      client.pendingAuth = undefined;
+      this.send(ws, { type: 'AUTH_DENY', requestId: msg.requestId, payload: { reason, message } });
+    };
+
     if (!client.pendingAuth) {
-      this.sendError(ws, 'AUTH_DENY', 'No pending challenge for this connection', msg.requestId);
+      deny('no_pending_challenge', 'No pending challenge for this connection');
       return;
     }
-    const { credential, sessionId, deviceId } = client.pendingAuth;
-    if (proof.sessionId !== sessionId) {
-      this.sendError(ws, 'AUTH_DENY', 'Session ID mismatch', msg.requestId);
+    const { credential, sessionId } = client.pendingAuth;
+    if (!proof || proof.sessionId !== sessionId) {
+      deny('session_mismatch', 'Session ID mismatch');
       return;
     }
 
-    const { completeJoinChallenge } = require('./hub-credentials');
     const res = completeJoinChallenge(credential, proof);
 
     if (!res.ok) {
-      client.pendingAuth = undefined;
-      this.send(ws, {
-        type: 'AUTH_DENY',
-        requestId: msg.requestId,
-        payload: { reason: res.reason, sessionId },
-      });
-      // Close the connection on auth failure to prevent brute force.
-      ws.close(4001, res.reason || 'Authentication failed');
+      deny(res.reason || 'invalid_proof', `Authentication failed: ${res.reason || 'invalid_proof'}`);
+      // Close the connection on auth failure so a rejected device cannot keep a
+      // socket around trying again.
+      try { ws.close(4001, res.reason || 'Authentication failed'); } catch { /* already gone */ }
       return;
     }
 
     // Success: complete the pairing.
+    const deviceId = client.pendingAuth.deviceId;
     client.pendingAuth = undefined;
     this.send(ws, {
       type: 'AUTH_OK',
@@ -455,8 +504,16 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     }
     const code = String(payload.code ?? '');
     const inv = code ? resolveInvitation(code) : null;
-    const { getActiveBusinessId } = require('../ipc-handlers');
-    const bizId = inv?.businessId || payload.businessId || String(getActiveBusinessId() || 1);
+    // Only reach for the active-business IPC helper when the invitation did not
+    // already answer the question. `ipc-handlers` is a heavy module and loading
+    // it unconditionally made every join submit depend on it, so a failure
+    // there took down the whole join channel rather than just the fallback.
+    const bizId = inv?.businessId
+      || payload.businessId
+      || (() => {
+        const { getActiveBusinessId } = require('../ipc-handlers');
+        return String(getActiveBusinessId() || 1);
+      })();
 
     const rec = submitDeviceJoinRequest({ ...payload, code, businessId: bizId, joinerDeviceId });
     this.registerJoinWaiter(clientId, rec.joinerDeviceId, 'submit');
@@ -466,6 +523,9 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       payload: {
         requestId: rec.requestId,
         status: rec.status,
+        // The submitter is the only party that learns this; it is what
+        // authorises collecting the credential once the owner decides.
+        ...(rec.pollToken ? { pollToken: rec.pollToken } : {}),
         handshake: this.buildHandshakeAck({ ...rec, status: rec.status }),
       },
     });
@@ -544,7 +604,18 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     // Every poll proves the joiner is live on this socket: remember it so the
     // owner's approval can be PUSHED instead of waiting for the next poll.
     this.registerJoinWaiter(clientId, String(joinerDeviceId), 'status-poll');
-    const payload: any = { record: rec, ...this.approvalCredentials(String(joinerDeviceId), rec) };
+    const payload: any = { record: rec };
+    if (rec && rec.status === 'approved') {
+      // Grant only to the joiner that submitted (isJoinPollAuthorised); this
+      // channel is reachable before any authentication.
+      if (isJoinPollAuthorised(rec, msg.payload?.pollToken ?? msg.payload?.poll_token)) {
+        Object.assign(payload, this.approvalCredentials(String(joinerDeviceId), rec));
+      } else {
+        this.log('warn', 'approved join polled without a valid poll token — grant withheld', {
+          joiner: shortId(String(joinerDeviceId)),
+        });
+      }
+    }
     // Explicit connection acknowledgement. `handshake.ok` means "this hub holds
     // your session" — the signal the joiner needs to leave "Waiting for
     // connection…" even before the owner decides.
@@ -638,13 +709,15 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       ...(payload ?? {}),
       handshake: payload?.handshake ?? this.buildHandshakeAck(payload?.record ?? null),
     };
-    // P3: an approved decision carries the signed membership credential so the
-    // joiner can complete the authenticated handshake on its next connection.
-    // Injected here (the single push fan-out point) rather than in every caller
-    // so a new approval route cannot forget it.
-    if (body.record?.status === 'approved' && !body.credential) {
-      const credential = getJoinerCredential(joinerDeviceId);
-      if (credential) body.credential = credential;
+    // P3: the credential (or, for a pre-P3 joiner, the legacy token) is decided
+    // by ONE rule — approvalGrant() — and injected here, the single push
+    // fan-out point, so a new approval route cannot forget it or get it wrong.
+    if (body.record?.status === 'approved') {
+      const grant = approvalGrant(joinerDeviceId, body.record);
+      if (grant.credential) body.credential = grant.credential;
+      // Only add a token when approvalGrant() decided one is warranted; never
+      // alongside a credential.
+      if (grant.pairingToken && !body.credential) body.pairingToken = grant.pairingToken;
     }
     // A pushed decision has no caller-issued requestId, so the joiner treats a
     // requestId-less RESPONSE as an out-of-band session update.
@@ -672,21 +745,8 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     return true;
   }
 
-  /**
-   * The credentials an approved joiner is handed.
-   *
-   * `pairingToken` is the legacy bearer secret and `credential` is the signed
-   * membership credential (P3). They travel together while both paths are
-   * live; the token goes away once the handshake has been exercised in the
-   * field. This is the ONLY place either is attached, because four independent
-   * copies of "approved means hand out the secret" is how they drifted before.
-   */
-  private approvalCredentials(joinerDeviceId: string, rec: { status?: string | null } | null): Record<string, unknown> {
-    if (!rec || rec.status !== 'approved') return {};
-    const out: Record<string, unknown> = { pairingToken: getPairingToken() };
-    const credential = getJoinerCredential(joinerDeviceId);
-    if (credential) out.credential = credential;
-    return out;
+  private approvalCredentials(joinerDeviceId: string, rec: { status?: string | null; joinerPublicKey?: string | null } | null): Record<string, unknown> {
+    return approvalGrant(joinerDeviceId, rec);
   }
 
   /** Pairing-session hello from a joiner: answer with the handshake ack. */
@@ -694,13 +754,16 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     const joinerDeviceId = String(msg.payload?.deviceId ?? msg.payload?.joinerDeviceId ?? '');
     this.registerJoinWaiter(clientId, joinerDeviceId, 'pair-session-hello');
     const rec = joinerDeviceId ? getDeviceJoinRequestByDevice(joinerDeviceId) : null;
+    // Same poll-token gate as the status endpoint: a hello is not proof that
+    // this socket is the joiner that asked.
+    const authorised = isJoinPollAuthorised(rec, msg.payload?.pollToken ?? msg.payload?.poll_token);
     this.send(client.ws, {
       type: DEVICE_JOIN_MSG.ACK,
       requestId: msg.requestId,
       payload: {
         status: rec?.status ?? 'pending',
         record: rec,
-        ...this.approvalCredentials(joinerDeviceId, rec),
+        ...(authorised ? this.approvalCredentials(joinerDeviceId, rec) : {}),
         handshake: this.buildHandshakeAck(rec),
       },
     });
@@ -718,6 +781,36 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     const reg = peripheralHub.register(client.clientId || clientId, { ...(msg.payload || {}), platform: 'mobile' });
     if (!reg) { this.sendError(ws, 'PERIPHERAL_FAILED', 'deviceId required'); return; }
     this.send(ws, { type: PERIPHERAL_MSG.ACK, requestId: msg.requestId, payload: { registered: true, hubId: ensureHubDeviceId() } });
+  }
+
+  /**
+   * Phone-initiated scan push. The renderer owns the cart, so the verdict has
+   * to come from there; `reply` is one-shot and expires so a closed/hung
+   * renderer still answers the phone instead of leaving it waiting.
+   */
+  private handlePeripheralScanPush(client: WsClient, msg: WsMessage): void {
+    const barcode = String(msg.payload?.barcode ?? '').trim();
+    let settled = false;
+    const reply = (result: PeripheralScanPushResultPayload) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      this.send(client.ws, {
+        type: PERIPHERAL_MSG.SCAN_PUSH_RESULT,
+        requestId: msg.requestId,
+        payload: { ...result, barcode: result?.barcode || barcode },
+      });
+    };
+    const timer = setTimeout(
+      () => reply({ ok: false, status: 'unavailable', barcode, message: 'Shega Desktop did not respond — is a sales cart open?' }),
+      8000,
+    );
+
+    const ok = peripheralHub.ingestScanPush(
+      { ...(msg.payload || {}), deviceId: msg.payload?.deviceId || client.deviceId },
+      reply,
+    );
+    if (!ok) reply({ ok: false, status: 'error', barcode, message: 'Invalid scan payload' });
   }
 
   /** IPC-facing: ask a connected phone to scan a barcode. */

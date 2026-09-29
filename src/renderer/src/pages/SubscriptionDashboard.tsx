@@ -51,16 +51,25 @@ function planEdition(tier: string | null | undefined): string {
   return parsePlanEdition(tier) ?? 'both';
 }
 
+/**
+ * Shape of `/licenses/:id/cost-breakdown`.
+ *
+ * Only extra businesses are billable. Devices are reported as usage with
+ * `billed: false` — connecting another device is free and never adds a line to
+ * the monthly total, so there is no per-device price here to render.
+ */
 interface CostBreakdown {
   base: {
     name: string;
     price: number;
     included: { mobile: number; desktop: number; businesses: number };
   };
+  devices?: {
+    mobile?: { included: number; active: number; billed?: boolean };
+    desktop?: { included: number; active: number; billed?: boolean };
+  };
   addons: {
-    mobile: { owned: number; active: number; unit_price: number; monthly_total: number };
-    desktop: { owned: number; active: number; unit_price: number; monthly_total: number };
-    businesses: { owned: number; active: number; unit_price: number; monthly_total: number };
+    businesses?: { owned: number; active: number; unit_price: number; monthly_total: number };
   };
   total_monthly: number;
 }
@@ -110,43 +119,28 @@ const SubscriptionCostBreakdown: React.FC<{ licenseId: number }> = ({ licenseId 
           </div>
         </div>
 
-        {/* Add-ons */}
+        {/* Devices are usage, never a billable line — connecting one is free. */}
+        {breakdown.devices && (
+          <div className="rounded-xl border border-border/50 p-3 space-y-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+              {t('subscription.devices_included_free', 'Devices — included, never billed')}
+            </p>
+            <div className="grid grid-cols-2 gap-2 text-[10px] text-muted-foreground">
+              <div className="flex items-center gap-1">
+                <Smartphone className="h-3 w-3" />
+                {t('subscription.mobile')}: {breakdown.devices.mobile?.active ?? 0}
+              </div>
+              <div className="flex items-center gap-1">
+                <Monitor className="h-3 w-3" />
+                {t('subscription.desktop')}: {breakdown.devices.desktop?.active ?? 0}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Add-ons — extra businesses are the only recurring add-on */}
         <div className="space-y-2">
-          {breakdown.addons.mobile.owned > 0 && (
-            <div className="rounded-xl border border-border/50 p-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-full bg-blue-500/10"><Smartphone className="h-3 w-3 text-blue-500" /></div>
-                <div>
-                  <p className="text-xs font-black uppercase tracking-wide">{t('subscription.add_mobile_device')}</p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {t('subscription.owned')}: {breakdown.addons.mobile.owned} · {t('subscription.active')}: {breakdown.addons.mobile.active}
-                  </p>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="text-xs font-bold">{formatETB(breakdown.addons.mobile.unit_price)} × {breakdown.addons.mobile.owned}</p>
-                <p className="text-[11px] font-bold text-primary">{formatETB(breakdown.addons.mobile.monthly_total)}/mo</p>
-              </div>
-            </div>
-          )}
-          {breakdown.addons.desktop.owned > 0 && (
-            <div className="rounded-xl border border-border/50 p-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-full bg-green-500/10"><Monitor className="h-3 w-3 text-green-500" /></div>
-                <div>
-                  <p className="text-xs font-black uppercase tracking-wide">{t('subscription.add_desktop_device')}</p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {t('subscription.owned')}: {breakdown.addons.desktop.owned} · {t('subscription.active')}: {breakdown.addons.desktop.active}
-                  </p>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="text-xs font-bold">{formatETB(breakdown.addons.desktop.unit_price)} × {breakdown.addons.desktop.owned}</p>
-                <p className="text-[11px] font-bold text-primary">{formatETB(breakdown.addons.desktop.monthly_total)}/mo</p>
-              </div>
-            </div>
-          )}
-          {breakdown.addons.businesses.owned > 0 && (
+          {(breakdown.addons.businesses?.owned ?? 0) > 0 && breakdown.addons.businesses && (
             <div className="rounded-xl border border-border/50 p-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="p-2 rounded-full bg-violet-500/10"><Building2 className="h-3 w-3 text-violet-500" /></div>
@@ -163,7 +157,7 @@ const SubscriptionCostBreakdown: React.FC<{ licenseId: number }> = ({ licenseId 
               </div>
             </div>
           )}
-          {(breakdown.addons.mobile.owned === 0 && breakdown.addons.desktop.owned === 0 && breakdown.addons.businesses.owned === 0) && (
+          {(breakdown.addons.businesses?.owned ?? 0) === 0 && (
             <p className="text-xs text-muted-foreground text-center py-2">{t('subscription.no_addons')}</p>
           )}
         </div>

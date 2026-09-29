@@ -36,7 +36,6 @@ const DebtManagement = lazyWithRetry(() => import('./pages/DebtManagement'))
 const Reports = lazyWithRetry(() => import('./pages/Reports'))
 const SubscriptionDashboard = lazyWithRetry(() => import('./pages/SubscriptionDashboard'))
 const SubscriptionPayment = lazyWithRetry(() => import('./pages/SubscriptionPayment'))
-const AddDevice = lazyWithRetry(() => import('./pages/AddDevice'))
 const AddBusiness = lazyWithRetry(() => import('./pages/AddBusiness'))
 const ConnectedDevices = lazyWithRetry(() => import('./pages/ConnectedDevices'))
 const BusinessCenter = lazyWithRetry(() => import('./pages/BusinessCenter'))
@@ -569,7 +568,6 @@ function App() {
                     <Route path="/reports" element={<PremiumRoute premiumFeature="reports"><ProtectedRoute permission="analytics" moduleId="analytics"><Reports /></ProtectedRoute></PremiumRoute>} />
                     <Route path="/subscription" element={<ProtectedRoute permission="dashboard"><SubscriptionDashboard /></ProtectedRoute>} />
                     <Route path="/subscription/payment" element={<ProtectedRoute permission="dashboard"><SubscriptionPayment /></ProtectedRoute>} />
-                    <Route path="/subscription/add-device" element={<ProtectedRoute permission="dashboard"><AddDevice /></ProtectedRoute>} />
                     <Route path="/subscription/add-business" element={<ProtectedRoute permission="dashboard"><AddBusiness /></ProtectedRoute>} />
                     <Route path="/subscription/devices" element={<ProtectedRoute permission="dashboard"><ConnectedDevices /></ProtectedRoute>} />
                     <Route path="/subscription/business-center" element={<ProtectedRoute permission="dashboard"><BusinessCenter /></ProtectedRoute>} />

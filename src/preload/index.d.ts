@@ -532,6 +532,8 @@ export interface ElectronAPI {
   peripheralScan: (deviceId: string, timeoutMs?: number) => Promise<{ barcode: string; symbology?: string; deviceId: string }>;
   peripheralCapture: (deviceId: string, mode: 'photo' | 'barcode' | 'qr', timeoutMs?: number) => Promise<{ dataUrl?: string; text?: string; mode: string; deviceId: string }>;
   peripheralCancel: (deviceId: string, requestId: string) => Promise<boolean>;
+  onPeripheralScanPush: (cb: (push: { pushToken: string; barcode: string; symbology?: string; deviceId?: string }) => void) => () => void;
+  ackPeripheralScanPush: (pushToken: string, result: { ok: boolean; status: string; barcode?: string; productName?: string; message?: string }) => Promise<boolean>;
   // QR user invites (Teams → Add User)
   inviteCreate: (opts?: { suggestedRole?: string }) => Promise<any>;
   inviteList: () => Promise<any[]>;

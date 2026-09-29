@@ -3,11 +3,12 @@ import { Hourglass, CheckCircle2, XCircle, RefreshCw } from 'lucide-react';
 import { Button } from './ui/button';
 import type { CustomerPayment } from '../hooks/usePaymentStatus';
 
+// Adding a business is the only paid add-on; devices are never billed, so the
+// two legacy "additional device" labels are gone rather than left to fall back
+// to a generic "Payment".
 const TYPE_LABELS: Record<string, string> = {
   subscription: 'Subscription',
   renewal: 'Subscription renewal',
-  additional_mobile_device: 'Additional mobile device',
-  additional_desktop_device: 'Additional desktop device',
   additional_business: 'Additional business',
 };
 

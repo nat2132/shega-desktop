@@ -142,8 +142,12 @@ const SubscriptionPayment: React.FC<SubscriptionPaymentProps> = ({ onComplete, i
     // an identical one is still awaiting review, and the answer has to survive a
     // reload, a sign-out/in, or a second device.
     const already = await window.api?.backendMyPayments?.();
+    // Only plan-level payments (subscription/renewal) block a new submission.
+    // An add-on awaiting review — an extra business — is a separate purchase and
+    // must not stop the customer from renewing. Device add-ons no longer exist:
+    // connecting a device is free and creates no payment at all.
     const pendingSubscription = (already?.payments || []).filter(
-      (p: any) => p.status === 'pending' && !['additional_mobile_device', 'additional_desktop_device', 'additional_business'].includes(String(p.payment_type)),
+      (p: any) => p.status === 'pending' && !['additional_business'].includes(String(p.payment_type)),
     );
     if (pendingSubscription.length > 0) {
       await refresh();

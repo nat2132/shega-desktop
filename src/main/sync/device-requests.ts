@@ -17,6 +17,7 @@ import {
   DeviceJoinDecision,
 } from '@shega/shared';
 import { registerPeer, releasePeer, pruneAckedOutbox } from './ack-store';
+import { issueJoinerCredential } from './hub-credentials';
 
 const now = () => new Date().toISOString();
 const normalizeCode = (code: string) => String(code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -63,12 +64,13 @@ export function ensureDeviceRequestsColumns(): void {
         assigned_avatar TEXT,
         assigned_permissions TEXT,
         joiner_avatar TEXT,
-        joiner_public_key TEXT
+        joiner_public_key TEXT,
+        poll_token TEXT
       );
     `);
   } catch { /* ignore */ }
 
-  const cols = ['assigned_name TEXT', 'assigned_avatar TEXT', 'assigned_permissions TEXT', 'joiner_avatar TEXT', 'joiner_public_key TEXT'];
+  const cols = ['assigned_name TEXT', 'assigned_avatar TEXT', 'assigned_permissions TEXT', 'joiner_avatar TEXT', 'joiner_public_key TEXT', 'poll_token TEXT'];
   for (const col of cols) {
     try {
       db.exec(`ALTER TABLE device_requests ADD COLUMN ${col}`);
@@ -281,7 +283,6 @@ function applyApproval(rec: DeviceJoinRequestRecord, decision?: DeviceJoinDecisi
   // joiner can prove possession on subsequent connections.
   if (rec.joinerPublicKey) {
     try {
-      const { issueJoinerCredential } = require('./hub-credentials');
       issueJoinerCredential({
         businessId: String(rec.businessId),
         deviceId: rec.joinerDeviceId,
@@ -327,7 +328,34 @@ function rowToRecord(row: any): DeviceJoinRequestRecord {
   }
   if (row.joiner_avatar) rec.assignedAvatar = row.joiner_avatar;
   if (row.joiner_public_key) rec.joinerPublicKey = row.joiner_public_key;
+  // Only ever handed to the joiner that submitted the request; the polling
+  // endpoints compare against it rather than trusting the device id alone.
+  if (row.poll_token) rec.pollToken = String(row.poll_token);
   return rec;
+}
+
+/**
+ * Whether a status poll is coming from the joiner that actually asked.
+ *
+ * The grant (credential, or the legacy token) is only handed out when this
+ * returns true. Without it a caller can still read the low-sensitivity record —
+ * status, role, business — which is what the join UI renders, but cannot
+ * collect authentication material for a device it did not submit.
+ */
+export function isJoinPollAuthorised(rec: { pollToken?: string } | null, presented: string | null | undefined): boolean {
+  if (!rec?.pollToken) {
+    // A request staged before this build has no token. Refuse the grant rather
+    // than falling open: the joiner simply re-submits to get one.
+    return false;
+  }
+  const given = String(presented ?? '');
+  if (!given) return false;
+  // Length-checked before comparing so the comparison is not a timing oracle on
+  // a variable-length input.
+  if (given.length !== rec.pollToken.length) return false;
+  let diff = 0;
+  for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ rec.pollToken.charCodeAt(i);
+  return diff === 0;
 }
 
 /** Stage a new join request, idempotent per (business, joiner device).
@@ -362,13 +390,19 @@ export function submitDeviceJoinRequest(req: DeviceJoinRequest): DeviceJoinReque
   }
 
   const id = randomBytes(12).toString('hex');
+  // P3: a per-request poll token. The join channel is UNAUTHENTICATED by
+  // design (that is what lets an unknown device ask to join), so "approved" must
+  // not by itself be enough to collect the grant — otherwise anyone who learns a
+  // device id could poll for its credential, and for legacy devices the
+  // hub-wide pairing token. Only the joiner that submitted receives this.
+  const pollToken = randomBytes(24).toString('hex');
   db.prepare(
     `INSERT INTO device_requests
-       (id, business_id, code, joiner_device_id, joiner_name, joiner_model, joiner_user, role, platform, status, created_at, joiner_public_key)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+       (id, business_id, code, joiner_device_id, joiner_name, joiner_model, joiner_user, role, platform, status, created_at, joiner_public_key, poll_token)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
   ).run(
     id, canonicalBizId, req.code ? normalizeCode(req.code) : null, req.joinerDeviceId, req.joinerName ?? null,
-    req.joinerModel ?? null, req.joinerUser, req.role ?? 'cashier', req.platform ?? 'mobile', now(), req.joinerPublicKey ?? null
+    req.joinerModel ?? null, req.joinerUser, req.role ?? 'cashier', req.platform ?? 'mobile', now(), req.joinerPublicKey ?? null, pollToken
   );
   const rec = rowToRecord(db.prepare('SELECT * FROM device_requests WHERE id = ?').get(id));
   // Surface the joiner device on the hub roster so the desktop owner's

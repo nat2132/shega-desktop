@@ -5,7 +5,15 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
-    exclude: ['**/node_modules/**', '**/dist/**', 'src/main/sync-hub.test.ts', 'src/main/sync/websocket-server.test.ts'],
+    // E2E suites: they bind real ports and need better-sqlite3 built against
+    // Electron's ABI, so they only run under `vitest.e2e.config.ts`.
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      'src/main/sync-hub.test.ts',
+      'src/main/sync/websocket-server.test.ts',
+      'src/main/sync/websocket-auth.test.ts',
+    ],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

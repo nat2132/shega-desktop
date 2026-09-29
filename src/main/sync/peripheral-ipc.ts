@@ -1,5 +1,6 @@
-import { ipcMain } from 'electron';
-import { peripheralHub } from './peripheral-server';
+import { ipcMain, BrowserWindow } from 'electron';
+import { randomBytes } from 'crypto';
+import { peripheralHub, type PeripheralScanPushResultPayload } from './peripheral-server';
 import { wsSyncServer } from './websocket-server';
 import { PERIPHERAL_MSG } from '@shega/shared';
 import { createUserInvite, listUserInvites, decideUserInvite, getUserInviteStatus, assignUserInviteIdentity } from './user-invites';
@@ -20,6 +21,61 @@ type Waiter = {
 
 const waiters = new Map<string, Waiter>();
 
+/**
+ * Phone-initiated scan pushes awaiting a verdict from the renderer.
+ *
+ * The cart lives in the renderer, so the main process cannot decide "added"
+ * itself. `reply` is the callback the WS handler handed us for that push; the
+ * renderer answers through the `peripheral:scan-push-ack` IPC channel and we
+ * relay the verdict back down the phone's socket.
+ */
+const pushReplies = new Map<string, { barcode: string; at: number; reply: (result: PeripheralScanPushResultPayload) => void }>();
+
+/** Drop pushes the renderer never answered (its ack was lost). */
+function pruneScanPushes(): void {
+  const cutoff = Date.now() - 60000;
+  for (const [token, entry] of pushReplies) {
+    if (entry.at < cutoff) pushReplies.delete(token);
+  }
+}
+
+export function registerScanPushForwarder(): void {
+  peripheralHub.on('scanPush', (push) => {
+    pruneScanPushes();
+    const pushToken = randomBytes(8).toString('hex');
+    pushReplies.set(pushToken, { barcode: push.barcode, at: Date.now(), reply: push.reply });
+
+    const windows = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
+    if (!windows.length) {
+      // Nobody can add to a cart with no window open — settle now instead of
+      // letting the phone hang until its own timeout.
+      pushReplies.delete(pushToken);
+      push.reply({ ok: false, status: 'unavailable', barcode: push.barcode, message: 'Shega Desktop is not open' });
+      return;
+    }
+
+    // Broadcast: whichever checkout screen is mounted answers first. Two
+    // BrowserWindows cannot both be on a cart screen in normal use, and the
+    // token is consumed on the first ack either way.
+    for (const win of windows) {
+      win.webContents.send('peripheral:scan-push', {
+        pushToken,
+        barcode: push.barcode,
+        symbology: push.symbology,
+        deviceId: push.deviceId,
+      });
+    }
+  });
+}
+
+function settleScanPush(pushToken: string, result: PeripheralScanPushResultPayload): boolean {
+  const pending = pushReplies.get(pushToken);
+  if (!pending) return false;
+  pushReplies.delete(pushToken);
+  pending.reply({ ...result, barcode: result?.barcode || pending.barcode });
+  return true;
+}
+
 function failWaiter(requestId: string, err: string) {
   const w = waiters.get(requestId);
   if (!w) return;
@@ -39,6 +95,12 @@ function completeWaiter(requestId: string, value: any) {
 }
 
 export function registerPeripheralHandlers(): void {
+  registerScanPushForwarder();
+
+  // The renderer's verdict for a phone-initiated scan push.
+  ipcMain.handle('peripheral:scan-push-ack', (_, pushToken: string, result: PeripheralScanPushResultPayload) =>
+    settleScanPush(String(pushToken), result || { ok: false, status: 'error', barcode: '' }));
+
   peripheralHub.on('scanResult', (res) => completeWaiter(res.requestId, { barcode: res.barcode, symbology: res.symbology, deviceId: res.deviceId }));
   peripheralHub.on('captureResult', (res) => {
     if (res.cancelled) return failWaiter(res.requestId, 'cancelled');

@@ -20,8 +20,6 @@ import { useCallback, useEffect, useSyncExternalStore } from 'react';
 export type PaymentType =
   | 'subscription'
   | 'renewal'
-  | 'additional_mobile_device'
-  | 'additional_desktop_device'
   | 'additional_business'
   | (string & {});
 
@@ -39,11 +37,9 @@ export interface CustomerPayment {
   admin_notes?: string | null;
 }
 
-export const ADDON_PAYMENT_TYPES: PaymentType[] = [
-  'additional_mobile_device',
-  'additional_desktop_device',
-  'additional_business',
-];
+// Adding a business is the only paid capacity add-on. Devices connect for free,
+// so there is no "additional device" payment type any more.
+export const ADDON_PAYMENT_TYPES: PaymentType[] = ['additional_business'];
 
 /** Payments that pay for capacity rather than the subscription itself. */
 export function isAddonPayment(p: Pick<CustomerPayment, 'payment_type'>): boolean {

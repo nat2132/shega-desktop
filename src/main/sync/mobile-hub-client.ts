@@ -17,6 +17,7 @@ import db from '../database';
 import { logger } from '../logger';
 import { ensureHubDeviceId, applyRemoteChanges, persistPeerDevice } from '../sync-hub';
 import { recordAck, pruneAckedOutbox, peerReceiptWatermark } from './ack-store';
+import { answerHubChallenge, getDesktopJoinerHandle } from './desktop-join-credentials';
 import { computeReceiptWatermark, unconfirmedCap, type ApplyOutcome, type ReceiptedChange } from '@shega/shared';
 import type { DiscoveredService } from './discovery';
 
@@ -177,10 +178,13 @@ function setCursor(deviceId: string, since: number): void {
 export async function syncWithMobileHub(peer: DiscoveredService): Promise<boolean> {
   const host = peer.host || peer.addresses?.[0];
   if (!host) return false;
-  // The pairing code is no longer broadcast over mDNS; without an explicitly
-  // configured token the phone hub will (correctly) reject the pair.
-  if (!peer.pairingToken) {
-    logger.debug('Skipping mobile hub without an explicit pairing token', { host });
+  // A pairing secret is no longer broadcast over mDNS, so `peer.pairingToken`
+  // is usually empty. That is fine as long as this desktop holds a membership
+  // credential from that phone: the credential handshake replaces the token.
+  // The old guard required a token outright, which — once the broadcast was
+  // removed — would have silently disabled desktop→mobile sync entirely.
+  if (!peer.pairingToken && !getDesktopJoinerHandle()) {
+    logger.debug('Skipping mobile hub: no pairing token and no stored credential', { host });
     return false;
   }
   const port = peer.port || MOBILE_HUB_PORT;
@@ -191,15 +195,33 @@ export async function syncWithMobileHub(peer: DiscoveredService): Promise<boolea
     socket = await connect(host, port);
 
     // 1. Pair with the phone's pairing code (carried in its mDNS TXT record).
+    //    P3: when this desktop holds a membership credential from a previous
+    //    approval, present it instead and answer the phone's challenge — the
+    //    token then becomes a fallback rather than the only thing in play.
+    const joinerHandle = getDesktopJoinerHandle();
     const pairRes = await rpc(socket, {
       type: 'PAIR_REQUEST',
       payload: {
         device_id: hubId,
         name: `Shega Desktop (${hubId.slice(0, 6)})`,
-        token: peer.pairingToken,
+        // Present whichever the phone can use; the hub prefers the credential.
+        ...(peer.pairingToken ? { token: peer.pairingToken } : {}),
+        ...(joinerHandle ? { credential: joinerHandle.credential } : {}),
       },
     });
-    if (pairRes?.type !== 'PAIR_RESPONSE' || !pairRes?.payload?.success) {
+    if (pairRes?.type === 'AUTH_CHALLENGE') {
+      const proof = answerHubChallenge(pairRes);
+      if (!proof) {
+        logger.warn('Mobile hub issued a challenge but this desktop has no credential', { host });
+        return false;
+      }
+      const authRes = await rpc(socket, { type: 'AUTH_PROOF', payload: proof });
+      if (authRes?.type === 'AUTH_DENY') {
+        logger.warn('Mobile hub denied the authenticated handshake', { host, reason: authRes.payload?.reason });
+        return false;
+      }
+      logger.info('Mobile hub authenticated this desktop', { host, role: authRes?.payload?.role ?? null });
+    } else if (pairRes?.type !== 'PAIR_RESPONSE' || !pairRes?.payload?.success) {
       logger.warn('Mobile hub pair rejected', { host, port });
       return false;
     }

@@ -28,6 +28,7 @@ import { useSettings } from '../../context/SettingsContext';
 import { toast } from 'sonner';
 import SaleSuccessModal from '../../components/SaleSuccessModal';
 import { DatePicker } from '../../components/DatePicker';
+import { registerScanPushHandler, type ScanPushVerdict } from '../../services/scanPushBridge';
 
 interface Product {
   id: number;
@@ -209,6 +210,26 @@ export default function CashierPOS() {
     addToCart(product);
     return true;
   }, [findByCode, addToCart]);
+
+  // ── Phone-initiated scan push (mobile "Use as Barcode Scanner") ──
+  // The POS is the active sales cart while it is on screen, so it accepts a
+  // barcode the phone pushed and reports the verdict back for the phone to show.
+  const acceptScanPushRef = useRef<(barcode: string) => ScanPushVerdict>(() => ({ ok: false, status: 'no_active_sale' }));
+  acceptScanPushRef.current = (barcode: string): ScanPushVerdict => {
+    const product = findByCode(barcode);
+    if (!product) {
+      toast.error(`Phone scan: no item found for ${barcode}`);
+      return { ok: false, status: 'not_found', message: `No item found for ${barcode}` };
+    }
+    if (product.totalBaseQuantity <= 0 && product.totalPackQuantity <= 0) {
+      toast.error(`${product.name} is out of stock`);
+      return { ok: false, status: 'out_of_stock', productName: product.name, message: `${product.name} is out of stock` };
+    }
+    addToCart(product);
+    toast.success(`${product.name} added by phone scan`);
+    return { ok: true, status: 'added', productName: product.name };
+  };
+  useEffect(() => registerScanPushHandler('cashier-pos', (barcode) => acceptScanPushRef.current(barcode)), []);
 
   const handleScanOrEnter = (e: React.FormEvent) => {
     e.preventDefault();

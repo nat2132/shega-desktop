@@ -10,6 +10,21 @@ import { businessDisplayName } from './sync/device-requests';
 import { logger } from './logger';
 import { insertAudit } from './audit-chain';
 import { notifyDataApplied } from './sync/notify';
+import {
+  approvalGrant,
+  beginJoinChallenge,
+  bindPairingTokenSource,
+  completeJoinChallenge,
+  consumeAccessGrant,
+  getJoinerCredential,
+  isJoinerRevoked,
+  issueAccessGrant,
+} from './sync/hub-credentials';
+
+// The credential module must not import this file back (it owns the database),
+// so the token source is injected instead. Bound at module load, before any
+// request can call approvalGrant().
+bindPairingTokenSource(() => getPairingToken());
 import { mainBus } from './bus';
 import {
   BUSINESS_ADAPTER_ENTITIES,
@@ -142,8 +157,19 @@ function generatePairingToken(): string {
   return out;
 }
 
-function validToken(token: string | null | undefined): boolean {
-  return !!token && token.trim().toUpperCase() === getPairingToken();
+function validToken(token: string | null | undefined, deviceId?: string): boolean {
+  // The legacy shared pairing token still authenticates while both paths are
+  // live. It goes away in the migration's final step.
+  if (!!token && token.trim().toUpperCase() === getPairingToken()) return true;
+  // Otherwise accept a short-lived, device-scoped grant earned by completing the
+  // credential handshake. Only redeem it when we know which device is asking —
+  // a grant must be spent on exactly one request, and never probed blind.
+  if (!token || !deviceId) return false;
+  try {
+    return !!consumeAccessGrant(token, deviceId);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1128,11 +1154,92 @@ export class SyncHub {
           return;
         }
 
+        if (path === '/sync/auth/challenge' && req.method === 'POST') {
+          // P3, step 1 of the desktop↔desktop HTTP flow. This transport has no
+          // place to carry a proof on the data request itself (the pull is a
+          // plain GET), so the challenge happens out of band here and buys a
+          // single-use grant for the pull that follows.
+          const body = JSON.parse(await readBody(req));
+          const deviceId = String(body.deviceId ?? body.device_id ?? '');
+          const credential = body.credential;
+          if (!deviceId || !credential) {
+            return sendJson(res, 400, { ok: false, error: 'deviceId and credential required' });
+          }
+          
+          if (isJoinerRevoked(deviceId)) {
+            return sendJson(res, 403, { ok: false, error: 'revoked', reason: 'revoked' });
+          }
+          const stored = getJoinerCredential(deviceId);
+          if (!stored) {
+            return sendJson(res, 403, { ok: false, error: 'no credential for this device', reason: 'no_credential' });
+          }
+          // Must be the exact credential this hub issued. The signature is then
+          // verified over the PRESENTED body, which is what catches an edited
+          // signed field (an escalated role leaves the signature untouched).
+          if (credential?.signature !== stored.signature) {
+            return sendJson(res, 403, { ok: false, error: 'credential mismatch', reason: 'credential_mismatch' });
+          }
+          const begun = beginJoinChallenge(credential, String(credential.businessId ?? ''));
+          if ('error' in begun) {
+            return sendJson(res, 403, { ok: false, error: begun.error, reason: begun.error });
+          }
+          return sendJson(res, 200, { ok: true, challenge: begun.challenge });
+        }
+
+        if (path === '/sync/auth/verify' && req.method === 'POST') {
+          // P3, step 2: verify the proof and, on success, mint the grant that
+          // authorises exactly one following pull or push.
+          const body = JSON.parse(await readBody(req));
+          const deviceId = String(body.deviceId ?? body.device_id ?? '');
+          const credential = body.credential;
+          const proof = body.proof;
+          if (!deviceId || !credential || !proof) {
+            return sendJson(res, 400, { ok: false, error: 'deviceId, credential and proof required' });
+          }
+          
+          if (isJoinerRevoked(deviceId)) {
+            return sendJson(res, 403, { ok: false, reason: 'revoked' });
+          }
+          const stored = getJoinerCredential(deviceId);
+          if (!stored) {
+            return sendJson(res, 403, { ok: false, reason: 'no_credential' });
+          }
+          if (credential?.signature !== stored.signature) {
+            return sendJson(res, 403, { ok: false, reason: 'credential_mismatch' });
+          }
+          // Named `outcome`, not `res`: `res` is the HTTP response in this scope
+          // and shadowing it silently broke every sendJson() call below.
+          const outcome = completeJoinChallenge(stored, proof);
+          if (!outcome.ok) {
+            logger.warn('[sync-hub] authenticated handshake refused', { deviceId, reason: outcome.reason });
+            return sendJson(res, 403, { ok: false, reason: outcome.reason ?? 'invalid_proof' });
+          }
+          if (isDeviceRevoked(deviceId)) {
+            return sendJson(res, 403, { ok: false, reason: 'device_was_unpaired' });
+          }
+          registerDevice(deviceId, body.name, body.platform);
+          mainBus.emitEvent('device-connected', {
+            deviceId,
+            deviceName: body.name || deviceId,
+            platform: body.platform || 'unknown',
+          });
+          logger.info(`[sync-hub] Peer authenticated: ${deviceId} (role=${outcome.role ?? 'unknown'})`);
+          return sendJson(res, 200, {
+            ok: true,
+            role: outcome.role,
+            businessId: outcome.businessId,
+            // Single-use, device-scoped, 60s. See hub-credentials.ts for why
+            // each of those properties is here.
+            accessToken: issueAccessGrant(deviceId, String(outcome.businessId ?? '')),
+          });
+        }
+
         if (path === '/sync/pull' && req.method === 'GET') {
           const token = String(url.searchParams.get('token') ?? '');
-          if (!validToken(token)) return sendJson(res, 403, { ok: false, error: 'invalid pairing token' });
           const deviceId = String(url.searchParams.get('device') || '');
           if (!deviceId) return sendJson(res, 400, { ok: false, error: 'device required' });
+          // The device id is read first so the grant can be checked against it.
+          if (!validToken(token, deviceId)) return sendJson(res, 403, { ok: false, error: 'invalid pairing token' });
           if (isDeviceRevoked(deviceId)) return sendJson(res, 403, { ok: false, error: 'device was unpaired — new pairing required' });
           registerDevice(deviceId);
           const force = takeResyncRequest(deviceId);
@@ -1153,9 +1260,9 @@ export class SyncHub {
         if (path === '/sync/push' && req.method === 'POST') {
           const body = JSON.parse(await readBody(req));
           const token = String(body.token ?? url.searchParams.get('token') ?? '');
-          if (!validToken(token)) return sendJson(res, 403, { ok: false, error: 'invalid pairing token' });
           const deviceId = String(body.device_id || body.device || '');
           if (!deviceId) return sendJson(res, 400, { ok: false, error: 'device_id required' });
+          if (!validToken(token, deviceId)) return sendJson(res, 403, { ok: false, error: 'invalid pairing token' });
           if (isDeviceRevoked(deviceId)) return sendJson(res, 403, { ok: false, error: 'device was unpaired — new pairing required' });
           registerDevice(deviceId, body.name, body.platform);
           mainBus.emitEvent('device-connected', { deviceId, deviceName: body.name || deviceId, platform: body.platform || 'unknown' });
@@ -1247,14 +1354,10 @@ export class SyncHub {
             }
           }
           const payload: any = { ok: true, requestId: rec.requestId, status: rec.status };
-          // Approval grants the pairing credential in-band (same as WS path),
-          // plus the signed membership credential the P3 handshake uses.
-          if (rec.status === 'approved') {
-            payload.pairingToken = getPairingToken();
-            const { getJoinerCredential } = await import('./sync/hub-credentials');
-            const credential = getJoinerCredential(joinerDeviceId);
-            if (credential) payload.credential = credential;
-          }
+          // Handed to the submitter, who must present it to collect the grant on
+          // a later status poll (see isJoinPollAuthorised).
+          if (rec.pollToken) payload.pollToken = rec.pollToken;
+          if (rec.status === 'approved') Object.assign(payload, approvalGrant(joinerDeviceId, rec));
           // Explicit connection acknowledgement: the joiner's session tracker
           // uses this to mark the connection real the moment the HTTP call
           // returns, so the joiner does not sit on "Waiting for connection…"
@@ -1276,13 +1379,15 @@ export class SyncHub {
             || (code && joinerDeviceId ? getDeviceJoinRequestBy(code, joinerDeviceId) : null);
 
           const payload: any = { ok: true, record: rec };
-          // Approval grants the pairing credential in-band (same as WS path),
-          // plus the signed membership credential the P3 handshake uses.
           if (rec && rec.status === 'approved') {
-            payload.pairingToken = getPairingToken();
-            const { getJoinerCredential } = await import('./sync/hub-credentials');
-            const credential = getJoinerCredential(joinerDeviceId);
-            if (credential) payload.credential = credential;
+            // The grant only goes to the joiner that submitted (see
+            // isJoinPollAuthorised). A stranger who learns an approved device id
+            // can still read the record — status/role/business, which the join
+            // screen renders — but collects no authentication material.
+            const { isJoinPollAuthorised } = await import('./sync/device-requests');
+            if (isJoinPollAuthorised(rec, body.pollToken ?? body.poll_token)) {
+              Object.assign(payload, approvalGrant(joinerDeviceId, rec));
+            }
           }
           // Explicit connection acknowledgement for the client's session tracker.
           payload.handshake = buildHandshakeAck(rec, SYNC_PORT);

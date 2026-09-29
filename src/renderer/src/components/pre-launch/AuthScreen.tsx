@@ -1146,7 +1146,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
             <div className="text-left space-y-1 mb-2">
               <h2 className="text-sm font-black text-foreground tracking-tight uppercase">Welcome to Shega</h2>
               <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50">
-                Create a new business, join one with a code, or sign back in
+                Create a new business, or sign back in
               </p>
             </div>
             <button type="button" onClick={() => setIntent('create')}
@@ -1160,18 +1160,11 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                 <p className="text-xs font-bold text-muted-foreground/70">Set up this terminal as a brand-new Shega business</p>
               </div>
             </button>
-            <button type="button" onClick={() => { setIntent('join'); setJoinMode('form'); setJoinPhase('searching'); setError(''); }}
-              className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 bg-muted/40 hover:bg-muted/70 border-transparent hover:border-foreground/10 text-left transition-all active:scale-[0.99]"
-            >
-              <div className="h-11 w-11 rounded-xl bg-muted text-foreground flex items-center justify-center shrink-0">
-                <Users size={18} />
-              </div>
-              <div className="flex-1">
-                <p className="text-sm font-black text-foreground">Join a business</p>
-                <p className="text-xs font-bold text-muted-foreground/70">Pair this terminal using a 6-digit code from your owner</p>
-              </div>
-            </button>
-            {/* Signing back in is a real third path, not a footnote: this screen
+            {/* Pairing this terminal to another one is NOT a startup choice.
+                A new install always creates or signs into its own business here;
+                linking devices happens later from Settings → Connected Devices,
+                where the same secure pairing runs as a deliberate action. */}
+            {/* Signing back in is a real second path, not a footnote: this screen
                 is also what an install with existing admins lands on after an
                 interrupted setup, and previously there was no way back to the
                 login form from here — the user was stuck on "create account". */}

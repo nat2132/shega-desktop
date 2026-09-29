@@ -34,6 +34,7 @@ import type {
   DevicePlatform,
 } from '@shega/shared';
 import { getSyncStrategy, PROTOCOL_VERSION } from '@shega/shared';
+import { getDesktopJoinerHandle } from './sync/desktop-join-credentials';
 
 // ─── Peer registry ──────────────────────────────────────────────────────────
 
@@ -520,6 +521,71 @@ function peerCursorSeq(deviceId: string): number {
  * changes newer than the lastSeq it saw from the peer (delta pull).
  * The same LWW/conflict resolution applies as with Mobile clients.
  */
+/**
+ * The credential this desktop holds for a given peer hub, if any.
+ *
+ * Keyed by the peer because a credential is scoped to one business/hub: using a
+ * credential issued by hub A to authenticate to hub B would be refused anyway,
+ * and trying would be a needless round trip.
+ */
+function joinerHandleFor(peerDeviceId: string) {
+  const handle = getDesktopJoinerHandle();
+  if (!handle) return null;
+  // A credential names the business, not the hub device, so an exact peer match
+  // is not always available. Presenting it and letting the hub decide is correct
+  // — the hub rejects a credential it did not issue, which is the answer we want.
+  return peerDeviceId ? handle : null;
+}
+
+/**
+ * P3 — authenticate to a peer hub over HTTP and return a single-use access grant.
+ *
+ * Returns null when this desktop holds no credential, or when the peer refused
+ * (older build, revoked, or a different hub entirely). The caller then falls
+ * back to the legacy token, which is what keeps both paths alive during the
+ * migration.
+ */
+async function authenticateWithPeerHub(peerUrl: string, hubId: string): Promise<string | null> {
+  const handle = getDesktopJoinerHandle();
+  if (!handle) return null;
+  try {
+    const challengeRes = await fetch(`${peerUrl}/sync/auth/challenge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: hubId, credential: handle.credential }),
+    });
+    if (!challengeRes.ok) {
+      logger.debug('Peer did not issue a challenge (legacy hub or no credential)', {
+        status: challengeRes.status,
+      });
+      return null;
+    }
+    const challengeBody = await challengeRes.json() as { challenge?: any; error?: string };
+    const challenge = challengeBody?.challenge;
+    if (!challenge) return null;
+
+    // Throws if the advertised verifier key is not the credential's issuer —
+    // the one place a joiner can notice it is not talking to the right hub.
+    const proof = handle.joiner.answer(challenge);
+    const verifyRes = await fetch(`${peerUrl}/sync/auth/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: hubId, credential: handle.credential, proof }),
+    });
+    if (!verifyRes.ok) {
+      const body = await verifyRes.json().catch(() => null) as { reason?: string } | null;
+      logger.warn('Peer refused the authenticated handshake', { reason: body?.reason ?? verifyRes.status });
+      return null;
+    }
+    const verified = await verifyRes.json() as { accessToken?: string; role?: string; businessId?: string };
+    logger.info('Peer authenticated this desktop', { role: verified?.role ?? null });
+    return typeof verified?.accessToken === 'string' ? verified.accessToken : null;
+  } catch (e: any) {
+    logger.debug('Peer handshake failed; will try the legacy token', { error: e?.message });
+    return null;
+  }
+}
+
 async function syncWithPeerHub(peer: DiscoveredService): Promise<void> {
   const hubId = ensureHubDeviceId();
   // The peer validates pulls against ITS OWN pairing token, which mDNS
@@ -548,7 +614,18 @@ async function syncWithPeerHub(peer: DiscoveredService): Promise<void> {
 
   // Pull delta changes from peer (since=0 → full snapshot the first time).
   const since = peerCursorSeq(peer.deviceId);
-  const pullUrl = `${peerUrl}/sync/pull?device=${encodeURIComponent(hubId)}&since=${since}&token=${encodeURIComponent(token)}`;
+  // P3: authenticate by challenge/verify and spend the resulting grant on this
+  // pull, rather than presenting the peer's long-lived shared token. Falls back
+  // to the token when this desktop holds no credential from that peer, which
+  // is the case until it has been approved through the join flow.
+  let pullToken = token;
+  const granted = await authenticateWithPeerHub(peerUrl, hubId);
+  if (granted) {
+    pullToken = granted;
+  } else if (!joinerHandleFor(peer.deviceId)) {
+    logger.debug('Peer handshake unavailable and no credential stored; using legacy token', { peerId: peer.deviceId });
+  }
+  const pullUrl = `${peerUrl}/sync/pull?device=${encodeURIComponent(hubId)}&since=${since}&token=${encodeURIComponent(pullToken)}`;
   try {
     const pullRes = await fetch(pullUrl);
     const pullData = await pullRes.json() as {

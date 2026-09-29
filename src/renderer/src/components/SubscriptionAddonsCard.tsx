@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Smartphone, Monitor, Building2, Minus, Plus, Loader2, CreditCard, Hourglass } from 'lucide-react';
+import { Building2, Minus, Plus, Loader2, CreditCard, Hourglass } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -7,51 +7,37 @@ import { useSettings } from '../context/SettingsContext';
 import { usePaymentStatus, type PaymentType } from '../hooks/usePaymentStatus';
 import { toast } from 'sonner';
 
-type AddonKey = 'additional_mobile_device' | 'additional_desktop_device' | 'additional_business';
+type AddonKey = 'additional_business';
 
 interface ServerPlan {
   id: number;
   display_name?: string;
   name?: string;
-  addon_mobile_price?: number;
-  addon_desktop_price?: number;
   addon_business_price?: number;
 }
 
 interface CloudStatus {
   status?: string;
   plan_id?: number | null;
-  devices?: {
-    mobile?: { allocated?: number; used?: number };
-    desktop?: { allocated?: number; used?: number };
-  };
   businesses?: { allocated?: number; used?: number };
 }
 
+/**
+ * The only recurring add-on: an extra business.
+ *
+ * Connecting a device is free, so there is no per-device option here — the plan
+ * decides which platforms a device may run, and any number of devices of those
+ * platforms may connect. That is also why no device price is read or fallen
+ * back to anywhere in this card.
+ */
 const ADDONS: Array<{
   key: AddonKey;
   titleKey: string;
   descKey: string;
-  priceKey: 'addon_mobile_price' | 'addon_desktop_price' | 'addon_business_price';
-  Icon: typeof Smartphone;
+  priceKey: 'addon_business_price';
+  Icon: typeof Building2;
   allocation: (s: CloudStatus) => { allocated: number; used: number };
 }> = [
-  {
-    key: 'additional_mobile_device',
-    titleKey: 'subscription.add_mobile_device',
-    descKey: 'subscription.add_mobile_device_desc',
-    priceKey: 'addon_mobile_price',
-    Icon: Smartphone,
-    allocation: (s) => ({ allocated: s.devices?.mobile?.allocated ?? 0, used: s.devices?.mobile?.used ?? 0 }),
-  },
-  {
-    key: 'additional_desktop_device',
-    titleKey: 'subscription.add_desktop_device',
-    descKey: 'subscription.add_desktop_device_desc',
-    priceKey: 'addon_desktop_price',
-    Icon: Monitor,
-    allocation: (s) => ({ allocated: s.devices?.desktop?.allocated ?? 0, used: s.devices?.desktop?.used ?? 0 }),
-  },
   {
     key: 'additional_business',
     titleKey: 'subscription.add_business',
@@ -61,6 +47,9 @@ const ADDONS: Array<{
     allocation: (s) => ({ allocated: s.businesses?.allocated ?? 0, used: s.businesses?.used ?? 0 }),
   },
 ];
+
+/** Adding a business costs ETB 2,500; the server price always wins when present. */
+const DEFAULT_BUSINESS_ADDON_PRICE = 2500;
 
 /**
  * Capacity add-ons. The server owns pricing and grants the extra allocation
@@ -74,11 +63,7 @@ export const SubscriptionAddonsCard: React.FC<{
   const { t } = useSettings();
   const [plans, setPlans] = useState<ServerPlan[]>([]);
   const [status, setStatus] = useState<CloudStatus | null>(null);
-  const [qty, setQty] = useState<Record<AddonKey, number>>({
-    additional_mobile_device: 1,
-    additional_desktop_device: 1,
-    additional_business: 1,
-  });
+  const [qty, setQty] = useState<Record<AddonKey, number>>({ additional_business: 1 });
   const [transactionId, setTransactionId] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -99,21 +84,16 @@ export const SubscriptionAddonsCard: React.FC<{
       ]);
       if (plansRes?.success && Array.isArray(plansRes.plans)) setPlans(plansRes.plans);
       if (syncRes?.success) setStatus(syncRes.status || null);
-    } catch (_) { /* keep default fallback prices */ }
+    } catch (_) { /* keep the default business price */ }
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
   const currentPlan = plans.find((p) => p.id === (status?.plan_id ?? planId));
-  const fallbackPrices: Record<AddonKey, number> = {
-    additional_mobile_device: 500,
-    additional_desktop_device: 800,
-    additional_business: 1000,
-  };
 
   const priceOf = (key: AddonKey) => {
     const value = currentPlan?.[ADDONS.find((a) => a.key === key)!.priceKey];
-    return typeof value === 'number' && value > 0 ? value : fallbackPrices[key];
+    return typeof value === 'number' && value > 0 ? value : DEFAULT_BUSINESS_ADDON_PRICE;
   };
 
   const submit = async (key: AddonKey) => {
@@ -290,6 +270,13 @@ export const SubscriptionAddonsCard: React.FC<{
             </div>
           );
         })}
+
+        <p className="text-[10px] text-muted-foreground">
+          {t(
+            'subscription.addons_devices_free',
+            'Connecting additional devices is free — manage them in Settings → Connected Devices.',
+          )}
+        </p>
       </CardContent>
     </Card>
   );

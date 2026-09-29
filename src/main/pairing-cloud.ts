@@ -14,6 +14,7 @@ import db from './database';
 import { ensureHubDeviceId } from './sync-hub';
 import { PIN_LENGTH } from './pin';
 import { getSetting, setSetting, getEncryptedSetting, setEncryptedSetting } from './secure-settings';
+import { acceptJoinerCredential } from './sync/desktop-join-credentials';
 
 const DEFAULT_BASE = 'https://shega-api-dah3.onrender.com';
 
@@ -697,6 +698,14 @@ export function registerPairingCloudHandlers(): void {
           if (record.assignedRole) setSetting('join_role', String(record.assignedRole));
           if (record.assignedPermissions) setSetting('join_assigned_permissions', JSON.stringify(record.assignedPermissions));
           if (res?.pairingToken) setEncryptedSetting('join_lan_token', String(res.pairingToken));
+          // P3: the owner's signed membership credential. This is what lets the
+          // next connection prove possession instead of replaying the shared
+          // token, so it is stored before anything tries to dial the hub.
+          if (res?.credential && acceptJoinerCredential(res.credential)) {
+            console.info('[join] stored membership credential for authenticated handshakes');
+          } else if (res?.credential) {
+            console.warn('[join] rejected membership credential — not issued to this device');
+          }
           // Keep the session's host/port so post-activation sync (and the P2P
           // manager's fallback) can reach the owner's hub without mDNS.
           if (session.host) setSetting('join_lan_host', String(session.host));
