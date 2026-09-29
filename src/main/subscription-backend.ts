@@ -23,6 +23,7 @@ export function ensureCloudTable(): void {
       tier TEXT,
       planName TEXT,
       planId INTEGER,
+      licenseId INTEGER,
       licenseKey TEXT,
       isTrial INTEGER DEFAULT 0,
       startedAt TEXT,
@@ -159,6 +160,10 @@ export function applyBackendStatus(status: any): any {
     tier,
     planName: status?.plan_name ?? null,
     planId: status?.plan_id ?? null,
+    // The License row id. Kept apart from `planId` because the
+    // `/api/customers/licenses/:licenseId/...` routes resolve against the license
+    // table, so passing the plan id there 404s for almost every account.
+    licenseId: status?.license_id ?? null,
     licenseKey: status?.license_key ?? null,
     isTrial: isTrial ? 1 : 0,
     startedAt: status?.started_at ?? null,
@@ -175,10 +180,10 @@ export function applyBackendStatus(status: any): any {
 
   db.prepare(`
     INSERT OR REPLACE INTO cloud_subscription
-    (businessId, accountEmail, status, access, tier, planName, planId, licenseKey,
+    (businessId, accountEmail, status, access, tier, planName, planId, licenseId, licenseKey,
      isTrial, startedAt, expiresAt, daysRemaining, devicesJson, businessesJson,
      monthlyJson, pendingJson, lastPaymentJson, syncedAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     bizId,
     getSetting('backend_account_email') ?? '',
@@ -187,6 +192,7 @@ export function applyBackendStatus(status: any): any {
     mapped.tier,
     mapped.planName,
     mapped.planId ?? null,
+    mapped.licenseId ?? null,
     mapped.licenseKey ?? null,
     mapped.isTrial,
     mapped.startedAt,
@@ -222,6 +228,7 @@ export function mergeIntoSubscription(local: any): any {
     id: base.id ?? cloud.businessId,
     businessId: base.businessId ?? cloud.businessId,
     planId: cloud.planId ?? base.planId ?? null,
+    licenseId: cloud.licenseId ?? base.licenseId ?? null,
     tier: cloud.tier ?? base.tier,
     status: cloud.status === 'trial' ? 'active' : cloud.status ?? base.status,
     isTrial: cloud.isTrial ? 1 : cloud.isTrial ?? base.isTrial ?? 0,

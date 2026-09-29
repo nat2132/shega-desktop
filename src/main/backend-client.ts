@@ -13,29 +13,23 @@
  *
  * Session tokens follow the existing cloud-sync pattern in this app: they are
  * stored in the local settings table and refreshed transparently on 401.
+ * Tokens are encrypted at rest using Electron's safeStorage (DPAPI on Windows,
+ * Keychain on macOS, libsecret on Linux).
  */
-import db from './database';
+import { getSetting, setSetting, getEncryptedSetting, setEncryptedSetting } from './secure-settings';
 
-const DEFAULT_BASE = 'https://f8bb-196-188-178-187.ngrok-free.app';
+const DEFAULT_BASE = 'https://7313-196-191-60-157.ngrok-free.app';
 
 const TOKEN_KEY = 'backend_access_token';
 const REFRESH_KEY = 'backend_refresh_token';
 const EMAIL_KEY = 'backend_account_email';
-
-function getSetting(key: string): string | null {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as any;
-  return row?.value ?? null;
-}
-function setSetting(key: string, value: string): void {
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
-}
 
 export function getBackendBaseUrl(): string {
   return (getSetting('backend_api_url') || process.env.SHEGA_BACKEND_URL || DEFAULT_BASE).replace(/\/+$/, '');
 }
 
 export function hasSession(): boolean {
-  return !!getSetting(TOKEN_KEY);
+  return !!getEncryptedSetting(TOKEN_KEY);
 }
 
 export function getSessionEmail(): string | null {
@@ -46,7 +40,7 @@ let inMemoryAccess: string | null = null;
 let inMemoryRefresh: string | null = null;
 
 function currentAccess(): string | null {
-  return inMemoryAccess || getSetting(TOKEN_KEY);
+  return inMemoryAccess || getEncryptedSetting(TOKEN_KEY);
 }
 
 export class BackendError extends Error {
@@ -87,7 +81,7 @@ async function api<T = any>(path: string, options: ApiOptions = {}): Promise<T> 
     throw new BackendError(0, `Cannot reach the Shega server at ${getBackendBaseUrl()}. Check your connection.`);
   }
 
-  if (res.status === 401 && getSetting(REFRESH_KEY) && !options.body) {
+  if (res.status === 401 && getEncryptedSetting(REFRESH_KEY) && !options.body) {
     const refreshed = await tryRefresh();
     if (refreshed) {
       try {
@@ -120,7 +114,7 @@ async function api<T = any>(path: string, options: ApiOptions = {}): Promise<T> 
 }
 
 async function tryRefresh(): Promise<boolean> {
-  const refresh = getSetting(REFRESH_KEY);
+  const refresh = getEncryptedSetting(REFRESH_KEY);
   if (!refresh) return false;
   try {
     const res = await fetch(`${getBackendBaseUrl()}/api/auth/refresh`, {
@@ -134,11 +128,11 @@ async function tryRefresh(): Promise<boolean> {
     inMemoryAccess = data.access;
     if (data.refresh) {
       inMemoryRefresh = data.refresh;
-      setSetting(REFRESH_KEY, data.refresh);
+      setEncryptedSetting(REFRESH_KEY, data.refresh);
     } else {
       inMemoryRefresh = refresh;
     }
-    setSetting(TOKEN_KEY, inMemoryAccess);
+    setEncryptedSetting(TOKEN_KEY, inMemoryAccess);
     return true;
   } catch {
     return false;
@@ -154,8 +148,8 @@ export async function login(username: string, password: string): Promise<any> {
   });
   inMemoryAccess = data.access;
   inMemoryRefresh = data.refresh;
-  setSetting(TOKEN_KEY, data.access);
-  setSetting(REFRESH_KEY, data.refresh);
+  setEncryptedSetting(TOKEN_KEY, data.access);
+  setEncryptedSetting(REFRESH_KEY, data.refresh);
   setSetting(EMAIL_KEY, data.user?.email || username);
   return data;
 }
@@ -184,15 +178,15 @@ export async function register(payload: {
   if (data?.access) {
     inMemoryAccess = data.access;
     inMemoryRefresh = data.refresh;
-    setSetting(TOKEN_KEY, data.access);
-    setSetting(REFRESH_KEY, data.refresh);
+    setEncryptedSetting(TOKEN_KEY, data.access);
+    setEncryptedSetting(REFRESH_KEY, data.refresh);
     setSetting(EMAIL_KEY, data.user?.email || payload.email);
   }
   return data;
 }
 
 export async function logout(): Promise<void> {
-  const refresh = getSetting(REFRESH_KEY);
+  const refresh = getEncryptedSetting(REFRESH_KEY);
   if (refresh) {
     try {
       await fetch(`${getBackendBaseUrl()}/api/auth/logout`, {
@@ -241,4 +235,47 @@ export const submitPayment = (payload: {
     },
   });
 
+/**
+ * Every payment this customer has submitted, newest first.
+ *
+ * The subscription status endpoint reports only the single most recent pending
+ * payment, so a customer who has a renewal AND a device add-on awaiting review
+ * would see just one of them. The Subscription page reads this list to show each
+ * outstanding request, and to keep a second submission from being made while one
+ * is still pending.
+ */
+export const getMyPayments = (): Promise<any[]> => api('/api/customers/payments');
+
 export const getMemberships = (): Promise<{ owned: any[]; memberships: any[] }> => api('/api/auth/memberships');
+
+// ── Device registration & Business creation (require approved entitlements) ──
+
+export const registerDevice = (licenseId: number, payload: {
+  device_id: string;
+  device_name?: string;
+  operating_system?: string;
+  device_type: 'MOBILE' | 'DESKTOP';
+  idempotency_key?: string;
+}): Promise<any> =>
+  api(`/api/customers/licenses/${licenseId}/devices/register`, {
+    method: 'POST',
+    body: payload,
+  });
+
+export const createBusiness = (licenseId: number, payload: {
+  name: string;
+  idempotency_key?: string;
+}): Promise<any> =>
+  api(`/api/customers/licenses/${licenseId}/businesses/create`, {
+    method: 'POST',
+    body: payload,
+  });
+
+export const getCostBreakdown = (licenseId: number): Promise<any> =>
+  api(`/api/customers/licenses/${licenseId}/cost-breakdown`);
+
+export const getDeviceEntitlements = (licenseId: number): Promise<any[]> =>
+  api(`/api/customers/licenses/${licenseId}/entitlements/devices`);
+
+export const getBusinessEntitlements = (licenseId: number): Promise<any[]> =>
+  api(`/api/customers/licenses/${licenseId}/entitlements/businesses`);

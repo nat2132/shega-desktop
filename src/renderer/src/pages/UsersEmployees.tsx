@@ -13,6 +13,8 @@ import { toast } from 'sonner';
 import Modal from '../components/Modal';
 import { RadarPulse } from '../components/RadarPulse';
 import ApprovalConfig from '../components/JoinApprovalConfig';
+import { uniqueSyncedTeam } from '../lib/team-directory';
+import { displayUsername } from '../lib/username';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
 import { DatePicker } from '../components/DatePicker';
@@ -800,6 +802,11 @@ const UsersEmployees: React.FC = () => {
     { id: 'attendance', label: t('employees.attendance', 'Attendance'), icon: Clock },
   ];
 
+  // `users` is a sync mirror of `admins`/`employees`, not a third set of people.
+  // The owner legitimately lives in several of those tables, so rows that
+  // project a desktop account are dropped or the same human is listed twice.
+  const syncedExtras = uniqueSyncedTeam(syncedTeam, [...employees, ...admins]);
+
   const seenUserIds = new Set([
     ...employees.map(e => String(e.id)),
     ...admins.map(a => String(a.id)),
@@ -821,7 +828,7 @@ const UsersEmployees: React.FC = () => {
         id: ad.id,
         firstName: ad.name,
         lastName: '',
-        email: `@${ad.username}`,
+        email: displayUsername(ad.username),
         phone: '',
         employeeCode: ad.username,
         roleName: ad.role === 'super_admin' ? t('admin.super_admins', 'Super Admin') : t('common.operator', 'Admin'),
@@ -835,7 +842,7 @@ const UsersEmployees: React.FC = () => {
       })),
   ];
 
-  for (const u of syncedTeam) {
+  for (const u of syncedExtras) {
     const idKey = String(u.id);
     if (!seenUserIds.has(idKey)) {
       seenUserIds.add(idKey);
@@ -844,7 +851,7 @@ const UsersEmployees: React.FC = () => {
         id: u.id,
         firstName: u.name || 'Team Member',
         lastName: '',
-        email: u.email || (u.username ? `@${u.username}` : ''),
+        email: u.email || displayUsername(u.username),
         phone: u.phone || '',
         employeeCode: u.username || `user-${String(u.id).slice(0, 8)}`,
         roleName: u.roleName || (u.isOwner ? 'Owner' : (u.role ? u.role.charAt(0).toUpperCase() + u.role.slice(1) : 'Member')),
@@ -963,18 +970,15 @@ const UsersEmployees: React.FC = () => {
                   <thead>
                     <tr className="border-b bg-muted/20">
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee', 'Team')}</th>
-                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.code', 'Code')}</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.role', 'Role')}</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">Device Presence</th>
-                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.department', 'Department')}</th>
-                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.phone', 'Contact')}</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.status', 'Status')}</th>
                       <th className="text-right p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.actions', 'Actions')}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {directoryRows.length === 0 && (
-                      <tr><td colSpan={8} className="p-8 text-center text-xs text-muted-foreground">{t('employees.no_users', 'No users found')}</td></tr>
+                      <tr><td colSpan={5} className="p-8 text-center text-xs text-muted-foreground">{t('employees.no_users', 'No users found')}</td></tr>
                     )}
                     {directoryRows.map(emp => {
                       const dev = liveDevices.find((d) =>
@@ -1037,17 +1041,12 @@ const UsersEmployees: React.FC = () => {
                               </div>
                             </div>
                           </td>
-                          <td className="p-3"><code className="text-xs bg-muted px-1.5 py-0.5 rounded">{emp.employeeCode || '—'}</code></td>
                           <td className="p-3"><Badge variant={emp.type === 'admin' && emp.adminRole === 'super_admin' ? 'default' : 'outline'} className="text-xs font-bold">{emp.roleName || '—'}</Badge></td>
                           <td className="p-3">
                             <Badge variant="outline" className={`text-[10px] font-bold ${badgeColor}`}>
                               <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${dotColor}`} />
                               {presenceLabel}
                             </Badge>
-                          </td>
-                          <td className="p-3 text-muted-foreground">{emp.department || '—'}</td>
-                          <td className="p-3">
-                            <p className="text-xs">{emp.phone || emp.username || '—'}</p>
                           </td>
                           <td className="p-3">{getStatusBadge(emp.employmentStatus || (emp.isActive ? 'active' : 'inactive'))}</td>
                           <td className="p-3 text-right">

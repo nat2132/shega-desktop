@@ -19,6 +19,8 @@ import {
   type MorVerificationStatus,
 } from '@shega/shared';
 
+import { getSetting, getEncryptedSetting } from '../secure-settings';
+
 const DEFAULT_BASE = 'https://shega-api-dah3.onrender.com';
 
 interface DbRow {
@@ -34,11 +36,6 @@ interface DbRow {
   reason: string | null;
   cached_at: string;
   cache_until: string;
-}
-
-function getSetting(key: string): string | null {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as any;
-  return row?.value ?? null;
 }
 
 function getBaseUrl(): string {
@@ -63,7 +60,7 @@ function toRecord(row: DbRow): MorVerification {
 }
 
 export function isBackendLinked(): boolean {
-  return !!getSetting('pairing_access_token');
+  return !!getEncryptedSetting('pairing_access_token');
 }
 
 function getCached(tin: string, subTin: string | null | undefined): MorVerification | null {
@@ -109,7 +106,8 @@ function upsert(record: MorVerification): void {
 }
 
 async function callBackend(tin: string, subTin: string | null, force: boolean): Promise<MorBackendResponse> {
-  const token = getSetting('pairing_access_token');
+  // Encrypted at rest by secure-settings — must be decrypted, not read raw.
+  const token = getEncryptedSetting('pairing_access_token');
   const res = await fetch(`${getBaseUrl()}/api/mor/verify-tin/`, {
     method: 'POST',
     headers: {

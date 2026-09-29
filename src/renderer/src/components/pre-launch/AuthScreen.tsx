@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, KeyRound, ArrowLeft, UserRound, Users, Store, ImagePlus } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, ArrowLeft, UserRound, Users, Store, ImagePlus, LogIn } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSettings, Language } from '../../context/SettingsContext';
 import { BrandedLogo } from '../branded-logo';
@@ -134,7 +134,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
     if (joinMode !== 'form') return;
     let stopped = false;
     (async () => {
-      try { await window.api.pairBeaconDiscoverable?.(true, undefined, 'team'); } catch { /* ignore */ }
+      try { await window.api.pairBeaconDiscoverable?.(true, undefined, 'team', false); } catch { /* ignore */ }
       try { await window.api.pairBeaconNearby?.(); } catch { /* ignore */ }
       while (!stopped) {
         try {
@@ -265,11 +265,17 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
       try {
         const list = await window.api?.getLoginUsers?.();
         setLoginUsers(list || []);
-        const lastKey = await window.api?.getLastLoginUser?.();
-        if (lastKey && Array.isArray(list)) {
-          const match = list.find((u) => u.key === lastKey);
-          if (match) {
-            setPickedUser(match);
+        if (Array.isArray(list) && list.length > 0) {
+          const lastKey = await window.api?.getLastLoginUser?.();
+          if (lastKey) {
+            const match = list.find((u) => u.key === lastKey);
+            if (match) {
+              setPickedUser(match);
+              return;
+            }
+          }
+          if (list.length === 1) {
+            setPickedUser(list[0]);
           }
         }
       } catch {
@@ -296,7 +302,10 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
   const handleUserPinLogin = async (pinValue?: string) => {
     if (!pickedUser) return;
     const pinToUse = pinValue ?? userPin;
-    if (!/^\d{4,6}$/.test(pinToUse)) { setUserError('Enter your 6-digit PIN'); return; }
+    if (pinToUse.length !== 6 || !/^\d{6}$/.test(pinToUse)) {
+      setUserError('PIN must be exactly 6 digits');
+      return;
+    }
     setUserLoading(true);
     setUserError('');
     try {
@@ -521,6 +530,18 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
       setError(err?.message || 'Could not save PIN setup');
     }
     setLoading(false);
+  };
+
+  // Return to the start chooser (create / join / log in) from any sub-flow.
+  // `mode` is what actually decides which branch renders, so it has to go back
+  // to 'register' — resetting `intent` alone is not enough.
+  const handleBackToChoice = () => {
+    setMode('register');
+    setIntent('welcome');
+    setError('');
+    setPickedUser(null);
+    setUserPin('');
+    setUserError('');
   };
 
   const handleBackToJoinLogin = () => {
@@ -759,7 +780,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                     </span>
                   ) : null}
                   <p className="text-[11px] font-black uppercase tracking-widest text-muted-foreground/60 pt-1">
-                    Add your profile and set a 4-digit PIN to unlock this terminal.
+                    Add your profile and set a 6-digit PIN to unlock this terminal.
                   </p>
                 </div>
 
@@ -801,19 +822,19 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                   <div className="space-y-1.5 text-left">
                     <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Terminal PIN</label>
                     <input
-                      type={showPin ? 'text' : 'password'} maxLength={4} value={joinPin}
+                      type={showPin ? 'text' : 'password'} maxLength={6} value={joinPin}
                       onChange={e => { setJoinPin(e.target.value.replace(/\D/g, '')); setError(''); }}
-                      className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.4em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30 disabled:opacity-40"
-                      placeholder="••••" autoFocus
+                      className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.3em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30 disabled:opacity-40"
+                      placeholder="••••••" autoFocus
                     />
                   </div>
                   <div className="space-y-1.5 text-left">
                     <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">Confirm PIN</label>
                     <input
-                      type={showPin ? 'text' : 'password'} maxLength={4} value={joinConfirmPin}
+                      type={showPin ? 'text' : 'password'} maxLength={6} value={joinConfirmPin}
                       onChange={e => { setJoinConfirmPin(e.target.value.replace(/\D/g, '')); setError(''); }}
-                      className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.4em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30 disabled:opacity-40"
-                      placeholder="••••"
+                      className="w-full bg-muted/50 rounded-2xl text-center text-2xl tracking-[0.3em] py-4 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30 disabled:opacity-40"
+                      placeholder="••••••"
                     />
                   </div>
                 </div>
@@ -891,6 +912,12 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                 I've set up this terminal before — Sign in
               </button>
             )}
+            <button type="button" onClick={handleBackToChoice}
+              className="w-full text-center text-xs font-black uppercase tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors py-2"
+            >
+              <ArrowLeft size={10} className="inline mr-1.5 -mt-0.5" />
+              Back
+            </button>
               </div>
             ) : (
               <div className="space-y-5">
@@ -937,12 +964,14 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                   <KeyRound size={12} className="inline mr-1.5 -mt-0.5" />
                   Forgot PIN?
                 </button>
-                <button type="button" onClick={() => { setPickedUser(null); setUserPin(''); setUserError(''); }}
-                  className="w-full text-center text-xs font-bold uppercase tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors py-1.5"
-                >
-                  <ArrowLeft size={10} className="inline mr-1.5 -mt-0.5" />
-                  Not you? Choose another profile
-                </button>
+                {loginUsers.length > 1 && (
+                  <button type="button" onClick={() => { setPickedUser(null); setUserPin(''); setUserError(''); }}
+                    className="w-full text-center text-xs font-bold uppercase tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors py-1.5"
+                  >
+                    <ArrowLeft size={10} className="inline mr-1.5 -mt-0.5" />
+                    Not you? Choose another profile
+                  </button>
+                )}
               </div>
             )
           ) : (
@@ -961,10 +990,10 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                 <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">{t('auth.pin_code')}</label>
                 <div className="relative">
                   <input
-                    type={showPin ? 'text' : 'password'} maxLength={4} value={pin}
+                    type={showPin ? 'text' : 'password'} maxLength={6} value={pin}
                     onChange={e => { setPin(e.target.value.replace(/\D/g, '')); setError(''); }}
                     className="w-full bg-muted/50 rounded-2xl text-center text-3xl tracking-[0.5em] py-5 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30"
-                    placeholder="••••"
+                    placeholder="••••••"
                   />
                   <button type="button" onClick={() => setShowPin(!showPin)} className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors">
                     {showPin ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -991,6 +1020,16 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
               className="w-full text-center text-xs font-black uppercase tracking-widest text-foreground/60 hover:text-foreground/90 transition-colors py-2"
             >
               Join an existing business
+            </button>
+            {/* Escape hatch: the start screen now offers "log in" as a peer of
+                create/join, so it has to be a peer on the way back too. Without
+                this, tapping Log in on an install with no accounts is a dead
+                end with no way to reach the chooser again. */}
+            <button type="button" onClick={handleBackToChoice}
+              className="w-full text-center text-xs font-black uppercase tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors py-2"
+            >
+              <ArrowLeft size={10} className="inline mr-1.5 -mt-0.5" />
+              Back
             </button>
           </form>
           )
@@ -1052,19 +1091,19 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
             <div className="space-y-1.5 text-left">
               <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">{t('auth.new_pin')}</label>
               <input
-                type={showPin ? 'text' : 'password'} maxLength={4} value={newPin}
+                type={showPin ? 'text' : 'password'} maxLength={6} value={newPin}
                 onChange={e => { setNewPin(e.target.value.replace(/\D/g, '')); setError(''); }}
                 className="w-full bg-muted/50 rounded-2xl text-center text-3xl tracking-[0.5em] py-5 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30"
-                placeholder="••••" autoFocus
+                placeholder="••••••" autoFocus
               />
             </div>
             <div className="space-y-1.5 text-left">
               <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/70 px-1">{t('auth.confirm_new_pin')}</label>
               <input
-                type={showPin ? 'text' : 'password'} maxLength={4} value={confirmNewPin}
+                type={showPin ? 'text' : 'password'} maxLength={6} value={confirmNewPin}
                 onChange={e => { setConfirmNewPin(e.target.value.replace(/\D/g, '')); setError(''); }}
                 className="w-full bg-muted/50 rounded-2xl text-center text-3xl tracking-[0.5em] py-5 font-black border-2 border-transparent focus:border-foreground/20 transition-all outline-none text-foreground placeholder:text-muted-foreground/30"
-                placeholder="••••"
+                placeholder="••••••"
               />
             </div>
             {error && (
@@ -1107,7 +1146,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
             <div className="text-left space-y-1 mb-2">
               <h2 className="text-sm font-black text-foreground tracking-tight uppercase">Welcome to Shega</h2>
               <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50">
-                Start a new business or join one with a 6-digit code
+                Create a new business, join one with a code, or sign back in
               </p>
             </div>
             <button type="button" onClick={() => setIntent('create')}
@@ -1117,7 +1156,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                 <Store size={18} />
               </div>
               <div className="flex-1">
-                <p className="text-sm font-black text-foreground">Start a new business</p>
+                <p className="text-sm font-black text-foreground">Create a business</p>
                 <p className="text-xs font-bold text-muted-foreground/70">Set up this terminal as a brand-new Shega business</p>
               </div>
             </button>
@@ -1128,8 +1167,23 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin, onLoginByUser, onRegis
                 <Users size={18} />
               </div>
               <div className="flex-1">
-                <p className="text-sm font-black text-foreground">Join an existing business</p>
+                <p className="text-sm font-black text-foreground">Join a business</p>
                 <p className="text-xs font-bold text-muted-foreground/70">Pair this terminal using a 6-digit code from your owner</p>
+              </div>
+            </button>
+            {/* Signing back in is a real third path, not a footnote: this screen
+                is also what an install with existing admins lands on after an
+                interrupted setup, and previously there was no way back to the
+                login form from here — the user was stuck on "create account". */}
+            <button type="button" onClick={() => { setIntent('welcome'); setMode('login'); setError(''); }}
+              className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 bg-muted/40 hover:bg-muted/70 border-transparent hover:border-foreground/10 text-left transition-all active:scale-[0.99]"
+            >
+              <div className="h-11 w-11 rounded-xl bg-muted text-foreground flex items-center justify-center shrink-0">
+                <LogIn size={18} />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-black text-foreground">Log in to your business</p>
+                <p className="text-xs font-bold text-muted-foreground/70">Already set up on this terminal? Sign in with your PIN</p>
               </div>
             </button>
           </div>

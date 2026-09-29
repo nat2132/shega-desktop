@@ -24,6 +24,7 @@ import {
 } from "@renderer/components/ui/sidebar"
 import { Badge } from "@renderer/components/ui/badge"
 import { resolveAvatar } from "../lib/avatar"
+import { displayUsername } from '../lib/username';
 
 export function NavUser({
   user,
@@ -93,7 +94,7 @@ export function NavUser({
                     {isSuperAdmin && <Crown className="h-3 w-3 text-amber-500" />}
                   </div>
                   <span className="truncate text-xs text-muted-foreground uppercase tracking-widest">
-                    @{currentAdmin?.username || t('common.unknown', 'Unknown')}
+                    {displayUsername(currentAdmin?.username, t('common.unknown', 'Unknown'))}
                   </span>
                 </div>
               </div>

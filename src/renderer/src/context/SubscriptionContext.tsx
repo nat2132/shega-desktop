@@ -4,6 +4,11 @@ interface SubscriptionInfo {
   id: number;
   businessId: number;
   planId: number | null;
+  /**
+   * The backend License row id. Every `/api/customers/licenses/:licenseId/...`
+   * route needs this — it is NOT the same as `planId`.
+   */
+  licenseId: number | null;
   tier: string;
   status: string;
   isTrial: number;

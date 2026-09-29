@@ -1,0 +1,30 @@
+appId: com.shega.inventory
+productName: Shega
+directories:
+  output: dist
+files:
+  - out/**/*
+  - package.json
+  - "!node_modules/@shega/shared/**"
+asar: true
+asarUnpack:
+  - "**/node_modules/better-sqlite3/**"
+  - "**/node_modules/serialport/**"
+  - "**/node_modules/@serialport/**"
+  - "**/node_modules/usb/**"
+  - "**/node_modules/node-datachannel/**"
+  - "**/*.node"
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: src/assets/images/logo.ico
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+publish:
+  provider: github
+  owner: nat2132
+  repo: shega-desktop

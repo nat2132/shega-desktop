@@ -122,8 +122,12 @@ class PairingBeaconService extends EventEmitter<BeaconEventMap> {
    * peers how to label this device — 'team' when this device is in Joining
    * Mode (owner lists it as "Team · name"), 'owner' when it's recruiting
    * (joiners list it as "Owner · name").
+   *
+   * @param publish - When false, only starts browsing (mDNS + LAN sweep + UDP)
+   *   without publishing a beacon. Use this for joiners to avoid NSD slot
+   *   conflicts with the owner's invite beacon. Default: true (backward compatible).
    */
-  setDiscoverable(on: boolean, businessName = 'Shega', role: BeaconRole = 'owner'): void {
+  setDiscoverable(on: boolean, businessName = 'Shega', role: BeaconRole = 'owner', publish = true): void {
     if (on) {
       if (this.published) return; // a live invite beacon is already stronger
       let bizName = businessName;
@@ -134,6 +138,28 @@ class PairingBeaconService extends EventEmitter<BeaconEventMap> {
         ).get() as any;
         if (row) { bizName = row.businessName || bizName; bizId = row.uuid ?? bizId; }
       } catch { /* brand-new install */ }
+
+      // Advertise the freshest OPEN invitation for this business, exactly like
+      // the mobile beacon does. Publishing `code: ''` unconditionally made the
+      // device visible but permanently unjoinable — the joiner's list showed
+      // "No invite code" even while the owner had a working invite open. Only
+      // fall back to a code-less presence beacon when there is genuinely no
+      // open invite to carry.
+      let openInvite: any = null;
+      try {
+        openInvite = db.prepare(
+          `SELECT code, role, expires_at FROM invitations WHERE status = 'open'
+           ORDER BY created_at DESC LIMIT 1`
+        ).get() as any;
+      } catch { /* invitations table not created yet */ }
+
+      if (!publish) {
+        // Joiner mode: only browse, don't publish a beacon.
+        // This avoids NSD slot conflicts with the owner's invite beacon.
+        this.startBrowsing();
+        return;
+      }
+
       const beacon: PairingBeacon = {
         v: 1,
         businessId: bizId,
@@ -143,10 +169,10 @@ class PairingBeaconService extends EventEmitter<BeaconEventMap> {
           deviceName: getDesktopDeviceName(),
           platform: 'desktop',
         },
-        code: '',
-        role,
-        expiresAt: new Date(Date.now() + 12 * 3600_000).toISOString(),
-        suggestedRole: 'cashier' as any,
+        code: openInvite?.code ? String(openInvite.code) : '',
+        role: openInvite ? 'owner' : role,
+        expiresAt: openInvite?.expires_at ?? new Date(Date.now() + 12 * 3600_000).toISOString(),
+        suggestedRole: (openInvite?.role ?? 'cashier') as any,
       };
       this.publishBeacon(beacon);
     } else if (this.published && this.published.beacon.code === '') {
@@ -173,24 +199,17 @@ class PairingBeaconService extends EventEmitter<BeaconEventMap> {
     ];
     (this as any).browser = browsers;
     for (const browser of browsers) browser.on('up', (service: any) => {
-      let beacon = decodePairingBeacon(service.txt?.beacon);
+      const beacon = decodePairingBeacon(service.txt?.beacon);
       if (!beacon) {
-        const svcName = String(service.name || service.host || 'Shega Mobile Device');
-        const devId = String(service.txt?.deviceId || service.txt?.id || service.name || service.host || `mdns-${Date.now()}`);
-        beacon = {
-          v: 1,
-          businessId: service.txt?.businessId || '',
-          businessName: service.txt?.businessName || service.txt?.bname || 'Shega',
-          owner: {
-            deviceId: devId,
-            deviceName: svcName,
-            platform: 'mobile',
-          },
-          code: service.txt?.code || '',
-          role: 'team' as any,
-          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-          suggestedRole: 'cashier' as any,
-        };
+        // No encodable PairingBeacon in TXT means the advertiser is NOT a
+        // Shega pairing peer. The old fallback synthesized a beacon from
+        // service name/host, which invented a phantom "Shega Mobile Device"
+        // for every non-pairing mDNS service on the network (printers, NAS,
+        // AirPlay, and Shega's own `_shega-pos._tcp` POS-hub advertisement),
+        // hardcoded platform 'mobile' regardless of the real advertiser, and
+        // keyed entries on the service name — so `down` events could not match
+        // and the phantom never disappeared. Ignore anything unidentifiable.
+        return;
       }
       if (!isBeaconLive(beacon)) {
         console.warn('[Discovery] Desktop rejected mDNS device: expired pairing beacon', beacon.owner.deviceId);
@@ -219,6 +238,7 @@ class PairingBeaconService extends EventEmitter<BeaconEventMap> {
       if (existing) {
         this.seen.delete(beacon.owner.deviceId);
         this.emit('down', existing);
+        console.log(`[Discovery] Desktop device removed: ${beacon.owner.deviceName} (${beacon.owner.platform})`);
       }
     });
     this.browsing = true;
@@ -280,7 +300,11 @@ export function startPairingBeaconForInvite(invite: {
     },
     code: invite.code,
     role: 'owner',
-    expiresAt: invite.expiresAt ?? new Date(Date.now() + 10 * 60_000).toISOString(),
+    // Must match the invitation's own expiry: peers reject beacons whose
+    // expiresAt has passed (isBeaconLive), so a short hardcoded default makes
+    // a still-valid 24h invite stop being discoverable after 10 minutes and the
+    // joiner's radar goes empty for a code that still works.
+    expiresAt: invite.expiresAt ?? new Date(Date.now() + 24 * 3600_000).toISOString(),
     suggestedRole: (invite.suggestedRole ?? invite.role ?? 'cashier') as any,
   };
   pairingBeacon.publishBeacon(beacon);
@@ -313,13 +337,14 @@ export function registerPairingBeaconHandlers(): void {
   // Discovery mode: entering Joining Mode / Add-Team keeps this device
   // visible on the network (device-name beacon without an invite code) so
   // other devices can find it — never overrides a live invite beacon.
-  ipcMain.handle('pair-beacon:discoverable', (_e, on: boolean, businessName?: string, role?: BeaconRole) => {
+  ipcMain.handle('pair-beacon:discoverable', (_e, on: boolean, businessName?: string, role?: BeaconRole, publish?: boolean) => {
     const wasPublishing = pairingBeacon.isPublishing();
     if (on) {
-      pairingBeacon.setDiscoverable(true, businessName, role);
+      pairingBeacon.setDiscoverable(true, businessName, role, publish);
       try { udpDiscovery.start(); udpDiscovery.broadcastPing(); } catch { /* best-effort */ }
       // Join-mode / pairing-mode devices announce themselves so owners see them.
-      if (!wasPublishing) {
+      // Only emit device-visible if we're actually publishing (not just browsing)
+      if (!wasPublishing && publish !== false) {
         const name = businessName || getDesktopDeviceName();
         mainBus.emitEvent('device-visible', { deviceId: ensureHubDeviceId(), deviceName: name, platform: 'desktop', mode: role ?? 'owner' });
         logger.info('device visible for pairing', { deviceName: name, role });

@@ -4,23 +4,18 @@
  * management requires linking the business' Shega account (email + password) once.
  * That grants a JWT used ONLY for the /api/sync/pairing/* endpoints (invite, list,
  * approve/reject, revoke). Tokens are stored in the local settings table; nothing
- * account-scoped is shipped elsewhere.
+ * account-scoped is shipped elsewhere. Tokens are encrypted at rest using
+ * Electron's safeStorage (DPAPI on Windows, Keychain on macOS, libsecret on Linux).
  */
 import { ipcMain } from 'electron';
 import QRCode from 'qrcode';
 import crypto from 'crypto';
 import db from './database';
 import { ensureHubDeviceId } from './sync-hub';
+import { PIN_LENGTH } from './pin';
+import { getSetting, setSetting, getEncryptedSetting, setEncryptedSetting } from './secure-settings';
 
 const DEFAULT_BASE = 'https://shega-api-dah3.onrender.com';
-
-function getSetting(key: string): string | null {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as any;
-  return row?.value ?? null;
-}
-function setSetting(key: string, value: string): void {
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
-}
 
 function getDefaultBusinessId(): number | null {
   try {
@@ -33,8 +28,10 @@ function getDefaultBusinessId(): number | null {
   }
 }
 
+import { getBackendBaseUrl } from './backend-client';
+
 function getBaseUrl(): string {
-  return (getSetting('cloud_sync_url') || process.env.SHEGA_API_URL || DEFAULT_BASE).replace(/\/+$/, '');
+  return getBackendBaseUrl();
 }
 
 /** Normalize an invite code so dashless/pastable variants still match. */
@@ -176,7 +173,10 @@ async function doAuthRequest(
   }: { method?: string; body?: any; auth?: boolean; retried?: boolean; tokenKey?: string } = {},
 ): Promise<any> {
   const headers: Record<string, string> = { Accept: 'application/json', 'Content-Type': 'application/json' };
-  let token = auth ? getSetting(tokenKey) : null;
+  // Tokens are written ENCRYPTED (setEncryptedSetting). Reading them with the
+  // plaintext getter sent the base64 ciphertext as the Bearer JWT, so every
+  // cloud pairing call 401'd on any machine where safeStorage is available.
+  let token = auth ? getEncryptedSetting(tokenKey) : null;
   if (auth && token) headers.Authorization = `Bearer ${token}`;
 
   const res = await fetch(`${getBaseUrl()}${path}`, {
@@ -215,7 +215,7 @@ async function refreshAuthToken(refreshKey: string): Promise<boolean> {
   if (authPromise) return authPromise;
   authPromise = (async () => {
     try {
-      const refresh = getSetting(refreshKey);
+      const refresh = getEncryptedSetting(refreshKey);
       if (!refresh) return false;
       const res = await fetch(`${getBaseUrl()}/api/auth/refresh/`, {
         method: 'POST',
@@ -226,8 +226,8 @@ async function refreshAuthToken(refreshKey: string): Promise<boolean> {
       const data = (await res.json()) as { access?: string; refresh?: string };
       if (!data?.access) return false;
       const accessKey = refreshKey.replace('_refresh_', '_access_');
-      setSetting(accessKey, data.access);
-      if (data.refresh) setSetting(refreshKey, data.refresh);
+      setEncryptedSetting(accessKey, data.access);
+      if (data.refresh) setEncryptedSetting(refreshKey, data.refresh);
       return true;
     } catch {
       return false;
@@ -244,7 +244,7 @@ async function refreshPairingToken(): Promise<boolean> {
 
 export function registerPairingCloudHandlers(): void {
   ipcMain.handle('pairing:status', () => {
-    const linked = !!getSetting('pairing_access_token');
+    const linked = !!getEncryptedSetting('pairing_access_token');
     return {
       linked,
       email: getSetting('pairing_account_email') ?? null,
@@ -257,8 +257,8 @@ export function registerPairingCloudHandlers(): void {
     const data = await doAuthRequest('/api/auth/login/', { email: email.trim().toLowerCase(), password }, { method: 'POST' });
     const access = data?.access ?? data?.token;
     if (!access) throw new Error('Could not obtain an access token');
-    setSetting('pairing_access_token', access);
-    if (data?.refresh) setSetting('pairing_refresh_token', data.refresh);
+    setEncryptedSetting('pairing_access_token', access);
+    if (data?.refresh) setEncryptedSetting('pairing_refresh_token', data.refresh);
     setSetting('pairing_account_email', email.trim().toLowerCase());
     setSetting('pairing_business_name', String(data?.user?.business_name ?? ''));
     setSetting('pairing_last_error', '');
@@ -637,8 +637,8 @@ export function registerPairingCloudHandlers(): void {
       }
     }
     if (!token) throw new Error('Could not obtain an access token');
-    setSetting('join_access_token', token);
-    if (refreshToken) setSetting('join_refresh_token', refreshToken);
+    setEncryptedSetting('join_access_token', token);
+    if (refreshToken) setEncryptedSetting('join_refresh_token', refreshToken);
 
     // 3) Accept the invitation for THIS machine's hub device.
     const deviceName = String(input?.deviceName ?? '').trim() || 'Shega Desktop';
@@ -668,7 +668,7 @@ export function registerPairingCloudHandlers(): void {
 
   ipcMain.handle('join:status', async (_e, invitationId?: number) => {
     const id = invitationId ?? Number(getSetting('join_invitation_id') || 0);
-    const token = getSetting('join_access_token');
+    const token = getEncryptedSetting('join_access_token');
 
     // LAN join: poll the owner's hub (the session recorded at submit time) for
     // the approval decision — the mobile and desktop hubs both answer with
@@ -696,7 +696,7 @@ export function registerPairingCloudHandlers(): void {
           if (record.assignedAvatar) setSetting('join_assigned_avatar', String(record.assignedAvatar));
           if (record.assignedRole) setSetting('join_role', String(record.assignedRole));
           if (record.assignedPermissions) setSetting('join_assigned_permissions', JSON.stringify(record.assignedPermissions));
-          if (res?.pairingToken) setSetting('join_lan_token', String(res.pairingToken));
+          if (res?.pairingToken) setEncryptedSetting('join_lan_token', String(res.pairingToken));
           // Keep the session's host/port so post-activation sync (and the P2P
           // manager's fallback) can reach the owner's hub without mDNS.
           if (session.host) setSetting('join_lan_host', String(session.host));
@@ -819,10 +819,11 @@ export function registerPairingCloudHandlers(): void {
       const assignedPerms = getSetting('join_assigned_permissions') || null;
       const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get(username) as any;
       if (!existing) {
-        db.prepare('INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)').run(
+        db.prepare('INSERT INTO admins (name, username, pin, pinLength, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
           displayName,
           username,
           joinHashPin(pinStr),
+          PIN_LENGTH,
           role,
           assignedPerms || JSON.stringify(['dashboard', 'inventory', 'sales', 'customers', 'analytics']),
           null,
@@ -841,14 +842,14 @@ export function registerPairingCloudHandlers(): void {
         db.prepare(`UPDATE admins SET ${sets.join(', ')} WHERE username = ?`).run(...vals);
       }
       // LAN pairing grant (owner hub token) is handed off where sync reads it.
-      const lanToken = getSetting('join_lan_token');
-      if (lanToken) setSetting('lan_pairing_token', lanToken);
+      const lanToken = getEncryptedSetting('join_lan_token');
+      if (lanToken) setEncryptedSetting('lan_pairing_token', lanToken);
       // Preserve the owner-hub endpoint for post-activation sync (the wipe
       // below clears every other join_ setting).
       const lanHost = getSetting('join_lan_host');
       const lanPort = getSetting('join_lan_port');
       db.prepare("DELETE FROM settings WHERE key LIKE 'join_%'").run();
-      if (lanToken) setSetting('lan_pairing_token', lanToken);
+      if (lanToken) setEncryptedSetting('lan_pairing_token', lanToken);
       if (lanHost) setSetting('lan_owner_host', lanHost);
       if (lanPort) setSetting('lan_owner_port', lanPort);
       // Kick one immediate pull from the owner's hub so the joiner's data
@@ -856,12 +857,30 @@ export function registerPairingCloudHandlers(): void {
       if (lanHost && lanToken) {
         (async () => {
           try {
-            const { syncWithMobileHub } = await import('./sync/mobile-hub-client');
             const host = String(lanHost);
             const port = Number(lanPort || 0);
             if (port === 5759) {
               // Mobile owner hub: TCP protocol with the granted pairing token.
+              const { syncWithMobileHub } = await import('./sync/mobile-hub-client');
               await syncWithMobileHub({ host, port, pairingToken: lanToken, deviceId: '', name: '', addresses: [host] } as any);
+            } else if (port === 5757) {
+              // Desktop owner hub: HTTP /sync/pull. The previous code only
+              // handled port 5759, so joining a DESKTOP owner left the joiner
+              // waiting for the next periodic mDNS cycle (up to 30s, and never
+              // at all when multicast is blocked) before any data arrived — the
+              // "paired but the business is empty" report.
+              const { ensureHubDeviceId } = await import('./sync-hub');
+              const { applyRemoteChanges } = await import('./sync-hub');
+              const hubId = ensureHubDeviceId();
+              const res = await fetch(
+                `http://${host}:${port}/sync/pull?device=${encodeURIComponent(hubId)}&since=0&token=${encodeURIComponent(String(lanToken))}`,
+              );
+              if (!res.ok) throw new Error(`pull returned ${res.status}`);
+              const data = await res.json() as { ok?: boolean; changes?: any[] };
+              if (data.ok && Array.isArray(data.changes) && data.changes.length) {
+                const result = applyRemoteChanges(hubId, data.changes);
+                console.log(`[join:activate] pulled ${data.changes.length} changes from desktop owner hub (applied ${result.applied}, conflicts ${result.conflicts})`);
+              }
             }
           } catch (e: any) {
             console.warn('Post-activation pull from owner hub failed:', e?.message);
@@ -891,10 +910,11 @@ export function registerPairingCloudHandlers(): void {
       } catch { /* identity lookup is best-effort */ }
       const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get(username) as any;
       if (!existing) {
-        db.prepare('INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)').run(
+        db.prepare('INSERT INTO admins (name, username, pin, pinLength, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
           displayName,
           username,
           joinHashPin(pinStr),
+          PIN_LENGTH,
           assignedRole || 'cashier',
           assignedPerms || JSON.stringify(['dashboard', 'inventory', 'sales', 'customers', 'analytics']),
           null,
@@ -933,18 +953,29 @@ export function registerPairingCloudHandlers(): void {
     const displayName = joinName || getSetting('join_display_name') || username.split('@')[0];
     const cloudAvatar = (joinAvatar || getSetting('join_assigned_avatar')) ?? null;
     const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get(username) as any;
+    // The role must be the one the OWNER assigned at approval, never a local
+    // default. Hardcoding 'admin' here made every cloud joiner an owner: the
+    // owner predicate is true for 'admin' in login-users.ts, user-bridge.ts,
+    // subscription-backend.ts and ipc-handlers.ts, and user-bridge.ts projects
+    // it into the SYNCED `users` table as role 'owner' / isOwner 1 — which then
+    // propagated back to the real owner's device and shadowed their identity.
+    const cloudRole = getSetting('join_role') || 'cashier';
     if (!existing) {
-      db.prepare('INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)').run(
+      db.prepare('INSERT INTO admins (name, username, pin, pinLength, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
         displayName,
         username,
         joinHashPin(pinStr),
-        'admin',
+        PIN_LENGTH,
+        cloudRole,
         JSON.stringify(['dashboard', 'inventory', 'sales', 'expenses', 'customers', 'analytics', 'adjustments', 'warehouses', 'shipments']),
         null,
       );
       if (cloudAvatar) {
         try { db.prepare('UPDATE admins SET avatar = ? WHERE username = ?').run(cloudAvatar, username); } catch { /* column-guarded */ }
       }
+    } else if (getSetting('join_role')) {
+      // Already created by a previous attempt: re-apply the owner-assigned role.
+      try { db.prepare('UPDATE admins SET role = ? WHERE username = ?').run(cloudRole, username); } catch { /* column-guarded */ }
     }
 
     // Join state consumed — clear tokens so nothing account-scoped lingers.

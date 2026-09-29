@@ -5,6 +5,7 @@ import {
   CheckCircle, XCircle, ArrowRight, Navigation
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
+import { useIsViewOnly } from '../context/ViewOnlyContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
@@ -37,6 +38,7 @@ const Shipments: React.FC = () => {
     origin: '', destination: '', driverName: '', driverPhone: '',
     vehicleInfo: '', notes: '', scheduledDate: ''
   });
+  const isViewOnly = useIsViewOnly();
 
   useEffect(() => { loadShipments(); }, []);
 
@@ -49,7 +51,8 @@ const Shipments: React.FC = () => {
     } catch (err) { console.error(err); }
   };
 
-  const openCreate = () => {
+const openCreate = () => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     setEditingShipment(null);
     setForm({ origin: '', destination: '', driverName: '', driverPhone: '', vehicleInfo: '', notes: '', scheduledDate: '' });
     setShowShipmentModal(true);
@@ -73,7 +76,8 @@ const Shipments: React.FC = () => {
     } catch (err) { console.error(err); }
   };
 
-  const handleSave = async () => {
+const handleSave = async () => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     if (!form.destination.trim()) return toast.error(t('shipments.fill_required'));
     try {
       if (editingShipment) {
@@ -88,7 +92,8 @@ const Shipments: React.FC = () => {
     } catch (err: any) { toast.error(err.message); }
   };
 
-  const handleStatusChange = async (id: number, status: string) => {
+const handleStatusChange = async (id: number, status: string) => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     try {
       await window.api.updateShipmentStatus(id, status);
       toast.success(t('shipments.status_updated'));
@@ -97,7 +102,8 @@ const Shipments: React.FC = () => {
     } catch (err: any) { toast.error(err.message); }
   };
 
-  const handleDelete = async () => {
+const handleDelete = async () => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     if (!deleteTarget) return;
     try {
       await window.api.deleteShipment(deleteTarget.id);

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Bell, ChevronDown, User, LogOut, Settings, Moon, Sun, Camera, Check } from 'lucide-react';
+import { Search, Bell, ChevronDown, LogOut, Settings, Moon, Sun, Camera, Check } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
 import { Button } from './ui/button';
@@ -16,6 +16,7 @@ import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
 import { toast } from 'sonner';
 import defaultAvatar from "../assets/company.png"
+import { displayUsername } from '../lib/username';
 
 // Import profile images
 const profileImages = (import.meta as any).glob('../assets/profile/*.png', { eager: true, import: 'default' });
@@ -119,7 +120,7 @@ const Header: React.FC<HeaderProps> = () => {
             <DropdownMenuContent align="end" className="w-56 mt-2 rounded-2xl bg-card/95 backdrop-blur-xl border-white/10 shadow-2xl p-2">
               <DropdownMenuLabel className="px-3 py-2">
                 <p className="text-xs font-black uppercase tracking-widest text-foreground">{currentAdmin?.name || 'Master Admin'}</p>
-                <p className="text-xs font-medium text-muted-foreground">@{currentAdmin?.username || 'admin'}</p>
+                <p className="text-xs font-medium text-muted-foreground">{displayUsername(currentAdmin?.username, 'admin')}</p>
               </DropdownMenuLabel>
               <DropdownMenuSeparator className="bg-border/50 mx-2" />
               <DropdownMenuItem onClick={() => setIsAvatarOpen(true)} className="rounded-xl px-3 py-2.5 focus:bg-primary focus:text-primary-foreground cursor-pointer transition-colors mt-1">

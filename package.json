@@ -25,7 +25,6 @@
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
     "@serialport/parser-delimiter": "^13.0.0",
-    "@shega/shared": "file:../shega-shared",
     "@tanstack/react-query": "^5.60.0",
     "@tanstack/react-table": "^8.21.3",
     "@tanstack/react-virtual": "^3.11.0",
@@ -59,6 +58,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",
+    "@shega/shared": "file:../shega-shared",
     "@tailwindcss/postcss": "^4.2.4",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^26.2.0",
@@ -82,14 +82,37 @@
   "build": {
     "appId": "com.shega.inventory",
     "productName": "Shega",
-    "win": {
-      "target": "nsis",
-      "icon": "src/assets/images/logo.ico",
-      "signAndEditExecutable": true
+    "directories": {
+      "output": "dist"
     },
-    "asar": false,
+    "files": [
+      "out/**/*",
+      "package.json",
+      "!node_modules/@shega/shared/**"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/serialport/**",
+      "**/node_modules/@serialport/**",
+      "**/node_modules/usb/**",
+      "**/node_modules/node-datachannel/**",
+      "**/*.node"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "src/assets/images/logo.ico"
+    },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true
     },
     "publish": {

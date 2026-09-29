@@ -6,6 +6,7 @@ import { join } from 'path';
 import { initDB, foldPeerBusinessDataIntoDefault } from './database';
 import { registerIPCHandlers } from './ipc-handlers';
 import { installViewOnlyGate } from './view-only-gate';
+import { installPinChangeGate } from './pin-change-gate';
 import { reconcileUserBridge } from './user-bridge';
 import { appUpdater } from './updater';
 import { SyncHub, SYNC_PORT, syncHubBus } from './sync-hub';
@@ -135,6 +136,14 @@ function createWindow() {
 app.whenReady().then(() => {
   try {
     initDB();
+  // Re-encrypt any secret still sitting in the settings table as plaintext from
+  // before safeStorage was introduced. Best-effort: a failure here must not
+  // block boot, and already-encrypted values are left untouched.
+  try {
+    const { migrateAllSecretSettings } = require('./secure-settings');
+    const migrated = migrateAllSecretSettings();
+    if (migrated.length) logger.info('secret settings re-encrypted', { keys: migrated });
+  } catch { /* safeStorage unavailable — values stay as-is */ }
   // Fold any peer-imported business data into the hub's default business so a
   // joined device's standalone business can't split the shared dataset.
   foldPeerBusinessDataIntoDefault();
@@ -143,11 +152,31 @@ app.whenReady().then(() => {
   // read-only account (expired / rejected / unapproved payment) cannot write
   // business data through the main process.
   installViewOnlyGate();
+  // A legacy (pre-6-digit) account is verified at login but must replace its PIN
+  // before it can write business data, even if it reaches an IPC channel directly.
+  installPinChangeGate();
   registerIPCHandlers();
   registerPairingCloudHandlers();
   registerCloudSyncHandlers();
   registerPeripheralHandlers();
   registerMockPeripheralHandlers();
+  // Unified hardware layer: discovery, connection state, auto-reconnect and
+  // printing. Detection is best-effort — a machine with no peripherals, or one
+  // where a COM port is locked, must still boot normally.
+  import('./hardware-ipc')
+    .then(({ registerHardwareIpcHandlers }) => registerHardwareIpcHandlers())
+    .catch(() => {});
+  // Flush any receipt queued before the last shutdown.
+  import('./print-spooler-instance')
+    .then(({ printSpooler }) => printSpooler.start())
+    .catch(() => {});
+  import('./hardware/manager')
+    .then(async ({ hardwareManager }) => {
+      await hardwareManager.initialize();
+    })
+    .catch((err) => {
+      console.warn('[hardware] discovery unavailable:', err?.message || err);
+    });
   import('./sync/pairing-beacon').then(({ registerPairingBeaconHandlers }) => registerPairingBeaconHandlers()).catch(() => {});
   registerMorHandlers();
   syncHub.start(SYNC_PORT);

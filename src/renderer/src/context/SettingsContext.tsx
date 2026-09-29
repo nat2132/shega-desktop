@@ -113,6 +113,14 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     });
     refreshBusiness();
     refreshBusinesses();
+
+    const unsub = window.api?.onDataChanged?.(() => {
+      refreshBusiness();
+      refreshBusinesses();
+    });
+    return () => {
+      if (typeof unsub === 'function') unsub();
+    };
   }, []);
 
   // Save settings when they change

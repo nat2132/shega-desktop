@@ -16,10 +16,18 @@ import {
   DeviceJoinRequestRecord,
   DeviceJoinDecision,
 } from '@shega/shared';
+import { registerPeer, releasePeer, pruneAckedOutbox } from './ack-store';
 
 const now = () => new Date().toISOString();
 const normalizeCode = (code: string) => String(code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-const CODE_EQ = "replace(replace(upper(coalesce(code,'')), '-', ''), ' ', '') = ?";
+/**
+ * SQL predicate matching a `code` column against a {@link normalizeCode}-normalized
+ * parameter. Both sides are normalized declaratively because SQLite has no
+ * regexp. Covers dashed codes, dashless codes written by older builds, and
+ * codes typed with spaces or lowercase, so a valid join request always finds
+ * its row. Keep in sync with INVITE_CODE_EQ in shega-mobile/src/services/invitationService.ts.
+ */
+const CODE_EQ = "replace(replace(replace(upper(coalesce(code,'')), '-', ''), ' ', ''), '_', '') = ?";
 
 const columnCache = new Map<string, Set<string>>();
 function tableColumns(table: string): Set<string> {
@@ -54,12 +62,13 @@ export function ensureDeviceRequestsColumns(): void {
         assigned_name TEXT,
         assigned_avatar TEXT,
         assigned_permissions TEXT,
-        joiner_avatar TEXT
+        joiner_avatar TEXT,
+        joiner_public_key TEXT
       );
     `);
   } catch { /* ignore */ }
 
-  const cols = ['assigned_name TEXT', 'assigned_avatar TEXT', 'assigned_permissions TEXT', 'joiner_avatar TEXT'];
+  const cols = ['assigned_name TEXT', 'assigned_avatar TEXT', 'assigned_permissions TEXT', 'joiner_avatar TEXT', 'joiner_public_key TEXT'];
   for (const col of cols) {
     try {
       db.exec(`ALTER TABLE device_requests ADD COLUMN ${col}`);
@@ -259,11 +268,40 @@ function applyApproval(rec: DeviceJoinRequestRecord, decision?: DeviceJoinDecisi
     } catch { /* column-guarded installs skip gracefully */ }
   }
   upsertJoinDevice(rec, 'active', userId, role, bizId);
+  // Approval grants this device access to synced data, so it joins the receipt
+  // roster immediately. Registering late is not safe: a device approved here
+  // that is not in the roster does not gate pruning, so the hub could discard
+  // rows this device has not pulled — and with a non-zero cursor it would never
+  // ask for them again.
+  registerPeer(rec.joinerDeviceId, { name: rec.joinerName || undefined, platform: rec.platform ?? 'mobile' });
   markInvitationUsed(rec.code ?? null);
+
+  // Issue a signed membership credential for the approved joiner.
+  // The credential rides on the approval payload (join status/notify) so the
+  // joiner can prove possession on subsequent connections.
+  if (rec.joinerPublicKey) {
+    try {
+      const { issueJoinerCredential } = require('./hub-credentials');
+      issueJoinerCredential({
+        businessId: String(rec.businessId),
+        deviceId: rec.joinerDeviceId,
+        devicePublicKey: rec.joinerPublicKey,
+        role,
+      });
+    } catch (e) {
+      console.warn('[device-requests] credential issuance failed:', e);
+    }
+  }
 }
 
 function applyRejection(rec: DeviceJoinRequestRecord): void {
   upsertJoinDevice(rec, 'revoked', null, null, resolveBusinessId(rec.businessId));
+  // A rejection is also a revoke: release the hold and drain whatever the hub
+  // was keeping for this device. A rejected device has no path back in
+  // (isDeviceRevoked refuses it even with a valid token), so holding its rows
+  // would leak outbox space indefinitely.
+  releasePeer(rec.joinerDeviceId);
+  pruneAckedOutbox();
 }
 
 function rowToRecord(row: any): DeviceJoinRequestRecord {
@@ -288,6 +326,7 @@ function rowToRecord(row: any): DeviceJoinRequestRecord {
     try { rec.assignedPermissions = JSON.parse(row.assigned_permissions); } catch { /* ignore */ }
   }
   if (row.joiner_avatar) rec.assignedAvatar = row.joiner_avatar;
+  if (row.joiner_public_key) rec.joinerPublicKey = row.joiner_public_key;
   return rec;
 }
 
@@ -297,6 +336,10 @@ function rowToRecord(row: any): DeviceJoinRequestRecord {
  *  request landed has an owner-intent record parked here; the joiner's later
  *  submit must NOT fork a duplicate that would split the STATUS poll. */
 export function submitDeviceJoinRequest(req: DeviceJoinRequest): DeviceJoinRequestRecord {
+  // The INSERT below names joiner_public_key, so the migration has to have run
+  // even when the table already exists from an older build — otherwise the
+  // statement throws and the joiner gets no acknowledgement at all.
+  ensureDeviceRequestsColumns();
   const resolvedId = resolveBusinessId(String(req.businessId ?? ''));
   const canonicalBizId = resolvedId != null ? String(resolvedId) : String(req.businessId || 1);
 
@@ -308,8 +351,12 @@ export function submitDeviceJoinRequest(req: DeviceJoinRequest): DeviceJoinReque
     // before the joiner resolved an invite). Fill in what the submit now knows.
     if (!existing.code && req.code) {
       db.prepare(
-        'UPDATE device_requests SET code = ?, joiner_name = COALESCE(?, joiner_name), joiner_model = COALESCE(?, joiner_model), joiner_user = COALESCE(?, joiner_user) WHERE id = ?'
-      ).run(req.code, req.joinerName ?? null, req.joinerModel ?? null, req.joinerUser, existing.id);
+        'UPDATE device_requests SET code = ?, joiner_name = COALESCE(?, joiner_name), joiner_model = COALESCE(?, joiner_model), joiner_user = COALESCE(?, joiner_user), joiner_public_key = COALESCE(?, joiner_public_key) WHERE id = ?'
+      ).run(normalizeCode(req.code), req.joinerName ?? null, req.joinerModel ?? null, req.joinerUser, req.joinerPublicKey ?? null, existing.id);
+    } else if (req.joinerPublicKey) {
+      // Refresh the public key if the existing row lacks one
+      db.prepare('UPDATE device_requests SET joiner_public_key = ? WHERE id = ?')
+        .run(req.joinerPublicKey, existing.id);
     }
     return rowToRecord(db.prepare('SELECT * FROM device_requests WHERE id = ?').get(existing.id));
   }
@@ -317,11 +364,11 @@ export function submitDeviceJoinRequest(req: DeviceJoinRequest): DeviceJoinReque
   const id = randomBytes(12).toString('hex');
   db.prepare(
     `INSERT INTO device_requests
-       (id, business_id, code, joiner_device_id, joiner_name, joiner_model, joiner_user, role, platform, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+       (id, business_id, code, joiner_device_id, joiner_name, joiner_model, joiner_user, role, platform, status, created_at, joiner_public_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
   ).run(
-    id, canonicalBizId, req.code ?? null, req.joinerDeviceId, req.joinerName ?? null,
-    req.joinerModel ?? null, req.joinerUser, req.role ?? 'cashier', req.platform ?? 'mobile', now()
+    id, canonicalBizId, req.code ? normalizeCode(req.code) : null, req.joinerDeviceId, req.joinerName ?? null,
+    req.joinerModel ?? null, req.joinerUser, req.role ?? 'cashier', req.platform ?? 'mobile', now(), req.joinerPublicKey ?? null
   );
   const rec = rowToRecord(db.prepare('SELECT * FROM device_requests WHERE id = ?').get(id));
   // Surface the joiner device on the hub roster so the desktop owner's
@@ -569,6 +616,12 @@ export function getDeviceJoinRequestByDevice(joinerDeviceId: string): DeviceJoin
 
 export function getDeviceJoinRequestBy(code: string, joinerDeviceId: string): DeviceJoinRequestRecord | null {
   const n = normalizeCode(code);
+  // An empty/garbage code normalizes to '', and CODE_EQ treats a NULL `code`
+  // column as '' too — so without this guard a junk code ("!!!", "", " ") would
+  // match a code-LESS owner-intent row and the joiner would be handed a request
+  // it never submitted. Code-less admission goes through
+  // getDeviceJoinRequestByDeviceId() instead.
+  if (!n) return null;
   const row = db.prepare(
     `SELECT * FROM device_requests WHERE ${CODE_EQ} AND joiner_device_id = ?
      ORDER BY created_at DESC LIMIT 1`
@@ -633,13 +686,16 @@ export function publishInvitation(inv: {
   db.prepare(
     `INSERT OR REPLACE INTO invitations (id, business_id, code, name, role, platform, created_by, expires_at, status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'open', ?)`
-  ).run(inv.id, inv.businessId, inv.code, inv.name ?? null, inv.role ?? null, inv.platform ?? 'mobile',
+  ).run(inv.id, inv.businessId, inv.code ? normalizeCode(inv.code) : inv.code, inv.name ?? null, inv.role ?? null, inv.platform ?? 'mobile',
     inv.expiresAt ?? null, now());
 }
 
 /** Resolve a code to an open invitation (used by the joiner device). */
 export function resolveInvitation(code: string): HubInvitation | null {
   const n = normalizeCode(code);
+  // Same NULL-vs-empty-code hazard as getDeviceJoinRequestBy: reject a code that
+  // carries no alphanumerics rather than letting it match a blank-code row.
+  if (!n) return null;
   const row = db.prepare(
     `SELECT * FROM invitations WHERE ${CODE_EQ} AND status = 'open'`
   ).get(n) as any;

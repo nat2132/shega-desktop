@@ -21,6 +21,7 @@ import Modal from '../components/Modal';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { RETURN_REASONS, OVERRIDE_REASONS, getDiscountCap } from '@shega/shared';
 import { useAuth } from '../context/AuthContext';
+import { useIsViewOnly } from '../context/ViewOnlyContext';
 import { exportCSV, exportPDF } from '../lib/export-utils';
 import { computeTrend } from '../lib/trend-utils';
 import { toast } from 'sonner';
@@ -107,6 +108,7 @@ const Sales: React.FC = () => {
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const { currentAdmin, isCashier } = useAuth();
   const [overrideReason, setOverrideReason] = useState('');
+  const isViewOnly = useIsViewOnly();
 
   useEffect(() => {
     loadData();
@@ -119,13 +121,13 @@ const Sales: React.FC = () => {
   useEffect(() => {
     startBarcodeWedge();
     const onScan = (e: Event) => {
-      const code = (e as CustomEvent<string>).detail;
+      // `detail` is the unified BarcodeScanEvent for hardware scanners, but the
+      // mock/dev dispatch still sends a bare string — accept both.
+      const detail = (e as CustomEvent<string | { barcode?: string }>).detail;
+      const code = typeof detail === 'string' ? detail : detail?.barcode;
       if (!code) return;
       window.api?.getItemByBarcode(code).then((item: any) => {
-        if (!item) {
-          toast.error(`Product not found for barcode ${code}`, { description: 'Search manually or add the product in Inventory.' });
-          return;
-        }
+        if (!item) return;
         addToCart(String(item.id));
         toast.success(`${item.name} added to cart`);
       });
@@ -398,6 +400,7 @@ const Sales: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     if (cart.length === 0) return;
 
     const cartSubtotal = cart.reduce((sum, c) => sum + (c.quantity * c.price - c.discount + c.vat), 0);
@@ -450,6 +453,7 @@ const Sales: React.FC = () => {
   const [editingId, setEditingId] = useState<number | null>(null);
 
   const handleEdit = (sale: Sale) => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     setEditingId(sale.id);
     const item = items.find(i => i.id === sale.itemId);
     if (item) {
@@ -476,6 +480,7 @@ const Sales: React.FC = () => {
   };
 
   const handleDelete = async (id: number) => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     await window.api?.deleteSale(id);
     loadData();
   };
@@ -585,6 +590,7 @@ const Sales: React.FC = () => {
   };
 
   const handleReturn = async (e: React.FormEvent) => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     e.preventDefault();
     if (!returnSale) return;
     const reason = returnReason === 'other' && returnCustomReason.trim()
@@ -641,6 +647,7 @@ const Sales: React.FC = () => {
   };
 
   const handleSaveDraft = async () => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     if (cart.length === 0) return;
     await window.api?.saveDraftSale({
       items: cart,
@@ -655,6 +662,7 @@ const Sales: React.FC = () => {
   };
 
   const deleteDraft = async (id: number) => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     await window.api?.deleteDraftSale(id);
     setDrafts(prev => prev.filter(d => d.id !== id));
   };

@@ -146,6 +146,8 @@ const api = {
   getLoginUsers: () => ipcRenderer.invoke('get-login-users'),
   getLastLoginUser: () => ipcRenderer.invoke('get-last-login-user'),
   loginByUser: (source: 'admin' | 'employee' | 'roster', id: number, pin: string) => ipcRenderer.invoke('login-by-user', source, id, pin),
+  clearSession: () => ipcRenderer.invoke('clear-session'),
+  setOwnPin: (source: 'admin' | 'employee' | 'roster', id: number, newPin: string, confirmPin: string) => ipcRenderer.invoke('set-own-pin', source, id, newPin, confirmPin),
   getCurrentAdmin: (id: number, isEmployee?: boolean) => ipcRenderer.invoke('get-current-admin', id, isEmployee),
   insertAdmin: (admin: any) => ipcRenderer.invoke('insert-admin', admin),
   updateAdmin: (id: number, admin: any) => ipcRenderer.invoke('update-admin', id, admin),
@@ -299,6 +301,40 @@ const api = {
   setPrinterConfig: (cfg: any) => ipcRenderer.invoke('set-printer-config', cfg),
   parseScaleReading: (line: string) => ipcRenderer.invoke('parse-scale-reading', line),
 
+  // Hardware (Unified Peripherals)
+  hardwarePrinterGetStatus: () => ipcRenderer.invoke('hardware:printer:getStatus'),
+  hardwarePrinterGetConfig: () => ipcRenderer.invoke('hardware:printer:getConfig'),
+  hardwarePrinterSaveConfig: (config: any) => ipcRenderer.invoke('hardware:printer:saveConfig', config),
+  hardwarePrinterPrintReceipt: (payload: any) => ipcRenderer.invoke('hardware:printer:printReceipt', payload),
+  hardwarePrinterPrintTestPage: (paperWidth?: 58 | 80) => ipcRenderer.invoke('hardware:printer:printTestPage', paperWidth),
+  hardwarePrinterPrintLabel: (payload: any) => ipcRenderer.invoke('hardware:printer:printLabel', payload),
+  hardwarePrinterOpenDrawer: () => ipcRenderer.invoke('hardware:printer:openDrawer'),
+  hardwarePrinterGetAvailableTransports: () => ipcRenderer.invoke('hardware:printer:getAvailableTransports'),
+  hardwareScannerStart: () => ipcRenderer.invoke('hardware:scanner:start'),
+  hardwareScannerStop: () => ipcRenderer.invoke('hardware:scanner:stop'),
+  hardwareScannerGetConfig: () => ipcRenderer.invoke('hardware:scanner:getConfig'),
+  hardwareScannerUpdateConfig: (config: any) => ipcRenderer.invoke('hardware:scanner:updateConfig', config),
+  hardwareScannerListSerialPorts: () => ipcRenderer.invoke('hardware:scanner:listSerialPorts'),
+  hardwareScannerListUsbHidDevices: () => ipcRenderer.invoke('hardware:scanner:listUsbHidDevices'),
+  hardwareScannerSimulateScan: (code: string) => ipcRenderer.invoke('hardware:scanner:simulateScan', code),
+  hardwareSettingsGet: () => ipcRenderer.invoke('hardware:settings:get'),
+  hardwareSettingsSave: (settings: any) => ipcRenderer.invoke('hardware:settings:save', settings),
+  // Persistent print spooler (pending / failed receipts)
+  hardwareSpoolerList: (status?: 'pending' | 'done' | 'failed', limit?: number) => ipcRenderer.invoke('hardware:spooler:list', status, limit),
+  hardwareSpoolerRetry: (id: number) => ipcRenderer.invoke('hardware:spooler:retry', id),
+  hardwareSpoolerDiscard: (id: number) => ipcRenderer.invoke('hardware:spooler:discard', id),
+  hardwareSpoolerClearCompleted: () => ipcRenderer.invoke('hardware:spooler:clearCompleted'),
+  onHardwareScannerScan: (cb: (result: any) => void) => {
+    const listener = (_: any, result: any) => cb(result);
+    ipcRenderer.on('hardware:scanner:scan', listener);
+    return () => { ipcRenderer.removeListener('hardware:scanner:scan', listener); };
+  },
+  onHardwareScannerError: (cb: (error: any) => void) => {
+    const listener = (_: any, error: any) => cb(error);
+    ipcRenderer.on('hardware:scanner:error', listener);
+    return () => { ipcRenderer.removeListener('hardware:scanner:error', listener); };
+  },
+
   // Mock Peripherals (USE_MOCK_PERIPHERALS dev harness)
   mockPeripheralStatus: () => ipcRenderer.invoke('mock:status'),
   mockScan: (code?: string) => ipcRenderer.invoke('mock:scan', code),
@@ -312,6 +348,7 @@ const api = {
   syncVerify: () => ipcRenderer.invoke('sync:verify'),
   syncLog: (limit: number) => ipcRenderer.invoke('sync:log', limit),
   syncResync: (deviceId: string) => ipcRenderer.invoke('sync:resync', deviceId),
+  syncDiagnostics: () => ipcRenderer.invoke('sync:diagnostics'),
 
   // Audit (Phase 4)
   verifyAuditChain: () => ipcRenderer.invoke('verify-audit-chain'),
@@ -391,8 +428,14 @@ const api = {
   backendSession: (): Promise<any> => ipcRenderer.invoke('backend-session'),
   backendSync: (): Promise<any> => ipcRenderer.invoke('backend-sync'),
   backendPlans: () => ipcRenderer.invoke('backend-plans'),
+  backendMyPayments: (): Promise<any> => ipcRenderer.invoke('backend-my-payments'),
   backendStartTrial: (args: { planId?: number }): Promise<any> => ipcRenderer.invoke('backend-start-trial', args),
   backendSubmitPayment: (args: { planId: number; transactionId: string; paymentMethod?: string; description?: string; paymentType?: string; quantity?: number }): Promise<any> => ipcRenderer.invoke('backend-submit-payment', args),
+  backendRegisterDevice: (args: { licenseId: number; device_id: string; device_name?: string; operating_system?: string; device_type: 'MOBILE' | 'DESKTOP'; idempotency_key?: string }): Promise<any> => ipcRenderer.invoke('backend-register-device', args),
+  backendCreateBusiness: (args: { licenseId: number; name: string; idempotency_key?: string }): Promise<any> => ipcRenderer.invoke('backend-create-business', args),
+  backendCostBreakdown: (args: { licenseId: number }): Promise<any> => ipcRenderer.invoke('backend-cost-breakdown', args),
+  backendDeviceEntitlements: (args: { licenseId: number }): Promise<any> => ipcRenderer.invoke('backend-device-entitlements', args),
+  backendBusinessEntitlements: (args: { licenseId: number }): Promise<any> => ipcRenderer.invoke('backend-business-entitlements', args),
 
   // Debug
   debugPing: () => ipcRenderer.invoke('debug:ping'),
@@ -482,7 +525,7 @@ const api = {
   joinCancel: () => ipcRenderer.invoke('join:cancel'),
   // Bluetooth-style pairing-beacon discovery
   pairBeaconStart: (invite: any) => ipcRenderer.invoke('pair-beacon:start', invite),
-  pairBeaconDiscoverable: (on: boolean, businessName?: string, role?: 'owner' | 'team') => ipcRenderer.invoke('pair-beacon:discoverable', on, businessName, role),
+  pairBeaconDiscoverable: (on: boolean, businessName?: string, role?: 'owner' | 'team', publish?: boolean) => ipcRenderer.invoke('pair-beacon:discoverable', on, businessName, role, publish),
   pairBeaconStop: () => ipcRenderer.invoke('pair-beacon:stop'),
   pairBeaconNearby: () => ipcRenderer.invoke('pair-beacon:nearby'),
   onDeviceEvent: (cb: (e: any) => void) => {

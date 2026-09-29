@@ -1,7 +1,8 @@
 import React from 'react';
-import { Sparkles, Crown, ArrowRight } from 'lucide-react';
+import { Sparkles, Crown, ArrowRight, Hourglass } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useSettings } from '../context/SettingsContext';
+import { usePaymentStatus } from '../hooks/usePaymentStatus';
 import {
   Dialog,
   DialogContent,
@@ -21,10 +22,11 @@ interface PremiumUpsellModalProps {
 const PremiumUpsellModal: React.FC<PremiumUpsellModalProps> = ({ open, onClose, feature }) => {
   const { t } = useSettings();
   const navigate = useNavigate();
+  const { hasPendingSubscription: hasPending } = usePaymentStatus();
 
   const handleUpgrade = () => {
     onClose();
-    navigate('/subscription');
+    navigate('/subscription/payment');
   };
 
   return (
@@ -61,16 +63,29 @@ const PremiumUpsellModal: React.FC<PremiumUpsellModalProps> = ({ open, onClose, 
 
         <div className="flex gap-2 pt-2">
           <Button variant="outline" size="sm" onClick={onClose} className="rounded-xl text-xs font-black uppercase tracking-widest flex-1">
-            {t('contact_us') || 'Close'}
+            {hasPending ? t('subscription.payment_pending_short', 'Not now') : t('contact_us') || 'Close'}
           </Button>
-          <Button
-            size="sm"
-            onClick={handleUpgrade}
-            className="rounded-xl text-xs font-black uppercase tracking-widest flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
-          >
-            {t('premium.locked_upgrade')} <ArrowRight className="h-3 w-3 ml-1" />
-          </Button>
+          {/* A payment is already with the admin, so offering "Upgrade" here
+              would invite a second submission for the same thing. */}
+          {!hasPending && (
+            <Button
+              size="sm"
+              onClick={handleUpgrade}
+              className="rounded-xl text-xs font-black uppercase tracking-widest flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
+            >
+              {t('premium.locked_upgrade')} <ArrowRight className="h-3 w-3 ml-1" />
+            </Button>
+          )}
         </div>
+        {hasPending && (
+          <p className="flex items-start gap-1.5 text-[11px] font-semibold text-amber-500">
+            <Hourglass className="mt-0.5 h-3 w-3 shrink-0" />
+            {t(
+              'subscription.upgrade_hidden_pending',
+              'Your payment is already submitted and waiting for approval. We will activate it as soon as an admin reviews it.',
+            )}
+          </p>
+        )}
       </DialogContent>
     </Dialog>
   );

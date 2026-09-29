@@ -308,6 +308,60 @@ wsSyncServer.start(WS_TEST_PORT);
   wsSyncServer.stop();
 }
 
+// --- Invite-code normalization regression (device-join approval) -------------
+// Codes are DISPLAYED with separators ("K2M-4NP-QW8") but reach the resolver in
+// many shapes: typed by hand with/without dashes or spaces, in any case, or sent
+// by the peer platform already canonicalized. Every comparison must normalize
+// both sides. The bug: `device_requests` rows were inserted with the raw code
+// while the approval-status lookup normalized its parameter and compared with
+// `code = ?` — so a valid pending request could never be found again and the
+// owner's approval never reached the joiner.
+// -----------------------------------------------------------------------------
+{
+  const dr = require('./src/main/sync/device-requests');
+  dr.ensureDeviceRequestsColumns();
+
+  const dashed = 'K2M-4NP-QW8';
+  const canon = 'K2M4NPQW8';
+  const joinerA = 'joiner-norm-a';
+  dr.submitDeviceJoinRequest({
+    businessId: String(bizId), code: dashed, joinerDeviceId: joinerA,
+    joinerName: 'Norm Phone', joinerUser: 'Norm Phone', role: 'cashier', platform: 'mobile',
+  } as any);
+
+  const stored = db.prepare('SELECT code FROM device_requests WHERE joiner_device_id = ?').get(joinerA) as any;
+  A('join_request_code_stored_canonical', stored?.code === canon, `stored=${stored?.code}`);
+
+  for (const variant of [dashed, canon, 'k2m 4np qw8', 'K2M_4NP_QW8', ` ${canon} `]) {
+    A('join_request_found_by_' + JSON.stringify(variant), !!dr.getDeviceJoinRequestBy(variant, joinerA)?.requestId);
+  }
+  A('join_request_wrong_code_rejected', !dr.getDeviceJoinRequestBy('ZZZ-999-XXX', joinerA));
+  A('join_request_wrong_joiner_rejected', !dr.getDeviceJoinRequestBy(dashed, 'joiner-norm-b'));
+
+  // The decisive step: the owner approves, and the joiner — polling with a
+  // differently-shaped code — must SEE the decision.
+  const recA = dr.getDeviceJoinRequestBy(canon, joinerA)!;
+  A('join_request_pending_before_decision', recA?.status === 'pending', recA?.status);
+  dr.decideDeviceJoinRequest({ requestId: recA.requestId, decision: 'approved' } as any);
+  A('join_request_approval_visible_to_joiner', dr.getDeviceJoinRequestBy('k2m 4np qw8', joinerA)?.status === 'approved');
+
+  // Invitation resolution: same normalization, and approval consumes the invite.
+  const bizUuid = (db.prepare('SELECT uuid FROM businesses WHERE id = ?').get(bizId) as any)?.uuid ?? String(bizId);
+  dr.publishInvitation({ id: 'inv-norm-1', businessId: bizUuid, code: 'SHG-1A2B3C', name: 'Cashier', role: 'cashier', platform: 'desktop' } as any);
+  for (const variant of ['SHG-1A2B3C', 'SHG1A2B3C', 'shg-1a2b3c', ' shg 1a2b3c ', 'SHG_1A2B3C']) {
+    A('invitation_resolves_' + JSON.stringify(variant), dr.resolveInvitation(variant)?.id === 'inv-norm-1');
+  }
+
+  const joinerC = 'joiner-norm-c';
+  dr.submitDeviceJoinRequest({
+    businessId: bizUuid, code: 'SHG-1A2B3C', joinerDeviceId: joinerC,
+    joinerName: 'Norm Phone C', joinerUser: 'Norm Phone C', role: 'cashier', platform: 'mobile',
+  } as any);
+  const recC = dr.getDeviceJoinRequestBy('SHG1A2B3C', joinerC)!;
+  dr.decideDeviceJoinRequest({ requestId: recC.requestId, decision: 'approved' } as any);
+  A('invitation_consumed_on_approval', (db.prepare('SELECT status FROM invitations WHERE id = ?').get('inv-norm-1') as any)?.status === 'used');
+}
+
 hub.stop();
 console.log(`\n=== E2E SUMMARY === pass=${PASSED} fail=${FAILED}`);
 process.exit(FAILED === 0 ? 0 : 1);

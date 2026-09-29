@@ -16,7 +16,80 @@ import * as crypto from 'crypto';
 import db from '../database';
 import { logger } from '../logger';
 import { ensureHubDeviceId, applyRemoteChanges, persistPeerDevice } from '../sync-hub';
+import { recordAck, pruneAckedOutbox, peerReceiptWatermark } from './ack-store';
+import { computeReceiptWatermark, unconfirmedCap, type ApplyOutcome, type ReceiptedChange } from '@shega/shared';
 import type { DiscoveredService } from './discovery';
+
+/**
+ * Builds the SYNC_PUSH payload from the desktop's own outbox rows.
+ *
+ * Exported for tests because the `client_seq` contract is load-bearing: the hub
+ * echoes per-change outcomes keyed by `client_seq`, and `appliedSeqs` (which
+ * decides which rows may be pruned) is built by matching on it. A change without
+ * it comes back as `client_seq: null`, every match misses, and unmerged rows —
+ * `pending` ones especially — would be treated as applied and then deleted.
+ */
+export function buildPushChanges(hubId: string): { changes: any[]; pushedSeqs: number[] } {
+  const outbox = db.prepare(
+    'SELECT seq, entity, entity_uuid, op, row_id, device_id FROM sync_outbox WHERE device_id = ? OR device_id IS NULL ORDER BY seq ASC LIMIT 500'
+  ).all(hubId) as any[];
+  const changes: any[] = [];
+  const pushedSeqs: number[] = [];
+  for (const r of outbox) {
+    let payload: any = {};
+    if (r.op === 'DELETE') {
+      payload = { id: r.row_id ?? null, uuid: r.entity_uuid, deleted_at: new Date().toISOString() };
+    } else if (r.row_id != null) {
+      try {
+        const row = db.prepare(`SELECT * FROM ${r.entity} WHERE id = ?`).get(r.row_id) as any;
+        if (row) payload = row;
+      } catch { /* table may not exist on this build */ }
+    }
+    if (r.op !== 'DELETE' && Object.keys(payload).length === 0) continue;
+    changes.push({
+      entity: r.entity,
+      entity_uuid: r.entity_uuid,
+      op: r.op,
+      payload,
+      device_id: hubId,
+      client_seq: r.seq,
+    });
+    pushedSeqs.push(r.seq);
+  }
+  return { changes, pushedSeqs };
+}
+
+/**
+ * Classifies pushed rows by the hub's per-change `results` and returns the
+ * highest seq this phone may be credited with holding.
+ *
+ * Two bounds apply, and both matter:
+ *   - `computeReceiptWatermark` stops at the first change the hub did not merge,
+ *     so a `pending` row (FK ordering) keeps occupying its slot in the watermark
+ *     and cannot be pruned. An unmatched result counts as not-merged: unknown is
+ *     not applied.
+ *   - `unconfirmedCap` additionally refuses to claim past rows that exist in the
+ *     outbox but were never pushed to *this* peer. The desktop outbox is shared
+ *     across devices, so seq numbers this phone never saw belong to other
+ *     authors' rows; crediting through them would let the hub delete a row the
+ *     phone was never sent. This is what previously made pruning here stall.
+ */
+export function contiguousAppliedPrefix(
+  pushedSeqs: number[],
+  results: { client_seq: number | null; status: string }[] | null,
+  opts?: { lastReceipt?: number; unpushedSeqs?: number[] },
+): { prefix: number; failed: number[] } {
+  const lastReceipt = opts?.lastReceipt ?? 0;
+  const merged: ReceiptedChange[] = pushedSeqs.map((seq) => {
+    const status = results ? results.find((r) => r.client_seq === seq)?.status : 'applied';
+    const outcome: ApplyOutcome = status === 'applied' || status === 'conflict' ? 'applied' : 'pending';
+    return { seq, outcome };
+  });
+  const ceiling = pushedSeqs.length > 0 ? Math.max(...pushedSeqs) : 0;
+  const { ackedUpto, failedSeqs } = computeReceiptWatermark(lastReceipt, merged, ceiling);
+  const cap = unconfirmedCap(lastReceipt, opts?.unpushedSeqs ?? []);
+  return { prefix: Math.min(ackedUpto, cap), failed: failedSeqs };
+}
 
 const MOBILE_HUB_PORT = 5759;
 
@@ -132,29 +205,35 @@ export async function syncWithMobileHub(peer: DiscoveredService): Promise<boolea
     }
 
     // 2. Push the desktop's unsynced outbox rows as changes.
-    const outbox = db.prepare(
-      'SELECT seq, entity, entity_uuid, op, row_id, device_id FROM sync_outbox WHERE device_id = ? OR device_id IS NULL ORDER BY seq ASC LIMIT 500'
-    ).all(hubId) as any[];
-    const changes: any[] = [];
-    const pushedSeqs: number[] = [];
-    for (const r of outbox) {
-      let payload: any = {};
-      if (r.op === 'DELETE') {
-        payload = { id: r.row_id ?? null, uuid: r.entity_uuid, deleted_at: new Date().toISOString() };
-      } else if (r.row_id != null) {
-        try {
-          const row = db.prepare(`SELECT * FROM ${r.entity} WHERE id = ?`).get(r.row_id) as any;
-          if (row) payload = row;
-        } catch { /* table may not exist on this build */ }
-      }
-      if (r.op !== 'DELETE' && Object.keys(payload).length === 0) continue;
-      changes.push({ entity: r.entity, entity_uuid: r.entity_uuid, op: r.op, payload, device_id: hubId });
-      pushedSeqs.push(r.seq);
-    }
+    const { changes, pushedSeqs } = buildPushChanges(hubId);
     if (changes.length > 0) {
       const ack = await rpc(socket, { type: 'SYNC_PUSH', payload: { changes } });
       if (ack?.type === 'SYNC_ACK') {
         logger.info('Mobile hub push', { host, pushed: ack.payload?.applied ?? 0, conflicts: ack.payload?.conflicts ?? 0 });
+        // Record what the hub actually merged. Previously this step DELETED the
+        // pushed rows outright, so a hub that rejected or deferred a change lost
+        // it permanently — the desktop believed "pushed" meant "delivered". Rows
+        // are now only eligible for deletion once every active peer has acked
+        // them, and an explicit receipt is recorded for this phone.
+        const results = Array.isArray(ack.payload?.results)
+          ? (ack.payload.results as { client_seq: number | null; status: string }[])
+          : null;
+        // The desktop outbox is shared across devices, so some rows in it belong
+        // to other authors and were deliberately not pushed to this phone. Those
+        // rows must cap the receipt, or the hub could prune a row this phone was
+        // never sent.
+        const lastReceipt = peerReceiptWatermark(peer.deviceId);
+        const pushedSet = new Set(pushedSeqs);
+        const unpushed = (db.prepare('SELECT seq FROM sync_outbox ORDER BY seq ASC').all() as any[])
+          .map((r) => Number(r.seq))
+          .filter((seq) => seq > lastReceipt && !pushedSet.has(seq));
+        const { prefix, failed } = contiguousAppliedPrefix(pushedSeqs, results, { lastReceipt, unpushedSeqs: unpushed });
+        if (prefix > lastReceipt) {
+          recordAck(peer.deviceId, prefix, failed);
+          pruneAckedOutbox();
+        }
+      } else {
+        logger.warn('Mobile hub push was not acknowledged — rows retained', { host });
       }
     }
 
@@ -171,11 +250,9 @@ export async function syncWithMobileHub(peer: DiscoveredService): Promise<boolea
       if (lastSeq > since) setCursor(peer.deviceId, lastSeq);
     }
 
-    // 4. Successful cycle — clear the pushed outbox rows so we don't resend.
-    if (pushedSeqs.length > 0) {
-      const ph = pushedSeqs.map(() => '?').join(', ');
-      db.prepare(`DELETE FROM sync_outbox WHERE seq IN (${ph})`).run(...pushedSeqs);
-    }
+    // 4. Successful cycle — the pushed rows are now eligible for pruning, but
+    // only once every active peer has acked them (see step 2). Rows are no
+    // longer deleted here: an unacked peer must still be able to collect them.
     // Persist the mobile hub as a peer device so it appears in Connected Devices
     // and we have its info for auto-reconnect.
     try {

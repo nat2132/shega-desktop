@@ -4,6 +4,11 @@ import { app } from 'electron';
 import path from 'path';
 import { existsSync, mkdirSync, unlinkSync, copyFileSync } from 'fs';
 import { BUILTIN_ROLES, PROTOCOL_VERSION } from '@shega/shared';
+import {
+  DEFAULT_ROLES as DEFAULT_ROLES_SEED,
+  ensureBusinessDefaults as ensureBusinessDefaultsFor,
+  backfillLegacyCustomerNames as backfillCustomerNamesFor,
+} from './business-defaults';
 
 const isDev = !app.isPackaged;
 const dbDir = isDev 
@@ -129,9 +134,7 @@ const ALL_PERMISSIONS = [
   'orders.view', 'orders.create', 'orders.edit', 'orders.delete', 'orders.convert', 'orders.cancel'
 ];
 
-const DEFAULT_ROLES: { name: string; description: string; permissions: string[] }[] = [
-  { name: 'Cashier', description: 'Process sales transactions', permissions: ['dashboard', 'inventory.view', 'sales.create', 'sales.invoices', 'customers.view', 'customers.add'] }
-];
+const DEFAULT_ROLES: { name: string; description: string; permissions: string[] }[] = DEFAULT_ROLES_SEED;
 
 function hashPin(pin: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -634,6 +637,7 @@ export function initDB() {
       name TEXT NOT NULL,
       username TEXT NOT NULL UNIQUE,
       pin TEXT NOT NULL,
+      pinLength INTEGER,
       role TEXT NOT NULL DEFAULT 'admin',
       permissions TEXT,
       isActive INTEGER DEFAULT 1,
@@ -753,6 +757,7 @@ export function initDB() {
       employeeId INTEGER UNIQUE REFERENCES employees(id) ON DELETE CASCADE,
       username TEXT UNIQUE NOT NULL,
       pin TEXT NOT NULL,
+      pinLength INTEGER,
       isActive INTEGER DEFAULT 1,
       forcePasswordChange INTEGER DEFAULT 0,
       failedLoginAttempts INTEGER DEFAULT 0,
@@ -1722,6 +1727,7 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
         isOwner INTEGER DEFAULT 0,
         pinHash TEXT,
         pinSalt TEXT,
+        pinLength INTEGER,
         avatar TEXT,
         sourceType TEXT,
         sourceId INTEGER,
@@ -2350,6 +2356,232 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     db.pragma(`user_version = ${version}`);
   }
 
+  // 9.x: PINs are now exactly 6 digits. PINs are stored as salted scrypt
+  // hashes, so the original length cannot be recovered from the hash — we need
+  // to remember it. `pinLength` is written by every set-PIN path from now on;
+  // pre-existing rows keep NULL, which the login handler treats as "legacy PIN,
+  // length unknown" so those users can still sign in and are then asked to
+  // choose a 6-digit PIN. NULL therefore must NOT be backfilled with 6.
+  if (version < 45) {
+    const addPinLength = (table: string) => {
+      try {
+        const cols = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map((c: any) => c.name);
+        if (!cols.includes('pinLength')) db.exec(`ALTER TABLE ${table} ADD COLUMN pinLength INTEGER`);
+      } catch { /* table may not exist on very old installs */ }
+    };
+    addPinLength('admins');
+    addPinLength('employee_accounts');
+    addPinLength('users');
+    version = 45;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 5.11: offline-first reliability — account link, backup state, and durable
+  // outbox/conflict state.
+  //
+  // sync_outbox already captured payload + device_id, but nothing recorded
+  // whether a change actually reached a peer. The relay relied on per-peer
+  // sync_cursor to skip, which silently dropped a change if the cursor advanced
+  // before the peer's write landed. These columns make delivery state durable
+  // and inspectable instead of inferred.
+  if (version < 46) {
+    const outboxCols = (db.prepare('PRAGMA table_info(sync_outbox)').all() as any[]).map((c: any) => c.name);
+    const addOutbox = (col: string, def: string) => {
+      if (!outboxCols.includes(col)) db.exec(`ALTER TABLE sync_outbox ADD COLUMN ${col} ${def}`);
+    };
+    addOutbox('business_id', 'TEXT');
+    addOutbox('change_id', 'TEXT');
+    addOutbox('status', "TEXT DEFAULT 'pending'");
+    addOutbox('attempts', 'INTEGER DEFAULT 0');
+    addOutbox('next_retry_at', 'TEXT');
+    addOutbox('last_error', 'TEXT');
+    addOutbox('acked_at', 'TEXT');
+    addOutbox('acked_by', 'TEXT');
+    addOutbox('row_version', 'INTEGER DEFAULT 1');
+
+    // Backfill: pre-existing rows are undelivered as far as we can tell, so
+    // they start pending and get picked up by the next relay pass.
+    db.exec(`
+      UPDATE sync_outbox SET status = 'pending' WHERE status IS NULL;
+      UPDATE sync_outbox
+         SET device_id = COALESCE(device_id, (SELECT device_id FROM sync_meta WHERE id = 1))
+       WHERE device_id IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_sync_outbox_status ON sync_outbox(status, seq);
+      CREATE INDEX IF NOT EXISTS idx_sync_outbox_change ON sync_outbox(change_id);
+      CREATE TRIGGER IF NOT EXISTS trg_sync_outbox_ai AFTER INSERT ON sync_outbox BEGIN
+        UPDATE sync_outbox
+           SET change_id = COALESCE(NEW.change_id, printf('%s:%d',
+             COALESCE(NEW.device_id, (SELECT device_id FROM sync_meta WHERE id = 1)), NEW.seq))
+         WHERE seq = NEW.seq;
+      END;
+    `);
+
+    // A row is relayed to many peers, so one status column cannot express
+    // "peer A acked, peer B has not". Receipts are recorded per peer and the
+    // row is only pruned once every known peer has acked.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS sync_outbox_acks (
+        seq INTEGER NOT NULL,
+        peer_device_id TEXT NOT NULL,
+        acked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (seq, peer_device_id)
+      );
+      CREATE TABLE IF NOT EXISTS sync_peer_state (
+        peer_device_id TEXT PRIMARY KEY,
+        last_seq INTEGER NOT NULL DEFAULT 0,
+        last_seen_at TEXT,
+        last_ack_at TEXT,
+        status TEXT NOT NULL DEFAULT 'unknown',
+        pending_count INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+
+    // Conflicts stored the incoming side only, so a conflict could not be shown
+    // to the user, audited, or resolved.
+    const conflictCols = (db.prepare('PRAGMA table_info(sync_conflicts)').all() as any[]).map((c: any) => c.name);
+    const addConflict = (col: string, def: string) => {
+      if (!conflictCols.includes(col)) db.exec(`ALTER TABLE sync_conflicts ADD COLUMN ${col} ${def}`);
+    };
+    addConflict('local_payload', 'TEXT');
+    addConflict('device_id', 'TEXT');
+    addConflict('business_id', 'TEXT');
+    addConflict('local_updated_at', 'TEXT');
+    addConflict('status', "TEXT DEFAULT 'open'");
+    addConflict('resolution', 'TEXT');
+    addConflict('resolved_at', 'TEXT');
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status ON sync_conflicts(status, id);`);
+
+    // Which cloud account this installation belongs to. Intentionally holds no
+    // credentials — desktop tokens must move to the OS keychain (Electron
+    // safeStorage) rather than this file.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS account_link (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        account_id INTEGER,
+        username TEXT,
+        email TEXT,
+        server_url TEXT,
+        installation_id TEXT,
+        status TEXT NOT NULL DEFAULT 'unlinked',
+        linked_at TEXT,
+        last_verified_at TEXT,
+        last_online_at TEXT,
+        notes TEXT
+      );
+      CREATE TABLE IF NOT EXISTS backup_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        last_backup_at TEXT,
+        last_backup_seq INTEGER DEFAULT 0,
+        last_backup_id TEXT,
+        last_restore_at TEXT,
+        last_status TEXT,
+        last_error TEXT,
+        auto_backup INTEGER NOT NULL DEFAULT 1,
+        retention_count INTEGER NOT NULL DEFAULT 10
+      );
+    `);
+    version = 46;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  // 5.12: per-peer delivery receipts for the outbox prune gate.
+  //
+  // v46 created sync_outbox_acks / sync_peer_state but never populated the
+  // roster, so an existing install would have looked peerless. Seed it from
+  // sync_cursor (which already held a per-device high-water mark) so those
+  // devices correctly gate pruning instead of everything being pruned.
+  if (version < 47) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS sync_outbox_acks (
+        seq INTEGER NOT NULL,
+        peer_device_id TEXT NOT NULL,
+        acked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (seq, peer_device_id)
+      );
+      CREATE TABLE IF NOT EXISTS sync_peer_state (
+        peer_device_id TEXT PRIMARY KEY,
+        last_seq INTEGER NOT NULL DEFAULT 0,
+        last_seen_at TEXT,
+        last_ack_at TEXT,
+        status TEXT NOT NULL DEFAULT 'unknown',
+        pending_count INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_sync_outbox_acks_peer ON sync_outbox_acks(peer_device_id, seq);
+    `);
+    try {
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT OR IGNORE INTO sync_peer_state (peer_device_id, last_seq, last_seen_at, status, pending_count)
+         SELECT device_id, COALESCE(last_seq, 0), ?, 'legacy', 0 FROM sync_cursor`,
+      ).run(now);
+    } catch { /* sync_cursor missing on a very old install */ }
+    version = 47;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 48) {
+    // Last address each device was successfully reached at.
+    //
+    // Peer sync is host-based, and mDNS is not a dependable inventory of
+    // reachable peers: Android blocks multicast, many routers stop relaying it,
+    // and a peer that rebooted re-announces only every 30s. Treating "mDNS
+    // found nothing" as "the LAN is empty" left data sitting in the outbox
+    // indefinitely. Persisting the address lets the re-probe reach a peer that
+    // is momentarily undiscoverable, which is what actually restores the link.
+    try {
+      const devCols = (db.prepare('PRAGMA table_info(devices)').all() as any[]).map((c: any) => c.name);
+      if (!devCols.includes('host')) db.exec('ALTER TABLE devices ADD COLUMN host TEXT');
+    } catch { /* devices table absent on a fresh install */ }
+    version = 48;
+    db.pragma(`user_version = ${version}`);
+  }
+
+  if (version < 49) {
+    // The backend License row id, kept separate from `planId`.
+    //
+    // Every customer route that acts on a license is
+    // `/api/customers/licenses/:licenseId/...`, but the desktop was passing
+    // `subscription.planId` there — which is a *Plan* id. For every account
+    // whose plan id and license id differ (i.e. nearly all of them) those calls
+    // 404'd, so adding a device or a business from a linked account silently did
+    // nothing. The status payload now carries `license_id`; it is persisted here
+    // so the renderer never has to guess.
+    try {
+      const cols = (db.prepare('PRAGMA table_info(cloud_subscription)').all() as any[]).map((c: any) => c.name);
+      if (cols.length) {
+        if (!cols.includes('licenseId')) db.exec('ALTER TABLE cloud_subscription ADD COLUMN licenseId INTEGER');
+      } else {
+        // Table not created yet on this install; subscription-backend's
+        // ensureCloudTable() creates it with the column.
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS cloud_subscription (
+            businessId INTEGER PRIMARY KEY,
+            accountEmail TEXT,
+            status TEXT,
+            access TEXT,
+            tier TEXT,
+            planName TEXT,
+            planId INTEGER,
+            licenseId INTEGER,
+            licenseKey TEXT,
+            isTrial INTEGER DEFAULT 0,
+            startedAt TEXT,
+            expiresAt TEXT,
+            daysRemaining INTEGER DEFAULT 0,
+            devicesJson TEXT,
+            businessesJson TEXT,
+            monthlyJson TEXT,
+            pendingJson TEXT,
+            lastPaymentJson TEXT,
+            syncedAt TEXT DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+      }
+    } catch { /* cloud table belongs to subscription-backend; created on first use */ }
+    version = 49;
+    db.pragma(`user_version = ${version}`);
+  }
+
   // ========== SYNC COLUMN BACKSTOP ==========
   // Every table in the relay must carry the standard sync columns. Tables that
   // were added to SHARED_TABLES without a dedicated migration (e.g.
@@ -2662,38 +2894,18 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     BEGIN UPDATE employee_accounts SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
   `);
 
-  // Seed: Ensure at least one business exists
-  let businessId = 1;
-  const bizCount = db.prepare('SELECT COUNT(*) as count FROM businesses').get() as any;
-  if (bizCount.count === 0) {
-    const res = db.prepare('INSERT INTO businesses (businessName, storeName, isDefault, uuid) VALUES (?, ?, 1, ?)')
-      .run('Shega Enterprise', 'Main Branch', crypto.randomUUID());
-    businessId = res.lastInsertRowid as number;
-    db.prepare('UPDATE categories SET businessId = ? WHERE businessId IS NULL').run(businessId);
-    db.prepare('UPDATE items SET businessId = ? WHERE businessId IS NULL').run(businessId);
-    db.prepare('UPDATE sales SET businessId = ? WHERE businessId IS NULL').run(businessId);
-    db.prepare('UPDATE expenses SET businessId = ? WHERE businessId IS NULL').run(businessId);
-    db.prepare('UPDATE adjustments SET businessId = ? WHERE businessId IS NULL').run(businessId);
-    db.prepare('UPDATE notifications SET businessId = ? WHERE businessId IS NULL').run(businessId);
-  } else {
-    const defaultBiz = db.prepare('SELECT id FROM businesses WHERE isDefault = 1 LIMIT 1').get() as any;
-    businessId = defaultBiz?.id || 1;
-  }
-
-  // Seed default warehouse
-  const warehouseCount = db.prepare('SELECT COUNT(*) as count FROM warehouses').get() as any;
-  if (warehouseCount.count === 0) {
-    db.prepare('INSERT INTO warehouses (businessId, name, location, managerName) VALUES (?, ?, ?, ?)')
-      .run(businessId, 'Main Warehouse', 'Headquarters', 'Operations Manager');
-  }
-
-  // Seed default employee role (Cashier)
-  const roleCount = db.prepare('SELECT COUNT(*) as count FROM employee_roles').get() as any;
-  if (roleCount.count === 0) {
-    const insertRole = db.prepare('INSERT INTO employee_roles (businessId, name, description, permissions, isSystem) VALUES (?, ?, ?, ?, 1)');
-    for (const role of DEFAULT_ROLES) {
-      insertRole.run(businessId, role.name, role.description, JSON.stringify(role.permissions));
-    }
+  // Default business is created dynamically on first owner signup / onboarding.
+  //
+  // These per-business seeds must NOT run before a business row exists. They
+  // previously fell back to a hardcoded businessId of 1, which on a clean
+  // install (zero businesses — the first one is created at owner signup) violated
+  // the warehouses/employee_roles/customer foreign keys and aborted initDB with
+  // "FOREIGN KEY constraint failed". That took down every startup on a clean
+  // database, not just the test harness.
+  const defaultBiz = db.prepare('SELECT id FROM businesses WHERE isDefault = 1 AND is_deleted = 0 LIMIT 1').get() as any;
+  if (defaultBiz?.id) {
+    ensureBusinessDefaultsFor(defaultBiz.id, db);
+    backfillCustomerNamesFor(defaultBiz.id, db);
   }
 
   // Migration: Add settings.backup to Administrator role
@@ -2707,7 +2919,11 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
     }
   }
 
-  // Migration: hash any existing plain-text admin PINs using scrypt
+  // Migration: hash any existing plain-text admin PINs using scrypt. The PIN
+  // value is preserved verbatim, so pinLength is deliberately NOT stamped here:
+  // a pre-existing PIN may well be 4 digits, and stamping 6 would lock the
+  // owner out. The login handler treats NULL as legacy and asks for a new
+  // 6-digit PIN.
   const plainPinAdmins = db.prepare("SELECT id, pin FROM admins WHERE length(pin) < 64").all() as any[];
   for (const a of plainPinAdmins) {
     const hashed = hashPin(a.pin);
@@ -2720,13 +2936,7 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
   // reappeared after every data reset and defeated the clean-install test.
 
   // Migration: Import existing customer names from sales into customers table
-  const existingCustomerNames = db.prepare("SELECT DISTINCT customerName, customerPhone FROM sales WHERE customerName IS NOT NULL AND customerName != ''").all() as any[];
-  for (const c of existingCustomerNames) {
-    const alreadyExists = db.prepare("SELECT id FROM customers WHERE customerName = ? AND businessId = ?").get(c.customerName, businessId);
-    if (!alreadyExists) {
-      db.prepare("INSERT INTO customers (businessId, customerName, phone) VALUES (?, ?, ?)").run(businessId, c.customerName, c.customerPhone || '');
-    }
-  }
+  // (driven by backfillLegacyCustomerNames above, which needs a real business id)
 
   // Seed default notification preferences
   const prefCount = (db.prepare('SELECT COUNT(*) AS c FROM notification_preferences').get() as any).c;
@@ -2880,6 +3090,14 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
 }
 
 export { ALL_PERMISSIONS, DEFAULT_ROLES };
+
+/**
+ * Bind the default-business seeds to the live connection for callers that don't
+ * care which handle is used (business creation in ipc-handlers).
+ */
+export function ensureBusinessDefaults(businessId: number): void {
+  ensureBusinessDefaultsFor(businessId, db);
+}
 
 export function validateDBFile(filePath: string): { ok: boolean; message?: string } {
   try {
@@ -3059,4 +3277,21 @@ export function factoryResetDb(): { ok: boolean; deleted: string[]; error?: stri
   } catch (e: any) {
     return { ok: false, deleted, error: e?.message };
   }
+}
+
+export function getItemByBarcode(code: string, activeOnly = true): any {
+  const db = getDb();
+  const { getActiveBusinessId } = require('./ipc-handlers');
+  const bizId = getActiveBusinessId();
+  if (!code || !code.trim()) return null;
+  const query = `
+    SELECT items.*, categories.name as categoryName
+    FROM items
+    LEFT JOIN categories ON items.categoryId = categories.id
+    WHERE items.businessId = ? AND items.is_deleted = 0
+      AND (items.barcode = ? COLLATE NOCASE OR items.sku = ? COLLATE NOCASE)
+    ${activeOnly ? 'AND items.isActive = 1' : ''}
+    LIMIT 1
+  `;
+  return db.prepare(query).get(bizId, code, code) || null;
 }

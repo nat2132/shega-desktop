@@ -3,6 +3,7 @@ import { createHash, randomUUID, randomBytes } from 'crypto';
 import { EventEmitter } from 'events';
 import { networkInterfaces } from 'os';
 import db from './database';
+import { registerPeer, recordAck, pruneAckedOutbox } from './sync/ack-store';
 import { getDesktopDeviceName } from './sync/device-name';
 import { getOpenInviteCode } from './sync/user-invites';
 import { businessDisplayName } from './sync/device-requests';
@@ -214,6 +215,13 @@ export function registerDevice(deviceId: string, name?: string, platform?: strin
     db.prepare("UPDATE roster_devices SET status = 'online', lastSeenAt = ?, updated_at = CURRENT_TIMESTAMP WHERE uuid = ? OR device_id = ?")
       .run(now, deviceId, deviceId);
   } catch { /* roster table naming may differ */ }
+
+  // A registered device is a peer whose acknowledgement gates outbox pruning.
+  // A revoked device returns above before reaching this, so it never re-enters
+  // the roster and cannot resurrect a hold that `releasePeer` lifted.
+  try {
+    registerPeer(deviceId, { name, platform });
+  } catch { /* sync_peer_state may not exist until migrations run */ }
 }
 
 /**
@@ -1160,6 +1168,33 @@ export class SyncHub {
           return;
         }
 
+        // 5.12: LAN delivery receipt. The pull above advanced sync_cursor at SEND
+        // time, so a client that received a batch and then died lost those
+        // changes forever. The client reports its contiguous applied high-water
+        // mark here instead, and the hub prunes only what every peer acked.
+        if (path === '/sync/ack' && req.method === 'POST') {
+          const body = JSON.parse(await readBody(req));
+          const token = String(body.token ?? url.searchParams.get('token') ?? '');
+          if (!validToken(token)) return sendJson(res, 403, { ok: false, error: 'invalid pairing token' });
+          const deviceId = String(body.device_id || body.device || '');
+          if (!deviceId) return sendJson(res, 400, { ok: false, error: 'device_id required' });
+          if (isDeviceRevoked(deviceId)) return sendJson(res, 403, { ok: false, error: 'device was unpaired — new pairing required' });
+          const ackedUpto = Number(body.acked_upto ?? body.ackedUpto ?? 0);
+          const failedSeqs: number[] = Array.isArray(body.failed_seqs ?? body.failedSeqs)
+            ? (body.failed_seqs ?? body.failedSeqs).map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n))
+            : [];
+          if (!Number.isFinite(ackedUpto) || ackedUpto <= 0) {
+            return sendJson(res, 400, { ok: false, error: 'acked_upto must be a positive number' });
+          }
+          const { acked } = recordAck(deviceId, ackedUpto, failedSeqs);
+          const pruned = pruneAckedOutbox();
+          if (pruned.pruned > 0) {
+            try { mainBus.emitEvent('sync-started', { deviceId, deviceName: deviceId, platform: 'unknown' }); } catch { /* bus optional */ }
+          }
+          sendJson(res, 200, { ok: true, acked, pruned: pruned.pruned, activePeers: pruned.activePeers });
+          return;
+        }
+
         if (path === '/sync/verify' && req.method === 'GET') {
           const token = String(url.searchParams.get('token') ?? '');
           if (!validToken(token)) return sendJson(res, 403, { ok: false, error: 'invalid pairing token' });
@@ -1212,8 +1247,14 @@ export class SyncHub {
             }
           }
           const payload: any = { ok: true, requestId: rec.requestId, status: rec.status };
-          // Approval grants the pairing credential in-band (same as WS path).
-          if (rec.status === 'approved') payload.pairingToken = getPairingToken();
+          // Approval grants the pairing credential in-band (same as WS path),
+          // plus the signed membership credential the P3 handshake uses.
+          if (rec.status === 'approved') {
+            payload.pairingToken = getPairingToken();
+            const { getJoinerCredential } = await import('./sync/hub-credentials');
+            const credential = getJoinerCredential(joinerDeviceId);
+            if (credential) payload.credential = credential;
+          }
           // Explicit connection acknowledgement: the joiner's session tracker
           // uses this to mark the connection real the moment the HTTP call
           // returns, so the joiner does not sit on "Waiting for connection…"
@@ -1235,8 +1276,14 @@ export class SyncHub {
             || (code && joinerDeviceId ? getDeviceJoinRequestBy(code, joinerDeviceId) : null);
 
           const payload: any = { ok: true, record: rec };
-          // Approval grants the pairing credential in-band (same as WS path).
-          if (rec && rec.status === 'approved') payload.pairingToken = getPairingToken();
+          // Approval grants the pairing credential in-band (same as WS path),
+          // plus the signed membership credential the P3 handshake uses.
+          if (rec && rec.status === 'approved') {
+            payload.pairingToken = getPairingToken();
+            const { getJoinerCredential } = await import('./sync/hub-credentials');
+            const credential = getJoinerCredential(joinerDeviceId);
+            if (credential) payload.credential = credential;
+          }
           // Explicit connection acknowledgement for the client's session tracker.
           payload.handshake = buildHandshakeAck(rec, SYNC_PORT);
           sendJson(res, 200, payload);

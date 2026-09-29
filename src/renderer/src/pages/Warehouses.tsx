@@ -4,6 +4,7 @@ import {
   Package, ArrowRightLeft, History, Search, RefreshCw
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
+import { useIsViewOnly } from '../context/ViewOnlyContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
@@ -33,6 +34,7 @@ const Warehouses: React.FC = () => {
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
+  const isViewOnly = useIsViewOnly();
   const [editingWh, setEditingWh] = useState<any>(null);
 
   const [whForm, setWhForm] = useState({ name: '', location: '', managerName: '', managerPhone: '', email: '' });
@@ -95,7 +97,8 @@ const Warehouses: React.FC = () => {
   }, [warehouses, allInventory]);
 
   // Warehouse CRUD
-  const openCreateWh = () => {
+const openCreateWh = () => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     setEditingWh(null);
     setWhForm({ name: '', location: '', managerName: '', managerPhone: '', email: '' });
     setShowWarehouseModal(true);
@@ -107,7 +110,8 @@ const Warehouses: React.FC = () => {
     setShowWarehouseModal(true);
   };
 
-  const handleSaveWarehouse = async () => {
+const handleSaveWarehouse = async () => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     if (!whForm.name.trim()) return toast.error(t('warehouses.wh_name_required'));
     try {
       if (editingWh) {
@@ -122,7 +126,8 @@ const Warehouses: React.FC = () => {
     } catch (err: any) { toast.error(err.message); }
   };
 
-  const handleDeleteWarehouse = async () => {
+const handleDeleteWarehouse = async () => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     if (!deleteTarget) return;
     try {
       await window.api.deleteWarehouse(deleteTarget.id);
@@ -135,6 +140,7 @@ const Warehouses: React.FC = () => {
 
   // Transfer
   const handleTransfer = async () => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     if (!transferForm.fromWarehouseId || !transferForm.toWarehouseId || !transferForm.itemId || transferForm.quantity <= 0) {
       return toast.error(t('warehouses.fill_required'));
     }
@@ -355,10 +361,12 @@ const Warehouses: React.FC = () => {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('warehouses.transfer_history')}</p>
-              <Button size="sm" className="h-9 px-5 text-xs font-black uppercase tracking-widest" onClick={() => {
-                setTransferForm({ fromWarehouseId: 0, toWarehouseId: 0, itemId: 0, quantity: 0, notes: '', transferredBy: '' });
-                setShowTransferModal(true);
-              }}>
+<Button 
+              size="sm" 
+              className="h-9 px-5 text-xs font-black uppercase tracking-widest" 
+              onClick={() => isViewOnly ? toast.error(t('view_only.default_message')) : (setTransferForm({ fromWarehouseId: 0, toWarehouseId: 0, itemId: 0, quantity: 0, notes: '', transferredBy: '' }), setShowTransferModal(true))}
+              disabled={isViewOnly}
+            >
                 <ArrowRightLeft size={14} className="mr-2" /> {t('warehouses.new_transfer')}
               </Button>
             </div>

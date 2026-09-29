@@ -15,7 +15,8 @@
     "skipLibCheck": true,
     "composite": true,
     "paths": {
-      "@shega/shared": ["../shega-shared/src/index.ts"]
+      "@shega/shared": ["../shega-shared/src/index.ts"],
+      "@shega/shared/*": ["../shega-shared/src/*"]
     }
   },
   "include": ["src/main/**/*", "../shega-shared/src/**/*"]

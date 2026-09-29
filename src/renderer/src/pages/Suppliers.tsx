@@ -10,6 +10,8 @@ import {
 
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
+import { toast } from 'sonner';
+import { useIsViewOnly } from '../context/ViewOnlyContext';
 import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
 import { MorStatusBadge, MorVerifyAction } from '../components/MorVerification';
 import {
@@ -105,6 +107,7 @@ const Suppliers: React.FC = () => {
   const [reversePaymentTarget, setReversePaymentTarget] = useState<Payment | null>(null);
   const [reversePaymentReason, setReversePaymentReason] = useState('');
   const [supplierVerification, setSupplierVerification] = useState<any>(null);
+  const isViewOnly = useIsViewOnly();
 
   useEffect(() => {
     if (view === 'detail' && selected?.taxNumber) {
@@ -169,6 +172,7 @@ const Suppliers: React.FC = () => {
   const paged = useMemo(() => suppliers.slice(page * ROWS_PER_PAGE, (page + 1) * ROWS_PER_PAGE), [suppliers, page]);
 
   const handleSave = async () => {
+    if (isViewOnly) { showToast(t('view_only.default_message'), 'error'); return; }
     if (!form.supplierName.trim()) { showToast(t('suppliers.name_required', 'Supplier name is required'), 'error'); return; }
     try {
       if (editingId) {
@@ -186,6 +190,7 @@ const Suppliers: React.FC = () => {
   };
 
   const handleArchive = async (s: Supplier) => {
+    if (isViewOnly) { showToast(t('view_only.default_message'), 'error'); return; }
     if (!window.confirm(t('suppliers.confirm_archive'))) return;
     try {
       await window.api.archiveSupplier(s.id);
@@ -195,6 +200,7 @@ const Suppliers: React.FC = () => {
   };
 
   const handleRestore = async (s: Supplier) => {
+    if (isViewOnly) { showToast(t('view_only.default_message'), 'error'); return; }
     try {
       await window.api.restoreSupplier(s.id);
       showToast(t('suppliers.toast_restored'));
@@ -203,6 +209,7 @@ const Suppliers: React.FC = () => {
   };
 
   const handleDelete = async (s: Supplier) => {
+    if (isViewOnly) { showToast(t('view_only.default_message'), 'error'); return; }
     if (!window.confirm(t('suppliers.confirm_delete'))) return;
     try {
       await window.api.deleteSupplier(s.id);
@@ -212,6 +219,7 @@ const Suppliers: React.FC = () => {
   };
 
   const handleToggleFavorite = async (id: number) => {
+    if (isViewOnly) { showToast(t('view_only.default_message'), 'error'); return; }
     try {
       await window.api.toggleSupplierFavorite(id);
       loadSuppliers();
@@ -286,6 +294,7 @@ const Suppliers: React.FC = () => {
   };
 
   const handleDeletePayment = async (p: Payment) => {
+    if (isViewOnly) { showToast(t('view_only.default_message'), 'error'); return; }
     if (!window.confirm(t('suppliers.confirm_delete_payment'))) return;
     try {
       await window.api.deleteSupplierPayment(p.id);
@@ -348,7 +357,11 @@ const Suppliers: React.FC = () => {
             <p className="text-sm text-muted-foreground">{t('suppliers.subtitle')}</p>
           </div>
           <div className="flex gap-2 flex-wrap">
-            <Button size="sm" onClick={() => openForm()}>
+            <Button 
+              size="sm" 
+              onClick={() => isViewOnly ? toast.error(t('view_only.default_message')) : openForm()} 
+              disabled={isViewOnly}
+            >
               <Plus className="h-4 w-4 mr-1" />{t('suppliers.add_supplier')}
             </Button>
           </div>
@@ -419,7 +432,13 @@ const Suppliers: React.FC = () => {
               <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                 <Truck className="h-12 w-12 mb-3 opacity-30" />
                 <p className="font-medium">{t('suppliers.empty_list')}</p>
-                <Button variant="outline" size="sm" className="mt-2" onClick={() => openForm()}>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  className="mt-2" 
+                  onClick={() => isViewOnly ? toast.error(t('view_only.default_message')) : openForm()} 
+                  disabled={isViewOnly}
+                >
                   <Plus className="h-4 w-4 mr-1" />{t('suppliers.add_supplier')}
                 </Button>
               </div>

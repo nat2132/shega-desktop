@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Search, CreditCard, Banknote, Receipt, X, Plus, Minus, Keyboard, Zap, Coins, PackageSearch } from 'lucide-react';
+import { Search, CreditCard, Banknote, Receipt, X, Plus, Minus, Zap, Coins, PackageSearch } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { AppButton } from '../components/ui/button';
-import { AppInput } from '../components/ui/input';
-import { AppCard } from '../components/ui/card';
+
+
 import { AppText } from '../components/ui/text';
 import { AppBadge } from '../components/ui/badge';
 

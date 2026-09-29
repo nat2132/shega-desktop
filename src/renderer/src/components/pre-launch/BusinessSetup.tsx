@@ -34,7 +34,9 @@ import { RadarPulse } from '../RadarPulse';
 import type { OwnerProfile } from './AuthScreen';
 
 interface BusinessSetupProps {
+  /** Owner identity collected at signup, so onboarding never re-asks for it. */
   ownerProfile?: OwnerProfile | null;
+  /** Called once the business has been created and the wizard may continue. */
   onComplete: () => void;
 }
 
@@ -147,33 +149,43 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ ownerProfile, onComplete 
   const next = () => { setError(''); setStep((s) => (s < 8 ? ((s + 1) as Step) : s)); };
   const back = () => { setError(''); setStep((s) => (s > 1 ? ((s - 1) as Step) : s)); };
 
-  /** Create the business once (step 4 → 5) — idempotent on revisit. */
+  /** Create or update the business once (step 4 → 5) — idempotent on revisit. */
   const createNow = async (): Promise<number | null> => {
     if (bizId) return bizId;
     if (!businessName.trim()) { setError('Enter the business name'); return null; }
     if (!ownerName.trim()) { setError('Enter your name'); return null; }
     setBusy(true);
     try {
-      const created = await window.api.businessCreate({
-        businessName: businessName.trim(),
-        storeName: businessName.trim(),
-        logo,
-        address: locationText,
-        email: ownerEmail.trim() || null,
-        currency: 'ETB',
-      });
-      const id = created?.id ?? null;
-      setBizId(id);
-      // Shared business metadata (type / city / country) + owner identity.
-      if (id) {
+      // Check if a business was already created during signup
+      const activeBiz = await window.api.getActiveBusiness().catch(() => null);
+      let id: number | null = null;
+
+      if (activeBiz?.id) {
+        id = activeBiz.id;
         await window.api.updateBusiness(id, {
           businessName: businessName.trim(),
+          storeName: businessName.trim(),
+          logo: logo || activeBiz.logo || null,
           address: locationText,
+          email: ownerEmail.trim() || null,
+          currency: 'ETB',
           businessType: businessType === 'other' ? (businessTypeCustom.trim() || 'other') : businessType,
           country: 'Ethiopia',
           city: city.trim(),
         }).catch(() => {});
+      } else {
+        const created = await window.api.businessCreate({
+          businessName: businessName.trim(),
+          storeName: businessName.trim(),
+          logo,
+          address: locationText,
+          email: ownerEmail.trim() || null,
+          currency: 'ETB',
+        });
+        id = created?.id ?? null;
       }
+
+      setBizId(id);
       await window.api.setSetting('setup_business_type', businessType === 'other' ? (businessTypeCustom.trim() || 'other') : (businessType || ''));
       await window.api.setSetting('setup_business_city', city.trim());
       await window.api.setSetting('setup_business_country', 'Ethiopia');
@@ -185,7 +197,6 @@ const BusinessSetup: React.FC<BusinessSetupProps> = ({ ownerProfile, onComplete 
           await window.api.updateAdmin(currentAdmin.id, { avatar: ownerAvatar }).catch(() => {});
         }
       }
-      // Date system (step 5) is applied through SettingsContext on change.
       await refreshBusiness().catch(() => {});
       return id;
     } catch (e: any) {

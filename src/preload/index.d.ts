@@ -145,6 +145,8 @@ export interface ElectronAPI {
   getLoginUsers: () => Promise<Array<{ key: string; source: 'admin' | 'employee' | 'roster'; id: number; name: string; username: string | null; role: string; roleName: string; avatar: string | null; isOwner: boolean }>>;
   getLastLoginUser: () => Promise<string | null>;
   loginByUser: (source: 'admin' | 'employee' | 'roster', id: number, pin: string) => Promise<any>;
+  clearSession: () => Promise<{ success: boolean }>;
+  setOwnPin: (source: 'admin' | 'employee' | 'roster', id: number, newPin: string, confirmPin: string) => Promise<{ success: boolean; error?: string }>;
   getCurrentAdmin: (id: number, isEmployee?: boolean) => Promise<any>;
   insertAdmin: (admin: any) => Promise<any>;
   updateAdmin: (id: number, admin: any) => Promise<any>;
@@ -278,6 +280,61 @@ export interface ElectronAPI {
   barcodePng: (value: string) => Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }>;
   barcodePngDataUrl: (value: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
   simulateScan: (code?: string) => Promise<{ success: boolean; value?: string; simulated?: boolean; transport?: 'hid' | 'serial'; error?: string }>;
+  getItemByBarcode: (code: string) => Promise<any | null>;
+  getPrintStatus: () => Promise<{ online: boolean; lastError?: string; transport: string }>;
+  printTestPage: () => Promise<{ success: boolean; error?: string }>;
+  printLabel: (label: any) => Promise<{ success: boolean; error?: string }>;
+  openCashDrawer: () => Promise<{ success: boolean; error?: string }>;
+  setPrinterConfig: (cfg: any) => Promise<any>;
+  verifyAuditChain: () => Promise<{ success: boolean; valid?: boolean; count?: number; error?: string }>;
+
+  // Sync status (hub health / logs / manual resync)
+  syncStatus: () => Promise<any>;
+  syncVerify: () => Promise<any>;
+  syncLog: (limit: number) => Promise<any>;
+  syncResync: (deviceId: string) => Promise<any>;
+  syncDiagnostics: () => Promise<any>;
+  onDataChanged: (cb: (stats: any) => void) => () => void;
+  removeDataChangedListeners: () => void;
+
+  // Subscription / billing (declared to match the existing preload bridge)
+  getCurrentSubscription: () => Promise<any>;
+  getSubscriptionPlans: () => Promise<any>;
+  getSubscriptionHistory: () => Promise<any>;
+  getRenewalInfo: () => Promise<any>;
+  startTrial: (plan?: string) => Promise<any>;
+  submitPayment: (payload: any) => Promise<any>;
+  backendCostBreakdown: (payload?: any) => Promise<any>;
+  backendCreateBusiness: (payload: any) => Promise<any>;
+  backendBusinessEntitlements: () => Promise<any>;
+  backendDeviceEntitlements: (deviceId?: string) => Promise<any>;
+  getSyncedTeam: () => Promise<any>;
+
+  // Hardware (Unified Peripherals)
+  hardwarePrinterGetStatus: () => Promise<{ success: boolean; status?: { online: boolean; lastError?: string; transport: string }; error?: string }>;
+  hardwarePrinterGetConfig: () => Promise<{ success: boolean; config?: any; error?: string }>;
+  hardwarePrinterSaveConfig: (config: any) => Promise<{ success: boolean; error?: string }>;
+  hardwarePrinterPrintReceipt: (payload: any) => Promise<{ success: boolean; error?: string }>;
+  hardwarePrinterPrintTestPage: (paperWidth?: 58 | 80) => Promise<{ success: boolean; error?: string }>;
+  hardwarePrinterPrintLabel: (payload: any) => Promise<{ success: boolean; error?: string }>;
+  hardwarePrinterOpenDrawer: () => Promise<{ success: boolean; error?: string }>;
+  hardwarePrinterGetAvailableTransports: () => Promise<{ success: boolean; transports?: Array<{ type: string; name: string; capabilities: any }>; error?: string }>;
+  hardwareScannerStart: () => Promise<{ success: boolean; error?: string }>;
+  hardwareScannerStop: () => Promise<{ success: boolean; error?: string }>;
+  hardwareScannerGetConfig: () => Promise<{ success: boolean; config?: any; error?: string }>;
+  hardwareScannerUpdateConfig: (config: any) => Promise<{ success: boolean; error?: string }>;
+  hardwareScannerListSerialPorts: () => Promise<{ success: boolean; ports?: Array<{ path: string; manufacturer?: string }>; error?: string }>;
+  hardwareScannerListUsbHidDevices: () => Promise<{ success: boolean; devices?: Array<{ vendorId: number; productId: number }>; error?: string }>;
+  hardwareScannerSimulateScan: (code: string) => Promise<{ success: boolean; error?: string }>;
+  hardwareSettingsGet: () => Promise<{ success: boolean; settings?: any; error?: string }>;
+  hardwareSettingsSave: (settings: any) => Promise<{ success: boolean; error?: string }>;
+  // Persistent print spooler (pending / failed receipts)
+  hardwareSpoolerList: (status?: 'pending' | 'done' | 'failed', limit?: number) => Promise<{ success: boolean; jobs?: any[]; counts?: { pending: number; failed: number; done: number }; error?: string }>;
+  hardwareSpoolerRetry: (id: number) => Promise<{ success: boolean; counts?: { pending: number; failed: number; done: number }; error?: string }>;
+  hardwareSpoolerDiscard: (id: number) => Promise<{ success: boolean; counts?: { pending: number; failed: number; done: number }; error?: string }>;
+  hardwareSpoolerClearCompleted: () => Promise<{ success: boolean; removed?: number; counts?: { pending: number; failed: number; done: number }; error?: string }>;
+  onHardwareScannerScan: (cb: (result: any) => void) => () => void;
+  onHardwareScannerError: (cb: (error: any) => void) => () => void;
 
   // Mock Peripherals (USE_MOCK_PERIPHERALS dev harness)
   mockPeripheralStatus: () => Promise<any>;
@@ -415,6 +472,7 @@ export interface ElectronAPI {
   backendSession: () => Promise<any>;
   backendSync: () => Promise<any>;
   backendPlans: () => Promise<any>;
+  backendMyPayments: () => Promise<{ success: boolean; payments?: any[]; error?: string }>;
   backendStartTrial: (args: { planId?: number }) => Promise<any>;
   /** Backend base URL configuration (setting → SHEGA_BACKEND_URL → default). */
   getBackendUrl: () => Promise<{ baseUrl: string }>;
@@ -428,7 +486,7 @@ export interface ElectronAPI {
   joinActivate: (pin: string | { pin: string; name?: string; username?: string; avatar?: string | null }) => Promise<{ success: boolean; username: string }>;
   joinCancel: () => Promise<{ cancelled: boolean }>;
   pairBeaconStart: (invite: any) => Promise<{ publishing: boolean }>;
-  pairBeaconDiscoverable: (on: boolean, businessName?: string, role?: 'owner' | 'team') => Promise<{ publishing: boolean }>;
+  pairBeaconDiscoverable: (on: boolean, businessName?: string, role?: 'owner' | 'team', publish?: boolean) => Promise<{ publishing: boolean }>;
   pairBeaconStop: () => Promise<{ publishing: boolean }>;
   pairBeaconNearby: () => Promise<Array<{ beacon: any; host: string; port: number; platform: string }>>;
   onDeviceEvent: (cb: (e: any) => void) => () => void;

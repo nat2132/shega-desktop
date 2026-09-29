@@ -1,22 +1,25 @@
 import { defineConfig } from 'vitest/config';
 
 /**
- * Config used ONLY for the sync-hub integration suite (real HTTP hub against
- * a throwaway DB). It aliases `better-sqlite3` to a Node-ABI copy installed in
- * the temp dir, because the repo copy is built for Electron's ABI and cannot
- * load under plain Node.
+ * E2E suites that the default `vitest.config.ts` deliberately skips: they bind
+ * real ports and open a real (throwaway) database, so they are opt-in rather
+ * than part of `npm run test:unit`.
+ *
+ *   npx vitest run --config vitest.e2e.config.ts
  */
-const abmel = 'C:/Users/Natol/AppData/Local/Temp/opencode/abmel/node_modules/better-sqlite3';
-
 export default defineConfig({
-  resolve: {
-    alias: {
-      'better-sqlite3': abmel,
-    },
-  },
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/main/sync-hub.test.ts', 'src/main/sync/websocket-server.test.ts'],
+    include: [
+      'src/main/sync-hub.test.ts',
+      'src/main/sync/websocket-server.test.ts',
+      'src/main/sync/websocket-auth.test.ts',
+    ],
+    testTimeout: 20000,
+    hookTimeout: 20000,
+    // Both suites bind a fixed port and chdir() into a temp dir, so they must
+    // not run concurrently with each other.
+    fileParallelism: false,
   },
 });

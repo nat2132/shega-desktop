@@ -16,6 +16,8 @@ import {
 import { logger } from '../logger';
 import { mainBus } from '../bus';
 import { notifyDataApplied } from './notify';
+import { recordAck, markPeerSeen, pruneAckedOutbox } from './ack-store';
+import { markConnected, markHeartbeat, markDisconnected, markFirstSync } from './diagnostics';
 import {
   submitDeviceJoinRequest,
   listDeviceJoinRequests,
@@ -34,6 +36,11 @@ import {
   PAIRING_SESSION_MSG,
   type PairingHandshakeAck,
 } from '@shega/shared';
+import {
+  getJoinerCredential,
+  beginJoinChallenge,
+  completeJoinChallenge,
+} from './hub-credentials';
 import { p2pSync } from './p2p-sync-manager';
 import {
   peripheralHub,
@@ -51,6 +58,8 @@ export interface WsClient {
   paired: boolean;
   lastHeartbeat: number;
   lastSeq: number;
+  /** Credential challenge state for P3 handshake. */
+  pendingAuth?: { credential: any; sessionId: string; deviceId: string };
 }
 
 export interface WsMessage {
@@ -176,6 +185,7 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     switch (msg.type) {
       case 'HEARTBEAT':
         client.lastHeartbeat = Date.now();
+        if (client.deviceId) markHeartbeat(client.deviceId, { transport: 'lan-ws' });
         this.send(ws, { type: 'HEARTBEAT_ACK', timestamp: Date.now() });
         break;
 
@@ -187,12 +197,22 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
         this.handlePairRequest(clientId, client, msg);
         break;
 
+      case 'AUTH_PROOF':
+        this.handleAuthProof(clientId, client, msg);
+        break;
+
       case 'SYNC_PUSH':
         this.handleSyncPush(clientId, client, msg);
+        if (client.deviceId) markFirstSync(client.deviceId, { transport: 'lan-ws' });
         break;
 
       case 'SYNC_PULL':
         this.handleSyncPull(clientId, client, msg);
+        if (client.deviceId) markFirstSync(client.deviceId, { transport: 'lan-ws' });
+        break;
+
+      case 'SYNC_APPLIED':
+        this.handleSyncApplied(clientId, client, msg);
         break;
 
       case 'SYNC_VERIFY':
@@ -282,13 +302,21 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
 
   private handlePairRequest(clientId: string, client: WsClient, msg: WsMessage): void {
     const ws = client.ws;
-    const { device_id, name, token, platform } = msg.payload || {};
+    const { device_id, name, token, platform, credential } = msg.payload || {};
 
     if (!device_id) {
       this.sendError(ws, 'PAIR_FAILED', 'device_id required', msg.requestId);
       return;
     }
 
+    // New credential-based handshake (P3): if a credential is presented, run the
+    // challenge flow. Otherwise fall back to the legacy token check.
+    if (credential) {
+      this.handleCredentialPairRequest(clientId, client, msg, device_id, name, platform, credential);
+      return;
+    }
+
+    // Legacy token path (unchanged for incremental migration).
     const hubToken = getPairingToken();
     if (String(token ?? '').trim().toUpperCase() !== hubToken) {
       this.sendError(ws, 'PAIR_FAILED', token ? 'Invalid pairing token' : 'Pairing token required', msg.requestId);
@@ -303,19 +331,107 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       return;
     }
 
-    registerDevice(device_id, name, platform);
-    client.deviceId = device_id;
-    client.paired = true;
+    this.completePairing(clientId, device_id, name, platform);
+  }
+
+  private handleCredentialPairRequest(clientId: string, client: WsClient, msg: WsMessage, deviceId: string, name: string | undefined, platform: string | undefined, credential: any): void {
+    const ws = client.ws;
+    const storedCred = getJoinerCredential(deviceId);
+
+    if (!storedCred) {
+      this.sendError(ws, 'PAIR_FAILED', 'No credential found for this device. Re-approval required.', msg.requestId);
+      return;
+    }
+
+    // Verify the presented credential matches what we issued (same signature).
+    if (credential.signature !== storedCred.signature) {
+      this.sendError(ws, 'PAIR_FAILED', 'Credential mismatch. Re-approval required.', msg.requestId);
+      return;
+    }
+
+    // Get the business id from the credential or the current active business.
+    const { getActiveBusinessId } = require('../ipc-handlers');
+    const businessId = credential.businessId || String(getActiveBusinessId() || 1);
+
+    const begun = beginJoinChallenge(storedCred, businessId);
+    if ('error' in begun) {
+      this.sendError(ws, 'PAIR_FAILED', begun.error, msg.requestId);
+      return;
+    }
+
+    // Store pending auth state on the client so we can complete it on AUTH_PROOF.
+    client.pendingAuth = {
+      credential: storedCred,
+      sessionId: begun.challenge.sessionId,
+      deviceId,
+    };
+
+    // Send the challenge; the client must respond with AUTH_PROOF.
+    this.send(ws, {
+      type: 'AUTH_CHALLENGE',
+      requestId: msg.requestId,
+      payload: begun.challenge,
+    });
+  }
+
+  private handleAuthProof(clientId: string, client: WsClient, msg: WsMessage): void {
+    const ws = client.ws;
+    const proof = msg.payload;
+    if (!client.pendingAuth) {
+      this.sendError(ws, 'AUTH_DENY', 'No pending challenge for this connection', msg.requestId);
+      return;
+    }
+    const { credential, sessionId, deviceId } = client.pendingAuth;
+    if (proof.sessionId !== sessionId) {
+      this.sendError(ws, 'AUTH_DENY', 'Session ID mismatch', msg.requestId);
+      return;
+    }
+
+    const { completeJoinChallenge } = require('./hub-credentials');
+    const res = completeJoinChallenge(credential, proof);
+
+    if (!res.ok) {
+      client.pendingAuth = undefined;
+      this.send(ws, {
+        type: 'AUTH_DENY',
+        requestId: msg.requestId,
+        payload: { reason: res.reason, sessionId },
+      });
+      // Close the connection on auth failure to prevent brute force.
+      ws.close(4001, res.reason || 'Authentication failed');
+      return;
+    }
+
+    // Success: complete the pairing.
+    client.pendingAuth = undefined;
+    this.send(ws, {
+      type: 'AUTH_OK',
+      requestId: msg.requestId,
+      payload: { role: res.role, businessId: res.businessId, serverSeq: this.getMaxSeq(), sessionId },
+    });
+    this.completePairing(clientId, deviceId, undefined, undefined);
+  }
+
+  private completePairing(clientId: string, deviceId: string, name: string | undefined, platform: string | undefined): void {
+    const ws = this.clients.get(clientId)?.ws;
+    if (!ws) return;
+
+    registerDevice(deviceId, name, platform);
+    const client = this.clients.get(clientId);
+    if (client) {
+      client.deviceId = deviceId;
+      client.paired = true;
+      client.pendingAuth = undefined;
+    }
 
     mainBus.emitEvent('device-connected', {
-      deviceId: device_id,
-      deviceName: name || device_id,
+      deviceId: deviceId,
+      deviceName: name || deviceId,
       platform: platform || 'unknown',
     });
 
     this.send(ws, {
       type: 'PAIR_RESPONSE',
-      requestId: msg.requestId,
       payload: {
         success: true,
         hubId: ensureHubDeviceId(),
@@ -324,7 +440,8 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       },
     });
 
-    logger.info(`[WS] Device paired: ${device_id} (${name || 'unknown'})`);
+    logger.info(`[WS] Device paired: ${deviceId} (${name || 'unknown'})`);
+    markConnected(deviceId, { transport: 'lan-ws', platform: platform || 'unknown' });
     this.emit('clientConnected', this.clients.get(clientId)!);
   }
 
@@ -427,12 +544,7 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     // Every poll proves the joiner is live on this socket: remember it so the
     // owner's approval can be PUSHED instead of waiting for the next poll.
     this.registerJoinWaiter(clientId, String(joinerDeviceId), 'status-poll');
-    const payload: any = { record: rec };
-    // Approval hands the admitted device its pairing credential in-band (same
-    // as the HTTP hub) — without it the code-less joiner could never pair.
-    if (rec && rec.status === 'approved') {
-      payload.pairingToken = getPairingToken();
-    }
+    const payload: any = { record: rec, ...this.approvalCredentials(String(joinerDeviceId), rec) };
     // Explicit connection acknowledgement. `handshake.ok` means "this hub holds
     // your session" — the signal the joiner needs to leave "Waiting for
     // connection…" even before the owner decides.
@@ -522,10 +634,18 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       this.log('warn', 'decision push skipped — joiner socket closed', { joiner: shortId(joinerDeviceId) });
       return false;
     }
-    const body = {
+    const body: any = {
       ...(payload ?? {}),
       handshake: payload?.handshake ?? this.buildHandshakeAck(payload?.record ?? null),
     };
+    // P3: an approved decision carries the signed membership credential so the
+    // joiner can complete the authenticated handshake on its next connection.
+    // Injected here (the single push fan-out point) rather than in every caller
+    // so a new approval route cannot forget it.
+    if (body.record?.status === 'approved' && !body.credential) {
+      const credential = getJoinerCredential(joinerDeviceId);
+      if (credential) body.credential = credential;
+    }
     // A pushed decision has no caller-issued requestId, so the joiner treats a
     // requestId-less RESPONSE as an out-of-band session update.
     this.send(client.ws, { type: DEVICE_JOIN_MSG.RESPONSE, payload: body });
@@ -533,6 +653,7 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       joiner: shortId(joinerDeviceId),
       role: payload?.record?.role ?? null,
       tokenIncluded: !!payload?.pairingToken,
+      credentialIncluded: !!body.credential,
     });
     return true;
   }
@@ -551,6 +672,23 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     return true;
   }
 
+  /**
+   * The credentials an approved joiner is handed.
+   *
+   * `pairingToken` is the legacy bearer secret and `credential` is the signed
+   * membership credential (P3). They travel together while both paths are
+   * live; the token goes away once the handshake has been exercised in the
+   * field. This is the ONLY place either is attached, because four independent
+   * copies of "approved means hand out the secret" is how they drifted before.
+   */
+  private approvalCredentials(joinerDeviceId: string, rec: { status?: string | null } | null): Record<string, unknown> {
+    if (!rec || rec.status !== 'approved') return {};
+    const out: Record<string, unknown> = { pairingToken: getPairingToken() };
+    const credential = getJoinerCredential(joinerDeviceId);
+    if (credential) out.credential = credential;
+    return out;
+  }
+
   /** Pairing-session hello from a joiner: answer with the handshake ack. */
   private handlePairSessionHello(clientId: string, client: WsClient, msg: WsMessage): void {
     const joinerDeviceId = String(msg.payload?.deviceId ?? msg.payload?.joinerDeviceId ?? '');
@@ -562,7 +700,7 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       payload: {
         status: rec?.status ?? 'pending',
         record: rec,
-        ...(rec?.status === 'approved' ? { pairingToken: getPairingToken() } : {}),
+        ...this.approvalCredentials(joinerDeviceId, rec),
         handshake: this.buildHandshakeAck(rec),
       },
     });
@@ -645,7 +783,9 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     // An approved user invite admits the device — hand it the hub pairing
     // credential so the joiner can pair + sync, exactly like the device-join
     // STATUS grant (J1).
-    if (rec.status === 'approved') payload.payload.invite.pairingToken = getPairingToken();
+    if (rec.status === 'approved') {
+      Object.assign(payload.payload.invite, this.approvalCredentials(String(rec.joinerDeviceId ?? ''), rec));
+    }
     this.send(ws, payload);
   }
 
@@ -707,6 +847,10 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       }
       result = snapshotSince(sinceSeq);
       client.lastSeq = result.lastSeq;
+      // Keep the roster's freshness signal current. registerPeer only refreshes
+      // it on connect, so a long-lived connection would otherwise look stale
+      // for as long as it stays up.
+      markPeerSeen(client.deviceId);
 
       this.send(ws, {
         type: 'SYNC_CHANGES',
@@ -726,6 +870,53 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     } catch (e: any) {
       logger.error('[WS] Sync pull failed:', e);
       this.sendError(ws, 'SYNC_PULL_FAILED', e.message);
+    }
+  }
+
+  /**
+   * Client → hub delivery receipt. `acked_upto` is the client's contiguous
+   * applied high-water mark; every hub row at or below it is now known to be
+   * durable on that client, and rows are pruned only once every active peer has
+   * confirmed. This is what makes the pull above safe: it still advances
+   * `client.lastSeq` optimistically as a transport hint, but delivery — and
+   * therefore pruning — no longer depends on that guess.
+   */
+  private handleSyncApplied(clientId: string, client: WsClient, msg: WsMessage): void {
+    const ws = client.ws;
+    if (!client.paired) {
+      this.sendError(ws, 'NOT_PAIRED', 'Device not paired');
+      return;
+    }
+    const { acked_upto: ackedUptoRaw, failed_seqs: failedRaw } = msg.payload || {};
+    const ackedUpto = Number(ackedUptoRaw ?? 0);
+    if (!Number.isFinite(ackedUpto) || ackedUpto <= 0) {
+      this.sendError(ws, 'INVALID_PAYLOAD', 'acked_upto must be a positive number');
+      return;
+    }
+    const failedSeqs: number[] = Array.isArray(failedRaw)
+      ? failedRaw.map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n))
+      : [];
+
+    try {
+      const { acked } = recordAck(client.deviceId, ackedUpto, failedSeqs);
+      const pruned = pruneAckedOutbox();
+      if (acked > 0 || pruned.pruned > 0) {
+        logger.info('[WS] Delivery receipt', {
+          device: client.deviceId,
+          ackedUpto,
+          failed: failedSeqs.length,
+          acked,
+          pruned: pruned.pruned,
+        });
+      }
+      this.send(ws, {
+        type: 'SYNC_ACK',
+        requestId: msg.requestId,
+        payload: { acked, pruned: pruned.pruned, activePeers: pruned.activePeers },
+      });
+    } catch (e: any) {
+      logger.error('[WS] Delivery receipt failed:', e);
+      this.sendError(ws, 'SYNC_ACK_FAILED', e.message);
     }
   }
 
@@ -797,9 +988,13 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
         const deadDeviceId = client.deviceId;
         client.ws.close();
         this.clients.delete(clientId);
-        if (deadDeviceId) this.markRosterOffline(deadDeviceId);
+        if (deadDeviceId) {
+          this.markRosterOffline(deadDeviceId);
+          markDisconnected(deadDeviceId);
+        }
         this.emit('clientDisconnected', client);
       } else if (client.ws.readyState === WebSocket.OPEN) {
+        if (client.deviceId) markHeartbeat(client.deviceId, { transport: 'lan-ws' });
         this.send(client.ws, { type: 'HEARTBEAT', timestamp: now });
       }
     }

@@ -23,6 +23,8 @@ import { mdnsDiscovery, type DiscoveredService } from './sync/discovery';
 import { networkMonitor, currentOnline } from './sync/connectivity';
 import { wsSyncServer, startWsSyncServer } from './sync/websocket-server';
 import { p2pSync } from './sync/p2p-sync-manager';
+import { beginCycle, endCycle, markPeerFound, markConnected, markFirstSync } from './sync/diagnostics';
+import type { CycleReason } from './sync/diagnostics';
 import { getActiveBusinessId } from './ipc-handlers';
 import type {
   PeerInfo,
@@ -31,7 +33,7 @@ import type {
   NetworkCapabilities,
   DevicePlatform,
 } from '@shega/shared';
-import { getSyncStrategy } from '@shega/shared';
+import { getSyncStrategy, PROTOCOL_VERSION } from '@shega/shared';
 
 // ─── Peer registry ──────────────────────────────────────────────────────────
 
@@ -153,10 +155,14 @@ export function detectNetworkCapabilities(): NetworkCapabilities {
  * are treated identically.
  */
 let syncInterval: NodeJS.Timeout | null = null;
+let announceInterval: NodeJS.Timeout | null = null;
 let startupKick: NodeJS.Timeout | null = null;
 let kickDebounce: NodeJS.Timeout | null = null;
 let syncInFlight = false;
 let lastCloudSyncAt = 0;
+let lastLanSyncAt = 0;
+let running = false;
+const ANNOUNCE_INTERVAL_MS = 30_000;
 
 const LAN_SYNC_INTERVAL_MS = 30_000;  // 30 seconds
 
@@ -166,7 +172,54 @@ const LAN_SYNC_INTERVAL_MS = 30_000;  // 30 seconds
 const CLOUD_MIN_INTERVAL_MS = 60_000;
 const KICK_DEBOUNCE_MS = 2_000;
 
+/**
+ * The single debounced reconnect entry point. It is a module-level named
+ * function (not a closure created inside startPeerSync) so stopPeerSync() can
+ * detach exactly the listeners that were attached.
+ *
+ * `reason` only labels the P0 timing window; it does not change behaviour, and
+ * it does not affect listener detachment because `off` matches by reference.
+ */
+function reconnectKick(reason: CycleReason = 'manual'): void {
+  if (kickDebounce) clearTimeout(kickDebounce);
+  // P0 telemetry: open the measurement window on the FIRST signal of a burst,
+  // so time-to-peer/connected/sync is measured from the real trigger rather
+  // than from whichever debounced timer happened to win.
+  beginCycle(reason);
+  kickDebounce = setTimeout(() => {
+    kickDebounce = null;
+    // Re-announce first: peers only dial us after hearing a hello, and a peer
+    // that restarted mid-outage has no session to resume, so the announce is
+    // what actually re-establishes the direct channel.
+    try { p2pSync.announce(); } catch {}
+    performLanSync()
+      .catch((e: any) => logger.error('Kicked sync failed', { error: e?.message }))
+      .finally(() => { endCycle(); });
+  }, KICK_DEBOUNCE_MS);
+}
+
+/**
+ * Named listener wrappers. `EventEmitter.off` matches by function reference, so
+ * wrapping `reconnectKick` inline at the `on(...)` call site would make these
+ * listeners impossible to detach in stopPeerSync().
+ */
+const kickOnOnline = (): void => reconnectKick('network-online');
+const kickOnNetworkChanged = (): void => reconnectKick('network-changed');
+const kickOnMdnsUp = (): void => reconnectKick('mdns-up');
+const kickOnMdnsDown = (): void => reconnectKick('mdns-down');
+
 export function startPeerSync(): void {
+  // Idempotent: startPeerSync runs on app boot and again on business switches.
+  // Re-running it used to add another announce interval, another pair of
+  // network/discovery listeners, and another sync interval while the previous
+  // ones kept running — the app ended up with N independent sync loops all
+  // pushing the same rows.
+  if (running) {
+    logger.debug?.('Peer sync already running; ignoring duplicate start');
+    return;
+  }
+  running = true;
+
   const hubId = ensureHubDeviceId();
   // This install is a Desktop build; the platform identity is a peer-detected
   // property, not an ownership marker. Desktop and Mobile are equal first-class
@@ -187,35 +240,26 @@ export function startPeerSync(): void {
     const biz = db.prepare('SELECT id, uuid FROM businesses WHERE id = ?').get(bizId) as any;
     if (biz?.uuid) {
       p2pSync.start(hubDevId, String(biz.uuid), Number(biz.id));
-      // Periodically announce so late-joining peers can dial us.
-      setInterval(() => p2pSync.announce(), 30000);
+      // Periodically announce so late-joining peers can dial us. The handle is
+      // owned here so stopPeerSync() can actually stop it — previously the
+      // interval was fire-and-forget and outlived stop/restart cycles.
+      if (announceInterval) clearInterval(announceInterval);
+      announceInterval = setInterval(() => p2pSync.announce(), ANNOUNCE_INTERVAL_MS);
     }
   } catch (e: any) {
     logger.warn('P2P sync start failed (continuing without it)', { error: e?.message });
   }
 
-  // Automatic reconnect (2.4/3.4): the one place that decides "what to do now".
-  // Every reconnect signal funnels into a single debounced kick, so a device
-  // coming back, a network switch, or a new hub appearing all trigger exactly
-  // one sync pass — never a stampede racing the 30s interval.
-  const kick = () => {
-    if (kickDebounce) clearTimeout(kickDebounce);
-    kickDebounce = setTimeout(() => {
-      kickDebounce = null;
-      performLanSync().catch((e: any) => logger.error('Kicked sync failed', { error: e?.message }));
-      try { p2pSync.announce(); } catch {}
-    }, KICK_DEBOUNCE_MS);
-  };
-
-  // Internet restored → the LAN may be reachable again too (same physical
-  // network); re-resolve everything and kick.
-  networkMonitor.on('online', kick);
-  networkMonitor.on('network-changed', kick);
-
+  // Automatic reconnect (2.4/3.4): every reconnect signal funnels into one
+  // debounced kick, so a device coming back, a network switch, or a new hub
+  // appearing all trigger exactly one sync pass — never a stampede racing the
+  // 30s interval.
+  networkMonitor.on('online', kickOnOnline);
+  networkMonitor.on('network-changed', kickOnNetworkChanged);
   // A hub appearing on the LAN is the strongest reconnect signal. Sync with it
   // immediately instead of waiting up to 30s for the interval.
-  mdnsDiscovery.on('up', kick);
-  mdnsDiscovery.on('down', kick);
+  mdnsDiscovery.on('up', kickOnMdnsUp);
+  mdnsDiscovery.on('down', kickOnMdnsDown);
 
   networkMonitor.start();
 
@@ -223,16 +267,19 @@ export function startPeerSync(): void {
   // hub right away — not after 30s. Give discovery ~2s to settle first.
   startupKick = setTimeout(() => {
     startupKick = null;
-    kick();
+    reconnectKick('startup');
   }, 2000);
 
   // Periodic LAN sync: pull from any discovered peers, push local changes
   if (syncInterval) clearInterval(syncInterval);
   syncInterval = setInterval(async () => {
+    beginCycle('interval');
     try {
       await performLanSync();
     } catch (e: any) {
       logger.error('LAN sync cycle failed', { error: e?.message });
+    } finally {
+      endCycle();
     }
   }, LAN_SYNC_INTERVAL_MS);
 
@@ -260,9 +307,14 @@ export function reScopePeerSync(businessRowId: number): void {
 }
 
 export function stopPeerSync(): void {
+  running = false;
   if (syncInterval) {
     clearInterval(syncInterval);
     syncInterval = null;
+  }
+  if (announceInterval) {
+    clearInterval(announceInterval);
+    announceInterval = null;
   }
   if (startupKick) {
     clearTimeout(startupKick);
@@ -272,11 +324,14 @@ export function stopPeerSync(): void {
     clearTimeout(kickDebounce);
     kickDebounce = null;
   }
-  networkMonitor.removeAllListeners('online');
-  networkMonitor.removeAllListeners('network-changed');
+  // Remove only the listeners this module registered. `removeAllListeners` also
+  // tore down every other subscriber on these shared singletons, so stopping
+  // peer sync silently disabled connectivity/discovery for unrelated features.
+  networkMonitor.off('online', kickOnOnline);
+  networkMonitor.off('network-changed', kickOnNetworkChanged);
   networkMonitor.stop();
-  mdnsDiscovery.removeAllListeners('up');
-  mdnsDiscovery.removeAllListeners('down');
+  mdnsDiscovery.off('up', kickOnMdnsUp);
+  mdnsDiscovery.off('down', kickOnMdnsDown);
   mdnsDiscovery.stop();
   wsSyncServer.stop();
   logger.info('Peer sync stopped');
@@ -299,9 +354,52 @@ export async function performLanSync(): Promise<void> {
   if (syncInFlight) return;
   const discovered = mdnsDiscovery.getDiscoveredServices();
 
+  // mDNS is not a dependable inventory of reachable peers: Android blocks
+  // multicast, many routers drop it after a few minutes, and a peer that
+  // rebooted re-announces only every 30s. Treating "mDNS found nothing" as
+  // "no LAN peers exist" meant a desktop whose peer was momentarily invisible
+  // did nothing at all and the data simply sat in the outbox until the next
+  // successful discovery — the "it says connected but nothing syncs" symptom.
+  //
+  // So before concluding the LAN is empty, actively re-probe the endpoints we
+  // already know about. A peer is reachable if it answers, regardless of
+  // whether its announcement reached us.
+  if (discovered.length === 0) {
+    const remembered = rememberedPeers();
+    if (remembered.length > 0) {
+      syncInFlight = true;
+      try {
+        const { isMobileHub, syncWithMobileHub } = await import('./sync/mobile-hub-client');
+        for (const peer of remembered) {
+          markPeerFound(peer.deviceId, { via: 'remembered', host: peer.host });
+          try {
+            if (isMobileHub(peer)) {
+              await syncWithMobileHub(peer);
+              markConnected(peer.deviceId, { transport: 'lan-tcp', addresses: [peer.host] });
+              markFirstSync(peer.deviceId, { transport: 'lan-tcp' });
+            } else {
+              await syncWithPeerHub(peer);
+              markConnected(peer.deviceId, { transport: 'lan-http', addresses: [peer.host] });
+              markFirstSync(peer.deviceId, { transport: 'lan-http' });
+            }
+          } catch (e: any) {
+            logger.debug?.(`Remembered peer ${peer.deviceId} unreachable`, { error: e?.message });
+          }
+        }
+      } finally {
+        syncInFlight = false;
+      }
+      // Re-probing found nobody: the peers really are gone, so cloud is the
+      // only remaining transport.
+    }
+  }
+
+  // Re-read discovery: a re-probe may have produced fresh announcements.
+  const hubs = discovered.length > 0 ? discovered : mdnsDiscovery.getDiscoveredServices();
+
   // Cloud fallback: no hubs on the LAN but internet is back → use the cloud
   // relay as a second transport so a LAN-less device still converges (§5).
-  if (discovered.length === 0) {
+  if (hubs.length === 0) {
     syncInFlight = true;
     try {
       const online = currentOnline();
@@ -312,6 +410,8 @@ export async function performLanSync(): Promise<void> {
       if (now - lastCloudSyncAt < CLOUD_MIN_INTERVAL_MS) return;
       lastCloudSyncAt = now;
       const res = await syncCloudOnce();
+      markConnected('cloud-relay', { transport: 'cloud' });
+      markFirstSync('cloud-relay', { transport: 'cloud' });
       logger.info('Cloud sync (LAN empty fallback)', {
         ok: res.ok,
         accepted: res.accepted ?? 0,
@@ -331,20 +431,76 @@ export async function performLanSync(): Promise<void> {
     // Mobile phones acting as POS Hubs speak the TCP JSON protocol, not HTTP —
     // route those to the dedicated mobile-hub client.
     const { isMobileHub, syncWithMobileHub } = await import('./sync/mobile-hub-client');
-    for (const peer of discovered) {
+    for (const peer of hubs) {
+      markPeerFound(peer.deviceId, {
+        via: 'mdns',
+        host: peer.host,
+        platform: (peer as any).platform,
+      });
       try {
+        const transport = isMobileHub(peer) ? 'lan-tcp' : 'lan-http';
         if (isMobileHub(peer)) {
           await syncWithMobileHub(peer);
         } else {
           await syncWithPeerHub(peer);
         }
+        // A completed round trip on this transport is both "link established"
+        // and "first sync" for the HTTP/TCP peer path — the WS path reports
+        // these separately from websocket-server.ts.
+        markConnected(peer.deviceId, { transport, addresses: peer.addresses ?? [peer.host] });
+        markFirstSync(peer.deviceId, { transport });
       } catch (e: any) {
         logger.warn('Sync with peer hub failed', { peerId: peer.deviceId, error: e?.message });
       }
     }
+    lastLanSyncAt = Date.now();
   } finally {
     syncInFlight = false;
   }
+}
+
+/**
+ * Endpoints we have previously synced with, so a peer that is momentarily
+ * undiscoverable can still be reached. Read from the `devices` table (populated
+ * by persistPeerDevice) rather than an in-memory map, because the common case
+ * is a *restart* — in-memory state is exactly what is missing when the app comes
+ * back and the peer is mid-announce.
+ */
+function rememberedPeers(): DiscoveredService[] {
+  let rows: any[] = [];
+  try {
+    rows = db.prepare(
+      `SELECT device_id, name, platform, host, last_seen_at FROM devices
+        WHERE is_deleted = 0 AND host IS NOT NULL AND host <> ''
+        ORDER BY last_seen_at DESC LIMIT 8`,
+    ).all() as any[];
+  } catch {
+    // Older install without the host column: nothing to re-probe yet.
+    return [];
+  }
+  return rows
+    .filter((r) => r?.device_id && r?.host)
+    .map((r) => ({
+      deviceId: String(r.device_id),
+      name: r.name || undefined,
+      host: String(r.host),
+      addresses: [String(r.host)],
+      port: 5757,
+      capabilities: [],
+      schemaVersion: PROTOCOL_VERSION,
+      discoveredAt: Date.parse(r.last_seen_at || '') || Date.now(),
+      // DiscoveredService extends bonjour's Service class; this is a synthetic
+      // re-probe target, not a live browser result, so it is cast rather than
+      // constructing a fake Service with its full EventEmitter surface.
+    } as any));
+}
+
+/** Record the address a peer was last reached at, for later re-probes. */
+function rememberPeerHost(deviceId: string, host: string): void {
+  if (!deviceId || !host) return;
+  try {
+    db.prepare('UPDATE devices SET host = ? WHERE device_id = ?').run(host, deviceId);
+  } catch { /* best effort */ }
 }
 
 /**
@@ -418,7 +574,9 @@ async function syncWithPeerHub(peer: DiscoveredService): Promise<void> {
   } catch (e: any) {
     logger.warn('Peer pull failed', { peerId: peer.deviceId, error: e?.message });
   }
-  // Persist the peer hub as a device so it appears in Connected Devices.
+  // Persist the peer hub as a device so it appears in Connected Devices, and
+  // remember its address so a later re-probe can reach it even when its mDNS
+  // announcement is being dropped.
   try {
     persistPeerDevice({
       deviceId: peer.deviceId,
@@ -426,6 +584,8 @@ async function syncWithPeerHub(peer: DiscoveredService): Promise<void> {
       platform: 'desktop',
       businessId: businessId ?? undefined,
     });
+    rememberPeerHost(peer.deviceId, peer.host);
+    p2pSync.markRosterStatus(peer.deviceId, true);
   } catch { /* best effort */ }
 }
 
@@ -476,14 +636,17 @@ export async function getUnifiedSyncStatus(): Promise<{
   return {
     health,
     transport: (transport === 'offline' && isHubRunning) ? 'lan' : transport,
-    lastSyncAt: null,
+    // A hardcoded null here meant the UI could never tell "connected but idle"
+    // from "never connected", so a successful recovery was invisible to the
+    // user even when it had happened.
+    lastSyncAt: lastLanSyncAt ? new Date(lastLanSyncAt).toISOString() : null,
     pendingOutbound: outboxCount,
     failedChanges: 0,
     conflicts: conflictCount,
     lan: {
       configured: true,
       peers: Math.max(mdnsDiscovery.getDiscoveredServices().length, wsPeers),
-      lastSyncAt: null,
+      lastSyncAt: lastLanSyncAt ? new Date(lastLanSyncAt).toISOString() : null,
     },
   };
 }

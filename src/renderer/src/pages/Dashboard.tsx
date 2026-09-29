@@ -58,7 +58,7 @@ const itemVariants = {
 };
 
 const Dashboard: React.FC = () => {
-  const { t, formatDate, formatTime, calendarType, language } = useSettings();
+  const { t, formatDate, formatTime, calendarType, language, currentBusiness } = useSettings();
   const { currentAdmin } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -266,7 +266,9 @@ const Dashboard: React.FC = () => {
                 {t(`dashboard.${greeting}`)}, {currentAdmin?.name?.split(' ')[0] || 'Admin'}
               </h1>
               <p className="text-sm text-muted-foreground/70 mt-0.5">
-                {t('dashboard.welcome')}
+                {currentBusiness?.businessName
+                  ? `Here is what's happening with ${currentBusiness.businessName} today.`
+                  : t('dashboard.welcome')}
               </p>
             </div>
             <div className="flex items-center gap-4">

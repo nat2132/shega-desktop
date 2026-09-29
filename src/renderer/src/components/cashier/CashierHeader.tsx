@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Bell, ChevronDown, Lock, LogOut, Receipt, Store, CircleDollarSign } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, Store, CircleDollarSign } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useCashier } from '../../context/CashierContext';
 import { BrandedLogo } from '../branded-logo';
@@ -20,6 +20,7 @@ import {
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { resolveAvatar } from '../../lib/avatar';
+import { displayUsername } from '../../lib/username';
 
 interface CashierHeaderProps {
   onOpenShiftUi: () => void;
@@ -159,7 +160,7 @@ export function CashierHeader({ onOpenShiftUi, onCloseShiftUi }: CashierHeaderPr
           <DropdownMenuContent align="end" className="w-60 rounded-xl">
             <DropdownMenuLabel className="flex flex-col gap-0.5">
               <span className="text-sm font-bold">{currentAdmin?.name}</span>
-              <span className="text-xs text-muted-foreground">@{currentAdmin?.username}</span>
+              <span className="text-xs text-muted-foreground">{displayUsername(currentAdmin?.username)}</span>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             {register && (

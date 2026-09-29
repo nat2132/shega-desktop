@@ -21,6 +21,7 @@ import * as net from 'net';
 import type { PairingBeacon } from '@shega/shared';
 import { getDesktopDeviceName, getLocalIPv4s } from './device-name';
 import { ensureHubDeviceId } from '../sync-hub';
+import { markPeerFound, countPeerFound } from './diagnostics';
 
 export interface LanFoundDevice {
   /** Same shape as an mDNS beacon hit so callers can merge the two lists. */
@@ -40,8 +41,29 @@ const CONCURRENCY = 128;
 const CACHE_MS = 1_500;
 const DISCOVERY_TTL_MS = 45_000;
 
+/** How often a host that has answered before is re-probed on its own. */
+const KNOWN_REPROBE_MS = 2_500;
+/** A known host that stops answering is dropped after this long. */
+const KNOWN_STALE_MS = 15_000;
+/** Full subnet-walk cadence — the expensive path, so it runs rarely. */
+const FULL_SWEEP_MS = 30_000;
+
 let cache: { at: number; items: LanFoundDevice[] } = { at: 0, items: [] };
 let inflight: Promise<LanFoundDevice[]> | null = null;
+let lastKnownReprobeAt = 0;
+let lastFullSweepAt = 0;
+let fullSweepRunning: Promise<LanFoundDevice[]> | null = null;
+
+/**
+ * Hosts that answered a previous probe, with their last-seen time.
+ *
+ * The full sweep walks several thousand hosts across every hotspot subnet and
+ * takes tens of seconds. Any caller that awaited it (the "scan nearby owners"
+ * path in pairing-cloud.ts) stalled for that whole window, so a manual refresh
+ * looked like it had done nothing. Re-probing only previously-responsive hosts
+ * is a handful of connects and finishes in well under a second.
+ */
+const known = new Map<string, { entry: LanFoundDevice; lastSeen: number }>();
 
 /** /24 host list for every active IPv4 on this machine plus hotspot subnets. */
 function candidateHosts(): string[] {
@@ -223,6 +245,47 @@ async function probeHost(host: string): Promise<LanFoundDevice[]> {
   return found;
 }
 
+/** Merge fresh hits into the known-host table and expire silent ones. */
+function reconcile(fresh: LanFoundDevice[]): LanFoundDevice[] {
+  const now = Date.now();
+  for (const entry of fresh) known.set(entry.host, { entry, lastSeen: now });
+  for (const [host, rec] of known) {
+    if (now - rec.lastSeen > KNOWN_STALE_MS) known.delete(host);
+  }
+  // P0 telemetry: time-to-first-peer is measured from the first hit of the
+  // current window, so re-observing an already-known host is not re-timed.
+  for (const entry of fresh) {
+    markPeerFound(entry.beacon.owner.deviceId, {
+      via: entry.via,
+      host: entry.host,
+      platform: entry.platform,
+      known: known.get(entry.host)?.lastSeen !== now,
+    });
+  }
+  countPeerFound(fresh.length);
+  return [...known.values()].map((r) => r.entry);
+}
+
+/** Cheap pass over the hosts that have already answered once. */
+async function reprobeKnown(): Promise<LanFoundDevice[]> {
+  const selfId = ensureHubDeviceId();
+  const hosts = [...known.keys()];
+  if (!hosts.length) return [];
+  const out: LanFoundDevice[] = [];
+  for (let i = 0; i < hosts.length; i += CONCURRENCY) {
+    const slice = hosts.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(slice.map((h) => probeHost(h).catch(() => [] as LanFoundDevice[])));
+    for (const list of results) {
+      for (const entry of list) {
+        if (entry.beacon.owner.deviceId === selfId) continue;
+        out.push(entry);
+      }
+    }
+  }
+  return out;
+}
+
+/** Expensive walk of every candidate host on every active subnet. */
 async function runSweep(): Promise<LanFoundDevice[]> {
   const hosts = candidateHosts();
   const selfId = ensureHubDeviceId();
@@ -241,14 +304,48 @@ async function runSweep(): Promise<LanFoundDevice[]> {
 }
 
 /**
- * Nearby devices found by sweeping the LAN. Cached briefly and never
- * concurrent, so the discovery screens can poll this cheaply.
+ * Start a full subnet sweep without blocking on it. Safe to call on every
+ * refresh: a walk already in flight is reused.
+ */
+export function startFullSweep(): Promise<LanFoundDevice[]> {
+  if (fullSweepRunning) return fullSweepRunning;
+  lastFullSweepAt = Date.now();
+  fullSweepRunning = runSweep()
+    .then((fresh) => {
+      const items = reconcile(fresh);
+      cache = { at: Date.now(), items };
+      return items;
+    })
+    .catch(() => cache.items)
+    .finally(() => { fullSweepRunning = null; });
+  return fullSweepRunning;
+}
+
+/**
+ * Nearby devices found by sweeping the LAN.
+ *
+ * Never blocks on the subnet walk. `force` skips the freshness window and
+ * re-probes known hosts right away; the full walk is always scheduled in the
+ * background so newly-arrived devices are still picked up, just without
+ * stalling the caller for the whole sweep duration.
  */
 export async function sweepLan(force = false): Promise<LanFoundDevice[]> {
-  if (!force && Date.now() - cache.at < CACHE_MS) return cache.items;
+  const now = Date.now();
+
+  // Keep a full walk warm in the background so first-time peers are still
+  // found, but only when the subnet is actually due for one.
+  if (!fullSweepRunning && now - lastFullSweepAt >= FULL_SWEEP_MS) {
+    void startFullSweep();
+  }
+
+  if (!force && now - cache.at < CACHE_MS) return cache.items;
   if (inflight) return inflight;
-  inflight = runSweep()
-    .then((items) => {
+  if (!force && now - lastKnownReprobeAt < KNOWN_REPROBE_MS) return cache.items;
+  lastKnownReprobeAt = now;
+
+  inflight = reprobeKnown()
+    .then((fresh) => {
+      const items = reconcile(fresh);
       cache = { at: Date.now(), items };
       return items;
     })

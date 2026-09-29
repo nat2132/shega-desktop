@@ -1,15 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Crown, Sparkles, Shield, Clock, Calendar, CreditCard, ArrowRight, Check,
   RefreshCw, ChevronUp, FileText, HelpCircle, Star, AlertTriangle, Loader2,
   Phone, Building2, User, Hash, CalendarDays, MessageSquare, CheckCircle2,
-  XCircle, Hourglass, Gift, Mail, Lock, Cloud, LogOut, Link2, Server
+  XCircle, Hourglass, Gift, Mail, Lock, Cloud, LogOut, Link2, Server,
+  DollarSign, Smartphone, Monitor
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { useSubscription } from '../context/SubscriptionContext';
 import PremiumBadge from '../components/PremiumBadge';
 import { SubscriptionAddonsCard } from '../components/SubscriptionAddonsCard';
+import PaymentStatusPanel from '../components/PaymentStatusPanel';
+import { usePaymentStatus } from '../hooks/usePaymentStatus';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -19,21 +22,6 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { parsePlanEdition } from '@shega/shared';
 import { toast } from 'sonner';
-
-interface PaymentTx {
-  id: number;
-  transactionId: string;
-  businessName: string;
-  phoneNumber: string;
-  selectedPlan: string;
-  amount: number;
-  paymentDate: string;
-  notes: string | null;
-  status: string;
-  adminNotes: string | null;
-  createdAt: string;
-}
-
 interface Plan {
   id: number;
   name: string;
@@ -63,13 +51,139 @@ function planEdition(tier: string | null | undefined): string {
   return parsePlanEdition(tier) ?? 'both';
 }
 
+interface CostBreakdown {
+  base: {
+    name: string;
+    price: number;
+    included: { mobile: number; desktop: number; businesses: number };
+  };
+  addons: {
+    mobile: { owned: number; active: number; unit_price: number; monthly_total: number };
+    desktop: { owned: number; active: number; unit_price: number; monthly_total: number };
+    businesses: { owned: number; active: number; unit_price: number; monthly_total: number };
+  };
+  total_monthly: number;
+}
+
+const SubscriptionCostBreakdown: React.FC<{ licenseId: number }> = ({ licenseId }) => {
+  const { t } = useSettings();
+  const [breakdown, setBreakdown] = useState<CostBreakdown | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const res = await window.api.backendCostBreakdown({ licenseId });
+        if (res?.success) setBreakdown(res.breakdown);
+      } catch (_) { /* ignore */ }
+      finally { setLoading(false); }
+    };
+    load();
+  }, [licenseId]);
+
+  if (loading) return null;
+  if (!breakdown) return null;
+
+  const formatETB = (n: number) => n.toLocaleString() + ' ' + t('subscription.etb');
+
+  return (
+    <Card className="rounded-2xl border-primary/20 bg-gradient-to-r from-primary/[0.04] to-transparent">
+      <CardHeader className="p-4 pb-2">
+        <CardTitle className="text-xs font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
+          <DollarSign className="h-3 w-3" />
+          {t('subscription.cost_breakdown')}
+        </CardTitle>
+        <CardDescription className="text-xs">{t('subscription.cost_breakdown_desc')}</CardDescription>
+      </CardHeader>
+      <CardContent className="p-4 pt-0 space-y-3">
+        {/* Base Plan */}
+        <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-black uppercase tracking-wide text-primary">{t('subscription.base_plan')}</span>
+            <span className="text-sm font-bold text-primary">{formatETB(breakdown.base.price)}</span>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-[10px] text-muted-foreground">
+            <div className="flex items-center gap-1"><Smartphone className="h-3 w-3" /> {t('subscription.mobile')}: {breakdown.base.included.mobile}</div>
+            <div className="flex items-center gap-1"><Monitor className="h-3 w-3" /> {t('subscription.desktop')}: {breakdown.base.included.desktop}</div>
+            <div className="flex items-center gap-1"><Building2 className="h-3 w-3" /> {t('subscription.businesses')}: {breakdown.base.included.businesses}</div>
+          </div>
+        </div>
+
+        {/* Add-ons */}
+        <div className="space-y-2">
+          {breakdown.addons.mobile.owned > 0 && (
+            <div className="rounded-xl border border-border/50 p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-full bg-blue-500/10"><Smartphone className="h-3 w-3 text-blue-500" /></div>
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide">{t('subscription.add_mobile_device')}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {t('subscription.owned')}: {breakdown.addons.mobile.owned} · {t('subscription.active')}: {breakdown.addons.mobile.active}
+                  </p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-xs font-bold">{formatETB(breakdown.addons.mobile.unit_price)} × {breakdown.addons.mobile.owned}</p>
+                <p className="text-[11px] font-bold text-primary">{formatETB(breakdown.addons.mobile.monthly_total)}/mo</p>
+              </div>
+            </div>
+          )}
+          {breakdown.addons.desktop.owned > 0 && (
+            <div className="rounded-xl border border-border/50 p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-full bg-green-500/10"><Monitor className="h-3 w-3 text-green-500" /></div>
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide">{t('subscription.add_desktop_device')}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {t('subscription.owned')}: {breakdown.addons.desktop.owned} · {t('subscription.active')}: {breakdown.addons.desktop.active}
+                  </p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-xs font-bold">{formatETB(breakdown.addons.desktop.unit_price)} × {breakdown.addons.desktop.owned}</p>
+                <p className="text-[11px] font-bold text-primary">{formatETB(breakdown.addons.desktop.monthly_total)}/mo</p>
+              </div>
+            </div>
+          )}
+          {breakdown.addons.businesses.owned > 0 && (
+            <div className="rounded-xl border border-border/50 p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-full bg-violet-500/10"><Building2 className="h-3 w-3 text-violet-500" /></div>
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide">{t('subscription.add_business')}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {t('subscription.owned')}: {breakdown.addons.businesses.owned} · {t('subscription.active')}: {breakdown.addons.businesses.active}
+                  </p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-xs font-bold">{formatETB(breakdown.addons.businesses.unit_price)} × {breakdown.addons.businesses.owned}</p>
+                <p className="text-[11px] font-bold text-primary">{formatETB(breakdown.addons.businesses.monthly_total)}/mo</p>
+              </div>
+            </div>
+          )}
+          {(breakdown.addons.mobile.owned === 0 && breakdown.addons.desktop.owned === 0 && breakdown.addons.businesses.owned === 0) && (
+            <p className="text-xs text-muted-foreground text-center py-2">{t('subscription.no_addons')}</p>
+          )}
+        </div>
+
+        {/* Total */}
+        <div className="rounded-xl border-2 border-primary/30 bg-primary/10 p-3 flex items-center justify-between">
+          <span className="text-xs font-black uppercase tracking-widest">{t('subscription.monthly_total')}</span>
+          <span className="text-lg font-black text-primary">{formatETB(breakdown.total_monthly)}</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
 const SubscriptionDashboard: React.FC = () => {
   const { t, formatDate } = useSettings();
   const navigate = useNavigate();
   const location = useLocation();
   const { subscription, renewalInfo, isPremium, isTrial, daysRemaining, refresh } = useSubscription();
   const [plans, setPlans] = useState<Plan[]>([]);
-  const [transactions, setTransactions] = useState<PaymentTx[]>([]);
   const [history, setHistory] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(true);
@@ -80,6 +194,18 @@ const SubscriptionDashboard: React.FC = () => {
   const [cloudBusy, setCloudBusy] = useState(false);
   const [serverUrl, setServerUrl] = useState('');
   const [savingServer, setSavingServer] = useState(false);
+
+  // The backend owns whether a submission is still under review, so the pending
+  // state is re-read from the API rather than remembered by this component.
+  const paymentsApi = usePaymentStatus({ linked: !!cloud?.linked });
+
+  const handleRefreshAll = useCallback(async () => {
+    await Promise.all([refresh(), paymentsApi.refresh()]);
+  }, [refresh, paymentsApi]);
+
+  useEffect(() => {
+    void handleRefreshAll();
+  }, [handleRefreshAll]);
 
   const loadSession = async () => {
     try {
@@ -188,13 +314,14 @@ const SubscriptionDashboard: React.FC = () => {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [p, tx, h] = await Promise.all([
+      const [p, h] = await Promise.all([
         window.api.getSubscriptionPlans(),
-        window.api.getPaymentTransactions(),
         window.api.getSubscriptionHistory(),
       ]);
       setPlans(p || []);
-      setTransactions(tx || []);
+      // Local subscription history only tracks tier changes.
+      // The authoritative payment list (including add-ons) comes from the backend
+      // via usePaymentStatus. We merge both into a unified timeline below.
       setHistory(h || []);
     } catch (err) {
       console.error('Failed to load subscription data:', err);
@@ -207,24 +334,47 @@ const SubscriptionDashboard: React.FC = () => {
     ? Math.max(0, Math.ceil((new Date(subscription.trialEndsAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
     : 0;
 
-  const statusBadge = (status: string) => {
-    const variants: Record<string, { color: string; icon: any; label: string }> = {
-      active: { color: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20', icon: CheckCircle2, label: t('premium.active') },
-      pending: { color: 'bg-amber-500/10 text-amber-500 border-amber-500/20', icon: Hourglass, label: t('subscription.payment_pending') },
-      rejected: { color: 'bg-red-500/10 text-red-500 border-red-500/20', icon: XCircle, label: t('subscription.payment_rejected') },
-      expired: { color: 'bg-muted text-muted-foreground border-border/50', icon: AlertTriangle, label: t('premium.expired') },
+const statusBadge = (status: string) => {
+      const variants: Record<string, { color: string; icon: any; label: string }> = {
+        approved: { color: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20', icon: CheckCircle2, label: t('subscription.payment_approved', 'Approved') },
+        pending: { color: 'bg-amber-500/10 text-amber-500 border-amber-500/20', icon: Hourglass, label: t('subscription.payment_pending') },
+        rejected: { color: 'bg-red-500/10 text-red-500 border-red-500/20', icon: XCircle, label: t('subscription.payment_rejected') },
+        cancelled: { color: 'bg-muted text-muted-foreground border-border/50', icon: XCircle, label: t('subscription.payment_cancelled', 'Cancelled') },
+      };
+      const v = variants[status] || variants.approved;
+      const Icon = v.icon;
+      return (
+        <Badge variant="outline" className={`text-xs font-black uppercase tracking-widest ${v.color}`}>
+          <Icon className="h-2.5 w-2.5 mr-1" />
+          {v.label}
+        </Badge>
+      );
     };
-    const v = variants[status] || variants.active;
-    const Icon = v.icon;
-    return (
-      <Badge variant="outline" className={`text-xs font-black uppercase tracking-widest ${v.color}`}>
-        <Icon className="h-2.5 w-2.5 mr-1" />
-        {v.label}
-      </Badge>
-    );
-  };
 
-  if (loading) {
+  // Unified history: merge local subscription tier changes with backend payments (including add-ons)
+  const unifiedHistory = React.useMemo(() => {
+    const local = (history || []).map((h: any) => ({
+      id: `local-${h.id}`,
+      date: h.createdAt,
+      type: 'subscription',
+      action: h.action?.replace(/_/g, ' ') || 'Subscription change',
+      details: h.details || '',
+      tier: { old: h.oldTier, new: h.newTier },
+    }));
+    const backend = (paymentsApi.payments || []).map((p: any) => ({
+      id: `pay-${p.id}`,
+      date: p.created_at,
+      type: 'payment',
+      action: p.status === 'approved' ? 'Payment Approved' : p.status === 'rejected' ? 'Payment Rejected' : 'Payment Submitted',
+      details: `${p.description || p.payment_type || 'Payment'} · ${p.transaction_id || '—'}`,
+      amount: p.amount,
+      status: p.status,
+      payment_type: p.payment_type,
+    }));
+    return [...local, ...backend].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [history, paymentsApi.payments]);
+
+    if (loading) {
     return (
       <div className="flex items-center justify-center h-full py-32">
         <div className="text-center">
@@ -246,7 +396,7 @@ const SubscriptionDashboard: React.FC = () => {
           </div>
           <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t('subscription.subtitle')}</p>
         </div>
-        {daysRemaining > 0 && daysRemaining <= 7 && !isTrial && (
+        {daysRemaining > 0 && daysRemaining <= 7 && !isTrial && !paymentsApi.hasPendingSubscription && (
           <Button
             onClick={() => navigate('/subscription/payment')}
             className="rounded-xl text-xs font-black uppercase tracking-widest bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
@@ -286,9 +436,6 @@ const SubscriptionDashboard: React.FC = () => {
         <TabsList className="rounded-2xl">
           <TabsTrigger value="overview" className="text-xs font-black uppercase tracking-widest rounded-xl">
             {t('subscription.current_plan')}
-          </TabsTrigger>
-          <TabsTrigger value="plans" className="text-xs font-black uppercase tracking-widest rounded-xl">
-            {t('subscription.pricing')}
           </TabsTrigger>
           <TabsTrigger value="payments" className="text-xs font-black uppercase tracking-widest rounded-xl">
             {t('subscription.payment_history')}
@@ -367,6 +514,23 @@ const SubscriptionDashboard: React.FC = () => {
               </CardContent>
             </Card>
           </div>
+
+          {/*
+            Payment status comes from the server's payment list, not from the
+            single `pending_payment` summary on the status payload: that field
+            only reports the newest submission, so a renewal and a device add-on
+            awaiting review together would hide one of them. It also replaces the
+            old banner that claimed access "remains active" during review, which
+            is wrong for a first subscription and misleading for a renewal.
+          */}
+          <PaymentStatusPanel
+            pending={paymentsApi.pending}
+            approved={paymentsApi.approved}
+            rejected={paymentsApi.rejected}
+            onRefresh={handleRefreshAll}
+            refreshing={paymentsApi.loading}
+            planName={cloud?.planName || subscription?.planName || null}
+          />
 
           {/* Shega Cloud Account — the backend is the source of truth */}
           <Card className="rounded-2xl border-primary/20 bg-gradient-to-r from-primary/[0.04] to-transparent">
@@ -465,6 +629,11 @@ const SubscriptionDashboard: React.FC = () => {
             </CardContent>
           </Card>
 
+          {/* Subscription Cost Breakdown */}
+          {cloud?.linked && subscription?.licenseId && (
+            <SubscriptionCostBreakdown licenseId={subscription.licenseId} />
+          )}
+
           {/* Capacity Add-ons — the server prices and grants these */}
           <SubscriptionAddonsCard
             linked={!!cloud?.linked}
@@ -487,12 +656,14 @@ const SubscriptionDashboard: React.FC = () => {
                     </p>
                   </div>
                 </div>
-                <Button
-                  onClick={() => navigate('/subscription/payment')}
-                  className="rounded-xl text-xs font-black uppercase tracking-widest bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
-                >
-                  {t('subscription.upgrade_now')} <ArrowRight className="h-3 w-3 ml-1" />
-                </Button>
+                {!paymentsApi.hasPendingSubscription && (
+                  <Button
+                    onClick={() => navigate('/subscription/payment')}
+                    className="rounded-xl text-xs font-black uppercase tracking-widest bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700"
+                  >
+                    {t('subscription.upgrade_now')} <ArrowRight className="h-3 w-3 ml-1" />
+                  </Button>
+                )}
               </CardContent>
             </Card>
           )}
@@ -543,19 +714,21 @@ const SubscriptionDashboard: React.FC = () => {
           )}
 
           {/* Quick Actions */}
-          <div className="grid grid-cols-2 gap-4">
-            <Card className="rounded-2xl border-border/50 cursor-pointer hover:bg-muted/30 transition-all" onClick={() => navigate('/subscription/payment')}>
-              <CardContent className="p-4 flex items-center gap-3">
-                <div className="p-2 rounded-full bg-amber-500/10">
-                  <CreditCard className="h-5 w-5 text-amber-500" />
-                </div>
-                <div>
-                  <p className="text-xs font-black uppercase tracking-widest">{t('subscription.billing')}</p>
-                  <p className="text-xs text-muted-foreground">{t('subscription.renew')} / {t('subscription.upgrade')}</p>
-                </div>
-                <ArrowRight className="h-4 w-4 text-muted-foreground ml-auto" />
-              </CardContent>
-            </Card>
+          <div className={`grid gap-4 ${paymentsApi.hasPendingSubscription ? 'grid-cols-1' : 'grid-cols-2'}`}>
+            {!paymentsApi.hasPendingSubscription && (
+              <Card className="rounded-2xl border-border/50 cursor-pointer hover:bg-muted/30 transition-all" onClick={() => navigate('/subscription/payment')}>
+                <CardContent className="p-4 flex items-center gap-3">
+                  <div className="p-2 rounded-full bg-amber-500/10">
+                    <CreditCard className="h-5 w-5 text-amber-500" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-widest">{t('subscription.billing')}</p>
+                    <p className="text-xs text-muted-foreground">{t('subscription.renew')} / {t('subscription.upgrade')}</p>
+                  </div>
+                  <ArrowRight className="h-4 w-4 text-muted-foreground ml-auto" />
+                </CardContent>
+              </Card>
+            )}
 
             <Card className="rounded-2xl border-border/50 cursor-pointer hover:bg-muted/30 transition-all">
               <CardContent className="p-4 flex items-center gap-3">
@@ -572,79 +745,23 @@ const SubscriptionDashboard: React.FC = () => {
           </div>
         </TabsContent>
 
-        {/* Plans Tab — Mobile · Desktop · Mobile + Desktop */}
-        <TabsContent value="plans" className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
-            {PLAN_EDITIONS.map(({ key, labelKey, highlight }) => {
-              const editionPlans = plans.filter(p => planEdition(p.tier) === key);
-              if (editionPlans.length === 0) return null;
-              return (
-                <div key={key} className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <p className={`text-xs font-black uppercase tracking-widest ${highlight ? 'text-amber-500' : 'text-muted-foreground'}`}>
-                      {t(labelKey)}
-                    </p>
-                    {highlight && <Sparkles className="h-3 w-3 text-amber-500" />}
-                  </div>
-                  {editionPlans.map(plan => {
-                    const isCurrent = subscription?.planId === plan.id;
-                    return (
-                      <Card
-                        key={plan.id}
-                        className={`rounded-2xl transition-all ${highlight ? 'border-amber-500/20 bg-gradient-to-b from-amber-500/[0.02] to-transparent' : 'border-border/50'} ${isCurrent ? 'ring-1 ring-emerald-500/30' : ''}`}
-                      >
-                        <CardContent className="p-4">
-                          <div className="flex items-center justify-between mb-2 gap-2">
-                            <p className={`text-xs font-black uppercase tracking-widest ${highlight ? 'text-amber-500' : 'text-muted-foreground'}`}>
-                              {plan.name}
-                            </p>
-                            {isCurrent ? (
-                              <Badge variant="outline" className="text-xs font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
-                                {t('subscription.current')}
-                              </Badge>
-                            ) : (
-                              highlight && <PremiumBadge size="sm" />
-                            )}
-                          </div>
-                          <p className="text-2xl font-black">
-                            {plan.price.toLocaleString()} <span className="text-sm text-muted-foreground font-bold">{t('subscription.etb')}</span>
-                          </p>
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {plan.description}
-                          </p>
-                          <Button
-                            onClick={() => navigate('/subscription/payment')}
-                            variant={isCurrent ? 'outline' : 'default'}
-                            size="sm"
-                            className={`mt-3 rounded-xl text-xs font-black uppercase tracking-widest w-full ${highlight && !isCurrent ? 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700' : ''}`}
-                          >
-                            {isCurrent ? t('subscription.current') : t('subscription.choose_plan')}
-                          </Button>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-        </TabsContent>
-
         {/* Payments Tab */}
         <TabsContent value="payments" className="space-y-4">
           <div className="flex items-center justify-between">
             <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('subscription.transaction_history')}</p>
-            <Button
-              onClick={() => navigate('/subscription/payment')}
-              size="sm"
-              className="rounded-xl text-xs font-black uppercase tracking-widest"
-            >
-              <CreditCard className="h-3 w-3 mr-1" />
-              {t('subscription.submit_payment')}
-            </Button>
+            {!paymentsApi.hasPendingSubscription && (
+              <Button
+                onClick={() => navigate('/subscription/payment')}
+                size="sm"
+                className="rounded-xl text-xs font-black uppercase tracking-widest"
+              >
+                <CreditCard className="h-3 w-3 mr-1" />
+                {t('subscription.submit_payment')}
+              </Button>
+            )}
           </div>
 
-          {transactions.length === 0 ? (
+{paymentsApi.payments.length === 0 ? (
             <Card className="rounded-2xl border-border/50">
               <CardContent className="p-8 text-center">
                 <CreditCard className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
@@ -653,7 +770,7 @@ const SubscriptionDashboard: React.FC = () => {
             </Card>
           ) : (
             <div className="space-y-2">
-              {transactions.map(tx => (
+              {paymentsApi.payments.map(tx => (
                 <div key={tx.id} className="p-4 rounded-2xl border border-border/50 flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className={`p-2 rounded-full ${
@@ -666,15 +783,15 @@ const SubscriptionDashboard: React.FC = () => {
                        <Hourglass className="h-4 w-4 text-amber-500" />}
                     </div>
                     <div>
-                      <p className="text-xs font-black uppercase tracking-widest">{tx.selectedPlan}</p>
-                      <p className="text-xs text-muted-foreground">{tx.transactionId} · {formatDate(tx.createdAt)}</p>
+                      <p className="text-xs font-black uppercase tracking-widest">{tx.description || tx.payment_type || 'Payment'}</p>
+                      <p className="text-xs text-muted-foreground">{tx.transaction_id} · {formatDate(tx.created_at)}</p>
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="text-[11px] font-bold">{tx.amount.toLocaleString()} {t('subscription.etb')}</p>
+                    <p className="text-[11px] font-bold">{tx.amount != null ? Number(tx.amount).toLocaleString() : '—'} {t('subscription.etb')}</p>
                     {statusBadge(tx.status)}
-                    {tx.adminNotes && tx.status === 'rejected' && (
-                      <p className="text-xs text-red-400 mt-0.5">{tx.adminNotes}</p>
+                    {tx.admin_notes && tx.status === 'rejected' && (
+                      <p className="text-xs text-red-400 mt-0.5">{tx.admin_notes}</p>
                     )}
                   </div>
                 </div>
@@ -684,31 +801,53 @@ const SubscriptionDashboard: React.FC = () => {
         </TabsContent>
 
         {/* History Tab */}
-        <TabsContent value="history" className="space-y-4">
-          {history.length === 0 ? (
-            <Card className="rounded-2xl border-border/50">
-              <CardContent className="p-8 text-center">
-                <Clock className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-                <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('subscription.no_subscription_history')}</p>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="space-y-1">
-              {history.map((h: any) => (
-                <div key={h.id} className="p-3 rounded-xl border border-border/50 flex items-center gap-3">
-                  <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center shrink-0">
-                    <Clock className="h-3 w-3 text-muted-foreground" />
+<TabsContent value="history" className="space-y-4">
+            {unifiedHistory.length === 0 ? (
+              <Card className="rounded-2xl border-border/50">
+                <CardContent className="p-8 text-center">
+                  <Clock className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('subscription.no_subscription_history')}</p>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="space-y-1">
+                {unifiedHistory.map((h: any) => (
+                  <div key={h.id} className="p-3 rounded-xl border border-border/50 flex items-center gap-3">
+                    <div className={`h-6 w-6 rounded-full flex items-center justify-center shrink-0 ${
+                      h.type === 'payment' && h.status === 'approved' ? 'bg-emerald-500/10' :
+                      h.type === 'payment' && h.status === 'rejected' ? 'bg-red-500/10' :
+                      h.type === 'payment' ? 'bg-amber-500/10' :
+                      'bg-muted'
+                    }`}>
+                      {h.type === 'payment' && h.status === 'approved' ? <CheckCircle2 className="h-3 w-3 text-emerald-500" /> :
+                       h.type === 'payment' && h.status === 'rejected' ? <XCircle className="h-3 w-3 text-red-500" /> :
+                       h.type === 'payment' ? <Hourglass className="h-3 w-3 text-amber-500" /> :
+                       <Clock className="h-3 w-3 text-muted-foreground" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold">{h.action}</p>
+                      <p className="text-xs text-muted-foreground truncate">{h.details}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {h.amount != null && (
+                        <p className="text-xs font-bold text-emerald-500">{Number(h.amount).toLocaleString()} {t('subscription.etb')}</p>
+                      )}
+                      {h.status && h.type === 'payment' && (
+                        <Badge variant="outline" className={`text-[10px] font-black uppercase tracking-widest ${
+                          h.status === 'approved' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' :
+                          h.status === 'rejected' ? 'bg-red-500/10 text-red-500 border-red-500/20' :
+                          'bg-amber-500/10 text-amber-500 border-amber-500/20'
+                        }`}>
+                          {h.status}
+                        </Badge>
+                      )}
+                      <p className="text-xs text-muted-foreground shrink-0">{formatDate(h.date)}</p>
+                    </div>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold">{h.action.replace(/_/g, ' ')}</p>
-                    <p className="text-xs text-muted-foreground truncate">{h.details}</p>
-                  </div>
-                  <p className="text-xs text-muted-foreground shrink-0">{formatDate(h.createdAt)}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </TabsContent>
+                ))}
+              </div>
+            )}
+          </TabsContent>
       </Tabs>
     </div>
   );

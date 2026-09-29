@@ -4,8 +4,16 @@
  * The Django backend (`/api/sync/*`) is documented but NOT yet deployed; this
  * module implements the exact client contract so the hub is ready the moment
  * the endpoints exist. When nothing is configured it returns structured
- * `not_configured` results and makes zero network calls — LAN behavior is
- * completely unchanged.
+ * `not_configured` results and makes zero network calls.
+ *
+ * IMPORTANT — this is NOT purely a dormant path. peer-sync.ts runs
+ * `syncCloudOnce()` as the LAN-empty fallback whenever no hub is discovered
+ * and the internet probe passes, so a desktop that has never been on the same
+ * LAN as a peer performs a FULL-SNAPSHOT push (buildCloudChanges re-serializes
+ * every row of every SHARED_TABLE) on its first cloud-enabled sync. An earlier
+ * version of this comment claimed "LAN behavior is completely unchanged", which
+ * was wrong; the snapshot cost is real and is being replaced by a true delta
+ * push off the outbox.
  *
  * Settings (all in the local `settings` table):
  *   cloud_sync_url        relay base URL (empty = offline/local-only)
@@ -39,8 +47,10 @@ function setSetting(key: string, value: string): void {
   db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
 }
 
+import { getBackendBaseUrl } from './backend-client';
+
 function getBaseUrl(): string {
-  return (getSetting('cloud_sync_url') || process.env.SHEGA_API_URL || DEFAULT_BASE).replace(/\/+$/, '');
+  return getBackendBaseUrl();
 }
 
 export interface CloudSyncConfig {

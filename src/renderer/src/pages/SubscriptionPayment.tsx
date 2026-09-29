@@ -15,18 +15,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { parsePlanEdition } from '@shega/shared';
 import { toast } from 'sonner';
 
-interface Plan {
-  id: number;
-  name: string;
-  /** Edition: mobile | desktop | both (legacy plan rows may say basic/premium). */
-  tier: string;
-  edition?: string;
-  durationMonths: number;
-  price: number;
-  description: string;
-  features: string;
-}
-
 /**
  * Resolve a canonical edition from a plan's `edition`/`tier`/`name`, tolerating
  * legacy rows. Shared with Mobile and the backend so all three agree on which
@@ -48,6 +36,23 @@ interface SubscriptionPaymentProps {
    * instead of making them pick again.
    */
   initialEdition?: string;
+}
+
+/**
+ * Local plan shape after normalisation. Raw API rows use snake_case
+ * (`display_name`, `duration_months`); they are mapped into this shape before
+ * being stored in state.
+ */
+interface Plan {
+  id: number;
+  name: string;
+  edition?: string;
+  tier?: string;
+  durationMonths: number;
+  price: number;
+  description?: string;
+  status?: string;
+  features?: string;
 }
 
 const SubscriptionPayment: React.FC<SubscriptionPaymentProps> = ({ onComplete, initialEdition }) => {
@@ -109,9 +114,9 @@ const SubscriptionPayment: React.FC<SubscriptionPaymentProps> = ({ onComplete, i
    */
   const preselectRef = useRef(false);
   useEffect(() => {
-    if (!initialEdition || preselectRef.current) return;
+    if (preselectRef.current) return;
     if (cloudPlans.length === 0 && plans.length === 0) return;
-    const wanted = parsePlanEdition(initialEdition);
+    const wanted = parsePlanEdition(initialEdition || 'desktop');
     const cloud = cloudPlans.find((p) => planEditionFromTier(p.edition ?? p.name) === wanted);
     if (cloud) {
       preselectRef.current = true;
@@ -126,11 +131,31 @@ const SubscriptionPayment: React.FC<SubscriptionPaymentProps> = ({ onComplete, i
   }, [initialEdition, cloudPlans, plans]);
 
   const handleSubmit = async () => {
-    if (!form.transactionId.trim() || !form.businessName.trim() || !form.phoneNumber.trim()) {
-      toast.error(t('subscription.please_fill_required'));
+    if (!form.transactionId.trim()) {
+      toast.error('Transaction ID is required');
       return;
     }
     if (!selectedPlan) return;
+
+    // Re-check the server before submitting. The banner on the Subscription page
+    // is a courtesy, not the guard: a submission must never be duplicated while
+    // an identical one is still awaiting review, and the answer has to survive a
+    // reload, a sign-out/in, or a second device.
+    const already = await window.api?.backendMyPayments?.();
+    const pendingSubscription = (already?.payments || []).filter(
+      (p: any) => p.status === 'pending' && !['additional_mobile_device', 'additional_desktop_device', 'additional_business'].includes(String(p.payment_type)),
+    );
+    if (pendingSubscription.length > 0) {
+      await refresh();
+      toast.error(
+        t(
+          'subscription.payment_already_pending',
+          'You already have a payment waiting for approval. We will activate it once it is reviewed.',
+        ),
+      );
+      onComplete ? onComplete() : navigate('/subscription');
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -143,8 +168,8 @@ const SubscriptionPayment: React.FC<SubscriptionPaymentProps> = ({ onComplete, i
           })
         : await window.api.submitPayment({
             transactionId: form.transactionId.trim(),
-            businessName: form.businessName.trim(),
-            phoneNumber: form.phoneNumber.trim(),
+            businessName: form.businessName.trim() || 'Business',
+            phoneNumber: form.phoneNumber.trim() || '0900000000',
             selectedPlan: selectedPlan.name,
             amount: selectedPlan.price,
             paymentDate: form.paymentDate,
@@ -152,9 +177,13 @@ const SubscriptionPayment: React.FC<SubscriptionPaymentProps> = ({ onComplete, i
           });
 
       if (result.success) {
-        setStep('done');
-        toast.success(t('subscription.payment_submitted'));
+        toast.success(t('subscription.payment_submitted', 'Payment submitted successfully! Waiting for admin approval.'));
         await refresh();
+        if (onComplete) {
+          onComplete();
+        } else {
+          navigate('/subscription');
+        }
       }
     } catch (err: any) {
       toast.error(err.message || t('subscription.submission_failed'));
@@ -173,28 +202,10 @@ const SubscriptionPayment: React.FC<SubscriptionPaymentProps> = ({ onComplete, i
   };
 
   const handleGoBack = () => {
-    if (step === 'pay') {
-      if (initialEdition) {
-        if (onComplete) {
-          onComplete();
-        } else {
-          navigate(-1);
-        }
-      } else {
-        setStep('select');
-      }
-    } else if (step === 'select') {
-      if (onComplete) {
-        onComplete();
-      } else {
-        navigate(-1);
-      }
+    if (onComplete) {
+      onComplete();
     } else {
-      if (onComplete) {
-        onComplete();
-      } else {
-        navigate('/subscription');
-      }
+      navigate('/subscription');
     }
   };
 
@@ -362,46 +373,20 @@ const SubscriptionPayment: React.FC<SubscriptionPaymentProps> = ({ onComplete, i
             <div>
               <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1.5">{t('subscription.transaction_id')} *</p>
               <Input
-                placeholder={t('subscription.transaction_id_placeholder')}
+                placeholder="Enter Telebirr / Bank Transaction ID (e.g. TXN-12345)"
                 value={form.transactionId}
                 onChange={e => setForm(prev => ({ ...prev, transactionId: e.target.value }))}
-                className="rounded-xl text-[11px]"
-              />
-            </div>
-            <div>
-              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1.5">{t('subscription.business_name')} *</p>
-              <Input
-                placeholder={t('subscription.business_name_placeholder')}
-                value={form.businessName}
-                onChange={e => setForm(prev => ({ ...prev, businessName: e.target.value }))}
-                className="rounded-xl text-[11px]"
-              />
-            </div>
-            <div>
-              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1.5">{t('subscription.phone_number')} *</p>
-              <Input
-                placeholder={t('subscription.phone_placeholder')}
-                value={form.phoneNumber}
-                onChange={e => setForm(prev => ({ ...prev, phoneNumber: e.target.value }))}
-                className="rounded-xl text-[11px]"
-              />
-            </div>
-            <div>
-              <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1.5">{t('subscription.payment_date')}</p>
-              <Input
-                type="date"
-                value={form.paymentDate}
-                onChange={e => setForm(prev => ({ ...prev, paymentDate: e.target.value }))}
-                className="rounded-xl text-[11px]"
+                className="rounded-xl font-mono text-sm h-11"
+                autoFocus
               />
             </div>
             <div>
               <p className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-1.5">{t('subscription.optional_notes')}</p>
               <Input
-                placeholder={t('subscription.optional_notes')}
+                placeholder="Optional notes or description"
                 value={form.notes}
                 onChange={e => setForm(prev => ({ ...prev, notes: e.target.value }))}
-                className="rounded-xl text-[11px]"
+                className="rounded-xl text-xs h-10"
               />
             </div>
 

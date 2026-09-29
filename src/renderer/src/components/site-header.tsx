@@ -2,7 +2,7 @@ import { Button } from "@renderer/components/ui/button"
 import { Separator } from "@renderer/components/ui/separator"
 import { SidebarTrigger } from "@renderer/components/ui/sidebar"
 import {
-  Sun, Moon, AlertTriangle, Clock, Hourglass, XCircle,
+  Sun, Moon, AlertTriangle, Clock, Crown,
 } from "lucide-react"
 import { useSettings } from "../context/SettingsContext"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -15,7 +15,12 @@ export function SiteHeader() {
   const { theme, setTheme, t } = useSettings();
   const location = useLocation();
   const navigate = useNavigate();
-  const { isReadOnly, isTrial, daysRemaining, status } = useSubscription();
+  const { isReadOnly, isTrial, isExpired, daysRemaining, status, renewalInfo } = useSubscription();
+
+  // A payment that has been submitted but not yet confirmed lands in a pending
+  // status. While that is true we must not keep sending the user to the payment
+  // screen, which would let them pay twice.
+  const hasPendingSubscription = renewalInfo?.status === 'pending';
 
   const getPageTitle = () => {
     const path = location.pathname;
@@ -28,23 +33,31 @@ export function SiteHeader() {
 
   const banner = (() => {
     if (location.pathname.startsWith('/subscription')) return null;
-    if (!isReadOnly && !isTrial) return null;
     if (isTrial) {
-      return { icon: Clock, tone: 'text-violet-500 bg-violet-500/10', text: t('subscription.trial_banner', 'Trial active') };
+      return {
+        icon: Crown,
+        tone: 'text-amber-500 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20',
+        text: 'Trial Active',
+        action: 'Upgrade Now',
+      };
     }
-    if (status === 'pending_payment') {
-      return { icon: Hourglass, tone: 'text-amber-500 bg-amber-500/10', text: t('subscription.payment_pending', 'Payment pending approval') };
+    if (isReadOnly || isExpired) {
+      return {
+        icon: AlertTriangle,
+        tone: 'text-red-500 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20',
+        text: 'Subscription Expired',
+        action: 'Renew Now',
+      };
     }
-    if (status === 'payment_rejected') {
-      return { icon: XCircle, tone: 'text-red-500 bg-red-500/10', text: t('subscription.payment_rejected', 'Payment rejected') };
+    if (daysRemaining <= 7 && daysRemaining > 0) {
+      return {
+        icon: Clock,
+        tone: 'text-amber-500 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20',
+        text: `${daysRemaining} Days Left`,
+        action: 'Renew',
+      };
     }
-    return {
-      icon: AlertTriangle,
-      tone: 'text-amber-500 bg-amber-500/10',
-      text: daysRemaining > 0
-        ? t('subscription.read_only_expiring', `View only — ${daysRemaining} days left, renew to edit`)
-        : t('subscription.read_only', 'View only — renew to edit'),
-    };
+    return null;
   })();
 
   return (
@@ -63,14 +76,16 @@ export function SiteHeader() {
 
         {banner && (
           <button
-            onClick={() => navigate('/subscription')}
-            className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-black uppercase tracking-widest ${banner.tone} hover:opacity-80 transition-opacity`}
+            onClick={() => navigate(banner.action && !hasPendingSubscription ? '/subscription/payment' : '/subscription')}
+            className={`flex items-center gap-2 rounded-xl px-3 py-1.5 text-[11px] font-black uppercase tracking-wider ${banner.tone} transition-all shadow-sm`}
           >
-            <banner.icon className="size-3.5" />
-            <span className="max-w-[220px] truncate">{banner.text}</span>
-            <span className="underline underline-offset-2">
-              {isTrial ? t('subscription.upgrade', 'Upgrade') : t('subscription.renew', 'Renew')}
-            </span>
+            <banner.icon className="size-3.5 shrink-0" />
+            <span>{banner.text}</span>
+            {banner.action && (
+              <span className="bg-amber-500 text-black px-2 py-0.5 rounded-md text-[10px] font-extrabold ml-1 shadow-sm">
+                {banner.action}
+              </span>
+            )}
           </button>
         )}
 

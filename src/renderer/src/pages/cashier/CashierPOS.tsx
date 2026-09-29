@@ -185,14 +185,53 @@ export default function CashierPOS() {
 
   const clearCart = () => setCart([]);
 
+  // Single source of truth for "which product does this code belong to".
+  // Shared by manual entry, the physical scanners, and the phone-as-scanner so
+  // every path resolves codes identically — and offline, from the already
+  // loaded catalogue, with no per-scan IPC.
+  const findByCode = useCallback((code: string) => {
+    const q = code.trim().toLowerCase();
+    if (!q) return undefined;
+    return products.find(
+      (p) =>
+        (p.barcode && p.barcode.trim().toLowerCase() === q) ||
+        (p.sku && p.sku.trim().toLowerCase() === q)
+    );
+  }, [products]);
+
+  /** Resolve a scanned code straight into the cart, bypassing manual search. */
+  const addCodeToCart = useCallback((code: string) => {
+    const product = findByCode(code);
+    if (!product) {
+      toast.error(`No item found for ${code}`);
+      return false;
+    }
+    addToCart(product);
+    return true;
+  }, [findByCode, addToCart]);
+
   const handleScanOrEnter = (e: React.FormEvent) => {
     e.preventDefault();
-    const q = search.trim().toLowerCase();
+    const q = search.trim();
     if (!q) return;
-    const product = products.find((p) => (p.barcode && p.barcode.toLowerCase() === q) || (p.sku && p.sku.toLowerCase() === q));
-    if (product) addToCart(product);
-    else toast.error('No item found for that code');
+    addCodeToCart(q);
   };
+
+  // Hardware scanners (USB/HID keyboard wedge, COM port, paired phone) fire
+  // this event from the main process. Listening at the app level is what makes
+  // "scan without clicking the barcode field" work: the code lands in the cart
+  // whatever currently has focus.
+  useEffect(() => {
+    const onScan = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      // Accepts the unified BarcodeScanEvent or a bare string, so both the
+      // hardware path and USE_MOCK_PERIPHERALS keep working.
+      const code = typeof detail === 'string' ? detail : detail?.barcode;
+      if (typeof code === 'string' && code.trim()) addCodeToCart(code);
+    };
+    window.addEventListener('shega:barcode-scan', onScan);
+    return () => window.removeEventListener('shega:barcode-scan', onScan);
+  }, [addCodeToCart]);
 
   // ── Phone as scanner: ask a connected mobile to scan a barcode ──
   const [scanningPhone, setScanningPhone] = useState<string | null>(null);

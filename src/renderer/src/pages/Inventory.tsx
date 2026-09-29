@@ -10,6 +10,7 @@ import autoTable from 'jspdf-autotable';
 import { ColumnDef } from '@tanstack/react-table';
 
 import { useSettings } from '../context/SettingsContext';
+import { useIsViewOnly } from '../context/ViewOnlyContext';
 import { useDataChangedRefresh } from '../hooks/useDataChangedRefresh';
 import { playSound } from '../utils/sound';
 import { toast } from 'sonner';
@@ -110,6 +111,7 @@ const Inventory: React.FC = () => {
   const [barcodes, setBarcodes] = useState<any[]>([]);
   const [newBarcode, setNewBarcode] = useState('');
   const [warehouses, setWarehouses] = useState<any[]>([]);
+  const isViewOnly = useIsViewOnly();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [phoneCaptureBusy, setPhoneCaptureBusy] = useState(false);
 
@@ -352,6 +354,7 @@ const Inventory: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     if (!formData.name.trim()) { toast.error(t('inventory.product_name_required', 'Product name is required')); return; }
     const basePrice = parseFloat(formData.baseSellingPrice) || 0;
     if (basePrice <= 0) { toast.error(t('inventory.selling_price_required', 'At least one selling price is required')); return; }
@@ -425,6 +428,7 @@ const Inventory: React.FC = () => {
   };
 
   const handleDelete = async () => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     if (deleteConfirmId) {
       await window.api?.deleteItem(deleteConfirmId);
       setDeleteConfirmId(null);
@@ -433,6 +437,7 @@ const Inventory: React.FC = () => {
   };
 
   const handleRestock = async () => {
+    if (isViewOnly) { toast.error(t('view_only.default_message')); return; }
     if (!restockItem || !restockQty || parseInt(restockQty) <= 0) return;
     await window.api?.restockItem(restockItem.id, parseInt(restockQty));
     setRestockItem(null);
@@ -741,13 +746,30 @@ const Inventory: React.FC = () => {
               </SheetContent>
             </Sheet>
 
-            <Button variant="outline" size="sm" onClick={() => setShowStockAdjModal(true)} className="border-amber-500/30 text-amber-600 hover:bg-amber-500/10 h-8 px-3">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={() => isViewOnly ? toast.error(t('view_only.default_message')) : setShowStockAdjModal(true)} 
+              className="border-amber-500/30 text-amber-600 hover:bg-amber-500/10 h-8 px-3"
+              disabled={isViewOnly}
+            >
               <Wrench className="mr-1.5 h-3.5 w-3.5" /> Stock Adjustment
             </Button>
-            <Button variant="outline" size="sm" onClick={openPOCreator} className="border-primary/20 text-primary hover:bg-primary/5 h-8 px-3">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={() => isViewOnly ? toast.error(t('view_only.default_message')) : openPOCreator()} 
+              className="border-primary/20 text-primary hover:bg-primary/5 h-8 px-3"
+              disabled={isViewOnly}
+            >
               <FileText className="mr-1.5 h-3.5 w-3.5" /> {t('inventory.create_po')}
             </Button>
-            <Button size="sm" onClick={() => { resetForm(); setEditingItem(null); setShowModal(true); }} className="h-8 px-4 shadow-md shadow-primary/20">
+            <Button 
+              size="sm" 
+              onClick={() => isViewOnly ? toast.error(t('view_only.default_message')) : (resetForm(), setEditingItem(null), setShowModal(true))} 
+              className="h-8 px-4 shadow-md shadow-primary/20"
+              disabled={isViewOnly}
+            >
               <Plus className="mr-1.5 h-3.5 w-3.5" /> {t('inventory.add_product')}
             </Button>
           </div>

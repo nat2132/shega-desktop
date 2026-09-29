@@ -36,6 +36,10 @@ const DebtManagement = lazyWithRetry(() => import('./pages/DebtManagement'))
 const Reports = lazyWithRetry(() => import('./pages/Reports'))
 const SubscriptionDashboard = lazyWithRetry(() => import('./pages/SubscriptionDashboard'))
 const SubscriptionPayment = lazyWithRetry(() => import('./pages/SubscriptionPayment'))
+const AddDevice = lazyWithRetry(() => import('./pages/AddDevice'))
+const AddBusiness = lazyWithRetry(() => import('./pages/AddBusiness'))
+const ConnectedDevices = lazyWithRetry(() => import('./pages/ConnectedDevices'))
+const BusinessCenter = lazyWithRetry(() => import('./pages/BusinessCenter'))
 const Register = lazyWithRetry(() => import('./pages/Register'))
 const CashierLayout = lazyWithRetry(() => import('./layouts/CashierLayout'))
 const CashierPOS = lazyWithRetry(() => import('./pages/cashier/CashierPOS'))
@@ -54,6 +58,7 @@ import SplashScreen from './components/pre-launch/SplashScreen'
 import AuthScreen, { type OwnerProfile } from './components/pre-launch/AuthScreen'
 import RecoveryKeyDisplay from './components/pre-launch/RecoveryKeyDisplay'
 import BusinessSetup from './components/pre-launch/BusinessSetup'
+import PinChangeScreen from './components/pre-launch/PinChangeScreen'
 import OnboardingWizard from './components/pre-launch/OnboardingWizard'
 import SubscriptionWelcome from './components/pre-launch/SubscriptionWelcome'
 import { onboardingEditionFor } from '@shega/shared'
@@ -66,15 +71,17 @@ import { TooltipProvider } from './components/ui/tooltip'
 import { SidebarProvider, SidebarInset } from './components/ui/sidebar'
 import { AppSidebar } from './components/app-sidebar'
 import { SiteHeader } from './components/site-header'
+import { ViewOnlyBanner } from './components/ViewOnlyBanner'
 import { Toaster } from './components/ui/sonner'
 import { toast } from 'sonner'
 import NotificationBanners from './components/NotificationBanners'
 import NotificationModal from './components/NotificationModal'
-type AppPhase = 'splash' | 'auth' | 'recovery-key' | 'business-setup' | 'onboarding' | 'subscription-welcome' | 'subscription-payment' | 'loading' | 'ready' | 'error'
+type AppPhase = 'splash' | 'auth' | 'pin-change' | 'recovery-key' | 'business-setup' | 'onboarding' | 'subscription-welcome' | 'subscription-payment' | 'loading' | 'ready' | 'error'
 
 function ProtectedRoute({ children, permission, moduleId }: { children: React.ReactNode; permission?: string; moduleId?: string }) {
   const { hasPermission } = useAuth();
   const { isModuleEnabled } = useSettings();
+  const { isReadOnly } = useSubscription();
   
   if (moduleId && !isModuleEnabled(moduleId)) {
     return <Navigate to="/" replace />;
@@ -84,13 +91,22 @@ function ProtectedRoute({ children, permission, moduleId }: { children: React.Re
     return <Navigate to="/" replace />;
   }
   
+  if (isReadOnly) {
+    return (
+      <>
+        <ViewOnlyBanner />
+        {children}
+      </>
+    );
+  }
+  
   return <>{children}</>;
 }
 
 function TeamAdminRoute({ children }: { children: React.ReactNode }) {
   const { isSuperAdmin, hasPermission } = useAuth();
   const { isModuleEnabled } = useSettings();
-  const { isPremium, isTrial } = useSubscription();
+  const { isPremium, isTrial, isReadOnly } = useSubscription();
   const location = useLocation();
 
   if (isSuperAdmin) return <>{children}</>;
@@ -99,17 +115,34 @@ function TeamAdminRoute({ children }: { children: React.ReactNode }) {
     if (!hasPermission('employees')) return <Navigate to="/" replace />;
     return <>{children}</>;
   }
+  if (isReadOnly) {
+    return (
+      <>
+        <ViewOnlyBanner />
+        {children}
+      </>
+    );
+  }
   return <Navigate to="/subscription" state={{ lockedFeature: 'users', from: location }} replace />;
 }
 
 function PremiumRoute({ children, premiumFeature }: { children: React.ReactNode; premiumFeature: string }) {
-  const { isPremium, isTrial } = useSubscription();
-  const [showLocked, setShowLocked] = React.useState(false);
+  const { isPremium, isTrial, isReadOnly } = useSubscription();
   const location = useLocation();
 
   if (isPremium || isTrial) return <>{children}</>;
 
-  // If not premium, redirect to subscription page
+  // If read-only (trial expired / no active subscription), allow viewing but show view-only banner
+  if (isReadOnly) {
+    return (
+      <>
+        <ViewOnlyBanner />
+        {children}
+      </>
+    );
+  }
+
+  // If not premium and not read-only (shouldn't happen), redirect to subscription
   return <Navigate to="/subscription" state={{ lockedFeature: premiumFeature, from: location }} replace />;
 }
 
@@ -125,6 +158,9 @@ function App() {
   // onboarding wizard never re-asks for a name, email or password.
   const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
   const [showTour, setShowTour] = React.useState(false);
+  // A legacy (pre-6-digit) account authenticates but is held here until it picks
+  // a new 6-digit PIN. `null` means no upgrade is pending.
+  const [pinChangeTarget, setPinChangeTarget] = React.useState<{ source: 'admin' | 'employee' | 'roster'; id: number; message?: string } | null>(null);
 
   // A write rejected by the main process (view-only account) becomes a toast and
   // a redirect to the renew screen, wherever the write was attempted from.
@@ -197,6 +233,14 @@ function App() {
   const handleLogin = async (username: string, pin: string) => {
     const result = await login(username, pin);
     if (result.success) {
+      // A legacy account signed in but must not reach the app yet. Route to the
+      // forced PIN replacement instead of loading, and remember which row the
+      // main process issued the upgrade grant for.
+      if (result.requiresPinChange) {
+        setPinChangeTarget({ source: result.pinChangeSource, id: result.pinChangeId, message: result.pinError });
+        setPhase('pin-change');
+        return result;
+      }
       // If first time, go through setup flow; otherwise go to loading
       if (isFirstTime) {
         setPhase('business-setup');
@@ -212,6 +256,11 @@ function App() {
     const result = await window.api.loginByUser(source, id, pin);
     if (result?.success) {
       setCurrentAdminFromResult(result);
+      if (result.requiresPinChange) {
+        setPinChangeTarget({ source, id, message: result.pinError });
+        setPhase('pin-change');
+        return result;
+      }
       if (isFirstTime) {
         setPhase('business-setup');
       } else {
@@ -219,6 +268,23 @@ function App() {
       }
     }
     return result;
+  };
+
+  /** Replacement committed: drop the gate and continue as normal. */
+  const handlePinChangeComplete = () => {
+    setPinChangeTarget(null);
+    setPhase(isFirstTime ? 'business-setup' : 'loading');
+  };
+
+  /**
+   * Replacement abandoned. The main process already considers this person signed
+   * in, so the session has to be torn down — otherwise a cancelled upgrade would
+   * leave a live session behind while the UI shows the profile picker again.
+   */
+  const handlePinChangeCancel = async () => {
+    await window.api?.clearSession?.();
+    setPinChangeTarget(null);
+    setPhase('auth');
   };
 
   /** Apply a login-by-user result to the auth context (mirrors useAuth.login). */
@@ -333,6 +399,23 @@ function App() {
   // Phase: Error
   if (phase === 'error') {
     return <ErrorScreen message={errorMsg} onRetry={handleRetry} />;
+  }
+
+  // Phase: Forced PIN replacement (legacy, pre-6-digit account).
+  // This MUST be checked before the `phase === 'auth' || !isAuthenticated` branch
+  // below: a legacy user already counts as authenticated at this point, so that
+  // branch would otherwise bounce them back to the profile picker and the
+  // upgrade would be silently skippable.
+  if (phase === 'pin-change' && pinChangeTarget) {
+    return (
+      <PinChangeScreen
+        source={pinChangeTarget.source}
+        id={pinChangeTarget.id}
+        message={pinChangeTarget.message}
+        onComplete={handlePinChangeComplete}
+        onCancel={handlePinChangeCancel}
+      />
+    );
   }
 
   // Phase: Auth (login or register)
@@ -486,6 +569,10 @@ function App() {
                     <Route path="/reports" element={<PremiumRoute premiumFeature="reports"><ProtectedRoute permission="analytics" moduleId="analytics"><Reports /></ProtectedRoute></PremiumRoute>} />
                     <Route path="/subscription" element={<ProtectedRoute permission="dashboard"><SubscriptionDashboard /></ProtectedRoute>} />
                     <Route path="/subscription/payment" element={<ProtectedRoute permission="dashboard"><SubscriptionPayment /></ProtectedRoute>} />
+                    <Route path="/subscription/add-device" element={<ProtectedRoute permission="dashboard"><AddDevice /></ProtectedRoute>} />
+                    <Route path="/subscription/add-business" element={<ProtectedRoute permission="dashboard"><AddBusiness /></ProtectedRoute>} />
+                    <Route path="/subscription/devices" element={<ProtectedRoute permission="dashboard"><ConnectedDevices /></ProtectedRoute>} />
+                    <Route path="/subscription/business-center" element={<ProtectedRoute permission="dashboard"><BusinessCenter /></ProtectedRoute>} />
                     <Route path="/admin-management" element={<Navigate to="/users" replace />} />
                     <Route path="/settings" element={<ProtectedRoute permission="settings"><Settings /></ProtectedRoute>} />
                   </Routes>

@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Smartphone, Monitor, Building2, Minus, Plus, Loader2, CreditCard } from 'lucide-react';
+import { Smartphone, Monitor, Building2, Minus, Plus, Loader2, CreditCard, Hourglass } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { useSettings } from '../context/SettingsContext';
+import { usePaymentStatus, type PaymentType } from '../hooks/usePaymentStatus';
 import { toast } from 'sonner';
 
 type AddonKey = 'additional_mobile_device' | 'additional_desktop_device' | 'additional_business';
@@ -81,33 +82,58 @@ export const SubscriptionAddonsCard: React.FC<{
   const [transactionId, setTransactionId] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // Pending state is read from the server, so it survives a reload, a sign-out
+  // and back in, and a second authorised device. The requested capacity is only
+  // granted once an admin approves, so the allocation below must not be shown as
+  // available while a request for it is still open.
+  const paymentState = usePaymentStatus({ linked });
+
+  const pendingFor = (key: PaymentType) =>
+    paymentState.pendingAddons.filter((p) => String(p.payment_type) === String(key));
+
   const load = useCallback(async () => {
-    if (!linked) return;
     try {
       const [plansRes, syncRes] = await Promise.all([
-        window.api.backendPlans(),
-        window.api.backendSync(),
+        window.api.backendPlans().catch(() => null),
+        window.api.backendSync().catch(() => null),
       ]);
       if (plansRes?.success && Array.isArray(plansRes.plans)) setPlans(plansRes.plans);
       if (syncRes?.success) setStatus(syncRes.status || null);
-    } catch (_) { /* keep the card quiet when the server is unreachable */ }
-  }, [linked]);
+    } catch (_) { /* keep default fallback prices */ }
+  }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  if (!linked) return null;
-
   const currentPlan = plans.find((p) => p.id === (status?.plan_id ?? planId));
-  // The server computes the amount from its own plan row, so never invent a
-  // price: without the server's add-on price the card stays disabled.
+  const fallbackPrices: Record<AddonKey, number> = {
+    additional_mobile_device: 500,
+    additional_desktop_device: 800,
+    additional_business: 1000,
+  };
+
   const priceOf = (key: AddonKey) => {
     const value = currentPlan?.[ADDONS.find((a) => a.key === key)!.priceKey];
-    return typeof value === 'number' && value > 0 ? value : null;
+    return typeof value === 'number' && value > 0 ? value : fallbackPrices[key];
   };
 
   const submit = async (key: AddonKey) => {
     if (!transactionId.trim()) {
       toast.error(t('subscription.addons_txn_label'));
+      return;
+    }
+    // Ask the server, not this component: a duplicate request for the same
+    // add-on must be refused even if the local view is stale.
+    const fresh = await paymentState.refresh();
+    const open = (fresh || []).filter(
+      (p) => p.status === 'pending' && String(p.payment_type) === String(key),
+    );
+    if (open.length > 0) {
+      toast.error(
+        t(
+          'subscription.addons_already_pending',
+          'This add-on is already waiting for approval. It will be activated once an admin reviews it.',
+        ),
+      );
       return;
     }
     const plan = currentPlan?.id ?? planId;
@@ -128,7 +154,9 @@ export const SubscriptionAddonsCard: React.FC<{
       if (res?.success) {
         toast.success(t('subscription.addons_success'));
         setTransactionId('');
-        await load();
+        // Re-read so the new request shows as pending straight away instead of
+        // waiting for the next poll.
+        await Promise.all([load(), paymentState.refresh()]);
       } else {
         toast.error(res?.error || t('subscription.payment_rejected'));
       }
@@ -157,8 +185,18 @@ export const SubscriptionAddonsCard: React.FC<{
           const { allocated, used } = allocation(status || {});
           const unit = priceOf(key);
           const count = qty[key];
+          const pending = pendingFor(key);
+          const isPending = pending.length > 0;
+          // While a request is open the add-on must read as requested, not
+          // owned: the extra capacity is only added when an admin approves.
+          const shownAllocated = allocated + (isPending ? count : 0);
           return (
-            <div key={key} className="flex flex-wrap items-center gap-3 rounded-xl border border-border/50 p-3">
+            <div
+              key={key}
+              className={`flex flex-wrap items-center gap-3 rounded-xl border p-3 ${
+                isPending ? 'border-amber-500/40 bg-amber-500/[0.06]' : 'border-border/50'
+              }`}
+            >
               <div className="p-2 rounded-full bg-primary/10">
                 <Icon className="h-4 w-4 text-primary" />
               </div>
@@ -171,47 +209,84 @@ export const SubscriptionAddonsCard: React.FC<{
                     : `${(unit * count).toLocaleString()} ${t('subscription.etb')} / month (${unit.toLocaleString()} × ${count})`}
                 </p>
                 <p className="text-[10px] text-muted-foreground">
-                  {t('subscription.addons_usage', { used: String(used), allocated: String(allocated) })}
+                  {isPending
+                    ? t('subscription.addons_pending_usage', {
+                        used: String(used),
+                        allocated: String(shownAllocated),
+                      })
+                    : t('subscription.addons_usage', { used: String(used), allocated: String(allocated) })}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="size-7 rounded-lg"
-                  onClick={() => setQty((q) => ({ ...q, [key]: Math.max(1, q[key] - 1) }))}
-                  disabled={!hasFullAccess || unit == null}
-                >
-                  <Minus className="h-3 w-3" />
-                </Button>
-                <span className="w-6 text-center text-sm font-black">{count}</span>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="size-7 rounded-lg"
-                  onClick={() => setQty((q) => ({ ...q, [key]: Math.min(10, q[key] + 1) }))}
-                  disabled={!hasFullAccess || unit == null}
-                >
-                  <Plus className="h-3 w-3" />
-                </Button>
-              </div>
-              <div className="flex items-center gap-2">
-                <Input
-                  value={transactionId}
-                  onChange={(e) => setTransactionId(e.target.value)}
-                  placeholder={t('subscription.addons_txn_placeholder')}
-                  className="h-8 w-44 text-xs"
-                  disabled={!hasFullAccess || unit == null}
-                />
-                <Button
-                  size="sm"
-                  className="rounded-lg text-[11px] font-black uppercase tracking-widest"
-                  disabled={!hasFullAccess || busy || unit == null}
-                  onClick={() => submit(key)}
-                >
-                  {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : t('subscription.addons_submit')}
-                </Button>
-              </div>
+
+              {isPending && (
+                <div className="w-full rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 space-y-1">
+                  <p className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-amber-400">
+                    <Hourglass className="h-3 w-3" />
+                    {t('subscription.addons_pending_title', 'Pending approval — not active yet')}
+                  </p>
+                  {pending.map((p) => (
+                    <p key={p.id} className="text-[11px] text-amber-200/80">
+                      {p.transaction_id && (
+                        <>
+                          Transaction ID: <span className="font-mono font-bold">{p.transaction_id}</span>{' '}
+                          ·{' '}
+                        </>
+                      )}
+                      {p.amount != null && <>ETB {Number(p.amount).toLocaleString()} · </>}
+                      {t('subscription.addons_pending_wait', 'Waiting for admin approval')}
+                    </p>
+                  ))}
+                  <p className="text-[10px] text-amber-200/60">
+                    {t(
+                      'subscription.addons_pending_note',
+                      'This capacity is added only after an admin approves the payment.',
+                    )}
+                  </p>
+                </div>
+              )}
+
+              {!isPending && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="size-7 rounded-lg"
+                      onClick={() => setQty((q) => ({ ...q, [key]: Math.max(1, q[key] - 1) }))}
+                      disabled={!hasFullAccess || unit == null}
+                    >
+                      <Minus className="h-3 w-3" />
+                    </Button>
+                    <span className="w-6 text-center text-sm font-black">{count}</span>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="size-7 rounded-lg"
+                      onClick={() => setQty((q) => ({ ...q, [key]: Math.min(10, q[key] + 1) }))}
+                      disabled={!hasFullAccess || unit == null}
+                    >
+                      <Plus className="h-3 w-3" />
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={transactionId}
+                      onChange={(e) => setTransactionId(e.target.value)}
+                      placeholder={t('subscription.addons_txn_placeholder')}
+                      className="h-8 w-44 text-xs"
+                      disabled={!hasFullAccess || unit == null}
+                    />
+                    <Button
+                      size="sm"
+                      className="rounded-lg text-[11px] font-black uppercase tracking-widest"
+                      disabled={!hasFullAccess || busy || unit == null}
+                      onClick={() => submit(key)}
+                    >
+                      {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : t('subscription.addons_submit')}
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           );
         })}

@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { ShoppingCart, Receipt, Users, LayoutGrid } from 'lucide-react';
+import { ShoppingCart, Receipt, Users } from 'lucide-react';
 import { cn } from '../../utils/shadcn';
 import { useAuth } from '../../context/AuthContext';
 import { useSettings } from '../../context/SettingsContext';

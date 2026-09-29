@@ -1,6 +1,6 @@
 import { ipcMain, BrowserWindow, shell } from 'electron';
 import type { WebContents } from 'electron';
-import db, { validateDBFile, reopenDB, getDemoMode, setDemoMode, resetDemoDb, getCurrentDb, factoryResetDb } from './database';
+import db, { validateDBFile, reopenDB, getDemoMode, setDemoMode, resetDemoDb, getCurrentDb, factoryResetDb, ensureBusinessDefaults } from './database';
 import { stopPeerSync } from './peer-sync';
 import { wsSyncServer } from './sync/websocket-server';
 import { insertAudit, verifyAuditChain } from './audit-chain';
@@ -11,11 +11,13 @@ import { app } from 'electron';
 import { appUpdater } from './updater';
 import { saleSchema, saleUpdateSchema, saleBatchSchema, payDebtSchema, orderConversionSchema, validate } from './validation';
 import { getPrinterConfig, savePrinterConfig, getPrintStatus, printRaw, openDrawer, probePrinter } from './print-service';
+import { printSpooler } from './print-spooler-instance';
 import { buildReceiptCommands, buildLabelCommands, buildTestPageCommands } from './receipt';
 import { parseWeightLine, ScaleConfig } from './scale-service';
 import { fiscalAdapter } from './fiscal';
 import { syncHub } from './index';
 import { verifyChecksums, getPairingToken, getLanAddress, requestDeviceResync } from './sync-hub';
+import { getDiagnosticsSnapshot } from './sync/diagnostics';
 import * as shifts from './pos/shifts';
 import * as reports from './pos/reports';
 import * as ledger from './pos/ledger';
@@ -143,6 +145,22 @@ let currentUserBusinessId: number | null = null; // set when an employee signs i
 // per-role overrides so domain handlers gate by team.manage etc.
 let currentUserSharedPerms: Record<string, PermissionValue> | null = null;
 
+// The single-use legacy-PIN upgrade grant lives in ./pin-change-grant so its
+// single-use / expiry / target-binding rules are testable in isolation.
+
+// Uniform response fields for a legacy login. The renderer needs to know both
+// that a replacement is required and WHICH row the grant was issued for, so
+// echoing the target here keeps `set-own-pin` from ever guessing a source/id.
+function pinChangeFields(isLegacy: boolean, source: PinChangeSource, id: number) {
+  if (!isLegacy) return { requiresPinChange: false as const, pinError: undefined, pinChangeSource: undefined, pinChangeId: undefined };
+  return {
+    requiresPinChange: true as const,
+    pinError: LEGACY_PIN_NOTICE,
+    pinChangeSource: source,
+    pinChangeId: id,
+  };
+}
+
 // Maps granular permission prefixes (and module names) to the module-level permission that grants them.
 const PERMISSION_MODULE: Record<string, string> = {
   dashboard: 'dashboard',
@@ -251,23 +269,9 @@ function requirePermission(perm: string) {
   throw new Error(`Permission denied: ${perm}`);
 }
 
-function hashPin(pin: string): string {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const key = crypto.scryptSync(pin, salt, 64).toString('hex');
-  return `${salt}:${key}`;
-}
-
-function verifyPin(pin: string, stored: string): boolean {
-  const parts = stored.split(':');
-  if (parts.length !== 2) {
-    // legacy SHA-256 fallback
-    const legacy = crypto.createHash('sha256').update(pin).digest('hex');
-    return legacy === stored;
-  }
-  const [salt, key] = parts;
-  const check = crypto.scryptSync(pin, salt, 64).toString('hex');
-  return check === key;
-}
+import { hashPin, verifyPin, needsRehash, PIN_LENGTH, isPinAcceptedFor, isValidPin, pinFormatError, LEGACY_PIN_NOTICE } from './pin';
+import { issuePinChangeGrant, consumePinChangeGrant, isPinChangeGrantValid, clearPinChangeGrant, type PinChangeSource } from './pin-change-grant';
+import { buildLoginUsers } from './login-users';
 
 export function getActiveBusinessId(): number {
   if (!activeBusinessId) {
@@ -399,7 +403,14 @@ export function registerIPCHandlers() {
     if (biz?.currency) put('currency', biz.currency);
 
     values.push(id);
-    return db.prepare(`UPDATE businesses SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+    const res = db.prepare(`UPDATE businesses SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+    try {
+      const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+      if (win) {
+        win.webContents.send('shega:data-changed', { source: 'business', at: new Date().toISOString() });
+      }
+    } catch (_) {}
+    return res;
   });
 
   // ========== P2P Yjs + WebRTC sync ==========
@@ -460,6 +471,15 @@ export function registerIPCHandlers() {
     const bizId = result.lastInsertRowid as number;
     const whRes = db.prepare('INSERT INTO warehouses (businessId, name, location, managerName) VALUES (?, ?, ?, ?)')
       .run(bizId, 'Main Warehouse', data.address || 'Headquarters', 'Operations Manager');
+    // System roles (Cashier, ...) are per-business, and business creation used to
+    // leave them behind — they were only seeded by initDB's default business. A
+    // business created during onboarding or as a secondary business therefore had
+    // no roles and no way to assign employee permissions.
+    try {
+      ensureBusinessDefaults(bizId);
+    } catch (e: any) {
+      console.warn('[createBusiness] Could not seed default roles:', e?.message);
+    }
     const locRes = db.prepare('INSERT INTO locations (businessId, name, address) VALUES (?, ?, ?)')
       .run(bizId, 'Main Location', data.address || null);
     db.prepare('INSERT INTO registers (businessId, locationId, name, isActive) VALUES (?, ?, ?, 1)')
@@ -2827,60 +2847,7 @@ export function registerIPCHandlers() {
   // Returns every authorized person on this install: local admins, bridged
   // employees, and roster users synced from other devices. Never leaks PIN
   // hashes — only avatar/name/role for the picker UI.
-  ipcMain.handle('get-login-users', () => {
-    type LoginUser = { key: string; source: 'admin' | 'employee' | 'roster'; id: number; name: string; username: string | null; role: string; roleName: string; avatar: string | null; isOwner: boolean };
-    const seen = new Set<string>();
-    const out: LoginUser[] = [];
-    const push = (u: LoginUser) => {
-      const dupKey = (u.username || u.name || '').toLowerCase();
-      if (!dupKey || seen.has(dupKey)) return;
-      seen.add(dupKey);
-      out.push(u);
-    };
-    try {
-      const admins = db.prepare('SELECT id, name, username, role, roleName, avatar, isActive FROM admins WHERE isActive = 1').all() as any[];
-      for (const a of admins) {
-        push({
-          key: `admin:${a.id}`, source: 'admin', id: a.id,
-          name: a.name || a.username || 'User', username: a.username ?? null,
-          role: a.role === 'super_admin' || a.role === 'admin' ? 'owner' : (a.role || 'staff'),
-          roleName: a.roleName || (a.role === 'super_admin' || a.role === 'admin' ? 'Owner' : a.role || 'Staff'),
-          avatar: a.avatar ?? null, isOwner: a.role === 'super_admin' || a.role === 'admin',
-        });
-      }
-    } catch { /* admins table may not exist pre-init */ }
-    try {
-      const emps = db.prepare(`
-        SELECT e.id, e.firstName, e.lastName, e.avatar, ea.username, ea.isActive,
-               e.role_key, r.name as roleName
-        FROM employees e
-        LEFT JOIN employee_accounts ea ON ea.employeeId = e.id
-        LEFT JOIN employee_roles r ON r.id = e.roleId
-        WHERE ea.isActive = 1
-      `).all() as any[];
-      for (const e of emps) {
-        const name = `${e.firstName || ''} ${e.lastName || ''}`.trim() || e.username || `Employee ${e.id}`;
-        push({
-          key: `employee:${e.id}`, source: 'employee', id: e.id,
-          name, username: e.username ?? null,
-          role: e.role_key || 'cashier', roleName: e.roleName || 'Cashier',
-          avatar: e.avatar ?? null, isOwner: e.role_key === 'owner',
-        });
-      }
-    } catch { /* ignore */ }
-    try {
-      const roster = db.prepare('SELECT id, name, username, email, role, roleName, avatar, isOwner FROM users WHERE is_deleted = 0 AND isActive = 1 AND (pinHash IS NOT NULL AND pinHash != \'\'\')').all() as any[];
-      for (const u of roster) {
-        push({
-          key: `roster:${u.id}`, source: 'roster', id: u.id,
-          name: u.name || u.username || 'User', username: u.username ?? u.email ?? null,
-          role: u.role || 'cashier', roleName: u.roleName || u.role || 'Cashier',
-          avatar: u.avatar ?? null, isOwner: !!u.isOwner || u.role === 'owner',
-        });
-      }
-    } catch { /* ignore */ }
-    return out;
-  });
+  ipcMain.handle('get-login-users', () => buildLoginUsers(db));
 
   ipcMain.handle('get-last-login-user', () => {
     try {
@@ -2890,18 +2857,95 @@ export function registerIPCHandlers() {
     }
   });
 
+  // Drop the main-process session on logout / user switch. Without this the
+  // renderer's `currentAdmin` was cleared but these globals kept the previous
+  // user's id, role and permissions — so a second person (or the same person
+  // re-picking a profile) could act on the first person's session. Any pending
+  // per-user jobs are stopped too so nothing is attributed to the old user.
+  ipcMain.handle('clear-session', () => {
+    try { stopPeerSync(); } catch { /* already stopped */ }
+    currentAdminId = null;
+    currentUserName = null;
+    currentUserRole = null;
+    currentUserPermissions = [];
+    currentUserBusinessId = null;
+    currentUserSharedPerms = null;
+    // Drop any pending legacy upgrade: after a logout/switch nobody may replay it.
+    clearPinChangeGrant();
+    activeBusinessId = null;
+    return { success: true };
+  });
+
+  // Replace a legacy account's own PIN with a new 6-digit one. This completes
+  // the pinLength NULL -> 6 upgrade: login verifies the old PIN, returns
+  // requiresPinChange, and issues a single-use grant; the renderer calls this
+  // while the app is still gated.
+  //
+  // The grant — not an id from the renderer — decides which row is written, so
+  // this cannot be used to reset somebody else's PIN. It only needs the grant,
+  // not owner rights, so an ordinary cashier can still replace their own PIN.
+  ipcMain.handle('set-own-pin', (_e, source: 'admin' | 'employee' | 'roster', id: number, newPin: unknown, confirmPin: unknown) => {
+    const pin = typeof newPin === 'string' ? newPin : '';
+    const confirm = typeof confirmPin === 'string' ? confirmPin : '';
+    if (!isValidPin(pin)) return { success: false, error: pinFormatError() };
+    if (pin !== confirm) return { success: false, error: 'PINs do not match' };
+    // Pre-flight the grant WITHOUT spending it. The grant is single-use, so
+    // consuming it first would strand a legacy user with no way to finish the
+    // upgrade if the account row is missing or the update touches nothing.
+    if (!isPinChangeGrantValid(source, id)) {
+      return { success: false, error: 'PIN change not allowed. Please sign in again.' };
+    }
+
+    const done = (info: { changes: number }): { success: boolean; error?: string } => {
+      if (info.changes < 1) {
+        // Nothing was written, so the grant stays live and the user can retry
+        // or sign in again rather than being locked out.
+        return { success: false, error: 'Account not found' };
+      }
+      consumePinChangeGrant(source, id);
+      return { success: true };
+    };
+
+    if (source === 'admin') {
+      return done(db.prepare('UPDATE admins SET pin = ?, pinLength = ? WHERE id = ?')
+        .run(hashPin(pin), PIN_LENGTH, id));
+    }
+
+    if (source === 'employee') {
+      // The login-by-user employee branch keys off employeeId, but the row that
+      // holds the PIN is the employee_accounts row.
+      const acct = db.prepare('SELECT id FROM employee_accounts WHERE employeeId = ?').get(id) as any;
+      if (!acct) return { success: false, error: 'Account not found' };
+      return done(db.prepare('UPDATE employee_accounts SET pin = ?, pinLength = ?, forcePasswordChange = 0, updatedAt = CURRENT_TIMESTAMP WHERE id = ?')
+        .run(hashPin(pin), PIN_LENGTH, acct.id));
+    }
+
+    // Roster users store the salt and the key in separate columns, so they do
+    // not use the combined hashPin() format.
+    const salt = crypto.randomBytes(16).toString('hex');
+    const nextHash = crypto.scryptSync(pin, salt, 64).toString('hex');
+    return done(db.prepare('UPDATE users SET pinHash = ?, pinSalt = ?, pinLength = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(nextHash, salt, PIN_LENGTH, id));
+  });
+
   // PIN-only login for a picked profile. Verifies against the source row's
   // scrypt hash and sets the same session state as `login` so permissions,
   // business context, and activity attribution switch with the user.
-  ipcMain.handle('login-by-user', (_e, source: 'admin' | 'employee' | 'roster', id: number, pin: string) => {
-    if (!pin || !/^\d{4,6}$/.test(String(pin))) return { success: false, error: 'Enter your 6-digit PIN' };
-    setSetting('last_login_user_key', `${source}:${id}`);
+  //
+  // A row with no recorded pinLength predates the 6-digit rule, so a shorter
+  // entry is still accepted there — but the caller is told to set a new 6-digit
+  // PIN (requiresPinChange) rather than being locked out. last_login_user_key is
+  // only written after the PIN actually verifies, so a wrong guess can no longer
+  // change which profile the picker pre-selects.
+  ipcMain.handle('login-by-user', (_e, source: 'admin' | 'employee' | 'roster', id: number, pin: unknown) => {
+    const entry = typeof pin === 'string' ? pin : '';
     if (source === 'admin') {
-      const admin = db.prepare('SELECT id, name, username, role, permissions, isActive, businessId, avatar, pin FROM admins WHERE id = ?').get(id) as any;
+      const admin = db.prepare('SELECT id, name, username, role, permissions, isActive, businessId, avatar, pin, pinLength FROM admins WHERE id = ?').get(id) as any;
       if (!admin) return { success: false, error: 'User not found' };
+      if (!isPinAcceptedFor(entry, admin.pinLength)) return { success: false, error: pinFormatError() };
       if (!admin.isActive) return { success: false, error: 'Account deactivated' };
       if (admin.lockedUntil && new Date(admin.lockedUntil) > new Date()) return { success: false, error: 'Account is locked. Try again later.' };
-      if (!verifyPin(pin, admin.pin)) {
+      if (!verifyPin(entry, admin.pin)) {
         const attempts = (admin.failedLoginAttempts || 0) + 1;
         if (attempts >= 5) {
           const lockUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
@@ -2911,7 +2955,15 @@ export function registerIPCHandlers() {
         db.prepare('UPDATE admins SET failedLoginAttempts = ? WHERE id = ?').run(attempts, admin.id);
         return { success: false, error: 'Wrong PIN' };
       }
-      db.prepare('UPDATE admins SET lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL WHERE id = ?').run(admin.id);
+      // The plaintext is already verified, so upgrading a weak legacy hash to
+      // scrypt here is free and does not change the PIN itself. `wasLegacy` is
+      // captured from the row BEFORE any write. It is deliberately NOT stamped
+      // to 6: the stored PIN is still the old one, so writing 6 here would make
+      // the next login reject the very PIN that just worked. The length only
+      // becomes 6 once the user actually picks a new 6-digit PIN.
+      const wasLegacy = !admin.pinLength;
+      const nextPin = needsRehash(admin.pin) ? hashPin(entry) : admin.pin;
+      db.prepare('UPDATE admins SET pin = ?, lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL WHERE id = ?').run(nextPin, admin.id);
       db.prepare('INSERT INTO login_history (action) VALUES (?)').run(`login: admin ${admin.id}`);
       currentAdminId = admin.id;
       currentUserName = admin.name;
@@ -2931,11 +2983,17 @@ export function registerIPCHandlers() {
           setActiveBusinessId(rosterId.businessId);
         }
       }
+      setSetting('last_login_user_key', `${source}:${id}`);
+      // A legacy row may now replace its PIN exactly once, scoped to this account.
+      if (wasLegacy) issuePinChangeGrant(source, id);
       return {
         success: true,
+        ...pinChangeFields(wasLegacy, source, id),
         admin: {
           ...admin,
           pin: undefined,
+          pinHash: undefined,
+          pinSalt: undefined,
           role: currentUserRole,
           permissions: currentUserPermissions,
           isEmployee: rosterId ? !rosterId.isOwner : false,
@@ -2947,10 +3005,25 @@ export function registerIPCHandlers() {
     if (source === 'roster') {
       const roster = db.prepare('SELECT * FROM users WHERE id = ? AND is_deleted = 0 AND isActive = 1').get(id) as any;
       if (!roster) return { success: false, error: 'User not found or deactivated' };
-      const hasPin = !!roster.pinHash;
-      if (hasPin && !verifyPin(pin, `${roster.pinSalt ?? ''}:${roster.pinHash}`)) {
+      // A roster row with no PIN hash is an unprovisioned membership — synced
+      // from the owner but never given a PIN. It must never authenticate on an
+      // empty or arbitrary entry; the user has to set a PIN first.
+      if (!roster.pinHash) return { success: false, error: 'No PIN set for this account yet' };
+      if (!isPinAcceptedFor(entry, roster.pinLength)) return { success: false, error: pinFormatError() };
+      const storedPin = `${roster.pinSalt ?? ''}:${roster.pinHash}`;
+      if (!verifyPin(entry, storedPin)) {
         db.prepare('INSERT INTO login_history (action) VALUES (?)').run(`failed_login: roster ${roster.id} wrong pin`);
         return { success: false, error: 'Wrong PIN' };
+      }
+      // No recorded length means this PIN predates the 6-digit rule. The stored
+      // PIN itself is unchanged, so pinLength stays NULL here: stamping it would
+      // make the next login reject the PIN that just worked. Only re-hashing into
+      // the stronger format is safe, because the value is the same.
+      const needsPinChange = !roster.pinLength;
+      if (needsRehash(storedPin)) {
+        const nextSalt = crypto.randomBytes(16).toString('hex');
+        const nextHash = crypto.scryptSync(entry, nextSalt, 64).toString('hex');
+        db.prepare('UPDATE users SET pinHash = ?, pinSalt = ? WHERE id = ?').run(nextHash, nextSalt, roster.id);
       }
       const isOwner = !!roster.isOwner || roster.role === 'owner' || roster.role === 'super_admin';
       const rawPerms: Record<string, unknown> = {};
@@ -2968,8 +3041,11 @@ export function registerIPCHandlers() {
       currentUserBusinessId = roster.businessId ?? null;
       if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
       db.prepare('INSERT INTO login_history (action) VALUES (?)').run(`login: roster ${roster.id}`);
+      setSetting('last_login_user_key', `${source}:${id}`);
+      if (needsPinChange) issuePinChangeGrant(source, id);
       return {
         success: true,
+        ...pinChangeFields(needsPinChange, source, id),
         admin: {
           id: roster.id,
           name: roster.name,
@@ -2998,7 +3074,8 @@ export function registerIPCHandlers() {
     if (!account) return { success: false, error: 'User not found' };
     if (account.lockedUntil && new Date(account.lockedUntil) > new Date()) return { success: false, error: 'Account is locked. Try again later.' };
     if (!account.isActive) return { success: false, error: 'Account deactivated' };
-    if (!verifyPin(pin, account.pin)) {
+    if (!isPinAcceptedFor(entry, account.pinLength)) return { success: false, error: pinFormatError() };
+    if (!verifyPin(entry, account.pin)) {
       const attempts = (account.failedLoginAttempts || 0) + 1;
       if (attempts >= 5) {
         const lockUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
@@ -3008,7 +3085,14 @@ export function registerIPCHandlers() {
       db.prepare('UPDATE employee_accounts SET failedLoginAttempts = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(attempts, account.id);
       return { success: false, error: 'Wrong PIN' };
     }
-    db.prepare('UPDATE employee_accounts SET lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(account.id);
+    // Same rule as the admin/roster paths: the plaintext is already verified,
+    // so re-hashing into the stronger format is safe, but pinLength must stay
+    // NULL. Stamping 6 here would make the next login reject the very PIN that
+    // just worked, before the user could ever replace it.
+    const wasLegacy = !account.pinLength;
+    const nextPin = needsRehash(account.pin) ? hashPin(entry) : account.pin;
+    db.prepare('UPDATE employee_accounts SET pin = ?, lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(nextPin, account.id);
+    setSetting('last_login_user_key', `${source}:${id}`);
     db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'login');
     currentAdminId = account.id;
     currentUserName = `${account.firstName} ${account.lastName}`.trim();
@@ -3018,11 +3102,16 @@ export function registerIPCHandlers() {
     currentUserBusinessId = account.employeeBusinessId ?? null;
     currentUserSharedPerms = resolveSharedPermissions(account.roleKey, account.permissionsJson);
     if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
+    if (wasLegacy) issuePinChangeGrant(source, id);
     return {
       success: true,
-      admin: {
+        ...pinChangeFields(wasLegacy, source, id),
+        admin: {
         id: account.employeeId,
         accountId: account.id,
+        pin: undefined,
+        pinHash: undefined,
+        pinSalt: undefined,
         username: account.username,
         firstName: account.firstName,
         lastName: account.lastName,
@@ -3041,13 +3130,14 @@ export function registerIPCHandlers() {
   ipcMain.handle('login', (_, username: string, pin: string) => {
     // Check admins table first
     const admin = db.prepare(
-      'SELECT id, name, username, role, permissions, isActive, businessId, avatar, pin FROM admins WHERE username = ?'
+      'SELECT id, name, username, role, permissions, isActive, businessId, avatar, pin, pinLength FROM admins WHERE username = ?'
     ).get(username) as any;
     if (admin) {
       if (admin.lockedUntil && new Date(admin.lockedUntil) > new Date()) {
         return { success: false, error: 'Account is locked. Try again later.' };
       }
       if (!admin.isActive) return { success: false, error: 'Account deactivated' };
+      if (!isPinAcceptedFor(pin, admin.pinLength)) return { success: false, error: pinFormatError() };
       if (!verifyPin(pin, admin.pin)) {
         const attempts = (admin.failedLoginAttempts || 0) + 1;
         if (attempts >= 5) {
@@ -3058,7 +3148,14 @@ export function registerIPCHandlers() {
         db.prepare('UPDATE admins SET failedLoginAttempts = ? WHERE id = ?').run(attempts, admin.id);
         return { success: false, error: 'Invalid credentials' };
       }
-      db.prepare('UPDATE admins SET lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL WHERE id = ?').run(admin.id);
+      // wasLegacy is captured before the write and drives requiresPinChange.
+      // pinLength is deliberately left NULL for legacy rows: the stored PIN is
+      // not changing here, so stamping 6 would make the next login reject the
+      // very PIN that just worked. Re-hashing the same value into the stronger
+      // format is safe.
+      const wasLegacy = !admin.pinLength;
+      const nextPin = needsRehash(admin.pin) ? hashPin(pin) : admin.pin;
+      db.prepare('UPDATE admins SET pin = ?, lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL WHERE id = ?').run(nextPin, admin.id);
       currentAdminId = admin.id;
       currentUserName = admin.name;
       currentUserRole = admin.role || 'admin';
@@ -3086,10 +3183,14 @@ export function registerIPCHandlers() {
           setActiveBusinessId(rosterId.businessId);
         }
       }
+      if (wasLegacy) issuePinChangeGrant('admin', admin.id);
       return {
         success: true,
+        ...pinChangeFields(wasLegacy, 'admin', admin.id),
         admin: {
           ...admin,
+          pin: undefined,
+          pinLength: admin.pinLength ?? null,
           role: currentUserRole,
           permissions: currentUserPermissions,
           isEmployee: rosterId ? !rosterId.isOwner : false,
@@ -3116,10 +3217,22 @@ export function registerIPCHandlers() {
       // staff were bridged into the same table, so this is the unified path.
       const roster = findRosterLogin(username);
       if (roster) {
-        const hasPin = !!roster.pinHash;
-        if (hasPin && !verifyPin(pin, `${roster.pinSalt ?? ''}:${roster.pinHash}`)) {
+        // A roster row with no PIN hash is unprovisioned and must not sign in.
+        if (!roster.pinHash) return { success: false, error: 'No PIN set for this account yet' };
+        if (!isPinAcceptedFor(pin, roster.pinLength)) return { success: false, error: pinFormatError() };
+        const rosterStored = `${roster.pinSalt ?? ''}:${roster.pinHash}`;
+        if (!verifyPin(pin, rosterStored)) {
           db.prepare('INSERT INTO login_history (action) VALUES (?)').run('failed_login: roster wrong pin');
           return { success: false, error: 'Invalid credentials' };
+        }
+        // The PIN value is unchanged, so pinLength stays NULL for legacy rows.
+        // Stamping 6 here would make the next login reject the PIN that just
+        // worked. Only the hash format may be upgraded in place.
+        const rosterLegacy = !roster.pinLength;
+        if (needsRehash(rosterStored)) {
+          const salt = crypto.randomBytes(16).toString('hex');
+          db.prepare('UPDATE users SET pinHash = ?, pinSalt = ? WHERE id = ?')
+            .run(crypto.scryptSync(pin, salt, 64).toString('hex'), salt, roster.id);
         }
         const isOwner = !!roster.isOwner || roster.role === 'owner' || roster.role === 'super_admin';
         const rawPerms: Record<string, unknown> = {};
@@ -3136,8 +3249,10 @@ export function registerIPCHandlers() {
         currentUserSharedPerms = isOwner ? null : resolveSharedPermissions(roster.role, roster.permissions);
         currentUserBusinessId = roster.businessId ?? null;
         if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
+        if (rosterLegacy) issuePinChangeGrant('roster', roster.id);
         return {
           success: true,
+          ...pinChangeFields(rosterLegacy, 'roster', roster.id),
           admin: {
             id: roster.id,
             name: roster.name,
@@ -3149,7 +3264,7 @@ export function registerIPCHandlers() {
             isEmployee: !isOwner,
             roleKey: roster.role,
             sharedPermissions: currentUserSharedPerms,
-            forcePasswordChange: hasPin ? 0 : 1
+            forcePasswordChange: rosterLegacy ? 1 : 0
           }
         };
       }
@@ -3164,6 +3279,7 @@ export function registerIPCHandlers() {
       db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'failed_login: inactive');
       return { success: false, error: 'Account deactivated' };
     }
+    if (!isPinAcceptedFor(pin, account.pinLength)) return { success: false, error: pinFormatError() };
     if (!verifyPin(pin, account.pin)) {
       const attempts = (account.failedLoginAttempts || 0) + 1;
       if (attempts >= 5) {
@@ -3176,7 +3292,13 @@ export function registerIPCHandlers() {
       db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'failed_login: wrong pin');
       return { success: false, error: 'Invalid credentials' };
     }
-    db.prepare('UPDATE employee_accounts SET lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(account.id);
+    // acctLegacy is captured before the write and drives requiresPinChange. The
+    // stored PIN is not changing here, so pinLength must remain NULL for legacy
+    // rows — stamping 6 would make the next login reject the PIN that just
+    // worked. Upgrading the hash format in place is safe (same value).
+    const acctLegacy = !account.pinLength;
+    const acctNextPin = needsRehash(account.pin) ? hashPin(pin) : account.pin;
+    db.prepare('UPDATE employee_accounts SET pin = ?, lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(acctNextPin, account.id);
     db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'login');
     currentAdminId = account.employeeId;
     currentUserName = `${account.firstName || ''} ${account.lastName || ''}`.trim() || account.username;
@@ -3186,8 +3308,10 @@ export function registerIPCHandlers() {
     currentUserBusinessId = account.employeeBusinessId ?? null;
     currentUserSharedPerms = resolveSharedPermissions(account.roleKey, account.permissionsJson);
     if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
+    if (acctLegacy) issuePinChangeGrant('employee', account.employeeId);
     return {
       success: true,
+      ...pinChangeFields(acctLegacy, 'employee', account.employeeId),
       admin: {
         id: account.employeeId,
         name: `${account.firstName || ''} ${account.lastName || ''}`.trim() || account.username,
@@ -3256,17 +3380,22 @@ export function registerIPCHandlers() {
     // Check for duplicate username
     const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get(admin.username);
     if (existing) return { success: false, error: 'Username already exists' };
+    if (!isValidPin(admin.pin)) return { success: false, error: pinFormatError() };
 
+    if (!isValidPin(admin.pin)) return { success: false, error: pinFormatError() };
     const hash = hashPin(admin.pin);
     const isFirstAdmin = adminTotal === 0;
     const role = isFirstAdmin ? 'super_admin' : (admin.role || 'admin');
     const permissions = isFirstAdmin ? ['*'] : (admin.permissions || []);
+    // pinLength is stamped on insert so this account is immediately subject to
+    // the strict 6-digit rule on its next login.
     const result = db.prepare(
-      'INSERT INTO admins (name, username, pin, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO admins (name, username, pin, pinLength, role, permissions, businessId) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).run(
       admin.name,
       admin.username,
       hash,
+      PIN_LENGTH,
       role,
       JSON.stringify(permissions),
       admin.businessId || null
@@ -3331,7 +3460,13 @@ export function registerIPCHandlers() {
 
     if (admin.name !== undefined) { fields.push('name = ?'); values.push(admin.name); }
     if (admin.username !== undefined) { fields.push('username = ?'); values.push(admin.username); }
-    if (admin.pin !== undefined) { const h = hashPin(admin.pin); fields.push('pin = ?'); values.push(h); }
+    if (admin.pin !== undefined) {
+      if (!isValidPin(admin.pin)) return { success: false, error: pinFormatError() };
+      fields.push('pin = ?'); values.push(hashPin(admin.pin));
+      // Re-stamping the length also retires any legacy flag, so this account
+      // accepts only 6 digits from now on.
+      fields.push('pinLength = ?'); values.push(PIN_LENGTH);
+    }
     if (admin.role !== undefined) { fields.push('role = ?'); values.push(admin.role); }
     if (admin.permissions !== undefined) { fields.push('permissions = ?'); values.push(JSON.stringify(admin.permissions)); }
     if (admin.isActive !== undefined) { fields.push('isActive = ?'); values.push(admin.isActive); }
@@ -3834,12 +3969,12 @@ export function registerIPCHandlers() {
   ipcMain.handle('insert-employee-account', (_, data: any) => {
     requirePermission('settings.users');
     if (!data.username || !data.username.trim()) throw new Error('Username is required');
-    if (!data.pin || data.pin.length < 4) throw new Error('PIN must be at least 4 characters');
+    if (!isValidPin(data.pin)) throw new Error(pinFormatError());
     const empBiz = db.prepare('SELECT businessId FROM employees WHERE id = ?').get(data.employeeId) as any;
     if (!empBiz || empBiz.businessId !== getActiveBusinessId()) throw new Error('Employee not found in this business');
     const hash = hashPin(data.pin);
-    const result = db.prepare('INSERT INTO employee_accounts (employeeId, username, pin, forcePasswordChange) VALUES (?, ?, ?, ?)')
-      .run(data.employeeId, data.username, hash, data.forcePasswordChange ? 1 : 0);
+    const result = db.prepare('INSERT INTO employee_accounts (employeeId, username, pin, pinLength, forcePasswordChange) VALUES (?, ?, ?, ?, ?)')
+      .run(data.employeeId, data.username, hash, PIN_LENGTH, data.forcePasswordChange ? 1 : 0);
     bridgeEmployeeUser(data.employeeId);
     return result.lastInsertRowid;
   });
@@ -3849,9 +3984,12 @@ export function registerIPCHandlers() {
     const acctBiz = db.prepare('SELECT e.businessId, ea.employeeId FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id WHERE ea.id = ?').get(id) as any;
     if (!acctBiz || acctBiz.businessId !== getActiveBusinessId()) throw new Error('Account not found in this business');
     if (data.pin) {
-    const hash = hashPin(data.pin);
-      db.prepare('UPDATE employee_accounts SET username = ?, pin = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?')
-        .run(data.username, hash, data.isActive !== undefined ? (data.isActive ? 1 : 0) : 1, data.forcePasswordChange ? 1 : 0, id);
+      if (!isValidPin(data.pin)) throw new Error(pinFormatError());
+      const hash = hashPin(data.pin);
+      // Restamping pinLength is what retires a legacy 4-digit PIN: once a new
+      // PIN is set here, the account is subject to the strict 6-digit rule.
+      db.prepare('UPDATE employee_accounts SET username = ?, pin = ?, pinLength = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?')
+        .run(data.username, hash, PIN_LENGTH, data.isActive !== undefined ? (data.isActive ? 1 : 0) : 1, data.forcePasswordChange ? 1 : 0, id);
     } else {
       db.prepare('UPDATE employee_accounts SET username = ?, isActive = ?, forcePasswordChange = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?')
         .run(data.username, data.isActive !== undefined ? (data.isActive ? 1 : 0) : 1, data.forcePasswordChange ? 1 : 0, id);
@@ -3889,8 +4027,9 @@ export function registerIPCHandlers() {
     const acct = db.prepare('SELECT ea.id, ea.employeeId, e.roleId, r.name as roleName FROM employee_accounts ea LEFT JOIN employees e ON ea.employeeId = e.id LEFT JOIN employee_roles r ON e.roleId = r.id WHERE ea.id = ? AND e.businessId = ?').get(id, getActiveBusinessId()) as any;
     if (!acct) return { success: false, error: 'Account not found' };
     if (acct.roleName === 'Owner') return { success: false, error: 'Cannot reset PIN for Owner role' };
+    if (!isValidPin(newPin)) return { success: false, error: pinFormatError() };
     const hash = hashPin(newPin);
-    db.prepare('UPDATE employee_accounts SET pin = ?, forcePasswordChange = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(hash, id);
+    db.prepare('UPDATE employee_accounts SET pin = ?, pinLength = ?, forcePasswordChange = 1, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(hash, PIN_LENGTH, id);
     bridgeEmployeeUser(acct.employeeId);
     db.prepare('INSERT INTO pin_history (entityType, entityId, action, performedBy, performedById, details) VALUES (?, ?, ?, ?, ?, ?)')
       .run('employee_account', id, 'pin_reset', currentUserName || 'unknown', null, 'PIN reset by super admin');
@@ -3968,7 +4107,9 @@ export function registerIPCHandlers() {
 
   ipcMain.handle('reset-pin-with-recovery', (_, username: string, recoveryKey: string, newPin: string) => {
     if (!username || !recoveryKey || !newPin) return { success: false, error: 'Missing required parameters' };
-    if (newPin.length !== 6) return { success: false, error: 'PIN must be exactly 6 digits' };
+    // Recovery is the one path a user reaches without their old PIN, so it must
+    // enforce the same strict rule rather than only a length check.
+    if (!isValidPin(newPin)) return { success: false, error: pinFormatError() };
     const normKey = recoveryKey.replace(/[^A-Z0-9]/gi, '').toUpperCase();
     const hash = hashPin(newPin);
 
@@ -3985,8 +4126,8 @@ export function registerIPCHandlers() {
         const parts = hash.split(':');
         const pinSalt = parts.length === 2 ? parts[0] : null;
         const pinHash = parts.length === 2 ? parts[1] : hash;
-        db.prepare('UPDATE users SET pinHash = ?, pinSalt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-          .run(pinHash, pinSalt, roster.id);
+        db.prepare('UPDATE users SET pinHash = ?, pinSalt = ?, pinLength = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(pinHash, pinSalt, PIN_LENGTH, roster.id);
         insertAuditLog('pin_recovery_reset', 'user', roster.id, 'pin', 'REDACTED', 'REDACTED', `PIN reset via recovery code for ${username}`);
         return { success: true };
       }
@@ -4014,11 +4155,11 @@ export function registerIPCHandlers() {
 
     db.prepare('UPDATE pin_recovery_keys SET usedAt = CURRENT_TIMESTAMP WHERE id = ?').run(record.id);
     if (empId) {
-      db.prepare('UPDATE employee_accounts SET pin = ?, forcePasswordChange = 0, failedLoginAttempts = 0, lockedUntil = NULL, isActive = 1, updatedAt = CURRENT_TIMESTAMP WHERE employeeId = ?')
-        .run(hash, empId);
+      db.prepare('UPDATE employee_accounts SET pin = ?, pinLength = ?, forcePasswordChange = 0, failedLoginAttempts = 0, lockedUntil = NULL, isActive = 1, updatedAt = CURRENT_TIMESTAMP WHERE employeeId = ?')
+        .run(hash, PIN_LENGTH, empId);
     }
     if (admId) {
-      db.prepare('UPDATE admins SET pin = ? WHERE id = ?').run(hash, admId);
+      db.prepare('UPDATE admins SET pin = ?, pinLength = ? WHERE id = ?').run(hash, PIN_LENGTH, admId);
     }
     insertAuditLog('pin_recovery_reset', 'account', (empId || admId) ?? null, 'pin', 'REDACTED', 'REDACTED', `PIN reset via recovery code for ${username}`);
     return { success: true };
@@ -4094,6 +4235,7 @@ export function registerIPCHandlers() {
       db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'failed_login: inactive');
       return { error: 'inactive' };
     }
+    if (!isPinAcceptedFor(pin, account.pinLength)) return { error: 'invalid_pin_format' };
     if (!verifyPin(pin, account.pin)) {
       const attempts = (account.failedLoginAttempts || 0) + 1;
       if (attempts >= 5) {
@@ -4106,7 +4248,12 @@ export function registerIPCHandlers() {
       db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'failed_login: wrong pin');
       return null;
     }
-    db.prepare('UPDATE employee_accounts SET lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(account.id);
+    // legacyAcct is captured before the write and reported as requiresPinChange.
+    // pinLength stays NULL for legacy rows: the PIN value is not changing here,
+    // so stamping 6 would make the next login reject the PIN that just worked.
+    const legacyAcct = !account.pinLength;
+    const acctPin2 = needsRehash(account.pin) ? hashPin(pin) : account.pin;
+    db.prepare('UPDATE employee_accounts SET pin = ?, lastLogin = CURRENT_TIMESTAMP, failedLoginAttempts = 0, lockedUntil = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(acctPin2, account.id);
     db.prepare('INSERT INTO login_history (accountId, employeeId, action) VALUES (?, ?, ?)').run(account.id, account.employeeId, 'login');
     currentUserName = `${account.firstName} ${account.lastName}`;
     currentUserRole = account.roleName || 'employee';
@@ -4115,6 +4262,7 @@ export function registerIPCHandlers() {
     currentUserBusinessId = account.employeeBusinessId ?? null;
     currentUserSharedPerms = resolveSharedPermissions(account.roleKey, account.permissionsJson);
     if (currentUserBusinessId) setActiveBusinessId(currentUserBusinessId);
+    if (legacyAcct) issuePinChangeGrant('employee', account.employeeId);
     return {
       id: account.employeeId,
       accountId: account.id,
@@ -4127,7 +4275,8 @@ export function registerIPCHandlers() {
       permissions: account.rolePermissions ? JSON.parse(account.rolePermissions) : [],
       roleKey: account.roleKey || null,
       sharedPermissions: currentUserSharedPerms,
-      forcePasswordChange: account.forcePasswordChange
+      forcePasswordChange: account.forcePasswordChange || legacyAcct ? 1 : 0,
+      ...pinChangeFields(legacyAcct, 'employee', account.employeeId)
     };
   });
 
@@ -5165,11 +5314,29 @@ export function registerIPCHandlers() {
             receiptSerial: sale.id,
           },
         });
-        await printRaw(commands);
+        // Queue durably BEFORE sending. The job is written to SQLite first and
+        // only marked done once the bytes actually go out, so a dead printer
+        // leaves the receipt pending instead of losing it. dedupeKey is the sale
+        // id: the same sale can never be printed twice, even across a retry or
+        // an app restart. The sale itself is already committed and is not
+        // touched here.
+        const job = printSpooler.enqueue({
+          kind: 'receipt',
+          bytes: commands,
+          paperWidth: cfg.paperWidth,
+          dedupeKey: `sale:${sale.id}`,
+          refId: sale.id ?? null,
+          label: `Receipt #${sale.id ?? ''}`.trim(),
+        });
         if (cfg.autoOpenDrawer && sale.paymentMethod === 'Cash' && sale.paymentStatus !== 'Debt') {
           await openDrawer();
         }
-        return { success: true, transport: 'network' };
+        return {
+          success: true,
+          transport: 'network',
+          queued: job.status === 'pending',
+          jobId: job.id,
+        };
       }
       const receiptHtml = `
 <!DOCTYPE html>
@@ -5306,7 +5473,12 @@ export function registerIPCHandlers() {
   });
 
   ipcMain.handle('set-printer-config', (_e, cfg: any) => {
-    return savePrinterConfig(cfg);
+    const saved = savePrinterConfig(cfg);
+    // Saving config is one of the moments the printer becomes reachable again
+    // (user just fixed the IP, or re-enabled it), so flush anything queued
+    // while it was unreachable.
+    void printSpooler.drain();
+    return saved;
   });
 
   ipcMain.handle('parse-scale-reading', (_e, line: string, config?: ScaleConfig) => {
@@ -5353,6 +5525,13 @@ export function registerIPCHandlers() {
   ipcMain.handle('sync:log', (_e, limit = 100) => {
     const rows = db.prepare('SELECT device_id, entity, entity_uuid, op, detail, created_at FROM sync_log ORDER BY id DESC LIMIT ?').all(limit) as any[];
     return rows;
+  });
+
+  // P0 diagnostics: connection-timing telemetry + per-peer health, so the
+  // before/after numbers for the connection redesign can be read off a device
+  // rather than guessed at. Read-only; it never mutates sync state.
+  ipcMain.handle('sync:diagnostics', () => {
+    return getDiagnosticsSnapshot();
   });
 
   // --- Backup & Restore ---
@@ -7174,6 +7353,16 @@ ipcMain.handle('get-current-subscription', () => {
     }
   });
 
+  ipcMain.handle('backend-my-payments', async () => {
+    if (!backendClient.hasSession()) return { success: false, error: 'Not linked to a Shega account.' };
+    try {
+      const payments = await backendClient.getMyPayments();
+      return { success: true, payments: Array.isArray(payments) ? payments : [] };
+    } catch (err: any) {
+      return { success: false, error: err?.detail || err?.message || 'Could not load your payments from the server.' };
+    }
+  });
+
   ipcMain.handle('backend-start-trial', async (_, args: { planId?: number }) => {
     if (!backendClient.hasSession()) return { success: false, error: 'Not linked to a Shega account.' };
     try {
@@ -7231,6 +7420,69 @@ ipcMain.handle('get-current-subscription', () => {
       }
     } catch (err: any) {
       return { success: false, error: err?.detail || err?.message || 'Could not submit the payment.' };
+    }
+  });
+
+  ipcMain.handle('backend-register-device', async (_, args: {
+    licenseId: number; device_id: string; device_name?: string; operating_system?: string; device_type: 'MOBILE' | 'DESKTOP'; idempotency_key?: string;
+  }) => {
+    if (!backendClient.hasSession()) return { success: false, error: 'Not linked to a Shega account.' };
+    try {
+      const result = await backendClient.registerDevice(Number(args?.licenseId), {
+        device_id: String(args?.device_id ?? ''),
+        device_name: args?.device_name,
+        operating_system: args?.operating_system,
+        device_type: args?.device_type,
+        idempotency_key: args?.idempotency_key,
+      });
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err?.detail || err?.message || 'Could not register the device.' };
+    }
+  });
+
+  ipcMain.handle('backend-create-business', async (_, args: {
+    licenseId: number; name: string; idempotency_key?: string;
+  }) => {
+    if (!backendClient.hasSession()) return { success: false, error: 'Not linked to a Shega account.' };
+    try {
+      const result = await backendClient.createBusiness(Number(args?.licenseId), {
+        name: String(args?.name ?? ''),
+        idempotency_key: args?.idempotency_key,
+      });
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err?.detail || err?.message || 'Could not create the business.' };
+    }
+  });
+
+  ipcMain.handle('backend-cost-breakdown', async (_, args: { licenseId: number }) => {
+    if (!backendClient.hasSession()) return { success: false, error: 'Not linked to a Shega account.' };
+    try {
+      const breakdown = await backendClient.getCostBreakdown(Number(args?.licenseId));
+      return { success: true, breakdown };
+    } catch (err: any) {
+      return { success: false, error: err?.detail || err?.message || 'Could not load cost breakdown.' };
+    }
+  });
+
+  ipcMain.handle('backend-device-entitlements', async (_, args: { licenseId: number }) => {
+    if (!backendClient.hasSession()) return { success: false, error: 'Not linked to a Shega account.' };
+    try {
+      const entitlements = await backendClient.getDeviceEntitlements(Number(args?.licenseId));
+      return { success: true, entitlements };
+    } catch (err: any) {
+      return { success: false, error: err?.detail || err?.message || 'Could not load device entitlements.' };
+    }
+  });
+
+  ipcMain.handle('backend-business-entitlements', async (_, args: { licenseId: number }) => {
+    if (!backendClient.hasSession()) return { success: false, error: 'Not linked to a Shega account.' };
+    try {
+      const entitlements = await backendClient.getBusinessEntitlements(Number(args?.licenseId));
+      return { success: true, entitlements };
+    } catch (err: any) {
+      return { success: false, error: err?.detail || err?.message || 'Could not load business entitlements.' };
     }
   });
 

@@ -41,7 +41,26 @@ function runElectron(script, cwd) {
     format: 'cjs',
     platform: 'node',
     target: 'node18',
-    external: ['electron', 'better-sqlite3'],
+    // `usb` ships a compiled .node binding that esbuild cannot load, and the
+    // sync e2e never touches USB. Marking it external keeps the bundle buildable
+    // and lets the hardware layer degrade gracefully.
+    external: ['electron', 'better-sqlite3', 'usb', '@serialport/parser-delimiter'],
+    // Mirror electron.vite.config.ts: an exact-match alias does not cover
+    // `@shega/shared/*` subpath imports, which the hardware layer uses.
+    alias: {
+      '@shega/shared': path.resolve(ROOT, '..', 'shega-shared', 'src', 'index.ts'),
+    },
+    plugins: [{
+      // Resolve `@shega/shared/<subpath>` against the shared source tree. The
+      // .ts extension is appended explicitly because esbuild does not do
+      // extension probing for an absolute path we hand it.
+      name: 'shega-shared-subpath',
+      setup(build) {
+        build.onResolve({ filter: /^@shega\/shared\// }, (args) => ({
+          path: path.resolve(ROOT, '..', 'shega-shared', 'src', args.path.replace('@shega/shared/', '')) + '.ts',
+        }));
+      },
+    }],
     logLevel: 'silent'
   });
 

@@ -15,6 +15,7 @@ import { getActiveBusinessId } from '../ipc-handlers';
 import { mdnsDiscovery } from './discovery';
 import { logger } from '../logger';
 import { getPairingToken } from '../sync-hub';
+import { releasePeer, pruneAckedOutbox } from './ack-store';
 import { pairingBeacon } from './pairing-beacon';
 import { sweepLan } from './lan-discovery';
 import { provisionJoinForDevice } from './device-requests';
@@ -120,6 +121,13 @@ class P2pSyncManager {
       yjsManager.closeBusiness(this.businessUuid);
       desktopWebRtc.closeAll();
     }
+    // Drop the previous run's subscriptions. Without this a business switch
+    // stacked another set of onUpdate/'update'/'peerConnected' handlers on the
+    // shared emitters, so every remote update was reconciled into SQLite once
+    // per accumulated subscription.
+    this.unsubs.splice(0).forEach((u) => {
+      try { u(); } catch { /* already detached */ }
+    });
     this.businessUuid = businessUuid;
     this.businessRowId = businessRowId;
     this.started = true;
@@ -162,9 +170,11 @@ class P2pSyncManager {
 
     // Tail the sync_outbox so every local SQLite mutation also lands in the
     // Yjs doc (which then fans out over WebRTC).
-    try {
-      this.lastOutboxSeq = (db.prepare('SELECT COALESCE(MAX(seq),0) AS m FROM sync_outbox').get() as any)?.m ?? 0;
-    } catch { this.lastOutboxSeq = 0; }
+    //
+    // Resume at 0, not MAX(seq): the old watermark meant a row written while
+    // the app was closed (or killed mid-pump) was never relayed. Undelivered
+    // work is now identified by the durable status column instead.
+    this.lastOutboxSeq = 0;
     if (this.outboxTimer) clearInterval(this.outboxTimer);
     this.outboxTimer = setInterval(() => this.pumpOutbox(), 1500);
   }
@@ -198,21 +208,68 @@ class P2pSyncManager {
   private pumpOutbox(): void {
     if (!this.businessUuid) return;
     try {
-      const rows = db.prepare('SELECT seq, entity, entity_uuid, op, payload FROM sync_outbox WHERE seq > ? ORDER BY seq ASC LIMIT 500').all(this.lastOutboxSeq) as any[];
+      // Undelivered work only. `seq > lastOutboxSeq` was an in-memory watermark,
+      // so anything queued by a trigger before the app started was invisible.
+      // Rows already relayed stay out of this query, so a peer that is slow to
+      // subscribe cannot re-receive the whole backlog every 1.5s.
+      const rows = db.prepare(
+        "SELECT seq, entity, entity_uuid, op, payload, attempts FROM sync_outbox WHERE status IS NULL OR status = 'pending' ORDER BY seq ASC LIMIT 500",
+      ).all() as any[];
       for (const row of rows) {
-        this.lastOutboxSeq = row.seq;
+        this.lastOutboxSeq = Math.max(this.lastOutboxSeq, row.seq);
         const collection = P2pSyncManager.ENTITY_TO_COLLECTION[row.entity];
-        if (!collection) continue;
+        if (!collection) { this.markUnsupported(row); continue; }
         let payload: Record<string, any> = {};
-        try { payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload || {}; } catch { continue; }
+        try { payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload || {}; }
+        catch { this.markFailed(row, 'outbox payload is not valid JSON'); continue; }
         // Local payloads come from the outbox (desktop camelCase). Incoming
         // records may carry either naming — normalize to desktop columns.
         const data = detectPayloadPlatform(payload) === 'mobile'
           ? normalizeToPlatform(payload, 'desktop')
           : payload;
-        yjsManager.recordLocalChange(this.businessUuid, collection, row.entity_uuid, data, row.op === 'DELETE');
+        try {
+          yjsManager.recordLocalChange(this.businessUuid, collection, row.entity_uuid, data, row.op === 'DELETE');
+          this.markRelayed(row);
+        } catch (e: any) {
+          this.markFailed(row, e?.message);
+        }
       }
     } catch { /* db busy — next tick */ }
+  }
+
+  /** Marks a change as handed to the Yjs doc so it is not replayed forever. */
+  private markRelayed(row: any): void {
+    try {
+      db.prepare("UPDATE sync_outbox SET status = 'sent', acked_at = CURRENT_TIMESTAMP, business_id = COALESCE(business_id, ?) WHERE seq = ?")
+        .run(String(this.businessUuid), row.seq);
+    } catch { /* best effort */ }
+  }
+
+  /**
+   * Keeps a failed change queued with exponential backoff, so a change that
+   * failed once (Yjs doc not ready, malformed payload) is retried instead of
+   * either being lost or spun on in a tight loop.
+   */
+  private markFailed(row: any, message: string): void {
+    try {
+      const attempts = (row.attempts ?? 0) + 1;
+      const backoffSec = Math.min(300, 2 ** Math.min(attempts, 8));
+      db.prepare("UPDATE sync_outbox SET attempts = ?, last_error = ?, next_retry_at = datetime('now', ?) WHERE seq = ?")
+        .run(attempts, String(message ?? '').slice(0, 500), `+${backoffSec} seconds`, row.seq);
+    } catch { /* best effort */ }
+  }
+
+  /**
+   * Some tables have change-capture triggers but no Yjs collection. Marking
+   * these 'sent' would falsely imply delivery, and leaving them 'pending' would
+   * re-read them every tick forever, so they get an explicit terminal status
+   * that stays visible for diagnostics.
+   */
+  private markUnsupported(row: any): void {
+    try {
+      db.prepare("UPDATE sync_outbox SET status = 'unsupported', last_error = 'no Yjs collection for entity' WHERE seq = ?")
+        .run(row.seq);
+    } catch { /* best effort */ }
   }
 
   /** Record a local SQLite mutation into the Yjs doc (called from the outbox). */
@@ -466,6 +523,19 @@ class P2pSyncManager {
     try {
       db.prepare('UPDATE roster_devices SET status = ?, is_deleted = 1 WHERE uuid = ? OR id = ?').run('revoked', deviceId, deviceId);
     } catch { /* roster table naming may differ */ }
+    // A revoked device can no longer authenticate, so it can never ask for the
+    // rows it never acked. Stop letting it pin them in the outbox.
+    try {
+      releasePeer(deviceId);
+      const pruned = pruneAckedOutbox();
+      if (pruned.pruned > 0) {
+        logger.info('[p2p] released revoked device and pruned', {
+          deviceId,
+          pruned: pruned.pruned,
+          activePeers: pruned.activePeers,
+        });
+      }
+    } catch { /* ack store unavailable on pre-v47 installs */ }
   }
 
   /** Owner: rename a device in the roster. */

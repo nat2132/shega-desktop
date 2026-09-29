@@ -236,6 +236,9 @@ export function decideUserInvite(
   if (decision === 'approved') {
     // Materialize the user inside the target business, inactive until they
     // set up their PIN on first login — matching the desktop employee flow.
+    // Note: `pin` is intentionally empty and `pinLength` is left NULL. This row
+    // has no PIN yet, so the user must set a 6-digit one at first login; the
+    // login path treats NULL as legacy and blocks until that happens.
     try {
       const name = (opts.name || row.assigned_name || row.joiner_name || 'New user') as string;
       const avatar = opts.avatar ?? row.assigned_avatar ?? null;

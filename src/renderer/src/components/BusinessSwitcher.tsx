@@ -20,7 +20,7 @@ interface BusinessRow {
 }
 
 export function BusinessSwitcher({ onChanged }: { onChanged?: () => void }) {
-  const { t } = useSettings();
+  const { t, currentBusiness } = useSettings();
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<BusinessRow[]>([]);
   const [currentId, setCurrentId] = useState<number | null>(null);
@@ -42,7 +42,13 @@ export function BusinessSwitcher({ onChanged }: { onChanged?: () => void }) {
     load();
     const onChangedElsewhere = () => load();
     window.addEventListener('business-changed', onChangedElsewhere);
-    return () => window.removeEventListener('business-changed', onChangedElsewhere);
+    const unsub = window.api?.onDataChanged?.(() => {
+      load();
+    });
+    return () => {
+      window.removeEventListener('business-changed', onChangedElsewhere);
+      if (typeof unsub === 'function') unsub();
+    };
   }, []);
 
   useEffect(() => {
@@ -60,12 +66,12 @@ export function BusinessSwitcher({ onChanged }: { onChanged?: () => void }) {
     [list, currentId],
   );
 
+  const displayBusinessName = currentBusiness?.businessName || current?.businessName || t('tabs.business');
+
   const switchTo = async (id: number | typeof ALL_BUSINESSES) => {
     if (switching) return;
     setOpen(false);
     if (id === ALL_BUSINESSES) {
-      // Aggregate scope is a renderer-side filter; pages read all businesses
-      // they can access. Notify without touching the persisted active id.
       window.dispatchEvent(new CustomEvent('business-changed', { detail: { scope: ALL_BUSINESSES } }));
       onChanged?.();
       return;
@@ -86,7 +92,7 @@ export function BusinessSwitcher({ onChanged }: { onChanged?: () => void }) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border bg-card/60 px-3 py-1 text-xs font-semibold text-foreground/80">
         <Building2 className="h-3.5 w-3.5 text-primary" />
-        <span className="max-w-[220px] truncate">{current?.businessName || t('tabs.business')}</span>
+        <span className="max-w-[220px] truncate">{displayBusinessName}</span>
       </span>
     );
   }
@@ -103,7 +109,7 @@ export function BusinessSwitcher({ onChanged }: { onChanged?: () => void }) {
         ) : (
           <Building2 className="h-3.5 w-3.5 text-primary" />
         )}
-        <span className="max-w-[220px] truncate">{current?.businessName || t('tabs.business')}</span>
+        <span className="max-w-[220px] truncate">{displayBusinessName}</span>
         <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
       </button>
 

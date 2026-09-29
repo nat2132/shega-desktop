@@ -32,6 +32,9 @@ type SyncUser = {
   isOwner: number;
   pinHash?: string | null;
   pinSalt?: string | null;
+  /** Carried through from the source row so a bridged 6-digit PIN is not
+   *  mistaken for a legacy 4-digit PIN when signing in on the other platform. */
+  pinLength?: number | null;
   uuid: string;
   device_id?: string | null;
 };
@@ -74,7 +77,7 @@ function safePermissions(raw: string | null | undefined): string {
 /** Upsert the projected `users` row for a desktop admin (owner/manager account). */
 export function bridgeAdminUser(adminId: number): void {
   const admin = db
-    .prepare('SELECT id, businessId, name, username, role, permissions, isActive, avatar, pin FROM admins WHERE id = ?')
+    .prepare('SELECT id, businessId, name, username, role, permissions, isActive, avatar, pin, pinLength FROM admins WHERE id = ?')
     .get(adminId) as any;
   if (!admin) return;
   const isOwner = admin.role === 'super_admin' || admin.role === 'admin';
@@ -95,6 +98,7 @@ export function bridgeAdminUser(adminId: number): void {
     isOwner: isOwner ? 1 : 0,
     pinHash,
     pinSalt,
+    pinLength: admin.pinLength ?? null,
     uuid: bridgeUuid('admin', admin.id),
     device_id: ensureHubDeviceId(),
   };
@@ -105,7 +109,7 @@ export function bridgeAdminUser(adminId: number): void {
 export function bridgeEmployeeUser(employeeId: number): void {
   const emp = db
     .prepare(
-      `SELECT e.*, a.username, a.pin, a.isActive AS accountActive, a.forcePasswordChange,
+      `SELECT e.*, a.username, a.pin, a.pinLength, a.isActive AS accountActive, a.forcePasswordChange,
               r.name AS roleName, r.permissions AS rolePermissions
        FROM employees e
        LEFT JOIN employee_accounts a ON a.employeeId = e.id
@@ -138,6 +142,7 @@ export function bridgeEmployeeUser(employeeId: number): void {
     isOwner: isOwnerRole ? 1 : 0,
     pinHash,
     pinSalt,
+    pinLength: emp.pinLength ?? null,
     uuid: bridgeUuid('employee', emp.id),
     device_id: ensureHubDeviceId(),
   };
@@ -150,22 +155,23 @@ function upsertSyncUser(source: UserBridgeSource, sourceId: number, payload: Syn
   if (existing) {
     db.prepare(
       `UPDATE users SET businessId = ?, name = ?, phone = ?, email = ?, username = ?, avatar = ?,
-         role = ?, roleName = ?, permissions = ?, isActive = ?, isOwner = ?, pinHash = ?, pinSalt = ?,
+         role = ?, roleName = ?, permissions = ?, isActive = ?, isOwner = ?, pinHash = ?, pinSalt = ?, pinLength = ?,
          updated_at = ?, is_deleted = 0 WHERE id = ?`
     ).run(
       payload.businessId, payload.name, payload.phone, payload.email, payload.username, payload.avatar,
       payload.role, payload.roleName, payload.permissions, payload.isActive, payload.isOwner,
-      payload.pinHash, payload.pinSalt, now, existing.id
+      payload.pinHash, payload.pinSalt, payload.pinLength ?? null, now, existing.id
     );
   } else {
     db.prepare(
       `INSERT INTO users (businessId, name, phone, email, username, avatar, role, roleName, permissions,
-         isActive, isOwner, pinHash, pinSalt, uuid, device_id, sourceType, sourceId, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         isActive, isOwner, pinHash, pinSalt, pinLength, uuid, device_id, sourceType, sourceId, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       payload.businessId, payload.name, payload.phone, payload.email, payload.username, payload.avatar,
       payload.role, payload.roleName, payload.permissions, payload.isActive, payload.isOwner,
-      payload.pinHash, payload.pinSalt, payload.uuid, payload.device_id, source, sourceId, now, now
+      payload.pinHash, payload.pinSalt, payload.pinLength ?? null,
+      payload.uuid, payload.device_id, source, sourceId, now, now
     );
   }
 }
@@ -189,10 +195,10 @@ export function reconcileUserBridge(): number {
 export function getSyncedTeam(businessId?: number | null): any[] {
   try {
     const q = (businessId != null && businessId !== 0)
-      ? `SELECT id, businessId, name, username, email, phone, role, roleName, permissions, avatar, isActive, isOwner, sourceType, updated_at
+      ? `SELECT id, businessId, name, username, email, phone, role, roleName, permissions, avatar, isActive, isOwner, sourceType, sourceId, updated_at
          FROM users WHERE (is_deleted IS NULL OR is_deleted = 0) AND (businessId = ? OR CAST(businessId AS TEXT) = ? OR businessId IS NULL)
          ORDER BY isOwner DESC, name ASC`
-      : `SELECT id, businessId, name, username, email, phone, role, roleName, permissions, avatar, isActive, isOwner, sourceType, updated_at
+      : `SELECT id, businessId, name, username, email, phone, role, roleName, permissions, avatar, isActive, isOwner, sourceType, sourceId, updated_at
          FROM users WHERE (is_deleted IS NULL OR is_deleted = 0)
          ORDER BY isOwner DESC, name ASC`;
     return db.prepare(q).all(businessId ? [businessId, String(businessId)] : []) as any[];
