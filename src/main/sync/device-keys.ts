@@ -47,18 +47,34 @@ export function getDeviceIdentity(deviceId: string): DeviceIdentity {
   const storedSecret = getEncryptedSetting(SECRET_KEY_SETTING);
   const storedPublic = getEncryptedSetting(PUBLIC_KEY_SETTING);
 
-  if (storedSecret && storedPublic && isValidPublicKey(storedPublic)) {
-    try {
-      // A public key that does not match the secret beside it would produce a
-      // hub that can never complete a handshake, and the failure would surface
-      // as a peer bug. Derive and compare rather than trusting the pair.
-      if (derivePublicKey(storedSecret) === storedPublic) {
-        cached = { deviceId, publicKey: storedPublic, secretKey: storedSecret };
-        return cached;
+  if (storedSecret && storedPublic) {
+    // A value that still carries the `enc:` prefix came back UNDECRYPTED —
+    // `safeStorage` was unavailable for this read (no keyring, a locked
+    // session, a transient failure) even though it was available when written.
+    // Decrypting again cannot fix that, and treating the blob as a key would
+    // silently re-key this install, overwriting the identity that every issued
+    // credential is signed with. Losing the key means every other device sees
+    // an unknown issuer, so this MUST throw rather than quietly mint a new one.
+    if (storedSecret.startsWith('enc:') || storedPublic.startsWith('enc:')) {
+      throw new Error(
+        'getDeviceIdentity: stored identity is still encrypted — safeStorage is ' +
+        'unavailable. Refusing to re-key, because that would invalidate every ' +
+        'credential this device has issued and accepted.',
+      );
+    }
+    if (isValidPublicKey(storedPublic)) {
+      try {
+        // A public key that does not match the secret beside it would produce a
+        // hub that can never complete a handshake, and the failure would surface
+        // as a peer bug. Derive and compare rather than trusting the pair.
+        if (derivePublicKey(storedSecret) === storedPublic) {
+          cached = { deviceId, publicKey: storedPublic, secretKey: storedSecret };
+          return cached;
+        }
+        console.warn('[deviceKeys] stored public key does not match the secret key; re-keying');
+      } catch {
+        // Malformed secret — fall through and re-key.
       }
-      console.warn('[deviceKeys] stored public key does not match the secret key; re-keying');
-    } catch {
-      // Malformed secret — fall through and re-key.
     }
   }
 
