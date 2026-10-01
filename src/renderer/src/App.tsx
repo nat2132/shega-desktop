@@ -74,6 +74,7 @@ import { ViewOnlyBanner } from './components/ViewOnlyBanner'
 import { Toaster } from './components/ui/sonner'
 import { toast } from 'sonner'
 import NotificationBanners from './components/NotificationBanners'
+import SyncStatusStrip from './components/SyncStatusStrip'
 import NotificationModal from './components/NotificationModal'
 type AppPhase = 'splash' | 'auth' | 'pin-change' | 'recovery-key' | 'business-setup' | 'onboarding' | 'subscription-welcome' | 'subscription-payment' | 'loading' | 'ready' | 'error'
 
@@ -536,6 +537,17 @@ function App() {
         <AppSidebar variant="inset" />
         <SidebarInset>
           <SiteHeader />
+          {/*
+            The one persistent sync indicator, mounted once in the authenticated
+            shell so every route shows the same state. Placed directly below the
+            header and outside <main>, so it never floats over content and never
+            scrolls with the page.
+
+            The state lives in the main process and arrives over IPC, so the sync
+            keeps running when this window is closed and this bar is only ever a
+            view of it.
+          */}
+          <SyncStatusStrip />
           <NotificationBanners />
           <main className="flex-1 overflow-y-auto scrollbar-apple p-4 md:p-6 min-h-0">
             <div className="@container/main flex flex-1 flex-col gap-2 min-h-full">

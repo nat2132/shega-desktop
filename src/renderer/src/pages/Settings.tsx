@@ -5,7 +5,8 @@ import {
   ShieldCheck, Database, Sun, Moon, Trash2, Upload, Bell, HardDrive, RotateCcw, FileText,
   Clock, Headphones,
   Phone, HeartPulse, Info, RefreshCw, Download,
-  Printer, Server, Percent, MonitorSmartphone
+  Printer, Server, Percent, MonitorSmartphone,
+  Warehouse, Truck, Users, BarChart3, UserCog, Package, ShoppingCart
 } from 'lucide-react';
 
 import { useSettings, Language } from '../context/SettingsContext';
@@ -21,12 +22,6 @@ import NotificationSettings from '../components/NotificationSettings';
 import DataTransferModal from '../components/DataTransferModal';
 import { BusinessHealthScore } from '../components/BusinessHealthScore';
 import { UpdateDialog } from '../components/UpdateDialog';
-import DeviceSettings from '../components/DeviceSettings';
-import P2pSyncStatus from '../components/P2pSyncStatus';
-import SyncSettings from '../components/SyncSettings';
-
-// Settings → Connected Devices (lazy: only pulled in when that tab is opened).
-const ConnectedDevices = React.lazy(() => import('./ConnectedDevices'));
 
 import companyLogo from '../assets/company.png';
 import { resolveAvatar, AVATAR_OPTIONS, avatarFileNameFrom } from '../lib/avatar';
@@ -47,11 +42,37 @@ const Settings: React.FC = () => {
     taxEnabled, setTaxEnabled,
     taxRate, setTaxRate,
     currentBusiness, refreshBusiness,
+    enabledModules, setEnabledModules,
     t
   } = useSettings();
+
+  const MODULE_TOGGLES = [
+    { id: 'warehouses', label: 'Warehouses', desc: 'Manage multiple warehouse locations & stock transfers', icon: Warehouse },
+    { id: 'shipments', label: 'Shipments & Deliveries', desc: 'Track incoming and outgoing inventory shipments', icon: Truck },
+    { id: 'suppliers', label: 'Suppliers', desc: 'Manage vendor directory, purchase orders & contacts', icon: Building2 },
+    { id: 'customers', label: 'Customers & Debt', desc: 'Track customer profiles, debt management & credit', icon: Users },
+    { id: 'analytics', label: 'Reports & Analytics', desc: 'Sales insights, revenue reports & performance metrics', icon: BarChart3 },
+    { id: 'employees', label: 'Team & Employees', desc: 'Manage staff roles, permissions & cashier access', icon: UserCog },
+    { id: 'inventory', label: 'Inventory & Products', desc: 'Product catalog, stock levels & categories', icon: Package },
+    { id: 'sales', label: 'Sales & Checkout', desc: 'POS checkout register, sales history & receipts', icon: ShoppingCart },
+  ];
+
+  const toggleModule = (id: string) => {
+    if (enabledModules.includes(id)) {
+      if (enabledModules.length <= 1) {
+        toast.error('At least one navigation module must remain enabled');
+        return;
+      }
+      setEnabledModules(enabledModules.filter((m) => m !== id));
+      toast.success(`${id.charAt(0).toUpperCase() + id.slice(1)} disabled in sidebar`);
+    } else {
+      setEnabledModules([...enabledModules, id]);
+      toast.success(`${id.charAt(0).toUpperCase() + id.slice(1)} enabled in sidebar`);
+    }
+  };
   const { currentAdmin, refreshAdmin } = useAuth();
   
-  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'tax' | 'notifications' | 'data' | 'connected' | 'devices' | 'sync' | 'support' | 'health' | 'about'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'system' | 'tax' | 'notifications' | 'data' | 'peripherals' | 'sync' | 'support' | 'health' | 'about'>('profile');
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [updateDialogAction, setUpdateDialogAction] = useState<'check' | 'auto'>('auto');
   const [appVersion, setAppVersion] = useState('');
@@ -225,9 +246,8 @@ const Settings: React.FC = () => {
     { id: 'tax' as const, label: t('settings.tax', 'Tax'), icon: Percent },
     { id: 'notifications' as const, label: t('settings.notifications'), icon: Bell },
     { id: 'data' as const, label: t('settings.core_database'), icon: Database },
-    { id: 'connected' as const, label: t('subscription.connected_devices', 'Connected Devices'), icon: MonitorSmartphone },
-    { id: 'devices' as const, label: 'Devices', icon: Printer },
-    { id: 'sync' as const, label: 'Sync Hub', icon: Server },
+    { id: 'peripherals' as const, label: t('settings.peripheral_devices', 'Peripheral Devices'), icon: Printer },
+    { id: 'sync' as const, label: t('settings.devices_sync_hub', 'Devices & Sync Hub'), icon: MonitorSmartphone },
     { id: 'support' as const, label: t('settings.support'), icon: Headphones },
     { id: 'health' as const, label: 'Health Score', icon: HeartPulse },
     { id: 'about' as const, label: 'About', icon: Info },
@@ -254,7 +274,12 @@ const Settings: React.FC = () => {
                   <tab.icon size={16} strokeWidth={activeTab === tab.id ? 3 : 2} />
                   <span className="font-black text-xs uppercase tracking-widest">{tab.label}</span>
                 </div>
-                {activeTab === tab.id && <div className="w-1.5 h-1.5 rounded-full bg-primary" />}
+                <div className="flex items-center gap-2">
+                  {(tab.id === 'peripherals' || tab.id === 'sync') && (
+                    <span className="text-[10px] font-black uppercase bg-amber-500/15 text-amber-600 dark:text-amber-400 px-1.5 py-0.5 rounded">Soon</span>
+                  )}
+                  {activeTab === tab.id && <div className="w-1.5 h-1.5 rounded-full bg-primary" />}
+                </div>
               </Button>
             ))}
            </div>
@@ -418,11 +443,54 @@ const Settings: React.FC = () => {
                          <p className="text-xs font-black uppercase tracking-widest">{t('settings.calendar_protocol')}</p>
                          <p className="text-xs text-muted-foreground font-bold uppercase">{t('settings.date_formatting')}</p>
                       </div>
-<div className="flex bg-card p-1 rounded-lg border">
+                      <div className="flex bg-card p-1 rounded-lg border">
                           <Button size="sm" variant={calendarType === 'ethiopian' ? 'default' : 'ghost'} onClick={() => setCalendarType('ethiopian')} className="h-7 px-4 text-xs">{t('common.ethiopian')}</Button>
                           <Button size="sm" variant={calendarType === 'gregorian' ? 'default' : 'ghost'} onClick={() => setCalendarType('gregorian')} className="h-7 px-4 text-xs">{t('common.gregorian')}</Button>
                        </div>
-</div>
+                   </div>
+
+                   {/* Sidebar Feature Module Toggles */}
+                   <div className="pt-6 border-t border-border space-y-4">
+                      <div className="space-y-1">
+                         <h4 className="text-sm font-black uppercase tracking-wider text-foreground">
+                            Sidebar Navigation Modules
+                         </h4>
+                         <p className="text-xs text-muted-foreground font-medium">
+                            Turn modules on or off in the sidebar (Warehouses, Shipments, Suppliers, Team, etc.)
+                         </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                         {MODULE_TOGGLES.map((mod) => {
+                            const isEnabled = enabledModules.includes(mod.id);
+                            const Icon = mod.icon;
+                            return (
+                               <div
+                                  key={mod.id}
+                                  className="p-3.5 rounded-xl border bg-muted/20 flex items-center justify-between gap-3 transition-all hover:border-border"
+                               >
+                                  <div className="flex items-center gap-3">
+                                     <div className="p-2 rounded-lg bg-primary/10 text-primary">
+                                        <Icon size={16} />
+                                     </div>
+                                     <div>
+                                        <p className="text-xs font-black uppercase tracking-wider text-foreground">
+                                           {mod.label}
+                                        </p>
+                                        <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">
+                                           {mod.desc}
+                                        </p>
+                                     </div>
+                                  </div>
+                                  <Switch
+                                     checked={isEnabled}
+                                     onCheckedChange={() => toggleModule(mod.id)}
+                                  />
+                               </div>
+                            );
+                         })}
+                      </div>
+                   </div>
                 </div>
               )}
 
@@ -552,21 +620,49 @@ const Settings: React.FC = () => {
                 </div>
               )}
 
-{activeTab === 'connected' && (
-              <React.Suspense fallback={<div className="flex items-center justify-center py-12"><RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" /></div>}>
-                <ConnectedDevices />
-              </React.Suspense>
-            )}
-            {activeTab === 'devices' && (
-              <>
-                <P2pSyncStatus />
-                <div className="mt-4">
-                  <DeviceSettings />
+            {activeTab === 'peripherals' && (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-black tracking-tight">Peripheral Devices</h3>
+                    <p className="text-xs text-muted-foreground uppercase font-black tracking-widest mt-1">
+                      Thermal printers, cash drawers, and hardware peripherals
+                    </p>
+                  </div>
+                  <Badge variant="outline" className="text-xs font-black px-3 py-1 bg-amber-500/10 text-amber-600 border-amber-500/30">
+                    Coming Soon
+                  </Badge>
                 </div>
-              </>
+                <div className="rounded-2xl border border-dashed border-border bg-muted/20 p-8 text-center space-y-3">
+                  <Printer size={32} className="mx-auto text-muted-foreground opacity-50" />
+                  <h4 className="text-base font-bold text-foreground">Peripheral Device Management Coming Soon</h4>
+                  <p className="text-xs text-muted-foreground max-w-md mx-auto">
+                    Thermal printer setup, cash drawer triggers, and hardware peripheral settings will be enabled in an upcoming Shega release.
+                  </p>
+                </div>
+              </div>
             )}
             {activeTab === 'sync' && (
-              <SyncSettings />
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-black tracking-tight">Devices &amp; Sync Hub</h3>
+                    <p className="text-xs text-muted-foreground uppercase font-black tracking-widest mt-1">
+                      Cross-device synchronization and peer management
+                    </p>
+                  </div>
+                  <Badge variant="outline" className="text-xs font-black px-3 py-1 bg-amber-500/10 text-amber-600 border-amber-500/30">
+                    Coming Soon
+                  </Badge>
+                </div>
+                <div className="rounded-2xl border border-dashed border-border bg-muted/20 p-8 text-center space-y-3">
+                  <MonitorSmartphone size={32} className="mx-auto text-muted-foreground opacity-50" />
+                  <h4 className="text-base font-bold text-foreground">Cross-Device Sync Coming Soon</h4>
+                  <p className="text-xs text-muted-foreground max-w-md mx-auto">
+                    Device-to-device synchronization and LAN/P2P peer management will be available in a future Shega release.
+                  </p>
+                </div>
+              </div>
             )}
 
                {activeTab === 'health' && (

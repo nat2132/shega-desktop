@@ -15,6 +15,7 @@ import { ensureHubDeviceId } from '../sync-hub';
 import { getDesktopDeviceName, getLocalIPv4s } from './device-name';
 import { getOpenInviteCode } from './user-invites';
 import type { PairingBeacon } from '@shega/shared';
+import { endpointRegistry } from './endpoint-registry';
 
 export const UDP_DISCOVERY_PORT = 5756;
 
@@ -158,6 +159,25 @@ class UdpDiscoveryService extends EventEmitter<UdpEventMap> {
 
         this.seen.set(peer.deviceId, peer);
         console.log(`[UDP Discovery] Desktop discovered peer ${peer.deviceName} (${peer.platform}) at ${senderHost}:${peer.port} via ${msg.type}`);
+
+        // Merge into the shared registry. UDP typically yields a routable IPv4
+        // address, which the selector prefers over a link-local IPv6 seen over
+        // mDNS — the two sightings describe ONE device, not two.
+        endpointRegistry.record({
+          deviceId: String(msg.deviceId),
+          host: senderHost,
+          port: peer.port,
+          transport: 'tcp',
+          source: 'udp',
+          deviceName: String(msg.deviceName || 'Shega Device'),
+          platform: String(msg.platform || 'desktop').includes('mobile') ? 'mobile' : 'desktop',
+        });
+        endpointRegistry.connection.set(peer.deviceId, 'discovered', {
+          endpoint: `${senderHost}:${peer.port}`,
+          transport: 'udp',
+        });
+        console.log(endpointRegistry.describe(peer.deviceId));
+
         this.emit('peerDiscovered', peer);
 
         if (msg.type === 'SHEGA_PING') {

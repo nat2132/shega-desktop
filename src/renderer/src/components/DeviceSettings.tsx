@@ -132,8 +132,8 @@ const DeviceSettings: React.FC = () => {
   return (
     <div className="space-y-8">
       <div className="space-y-1">
-        <h3 className="text-xl font-black tracking-tight">Devices &amp; Peripherals</h3>
-        <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">Thermal printer, cash drawer and barcode label output</p>
+        <h3 className="text-xl font-black tracking-tight">Peripheral Devices</h3>
+        <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">ESC/POS thermal printers, cash drawers, barcode label output, and hardware testing</p>
       </div>
 
       <div className="p-6 rounded-2xl border bg-muted/20">

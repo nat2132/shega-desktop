@@ -2701,24 +2701,18 @@ db.exec('UPDATE budgets SET updatedAt = CURRENT_TIMESTAMP WHERE updatedAt IS NUL
   {
     const uCols = (db.prepare('PRAGMA table_info(users)').all() as any[]).map((c: any) => c.name);
     const uTrigCols = ['id', 'businessId', 'name', 'phone', 'email', 'username', 'role', 'roleName', 'permissions', 'isActive', 'isOwner', 'pinHash', 'pinSalt', 'recoveryHash', 'recoverySalt', 'avatar', 'uuid', 'device_id', 'row_version', 'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'is_synced'].filter((c) => uCols.includes(c) || c === 'id');
-    const userArgs = uTrigCols.map((c) => `'${c}', ${c}`).join(', ');
     try {
+      // P3: users are PER-DEVICE. The update/delete triggers that used to write
+      // every user row into `sync_outbox` are removed — they shipped pinHash,
+      // pinSalt, recoveryHash, username, permissions and isOwner to every peer,
+      // so a PIN verifier crossed the LAN on every account edit. Only the
+      // uuid-generation step survives, because uuid is a local row identity.
       db.exec(`
         DROP TRIGGER IF EXISTS trg_users_ai;
         DROP TRIGGER IF EXISTS trg_users_au;
         DROP TRIGGER IF EXISTS trg_users_ad;
-        CREATE TRIGGER IF NOT EXISTS trg_users_ai AFTER INSERT ON users BEGIN
+        CREATE TRIGGER IF NOT EXISTS trg_users_uuid AFTER INSERT ON users WHEN NEW.uuid IS NULL BEGIN
           UPDATE users SET uuid = ${genUuid} WHERE id = NEW.id AND uuid IS NULL;
-          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-          SELECT 'users', uuid, 'INSERT', json_object(${userArgs}), device_id FROM users WHERE id = NEW.id;
-        END;
-        CREATE TRIGGER IF NOT EXISTS trg_users_au AFTER UPDATE ON users WHEN OLD.uuid IS NOT NULL AND NEW.uuid IS NOT NULL BEGIN
-          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-          SELECT 'users', uuid, 'UPDATE', json_object(${userArgs}), device_id FROM users WHERE id = NEW.id;
-        END;
-        CREATE TRIGGER IF NOT EXISTS trg_users_ad AFTER DELETE ON users BEGIN
-          INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id)
-          VALUES ('users', OLD.uuid, 'DELETE', json_object('id', OLD.id, 'businessId', OLD.businessId, 'name', OLD.name, 'uuid', OLD.uuid, 'device_id', OLD.device_id, 'row_version', OLD.row_version, 'updated_at', OLD.updated_at, 'is_deleted', OLD.is_deleted, 'deleted_at', OLD.deleted_at, 'is_synced', OLD.is_synced), OLD.device_id);
         END;
       `);
     } catch (e: any) {

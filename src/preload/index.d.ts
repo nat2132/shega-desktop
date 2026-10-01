@@ -294,6 +294,9 @@ export interface ElectronAPI {
   syncLog: (limit: number) => Promise<any>;
   syncResync: (deviceId: string) => Promise<any>;
   syncDiagnostics: () => Promise<any>;
+  /** P3 sync progress: current state, and a subscription to main-process pushes. */
+  syncProgressGet: () => Promise<any>;
+  onSyncProgress: (cb: (state: any) => void) => () => void;
   onDataChanged: (cb: (stats: any) => void) => () => void;
   removeDataChangedListeners: () => void;
 

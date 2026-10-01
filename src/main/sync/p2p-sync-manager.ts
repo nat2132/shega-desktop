@@ -486,7 +486,10 @@ class P2pSyncManager {
         const ageMs = seen ? Date.now() - seen : Infinity;
         const live = byId.get(id);
         const devStatus = String(r.status || 'offline').toLowerCase();
-        const online = !!live || devStatus === 'online' || devStatus === 'connected' || (devStatus === 'active' && ageMs < 5 * 60_000);
+        const GRACE_PERIOD_MS = 20_000;
+        const isRecentlyConnected = ageMs < GRACE_PERIOD_MS;
+        const online = !!live || devStatus === 'online' || devStatus === 'connected' || (devStatus === 'active' && isRecentlyConnected);
+        const status = !!live ? 'connected' : isRecentlyConnected ? 'reconnecting' : 'offline';
 
         const userName = live?.userName ?? r.user_name ?? null;
         const userRole = live?.role ?? r.roleName ?? r.user_role ?? r.role ?? null;
@@ -502,7 +505,7 @@ class P2pSyncManager {
           lastSyncAt: Date.parse(r.last_sync_at || r.lastSyncAt || '') || (live?.lastSyncAt ?? null),
           lastSeenAt: live?.lastSeenAt ?? (seen || null),
           online,
-          status: online ? 'connected' : ageMs < 5 * 60_000 ? 'reconnecting' : 'offline',
+          status,
           source: live?.source ?? 'roster',
           name,
           model: live?.model ?? r.model,

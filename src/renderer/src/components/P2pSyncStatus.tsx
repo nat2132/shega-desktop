@@ -10,7 +10,6 @@ import { toast } from 'sonner';
 import { cn } from '../utils/shadcn';
 import { useSettings } from '../context/SettingsContext';
 import { RadarPulse } from './RadarPulse';
-import ApprovalConfig from './JoinApprovalConfig';
 
 const STATE_DOT: Record<string, string> = {
   synced: 'bg-green-500',
@@ -136,8 +135,8 @@ export default function P2pSyncStatus() {
     return 'synced';
   };
 
-  const online = devices.filter((d) => d.online);
-  const offline = devices.filter((d) => !d.online);
+  const online = devices.filter((d) => d.online || d.status === 'connected' || d.status === 'reconnecting');
+  const offline = devices.filter((d) => !d.online && d.status !== 'connected' && d.status !== 'reconnecting');
 
   const renderRow = (d: DeviceRow) => {
     const st = deviceState(d);
@@ -468,9 +467,7 @@ function PairDeviceModal({ onClose, recordCounts, businessName, onConnected }: {
     if (!peer.deviceId) { toast.error('That device did not share an identity yet — try again in a moment.'); return; }
     if (phase[peer.id] === 'connecting' || phase[peer.id] === 'online') return;
     setPeerError((x) => ({ ...x, [peer.id]: '' }));
-    // Owner-controlled onboarding: the tap opens the role prompt FIRST, and the
-    // chosen role rides the approved join request to the joining device.
-    setRolePeer(peer);
+    void grantPeer(peer, 'cashier');
   };
 
   /** Grant the tapped peer with the owner-assigned role (role step done). */
@@ -540,7 +537,7 @@ function PairDeviceModal({ onClose, recordCounts, businessName, onConnected }: {
       case 'approved': return 'Approved — waiting for the device to connect (tap to retry)';
       case 'online': return 'Connected — syncing business data';
       case 'failed': return peerError[p.id] || 'Connection failed — tap to retry';
-      default: return 'Tap to assign a role';
+      default: return 'Tap to connect';
     }
   };
 
@@ -647,26 +644,6 @@ function PairDeviceModal({ onClose, recordCounts, businessName, onConnected }: {
           </div>
         </div>
       </div>
-
-      {/* Role assignment prompt — shown right after the owner taps a radar peer,
-          before the grant. The owner assigns ONLY the role; the joiner sets up
-          their own name, profile picture and PIN after approval. */}
-      {rolePeer && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-6" onClick={() => setRolePeer(null)}>
-          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-sm font-bold text-foreground">Assign a role to “{rolePeer.name}”</p>
-              <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => setRolePeer(null)}><X size={14} /></Button>
-            </div>
-            <ApprovalConfig
-              applicantName={rolePeer.name}
-              busy={approving}
-              onConfirm={(cfg) => void grantPeer(rolePeer, cfg.role, cfg.permissions)}
-              onDecline={() => setRolePeer(null)}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

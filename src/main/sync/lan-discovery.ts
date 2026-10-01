@@ -18,6 +18,7 @@
  */
 
 import * as net from 'net';
+import { endpointRegistry } from './endpoint-registry';
 import type { PairingBeacon } from '@shega/shared';
 import { getDesktopDeviceName, getLocalIPv4s } from './device-name';
 import { ensureHubDeviceId } from '../sync-hub';
@@ -255,6 +256,19 @@ function reconcile(fresh: LanFoundDevice[]): LanFoundDevice[] {
   // P0 telemetry: time-to-first-peer is measured from the first hit of the
   // current window, so re-observing an already-known host is not re-timed.
   for (const entry of fresh) {
+    const devId = entry.beacon.owner.deviceId;
+    if (devId) {
+      const port = entry.platform === 'mobile' ? MOBILE_PORT : HUB_HTTP_PORT;
+      endpointRegistry.record({
+        deviceId: devId,
+        host: entry.host,
+        port,
+        transport: entry.platform === 'mobile' ? 'tcp' : 'http',
+        source: 'lan-sweep',
+        deviceName: entry.beacon.owner.deviceName,
+        platform: entry.platform === 'mobile' ? 'mobile' : 'desktop',
+      });
+    }
     markPeerFound(entry.beacon.owner.deviceId, {
       via: entry.via,
       host: entry.host,

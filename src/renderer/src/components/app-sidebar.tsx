@@ -104,6 +104,14 @@ const navSections: NavSection[] = [
     defaultUrl: '/customers',
     items: [
       { title: 'customers', url: '/customers', icon: Users, permission: 'customers', module: 'customers' },
+    ],
+  },
+  {
+    id: 'debts',
+    title: 'debt_management',
+    icon: PiggyBank,
+    defaultUrl: '/debt-management',
+    items: [
       { title: 'debt_management', url: '/debt-management', icon: PiggyBank, permission: 'customers', module: 'customers' },
     ],
   },

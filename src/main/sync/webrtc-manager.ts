@@ -14,6 +14,7 @@ import {
   type SignalMessage,
   type YjsPeerInfo,
 } from '@shega/shared';
+import { desktopConnectionManager } from './connection-manager';
 
 type PeerConn = any; // node-datachannel PeerConnection
 type DataChan = any; // node-datachannel DataChannel
@@ -46,6 +47,8 @@ interface PeerSession {
   kind: ConnectionKind;
   connectedAt: number;
   polite: boolean; // glare handling: one side yields
+  gen: number;
+  disconnectTimer?: NodeJS.Timeout | null;
 }
 
 /**
@@ -249,6 +252,8 @@ export class DesktopWebRtcManager {
     this.businessId = businessId;
   }
 
+  private sessionGenCounter = 0;
+
   private createPeer(deviceId: string, deviceType: 'mobile' | 'desktop', polite: boolean): PeerSession | null {
     const ndc = loadDatachannel();
     if (!ndc?.PeerConnection) {
@@ -265,7 +270,7 @@ export class DesktopWebRtcManager {
     const session: PeerSession = {
       deviceId, deviceType, pc, dc: null,
       businessId: this.businessId, kind: 'p2p-direct',
-      connectedAt: 0, polite,
+      connectedAt: 0, polite, gen: ++this.sessionGenCounter,
     };
     this.sessions.set(deviceId, session);
 
@@ -286,6 +291,7 @@ export class DesktopWebRtcManager {
     pc.on('connectionStateChange', (state: string) => {
       this.emit('status', `peer ${deviceId}: ${state}`);
       if (state === 'connected' || state === 'completed') {
+        this.clearDisconnectTimer(session);
         session.kind = 'p2p-direct';
         // Classify the selected transport: direct vs TURN relay. node-datachannel
         // exposes the winning candidate pair; only the candidate types are logged.
@@ -302,7 +308,13 @@ export class DesktopWebRtcManager {
             this.emit('status', `peer ${deviceId}: connected direct (${localTyp ?? '?'} -> ${remoteTyp ?? '?'})`);
           }
         } catch { /* diagnostics only — never fail a connection on stats access */ }
-      } else if (state === 'failed' || state === 'closed' || state === 'disconnected') {
+      } else if (state === 'disconnected') {
+        // ICE 'disconnected' is frequently transient. Give a 20s grace period
+        // before tearing down the session so temporary packet loss or candidate pair re-bind
+        // doesn't cause rapid Connected -> Disconnected UI flickering.
+        this.armDisconnectTimer(session, deviceId);
+      } else if (state === 'failed' || state === 'closed') {
+        this.clearDisconnectTimer(session);
         this.closePeer(deviceId);
       }
     });
@@ -315,6 +327,12 @@ export class DesktopWebRtcManager {
     session.dc = dc;
     dc.on('open', () => {
       session.connectedAt = Date.now();
+      desktopConnectionManager.reportTransportConnected(
+        session.deviceId,
+        'webrtc',
+        session.gen,
+        session.kind === 'relay' ? 'relay' : 'p2p'
+      );
       this.emit('peerConnected', {
         deviceId: session.deviceId,
         deviceType: session.deviceType,
@@ -324,7 +342,7 @@ export class DesktopWebRtcManager {
       });
       this.emit('status', `peer ${session.deviceId}: datachannel open`);
     });
-    dc.on('closed', () => this.closePeer(session.deviceId));
+    dc.on('closed', () => this.closePeer(session.deviceId, session));
     dc.on('message', (data: ArrayBuffer | string) => {
       if (typeof data === 'string') return;
       this.emit('update', session.businessId, session.deviceId, new Uint8Array(data));
@@ -359,13 +377,37 @@ export class DesktopWebRtcManager {
     try { session.pc.setRemoteDescription(sdp, 'answer'); } catch { /* ignore */ }
   }
 
-  closePeer(deviceId: string): void {
+  closePeer(deviceId: string, targetSession?: PeerSession): void {
     const s = this.sessions.get(deviceId);
     if (!s) return;
+
+    // Stale session check
+    if (targetSession && s !== targetSession) {
+      console.log(`[connection] ignored stale WebRTC session close device=${deviceId} gen=${targetSession.gen} current=${s.gen}`);
+      return;
+    }
+
+    this.clearDisconnectTimer(s);
     try { s.dc?.close(); } catch {}
     try { s.pc.close(); } catch {}
     this.sessions.delete(deviceId);
+    desktopConnectionManager.reportTransportDisconnected(deviceId, 'webrtc', s.gen, 'webrtc closed');
     this.emit('peerDisconnected', deviceId);
+  }
+
+  private armDisconnectTimer(session: PeerSession, deviceId: string): void {
+    this.clearDisconnectTimer(session);
+    session.disconnectTimer = setTimeout(() => {
+      session.disconnectTimer = null;
+      this.closePeer(deviceId);
+    }, 20_000);
+  }
+
+  private clearDisconnectTimer(session: PeerSession): void {
+    if (session.disconnectTimer) {
+      clearTimeout(session.disconnectTimer);
+      session.disconnectTimer = null;
+    }
   }
 
   closeAll(): void {

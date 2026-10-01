@@ -34,6 +34,8 @@ import {
   desktopTableName,
   changeChecksum,
   SHARED_SYNC_ENTITIES,
+  LOCAL_ONLY_ENTITIES,
+  isBusinessSyncEntity,
   PROTOCOL_VERSION,
   AdapterEntity,
   type PairingHandshakeAck,
@@ -676,13 +678,11 @@ function applyChange(deviceId: string, change: Change): 'applied' | 'conflict' |
     }
   }
 
-  // §32: audit events are append-only — never LWW-updated. Incoming changes are
-  // deduped by stable `uuid` and re-chained into the hub's tamper-evident log
-  // via insertAudit() so the merged ledger remains one verifiable chain.
-  if (entity === 'audit_logs') {
-    if (op === 'DELETE') return 'skipped'; // audit rows are immutable
-    return applyAuditChange(deviceId, change) ? 'applied' : 'skipped';
-  }
+  // NOTE: the former `audit_logs` special case is gone. audit_logs is now
+  // local-only (every row carries a user_id/device_id, so replicating it would
+  // both leak who acted on the business and recreate references to users that do
+  // not exist on this device), and applyChange() refuses it before reaching
+  // here. Each device keeps its own audit trail.
 
   if (op === 'DELETE') {
     const existing = existingByUuid(entity, entity_uuid);
@@ -895,6 +895,21 @@ export function ensureSyncReceivedTable(): void {
  * are backfilled so the whole shared dataset is pushed at least once.
  */
 export function ensureBaselineOutbox(): number {
+  // Purge rows queued BEFORE the business-only rule. Removing an entity from
+  // the shared list stops new ones being written and stops them being served,
+  // but anything already sitting in the outbox would still be pushed — and for
+  // `users` that payload contains PIN hashes. This is a one-time cleanup of
+  // history, not a workaround for the ongoing path.
+  try {
+    const placeholders = LOCAL_ONLY_ENTITIES.map(() => '?').join(',');
+    const purged = db
+      .prepare(`DELETE FROM sync_outbox WHERE entity IN (${placeholders})`)
+      .run(...(LOCAL_ONLY_ENTITIES as unknown as string[]));
+    if (purged.changes > 0) {
+      logger.warn(`[sync-hub] purged ${purged.changes} queued user/team/device rows from the outbox (business-only sync)`);
+    }
+  } catch { /* outbox not created yet */ }
+
   const exists = db.prepare('SELECT 1 FROM sync_outbox WHERE entity = ? AND entity_uuid = ? LIMIT 1');
   const enqueue = db.prepare(
     'INSERT INTO sync_outbox (entity, entity_uuid, op, payload, device_id, created_at) VALUES (?, ?, ?, ?, ?, ?)'
@@ -914,6 +929,12 @@ export function ensureBaselineOutbox(): number {
   return added;
 }
 
+/**
+ * Peer+entity pairs already reported as refused local-only rows.
+ * Bounded by peers × entities; see the use site for why the log is deduplicated.
+ */
+const localOnlyWarned = new Set<string>();
+
 export function applyPush(deviceId: string, changes: Change[]): ApplyResult {
   const result: ApplyResult = { applied: 0, conflicts: 0, skipped: 0, pending: 0, results: [] };
   ensureSyncReceivedTable();
@@ -924,6 +945,31 @@ export function applyPush(deviceId: string, changes: Change[]): ApplyResult {
       const clientSeq = change.client_seq != null ? Number(change.client_seq) : null;
       let status: ApplyStatus;
       try {
+        // Business data only. The entity list already excludes users/teams/
+        // roles/devices, but a peer on an older build can still SEND one — that
+        // build shipped `users` with pin_hash/pin_salt in its field map. Refusing
+        // here is what actually enforces the boundary.
+        if (!isBusinessSyncEntity(change.entity)) {
+          result.skipped += 1;
+          status = 'skipped';
+          if (LOCAL_ONLY_ENTITIES.includes(change.entity as any)) {
+            logSync(deviceId, change.entity, change.entity_uuid, change.op, 'local_only_entity_refused');
+            // Logged once per peer+entity, not once per row: an older peer that
+            // still ships `devices` would otherwise produce one line per device
+            // per batch, burying every other diagnostic. Enforcement is unchanged.
+            const key = `${deviceId}:${change.entity}`;
+            if (!localOnlyWarned.has(key)) {
+              localOnlyWarned.add(key);
+              logger.warn(
+                `[sync-hub] refused inbound local-only entity "${change.entity}" from ${deviceId} — ` +
+                'users, teams, roles and device identity are per-device and never sync ' +
+                '(further occurrences of this peer+entity are not logged)',
+              );
+            }
+          }
+          result.results!.push({ client_seq: clientSeq, status });
+          continue;
+        }
         // 3.7 integrity: reject a change whose checksum does not match its payload.
         if (change.checksum) {
           const expected = changeChecksum(change);

@@ -18,6 +18,7 @@ import { fiscalAdapter } from './fiscal';
 import { syncHub } from './index';
 import { verifyChecksums, getPairingToken, getLanAddress, requestDeviceResync } from './sync-hub';
 import { getDiagnosticsSnapshot } from './sync/diagnostics';
+import { bindProgressIpc, getSyncProgress } from './sync/sync-progress-store';
 import * as shifts from './pos/shifts';
 import * as reports from './pos/reports';
 import * as ledger from './pos/ledger';
@@ -5532,6 +5533,21 @@ export function registerIPCHandlers() {
   // rather than guessed at. Read-only; it never mutates sync state.
   ipcMain.handle('sync:diagnostics', () => {
     return getDiagnosticsSnapshot();
+  });
+
+  // Sync progress state for the UI. Two channels on purpose:
+  //  - `sync:progress` is PUSHED on every state change, so a progress bar tracks
+  //    the real sync instead of lagging it by a poll interval.
+  //  - `sync:progress:get` answers the current value for a renderer that mounts
+  //    mid-sync and needs the state before the first push arrives.
+  ipcMain.handle('sync:progress:get', () => getSyncProgress());
+  bindProgressIpc((channel, state) => {
+    // Never let a destroyed window turn a sync state change into an exception in
+    // the main process.
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      try { win.webContents.send(channel, state); } catch { /* window closing */ }
+    }
   });
 
   // --- Backup & Restore ---

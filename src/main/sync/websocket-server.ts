@@ -43,7 +43,9 @@ import {
   completeJoinChallenge,
   getJoinerCredential,
 } from './hub-credentials';
+import { getSyncCoordinator } from './sync-progress-store';
 import { p2pSync } from './p2p-sync-manager';
+import { desktopConnectionManager } from './connection-manager';
 import {
   peripheralHub,
   buildScanRequest,
@@ -61,6 +63,7 @@ export interface WsClient {
   paired: boolean;
   lastHeartbeat: number;
   lastSeq: number;
+  generation?: number;
   /** Credential challenge state for P3 handshake. */
   pendingAuth?: { credential: any; sessionId: string; deviceId: string };
 }
@@ -140,6 +143,8 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     logger.info(`[WS] Sync server listening on port ${WS_SYNC_PORT}`);
   }
 
+  private globalSocketGen = 0;
+
   private handleConnection(ws: WebSocket, req: any): void {
     const clientId = randomBytes(8).toString('hex');
     const client: WsClient = {
@@ -148,6 +153,7 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       paired: false,
       lastHeartbeat: Date.now(),
       lastSeq: 0,
+      generation: ++this.globalSocketGen,
     };
 
     client.clientId = clientId;
@@ -899,6 +905,21 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
       const result = applyPush(client.deviceId, changes);
       client.lastSeq = Math.max(client.lastSeq, client_seq || 0);
 
+      // P3: the hub-side WebSocket pass reports to the same coordinator as the
+      // HTTP and LAN-TCP transports, so a desktop acting as hub shows the same
+      // status bar regardless of which peer link carried the batch. `total` is
+      // the batch actually received, so the bar counts real applied rows.
+      const coordinator = getSyncCoordinator();
+      const started = coordinator.beginPass({
+        transport: 'websocket',
+        peerId: client.deviceId,
+        total: changes.length,
+      });
+      if (started) {
+        coordinator.reportApplied({ applied: result.applied, conflicts: result.conflicts });
+        coordinator.finishPass();
+      }
+
       this.send(ws, {
         type: 'SYNC_ACK',
         requestId: msg.requestId,
@@ -1061,7 +1082,10 @@ export class WsSyncServer extends EventEmitter<SyncEventMap> {
     }
     peripheralHub.unregisterBySocket(clientId);
     logger.info(`[WS] Client disconnected: ${clientId} (${deviceId || 'unpaired'})`);
-    if (deviceId) this.markRosterOffline(deviceId);
+    if (deviceId) {
+      desktopConnectionManager.reportTransportDisconnected(deviceId, 'ws', client.generation, 'socket closed');
+      this.markRosterOffline(deviceId);
+    }
     this.emit('clientDisconnected', client);
   }
 

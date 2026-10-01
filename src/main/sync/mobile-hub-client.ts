@@ -18,8 +18,10 @@ import { logger } from '../logger';
 import { ensureHubDeviceId, applyRemoteChanges, persistPeerDevice } from '../sync-hub';
 import { recordAck, pruneAckedOutbox, peerReceiptWatermark } from './ack-store';
 import { answerHubChallenge, getDesktopJoinerHandle } from './desktop-join-credentials';
+import { getSyncCoordinator } from './sync-progress-store';
 import { computeReceiptWatermark, unconfirmedCap, type ApplyOutcome, type ReceiptedChange } from '@shega/shared';
 import type { DiscoveredService } from './discovery';
+import { desktopConnectionManager } from './connection-manager';
 
 /**
  * Builds the SYNC_PUSH payload from the desktop's own outbox rows.
@@ -226,11 +228,27 @@ export async function syncWithMobileHub(peer: DiscoveredService): Promise<boolea
       return false;
     }
 
+    desktopConnectionManager.markEndpointReachable(peer.deviceId, host, port);
+    desktopConnectionManager.reportTransportConnected(peer.deviceId, 'tcp', undefined, 'lan');
+
     // 2. Push the desktop's unsynced outbox rows as changes.
     const { changes, pushedSeqs } = buildPushChanges(hubId);
     if (changes.length > 0) {
+      // P3: report the LAN-TCP pass to the same coordinator the HTTP and
+      // WebSocket transports use, so the status bar is identical whichever link
+      // is active. `total` is the batch we are actually sending, so the
+      // percentage reflects real work.
+      const coordinator = getSyncCoordinator();
+      const started = coordinator.beginPass({ transport: 'lan-tcp', peerId: host, total: changes.length });
       const ack = await rpc(socket, { type: 'SYNC_PUSH', payload: { changes } });
       if (ack?.type === 'SYNC_ACK') {
+        if (started) {
+          coordinator.reportApplied({
+            applied: Number(ack.payload?.applied ?? 0),
+            conflicts: Number(ack.payload?.conflicts ?? 0),
+          });
+          coordinator.finishPass();
+        }
         logger.info('Mobile hub push', { host, pushed: ack.payload?.applied ?? 0, conflicts: ack.payload?.conflicts ?? 0 });
         // Record what the hub actually merged. Previously this step DELETED the
         // pushed rows outright, so a hub that rejected or deferred a change lost
@@ -288,6 +306,8 @@ export async function syncWithMobileHub(peer: DiscoveredService): Promise<boolea
     return true;
   } catch (e: any) {
     logger.warn('Mobile hub sync failed', { host, port, error: e?.message });
+    desktopConnectionManager.markEndpointUnreachable(peer.deviceId, host, port, e?.message || 'Mobile hub sync failed');
+    desktopConnectionManager.reportTransportDisconnected(peer.deviceId, 'tcp', undefined, 'Mobile hub sync failed');
     return false;
   } finally {
     if (socket) closeQuietly(socket);

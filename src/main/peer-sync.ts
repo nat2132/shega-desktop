@@ -33,7 +33,9 @@ import type {
   NetworkCapabilities,
   DevicePlatform,
 } from '@shega/shared';
-import { getSyncStrategy, PROTOCOL_VERSION } from '@shega/shared';
+import { getSyncStrategy, PROTOCOL_VERSION, formatUrl } from '@shega/shared';
+import { getSyncCoordinator, reportSyncTransportError } from './sync/sync-progress-store';
+import { endpointRegistry } from './sync/endpoint-registry';
 import { getDesktopJoinerHandle } from './sync/desktop-join-credentials';
 
 // ─── Peer registry ──────────────────────────────────────────────────────────
@@ -588,11 +590,10 @@ async function authenticateWithPeerHub(peerUrl: string, hubId: string): Promise<
 
 async function syncWithPeerHub(peer: DiscoveredService): Promise<void> {
   const hubId = ensureHubDeviceId();
-  // The peer validates pulls against ITS OWN pairing token, which mDNS
-  // carries in the service's txt record. Using our local token here always
-  // returns 403, so desktop↔desktop never replicated. (Bug fix: B1.)
   const token = peer.pairingToken;
-  const peerUrl = `http://${peer.host}:${peer.port}`;
+
+  const selected = desktopConnectionManager.selectBestEndpoint(peer.deviceId, { scheme: 'http', preferTransport: 'http' });
+  const peerUrl = selected?.url || `http://${peer.host}:${peer.port}`;
 
   // First, verify we're authorized to sync with this peer
   let businessId: string | null = null;
@@ -608,12 +609,23 @@ async function syncWithPeerHub(peer: DiscoveredService): Promise<void> {
       logger.warn('Peer auth failed', { peerId: peer.deviceId, reason: verification.reason });
       return;
     }
-  } catch {
-    return; // Peer unreachable
+    // The endpoint answered /sync/info, so it is live.
+    desktopConnectionManager.markEndpointReachable(peer.deviceId, selected?.host || peer.host, selected?.port || peer.port);
+    desktopConnectionManager.reportTransportConnected(peer.deviceId, 'lan');
+  } catch (e: any) {
+    // Unreachable: mark this address unreachable so discovery can supply a new one
+    desktopConnectionManager.markEndpointUnreachable(peer.deviceId, selected?.host || peer.host, selected?.port || peer.port, e?.message || 'HTTP sync/info failed');
+    desktopConnectionManager.reportTransportDisconnected(peer.deviceId, 'lan', undefined, 'HTTP unreachable');
+    return;
   }
 
   // Pull delta changes from peer (since=0 → full snapshot the first time).
   const since = peerCursorSeq(peer.deviceId);
+  // P3: announce the check so the UI can say "Checking…" for the round trip
+  // instead of appearing idle. The batch size is only known once the pull
+  // returns, so the bar starts indeterminate rather than guessing.
+  const coordinator = getSyncCoordinator();
+  coordinator.check(peer.deviceId, { pendingOutbound: 0, peerLastSeq: 0, localCursor: 0 });
   // P3: authenticate by challenge/verify and spend the resulting grant on this
   // pull, rather than presenting the peer's long-lived shared token. Falls back
   // to the token when this desktop holds no credential from that peer, which
@@ -633,14 +645,27 @@ async function syncWithPeerHub(peer: DiscoveredService): Promise<void> {
       changes?: any[];
       lastSeq?: number;
     };
-    const changes = pullData.changes;
-    if (pullData.ok && changes && changes.length > 0) {
+    const rawChanges = pullData.changes;
+    // Narrowed to a real array before use: the declared type allows undefined and
+    // `total > 0` does not narrow it on its own.
+    const changes = Array.isArray(rawChanges) ? rawChanges : [];
+    const total = changes.length;
+    if (pullData.ok && total === 0) {
+      // The peer had nothing we lack. Say so instead of running an empty pass
+      // and flashing a progress bar on every timer tick.
+      coordinator.check(peer.deviceId, { pendingOutbound: 0, peerLastSeq: 0, localCursor: 0 });
+    } else if (pullData.ok && total > 0) {
+      // Real progress: the batch size is known, and applied/conflicts come from
+      // the apply result rather than from elapsed time.
+      const started = coordinator.beginPass({ transport: 'http', peerId: peer.deviceId, total });
       // Apply remote changes through the existing LWW path
       const { applyRemoteChanges } = await import('./sync-hub');
       const result = applyRemoteChanges(hubId, changes);
+            if (started) coordinator.reportApplied({ applied: result.applied, conflicts: result.conflicts });
+      if (started) coordinator.finishPass();
       logger.info('Peer sync pull', {
         peerId: peer.deviceId,
-        pulled: changes.length,
+        pulled: total,
         applied: result.applied,
         conflicts: result.conflicts,
         from: since,
@@ -650,6 +675,8 @@ async function syncWithPeerHub(peer: DiscoveredService): Promise<void> {
     if (pullData.ok && lastSeq > since) peerCursors.set(peer.deviceId, lastSeq);
   } catch (e: any) {
     logger.warn('Peer pull failed', { peerId: peer.deviceId, error: e?.message });
+    desktopConnectionManager.markEndpointUnreachable(peer.deviceId, selected?.host || peer.host, selected?.port || peer.port, e?.message || 'Peer pull failed');
+    reportSyncTransportError(peer.deviceId, e);
   }
   // Persist the peer hub as a device so it appears in Connected Devices, and
   // remember its address so a later re-probe can reach it even when its mDNS

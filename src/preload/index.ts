@@ -349,6 +349,19 @@ const api = {
   syncLog: (limit: number) => ipcRenderer.invoke('sync:log', limit),
   syncResync: (deviceId: string) => ipcRenderer.invoke('sync:resync', deviceId),
   syncDiagnostics: () => ipcRenderer.invoke('sync:diagnostics'),
+  /**
+   * P3 sync progress. Exposed as named methods rather than exposing raw
+   * ipcRenderer: the renderer runs with contextIsolation, so it has no Node
+   * globals (no `require`, no `__dirname`) and cannot import the `electron`
+   * package at all. `onSyncProgress` subscribes to the main-process pushes;
+   * the returned function is the unsubscribe.
+   */
+  syncProgressGet: () => ipcRenderer.invoke('sync:progress:get'),
+  onSyncProgress: (cb: (state: unknown) => void) => {
+    const listener = (_e: unknown, state: unknown) => cb(state);
+    ipcRenderer.on('sync:progress', listener);
+    return () => ipcRenderer.removeListener('sync:progress', listener);
+  },
 
   // Audit (Phase 4)
   verifyAuditChain: () => ipcRenderer.invoke('verify-audit-chain'),

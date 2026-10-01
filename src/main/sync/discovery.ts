@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 import { ensureHubDeviceId, SYNC_PORT } from '../sync-hub';
 import { getDesktopDeviceName } from './device-name';
 import { PROTOCOL_VERSION } from '@shega/shared';
+import { desktopConnectionManager } from './connection-manager';
 
 export interface ServiceInfo {
   deviceId: string;
@@ -124,6 +125,16 @@ export class MdnsDiscovery extends EventEmitter<DiscoveryEventMap> {
       };
 
       this.discoveredServices.set(deviceId, discovered);
+
+      desktopConnectionManager.addDiscoveredEndpoint(deviceId, {
+        host: discovered.host,
+        port: discovered.port,
+        transport: 'http',
+        source: 'mdns',
+        lastSeenAt: Date.now(),
+      });
+      desktopConnectionManager.markEndpointReachable(deviceId, discovered.host, discovered.port);
+
       console.log(`[mDNS] Discovered hub: ${deviceId} at ${discovered.host}:${service.port}`);
       this.emit('up', discovered);
     });
@@ -134,6 +145,7 @@ export class MdnsDiscovery extends EventEmitter<DiscoveryEventMap> {
 
       const existing = this.discoveredServices.get(deviceId);
       if (existing) {
+        desktopConnectionManager.markEndpointUnreachable(deviceId, existing.host, existing.port, 'mDNS down');
         this.discoveredServices.delete(deviceId);
         console.log(`[mDNS] Hub went down: ${deviceId}`);
         this.emit('down', existing);
