@@ -155,7 +155,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const isAuthenticated = currentAdmin !== null;
   const isSuperAdmin = currentAdmin?.role === 'super_admin' && !currentAdmin?.isEmployee;
-  const isCashier = currentAdmin?.role !== 'super_admin' && (currentAdmin?.roleKey || currentAdmin?.role || '').toLowerCase() === 'cashier';
+  const isCashier =
+    currentAdmin !== null &&
+    currentAdmin.role !== 'super_admin' &&
+    !currentAdmin.isOwner &&
+    ((currentAdmin.roleKey || currentAdmin.role || (currentAdmin as any).roleName || '').toLowerCase().includes('cashier') ||
+     (currentAdmin.permissions?.includes('sales.create') && !currentAdmin.permissions?.includes('*') && !currentAdmin.permissions?.includes('settings')));
 
   return (
     <AuthContext.Provider value={{

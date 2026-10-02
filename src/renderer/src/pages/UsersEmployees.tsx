@@ -501,28 +501,50 @@ const UsersEmployees: React.FC = () => {
   const openEmployeeModal = (emp?: any) => {
     if (emp) {
       setEditEmployee(emp);
+      const acct = accounts.find((a: any) => a.employeeId === emp.id);
       setEmpForm({
         firstName: emp.firstName || '', lastName: emp.lastName || '', phone: emp.phone || '',
         email: emp.email || '', address: emp.address || '', emergencyContact: emp.emergencyContact || '',
         gender: emp.gender || '', dateOfBirth: emp.dateOfBirth || '', roleId: emp.roleId?.toString() || '',
         department: emp.department || '', warehouseId: emp.warehouseId?.toString() || '',
-        employmentStatus: emp.employmentStatus || 'active', hireDate: emp.hireDate || '', notes: emp.notes || '', avatar: emp.avatar || ''
+        employmentStatus: emp.employmentStatus || 'active', hireDate: emp.hireDate || '', notes: emp.notes || '', avatar: emp.avatar || '',
+        username: acct?.username || '', pin: '', confirmPin: ''
       });
     } else {
       setEditEmployee(null);
-      setEmpForm({ firstName: '', lastName: '', phone: '', email: '', address: '', emergencyContact: '', gender: '', dateOfBirth: '', roleId: '', department: '', warehouseId: '', employmentStatus: 'active', hireDate: new Date().toISOString().split('T')[0], notes: '', avatar: '' });
+      setEmpForm({ firstName: '', lastName: '', phone: '', email: '', address: '', emergencyContact: '', gender: '', dateOfBirth: '', roleId: '', department: '', warehouseId: '', employmentStatus: 'active', hireDate: new Date().toISOString().split('T')[0], notes: '', avatar: '', username: '', pin: '', confirmPin: '' });
     }
     setShowEmployeeModal(true);
   };
 
   const saveEmployee = async () => {
     if (!empForm.firstName || !empForm.lastName) { toast.error(t('employees.name_required', 'Name is required')); return; }
+    if (!editEmployee && empForm.username && (!empForm.pin || empForm.pin.length !== 6)) {
+      toast.error('PIN must be exactly 6 digits');
+      return;
+    }
+    if (empForm.pin && empForm.pin !== empForm.confirmPin) {
+      toast.error('PINs do not match');
+      return;
+    }
     try {
       if (editEmployee) {
         await window.api?.updateEmployee(editEmployee.id, { ...empForm, roleId: empForm.roleId ? parseInt(empForm.roleId) : null, warehouseId: empForm.warehouseId ? parseInt(empForm.warehouseId) : null });
+        if (empForm.username && empForm.pin) {
+          const existingAcct = accounts.find((a: any) => a.employeeId === editEmployee.id);
+          if (existingAcct) {
+            await window.api?.updateEmployeeAccount(existingAcct.id, { username: empForm.username, pin: empForm.pin, employeeId: editEmployee.id });
+          } else {
+            await window.api?.insertEmployeeAccount({ username: empForm.username, pin: empForm.pin, employeeId: editEmployee.id });
+          }
+        }
         toast.success(t('employees.emp_updated', 'Employee updated'));
       } else {
-        await window.api?.insertEmployee({ ...empForm, roleId: empForm.roleId ? parseInt(empForm.roleId) : null, warehouseId: empForm.warehouseId ? parseInt(empForm.warehouseId) : null });
+        const res = await window.api?.insertEmployee({ ...empForm, roleId: empForm.roleId ? parseInt(empForm.roleId) : null, warehouseId: empForm.warehouseId ? parseInt(empForm.warehouseId) : null });
+        const newEmpId = res?.id || res;
+        if (newEmpId && empForm.username && empForm.pin) {
+          await window.api?.insertEmployeeAccount({ username: empForm.username, pin: empForm.pin, employeeId: Number(newEmpId) });
+        }
         toast.success(t('employees.emp_created', 'Employee created'));
       }
       setShowEmployeeModal(false);
@@ -1436,6 +1458,24 @@ const UsersEmployees: React.FC = () => {
           <div className="space-y-1.5 col-span-2">
             <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.notes_label_form', 'Notes')}</label>
             <Input className="h-9 text-xs" value={empForm.notes} onChange={e => setEmpForm({ ...empForm, notes: e.target.value })} />
+          </div>
+        </div>
+
+        <div className="pt-3 border-t border-border space-y-3">
+          <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.login_credentials', 'Login Account Credentials')}</p>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.username_label', 'Username')}</label>
+              <Input className="h-9 text-xs" value={empForm.username || ''} onChange={e => setEmpForm({ ...empForm, username: e.target.value.toLowerCase().replace(/\s/g, '') })} placeholder="cashier1" />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.pin', 'PIN (6 digits)')}</label>
+              <Input type="password" maxLength={6} className="h-9 text-xs" value={empForm.pin || ''} onChange={e => setEmpForm({ ...empForm, pin: e.target.value.replace(/\D/g, '') })} placeholder="••••••" />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('admin.confirm_pin', 'Confirm PIN')}</label>
+              <Input type="password" maxLength={6} className="h-9 text-xs" value={empForm.confirmPin || ''} onChange={e => setEmpForm({ ...empForm, confirmPin: e.target.value.replace(/\D/g, '') })} placeholder="••••••" />
+            </div>
           </div>
         </div>
         <div className="flex gap-3 mt-6">
