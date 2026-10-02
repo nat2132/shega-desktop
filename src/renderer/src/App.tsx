@@ -48,6 +48,7 @@ import { useSettings } from './context/SettingsContext'
 import { SubscriptionProvider, useSubscription } from './context/SubscriptionContext'
 import ErrorBoundary from './components/ErrorBoundary'
 import DeviceLockOverlay from './components/DeviceLockOverlay'
+import { UpdateDialog } from './components/UpdateDialog'
 import { useViewOnlyNotice } from './lib/viewOnly'
 import PinApprovalProvider from './components/PinApprovalProvider'
 import { initSound, playSound } from './utils/sound'
@@ -158,6 +159,18 @@ function App() {
   // onboarding wizard never re-asks for a name, email or password.
   const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
   const [showTour, setShowTour] = React.useState(false);
+  const [showAutoUpdateDialog, setShowAutoUpdateDialog] = React.useState(false);
+
+  useEffect(() => {
+    const unsub = window.api?.onUpdateStatus?.((data: any) => {
+      if (data?.status === 'available') {
+        setShowAutoUpdateDialog(true);
+      }
+    });
+    return () => {
+      window.api?.removeUpdateListeners?.();
+    };
+  }, []);
   // A legacy (pre-6-digit) account authenticates but is held here until it picks
   // a new 6-digit PIN. `null` means no upgrade is pending.
   const [pinChangeTarget, setPinChangeTarget] = React.useState<{ source: 'admin' | 'employee' | 'roster'; id: number; message?: string } | null>(null);
@@ -596,6 +609,11 @@ function App() {
       <NotificationModal />
       <DeviceLockOverlay />
       <PinApprovalProvider />
+      <UpdateDialog
+        open={showAutoUpdateDialog}
+        onOpenChange={setShowAutoUpdateDialog}
+        initialAction="auto"
+      />
     </TooltipProvider>
     </SubscriptionProvider>
   )

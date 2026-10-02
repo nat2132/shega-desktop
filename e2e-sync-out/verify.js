@@ -33477,7 +33477,7 @@ var init_backend_client = __esm({
   "src/main/backend-client.ts"() {
     init_database();
     import_electron5 = require("electron");
-    DEFAULT_BASE = "https://7313-196-191-60-157.ngrok-free.app";
+    DEFAULT_BASE = "https://afran.et";
     TOKEN_KEY = "backend_access_token";
     REFRESH_KEY = "backend_refresh_token";
     EMAIL_KEY = "backend_account_email";

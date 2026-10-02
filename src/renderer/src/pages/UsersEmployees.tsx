@@ -24,10 +24,15 @@ type Tab = 'directory' | 'accounts' | 'roles' | 'attendance';
 
 const ADMIN_PERMISSIONS = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊' },
-  { id: 'inventory', label: 'Inventory', icon: '📦' },
   { id: 'sales', label: 'Sales', icon: '🛒' },
+  { id: 'inventory', label: 'Inventory', icon: '📦' },
+  { id: 'warehouses', label: 'Warehouses', icon: '🏭' },
+  { id: 'shipments', label: 'Shipments', icon: '🚚' },
+  { id: 'suppliers', label: 'Suppliers', icon: '🏢' },
   { id: 'customers', label: 'Customers', icon: '👥' },
   { id: 'analytics', label: 'Analytics', icon: '📈' },
+  { id: 'employees', label: 'Employees', icon: '👔' },
+  { id: 'audit.view', label: 'Audit Logs', icon: '📋' },
   { id: 'settings', label: 'Settings', icon: '🔧' },
 ];
 
@@ -715,11 +720,17 @@ const UsersEmployees: React.FC = () => {
     if (!showDeleteConfirm) return;
     try {
       const { type, id } = showDeleteConfirm;
-      if (type === 'employee') await window.api?.deleteEmployee(id);
-      else if (type === 'account') await window.api?.deleteEmployeeAccount(id);
-      else if (type === 'role') await window.api?.deleteEmployeeRole(id);
-      else if (type === 'admin') await window.api?.deleteAdmin(id);
-      toast.success(type === 'employee' ? t('employees.emp_deleted', 'Employee deleted') : type === 'account' ? t('employees.account_deleted', 'Account deleted') : type === 'role' ? t('employees.role_deleted', 'Role deleted') : t('admin.deleted', 'Admin deleted'));
+      if (type === 'employee') {
+        await window.api?.deleteEmployee?.(id);
+      } else if (type === 'account') {
+        await window.api?.deleteEmployeeAccount?.(id);
+      } else if (type === 'role') {
+        await window.api?.deleteEmployeeRole?.(id);
+      } else if (type === 'admin' || type === 'user' || type === 'roster') {
+        await window.api?.deleteAdmin?.(id);
+        await window.api?.deleteEmployee?.(id);
+      }
+      toast.success(t('employees.emp_deleted', 'Team member deleted'));
       setShowDeleteConfirm(null);
       loadData();
     } catch { toast.error(t('employees.delete_failed', 'Delete failed')); }
@@ -952,9 +963,6 @@ const UsersEmployees: React.FC = () => {
                 <option value="suspended">{t('employees.suspended', 'Suspended')}</option>
               </select>
               <Button size="sm" variant="outline" onClick={() => loadData()} className="h-9 px-3"><RefreshCw size={14} /></Button>
-              <Button size="sm" variant="outline" onClick={openInviteModal} className="h-9 px-4 gap-1.5 text-xs font-black uppercase tracking-widest">
-                <QrCode size={14} /> {t('employees.invite_qr', 'Invite via QR')}
-              </Button>
               <Button size="sm" onClick={() => openEmployeeModal()} className="h-9 px-4 gap-1.5 text-xs font-black uppercase tracking-widest">
                 <UserPlus size={14} /> {t('employees.add_team', 'Add Team')}
               </Button>
@@ -971,14 +979,13 @@ const UsersEmployees: React.FC = () => {
                     <tr className="border-b bg-muted/20">
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.employee', 'Team')}</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.role', 'Role')}</th>
-                      <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">Device Presence</th>
                       <th className="text-left p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.status', 'Status')}</th>
                       <th className="text-right p-3 text-xs font-black uppercase tracking-widest text-muted-foreground">{t('employees.actions', 'Actions')}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {directoryRows.length === 0 && (
-                      <tr><td colSpan={5} className="p-8 text-center text-xs text-muted-foreground">{t('employees.no_users', 'No users found')}</td></tr>
+                      <tr><td colSpan={4} className="p-8 text-center text-xs text-muted-foreground">{t('employees.no_users', 'No users found')}</td></tr>
                     )}
                     {directoryRows.map(emp => {
                       const dev = liveDevices.find((d) =>
@@ -1042,12 +1049,6 @@ const UsersEmployees: React.FC = () => {
                             </div>
                           </td>
                           <td className="p-3"><Badge variant={emp.type === 'admin' && emp.adminRole === 'super_admin' ? 'default' : 'outline'} className="text-xs font-bold">{emp.roleName || '—'}</Badge></td>
-                          <td className="p-3">
-                            <Badge variant="outline" className={`text-[10px] font-bold ${badgeColor}`}>
-                              <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${dotColor}`} />
-                              {presenceLabel}
-                            </Badge>
-                          </td>
                           <td className="p-3">{getStatusBadge(emp.employmentStatus || (emp.isActive ? 'active' : 'inactive'))}</td>
                           <td className="p-3 text-right">
                             <div className="flex items-center justify-end gap-1">

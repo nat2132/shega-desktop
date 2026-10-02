@@ -249,8 +249,8 @@ const Settings: React.FC = () => {
     { id: 'peripherals' as const, label: t('settings.peripheral_devices', 'Peripheral Devices'), icon: Printer },
     { id: 'sync' as const, label: t('settings.devices_sync_hub', 'Devices & Sync Hub'), icon: MonitorSmartphone },
     { id: 'support' as const, label: t('settings.support'), icon: Headphones },
-    { id: 'health' as const, label: 'Health Score', icon: HeartPulse },
-    { id: 'about' as const, label: 'About', icon: Info },
+    { id: 'health' as const, label: t('settings.health_score', 'Health Score'), icon: HeartPulse },
+    { id: 'about' as const, label: t('settings.about', 'About'), icon: Info },
   ];
 
   return (
@@ -624,20 +624,20 @@ const Settings: React.FC = () => {
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h3 className="text-xl font-black tracking-tight">Peripheral Devices</h3>
+                    <h3 className="text-xl font-black tracking-tight">{t('settings.peripheral_devices', 'Peripheral Devices')}</h3>
                     <p className="text-xs text-muted-foreground uppercase font-black tracking-widest mt-1">
-                      Thermal printers, cash drawers, and hardware peripherals
+                      {t('settings.peripherals_desc', 'Thermal printers, cash drawers, and hardware peripherals')}
                     </p>
                   </div>
                   <Badge variant="outline" className="text-xs font-black px-3 py-1 bg-amber-500/10 text-amber-600 border-amber-500/30">
-                    Coming Soon
+                    {t('nav_user.coming_soon', 'Coming Soon')}
                   </Badge>
                 </div>
                 <div className="rounded-2xl border border-dashed border-border bg-muted/20 p-8 text-center space-y-3">
                   <Printer size={32} className="mx-auto text-muted-foreground opacity-50" />
-                  <h4 className="text-base font-bold text-foreground">Peripheral Device Management Coming Soon</h4>
+                  <h4 className="text-base font-bold text-foreground">{t('settings.peripheral_devices', 'Peripheral Devices')} — {t('nav_user.coming_soon', 'Coming Soon')}</h4>
                   <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                    Thermal printer setup, cash drawer triggers, and hardware peripheral settings will be enabled in an upcoming Shega release.
+                    {t('settings.peripherals_coming_soon', 'Thermal printer setup, cash drawer triggers, and hardware peripheral settings will be enabled in an upcoming Shega release.')}
                   </p>
                 </div>
               </div>
@@ -646,20 +646,20 @@ const Settings: React.FC = () => {
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h3 className="text-xl font-black tracking-tight">Devices &amp; Sync Hub</h3>
+                    <h3 className="text-xl font-black tracking-tight">{t('settings.devices_sync_hub', 'Devices & Sync Hub')}</h3>
                     <p className="text-xs text-muted-foreground uppercase font-black tracking-widest mt-1">
-                      Cross-device synchronization and peer management
+                      {t('settings.sync_desc', 'Cross-device synchronization and peer management')}
                     </p>
                   </div>
                   <Badge variant="outline" className="text-xs font-black px-3 py-1 bg-amber-500/10 text-amber-600 border-amber-500/30">
-                    Coming Soon
+                    {t('nav_user.coming_soon', 'Coming Soon')}
                   </Badge>
                 </div>
                 <div className="rounded-2xl border border-dashed border-border bg-muted/20 p-8 text-center space-y-3">
                   <MonitorSmartphone size={32} className="mx-auto text-muted-foreground opacity-50" />
-                  <h4 className="text-base font-bold text-foreground">Cross-Device Sync Coming Soon</h4>
+                  <h4 className="text-base font-bold text-foreground">{t('settings.devices_sync_hub', 'Devices & Sync Hub')} — {t('nav_user.coming_soon', 'Coming Soon')}</h4>
                   <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                    Device-to-device synchronization and LAN/P2P peer management will be available in a future Shega release.
+                    {t('settings.sync_coming_soon', 'Device-to-device synchronization and LAN/P2P peer management will be available in a future Shega release.')}
                   </p>
                 </div>
               </div>
@@ -672,8 +672,8 @@ const Settings: React.FC = () => {
                {activeTab === 'about' && (
                  <div className="space-y-8">
                    <div className="space-y-1">
-                     <h3 className="text-xl font-black tracking-tight">About Shega</h3>
-                     <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">Application information & updates</p>
+                     <h3 className="text-xl font-black tracking-tight">{t('settings.about', 'About Shega')}</h3>
+                     <p className="text-xs text-muted-foreground uppercase font-black tracking-widest">{t('settings.app_info_updates', 'Application information & updates')}</p>
                    </div>
 
                    <div className="rounded-2xl border bg-muted/20 p-6 flex flex-col items-center text-center gap-4">
@@ -682,7 +682,7 @@ const Settings: React.FC = () => {
                      </div>
                      <div>
                        <p className="text-lg font-black tracking-tight">Shega</p>
-                       <p className="text-xs text-muted-foreground">Offline Inventory & Sales Management</p>
+                       <p className="text-xs text-muted-foreground">{t('settings.app_subtitle', 'Offline Inventory & Sales Management')}</p>
                      </div>
                      <Badge variant="outline" className="text-xs font-mono px-3 py-1">
                        v{appVersion || '1.0.0'}
@@ -701,7 +701,7 @@ const Settings: React.FC = () => {
                        className="h-14 rounded-2xl font-black uppercase text-xs tracking-widest"
                      >
                        <RefreshCw size={14} />
-                       Check for Updates
+                       {t('settings.check_updates', 'Check for Updates')}
                      </Button>
 
                      <Button
@@ -710,12 +710,12 @@ const Settings: React.FC = () => {
                        className="h-14 rounded-2xl font-black uppercase text-xs tracking-widest"
                      >
                        <Download size={14} />
-                       View Releases
+                       {t('settings.view_releases', 'View Releases')}
                      </Button>
                    </div>
 
                    <div className="rounded-2xl border bg-muted/10 p-4 space-y-2">
-                     <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Technical Details</p>
+                     <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t('settings.tech_details', 'Technical Details')}</p>
                      <div className="grid grid-cols-2 gap-2 text-xs">
                        <div>
                          <span className="text-muted-foreground">Version: </span>

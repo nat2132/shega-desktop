@@ -18,7 +18,7 @@
  */
 import { getSetting, setSetting, getEncryptedSetting, setEncryptedSetting } from './secure-settings';
 
-const DEFAULT_BASE = 'https://7313-196-191-60-157.ngrok-free.app';
+const DEFAULT_BASE = 'https://afran.et';
 
 const TOKEN_KEY = 'backend_access_token';
 const REFRESH_KEY = 'backend_refresh_token';
